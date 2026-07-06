@@ -10,7 +10,7 @@ import {
   type PointerEvent,
 } from 'react';
 import { getNodeDefinition, getNodeTypeLabel, NODE_TYPE_LIST } from '../graph/nodeTypes';
-import type { NodeType, PatchNode } from '../graph/types';
+import type { NodeDefinition, NodeType, PatchNode } from '../graph/types';
 import type { ShaderFlowNode, ShaderNodeData } from './flowPatch';
 
 export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNode>) {
@@ -50,7 +50,8 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   );
   const connectedInputPorts = useMemo(() => new Set(data.connectedPorts?.inputs ?? []), [data.connectedPorts?.inputs]);
   const connectedOutputPorts = useMemo(() => new Set(data.connectedPorts?.outputs ?? []), [data.connectedPorts?.outputs]);
-  const compactPorts = node.compactPorts === true;
+  const forceCompactPorts = definition ? shouldForceCompactPorts(definition) : false;
+  const compactPorts = forceCompactPorts || node.compactPorts === true;
   const revealCompactPorts = data.isOnlySelected === true || (data.isConnecting === true && pointerOver);
   const showAllPorts = !compactPorts || revealCompactPorts;
   const showHeaderInput = Boolean(
@@ -239,28 +240,30 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           onChange={(type) => data.onTypeChange(node.id, type)}
           onCustomLabelCommit={isGroup ? (label) => data.onSubpatchNameChange?.(node.id, label) : undefined}
         />
-        <button
-          className="node-compact-toggle nodrag nopan"
-          type="button"
-          aria-label={compactPorts ? 'Expand ports' : 'Compact ports'}
-          title={compactPorts ? 'Expand ports' : 'Compact ports'}
-          aria-pressed={compactPorts}
-          onPointerDown={(event) => event.stopPropagation()}
-          onDoubleClick={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            data.onCompactToggle(node.id, !compactPorts);
-          }}
-        >
-          <span
-            className={[
-              'node-compact-icon',
-              compactPorts ? 'node-compact-icon-compact' : 'node-compact-icon-expanded',
-            ].join(' ')}
-            aria-hidden="true"
-          />
-        </button>
+        {!forceCompactPorts ? (
+          <button
+            className="node-compact-toggle nodrag nopan"
+            type="button"
+            aria-label={compactPorts ? 'Expand ports' : 'Compact ports'}
+            title={compactPorts ? 'Expand ports' : 'Compact ports'}
+            aria-pressed={compactPorts}
+            onPointerDown={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              data.onCompactToggle(node.id, !compactPorts);
+            }}
+          >
+            <span
+              className={[
+                'node-compact-icon',
+                compactPorts ? 'node-compact-icon-compact' : 'node-compact-icon-expanded',
+              ].join(' ')}
+              aria-hidden="true"
+            />
+          </button>
+        ) : null}
         {showHeaderOutputPort && headerOutputPort ? (
           <Handle
             id={`out:${headerOutputPort}`}
@@ -525,6 +528,12 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
 function displayAmplitudeRange(value: number | undefined): number {
   const range = Math.abs(Number(value ?? 1));
   return Number.isFinite(range) && range > 0 ? range : 1;
+}
+
+function shouldForceCompactPorts(definition: NodeDefinition): boolean {
+  return definition.inputs.length === 1
+    && definition.inputs[0]?.name === 'signal'
+    && definition.outputs.length <= 1;
 }
 
 function samplesToScopePath(samples: number[], range: number): string {

@@ -10,6 +10,11 @@ const MAX_FORMANT_BANDS: usize = 3;
 const MAX_CUSTOM_WAVE_POINTS: usize = 64;
 const MAX_SAMPLE_SLOTS: usize = 16;
 const MAX_SAMPLE_FRAMES: usize = 524_288;
+const MAX_DSP_OPS: usize = 4096;
+const MAX_DSP_REGS: usize = 2048;
+const MAX_DSP_VALUES: usize = 2048;
+const MAX_DSP_STATE: usize = 4096;
+const MAX_DSP_SCOPES: usize = 32;
 const LINK_SCOPE_POINTS: usize = 512;
 const LINK_SCOPE_SECONDS_MAX: f64 = 30.0;
 const FORMANT_INTENSITY_MAX: f64 = 36.0;
@@ -18,6 +23,8 @@ const CUSTOM_ONESHOT_EDGE_FADE_SECONDS: f64 = 0.002;
 const SAMPLE_EDGE_FADE_SECONDS: f64 = 0.002;
 const VOICE_START_FADE_SECONDS: f64 = 0.006;
 const VOICE_STEAL_FADE_SECONDS: f64 = 0.03;
+const DSP_VALUE_SMOOTH_SECONDS: f64 = 0.012;
+const DSP_VALUE_SETTLE_EPSILON: f64 = 0.0000001;
 const CUSTOM_MODE_LOOP: i32 = 0;
 const CUSTOM_MODE_ONCE: i32 = 1;
 const CUSTOM_MODE_PING_PONG: i32 = 2;
@@ -63,6 +70,16 @@ const PARAM_MODE_SET: i32 = 0;
 const PARAM_MODE_ADD: i32 = 1;
 const PARAM_MODE_MULTIPLY: i32 = 2;
 const LINK_AMOUNT_LIMIT: f64 = 12_000.0;
+const DSP_OP_VALUE: i32 = 0;
+const DSP_OP_ADD: i32 = 1;
+const DSP_OP_MUL: i32 = 2;
+const DSP_OP_OSC: i32 = 3;
+const DSP_OP_FILTER: i32 = 4;
+const DSP_OP_OUTPUT: i32 = 5;
+const DSP_OP_ABS: i32 = 6;
+const DSP_OP_MAP: i32 = 7;
+const DSP_OP_FEEDBACK_READ: i32 = 8;
+const DSP_OP_FEEDBACK_WRITE: i32 = 9;
 
 #[derive(Copy, Clone)]
 struct Node {
@@ -120,6 +137,19 @@ struct Link {
     env_release: f64,
 }
 
+#[derive(Copy, Clone)]
+struct DspOp {
+    opcode: i32,
+    out: i32,
+    a: i32,
+    b: i32,
+    c: i32,
+    d: i32,
+    e: i32,
+    state: i32,
+    value: f64,
+}
+
 const EMPTY_NODE: Node = Node {
     wave: 0,
     frequency_mode: 0,
@@ -172,6 +202,18 @@ const EMPTY_LINK: Link = Link {
     env_decay: 0.16,
     env_sustain: 0.72,
     env_release: 0.24,
+};
+
+const EMPTY_DSP_OP: DspOp = DspOp {
+    opcode: -1,
+    out: -1,
+    a: -1,
+    b: -1,
+    c: -1,
+    d: -1,
+    e: -1,
+    state: -1,
+    value: 0.0,
 };
 
 #[derive(Copy, Clone)]
@@ -324,6 +366,22 @@ static mut SAMPLE_DATA: [[f32; MAX_SAMPLE_FRAMES]; MAX_SAMPLE_SLOTS] =
     [[0.0; MAX_SAMPLE_FRAMES]; MAX_SAMPLE_SLOTS];
 static mut SAMPLE_LENGTHS: [usize; MAX_SAMPLE_SLOTS] = [0; MAX_SAMPLE_SLOTS];
 static mut SAMPLE_RATES: [f64; MAX_SAMPLE_SLOTS] = [44_100.0; MAX_SAMPLE_SLOTS];
+static mut DSP_OPS: [DspOp; MAX_DSP_OPS] = [EMPTY_DSP_OP; MAX_DSP_OPS];
+static mut DSP_OP_COUNT: usize = 0;
+static mut DSP_VALUES: [f64; MAX_DSP_VALUES] = [0.0; MAX_DSP_VALUES];
+static mut DSP_VALUE_TARGETS: [f64; MAX_DSP_VALUES] = [0.0; MAX_DSP_VALUES];
+static mut DSP_VALUE_INITIALIZED: [bool; MAX_DSP_VALUES] = [false; MAX_DSP_VALUES];
+static mut DSP_VALUE_ACTIVE_COUNT: usize = 0;
+static mut DSP_REGS: [f64; MAX_DSP_REGS] = [0.0; MAX_DSP_REGS];
+static mut DSP_STATE: [f64; MAX_DSP_STATE] = [0.0; MAX_DSP_STATE];
+static mut DSP_SCOPE_REGS: [i32; MAX_DSP_SCOPES] = [-1; MAX_DSP_SCOPES];
+static mut DSP_SCOPE_SAMPLES: [[f32; LINK_SCOPE_POINTS]; MAX_DSP_SCOPES] =
+    [[0.0; LINK_SCOPE_POINTS]; MAX_DSP_SCOPES];
+static mut DSP_SCOPE_POINTS_ACTIVE: [usize; MAX_DSP_SCOPES] = [256; MAX_DSP_SCOPES];
+static mut DSP_SCOPE_DECIMATE: [u32; MAX_DSP_SCOPES] = [1; MAX_DSP_SCOPES];
+static mut DSP_SCOPE_DECIMATE_COUNTERS: [u32; MAX_DSP_SCOPES] = [0; MAX_DSP_SCOPES];
+static mut DSP_SCOPE_COUNTS: [u32; MAX_DSP_SCOPES] = [0; MAX_DSP_SCOPES];
+static mut DSP_SCOPE_WRITE_INDICES: [u32; MAX_DSP_SCOPES] = [0; MAX_DSP_SCOPES];
 static mut SAMPLE_PLAYING: [[bool; MAX_NODES]; MAX_VOICE_SLOTS] =
     [[false; MAX_NODES]; MAX_VOICE_SLOTS];
 static mut SAMPLE_POSITIONS: [[f64; MAX_NODES]; MAX_VOICE_SLOTS] =
@@ -550,6 +608,183 @@ pub extern "C" fn clearGraph() {
             FREQUENCY_MODS[index] = 0.0;
             FREQUENCY_MOD_ACTIVE[index] = false;
         }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn clearDspProgram() {
+    unsafe {
+        DSP_OP_COUNT = 0;
+        DSP_VALUE_ACTIVE_COUNT = 0;
+        for index in 0..MAX_DSP_REGS {
+            DSP_REGS[index] = 0.0;
+        }
+        for index in 0..MAX_DSP_STATE {
+            DSP_STATE[index] = 0.0;
+        }
+        for index in 0..MAX_DSP_VALUES {
+            DSP_VALUE_INITIALIZED[index] = false;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn getDspState(index: u32) -> f64 {
+    unsafe {
+        let index = index as usize;
+        if index < MAX_DSP_STATE {
+            DSP_STATE[index]
+        } else {
+            0.0
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn setDspState(index: u32, value: f64) {
+    unsafe {
+        let index = index as usize;
+        if index < MAX_DSP_STATE {
+            DSP_STATE[index] = if value.is_finite() {
+                value.clamp(-12_000.0, 12_000.0)
+            } else {
+                0.0
+            };
+        }
+    }
+}
+
+fn reset_dsp_scope(slot: usize) {
+    unsafe {
+        DSP_SCOPE_DECIMATE_COUNTERS[slot] = 0;
+        DSP_SCOPE_COUNTS[slot] = 0;
+        DSP_SCOPE_WRITE_INDICES[slot] = 0;
+        for index in 0..LINK_SCOPE_POINTS {
+            DSP_SCOPE_SAMPLES[slot][index] = 0.0;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn clearDspScopes() {
+    unsafe {
+        for slot in 0..MAX_DSP_SCOPES {
+            DSP_SCOPE_REGS[slot] = -1;
+            DSP_SCOPE_POINTS_ACTIVE[slot] = 256;
+            DSP_SCOPE_DECIMATE[slot] = 1;
+            reset_dsp_scope(slot);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn setDspScope(
+    slot: u32,
+    register: i32,
+    seconds: f64,
+    points: u32,
+    sample_rate: f64,
+) -> i32 {
+    unsafe {
+        let slot = slot as usize;
+        if slot >= MAX_DSP_SCOPES || register < 0 || register as usize >= MAX_DSP_REGS {
+            return -1;
+        }
+        let safe_seconds = if seconds.is_finite() {
+            seconds.clamp(0.01, LINK_SCOPE_SECONDS_MAX)
+        } else {
+            0.08
+        };
+        let safe_rate = if sample_rate.is_finite() && sample_rate > 0.0 {
+            sample_rate
+        } else {
+            44_100.0
+        };
+        let active_points = (points as usize).clamp(32, LINK_SCOPE_POINTS);
+
+        DSP_SCOPE_REGS[slot] = register;
+        DSP_SCOPE_POINTS_ACTIVE[slot] = active_points;
+        DSP_SCOPE_DECIMATE[slot] = ((safe_seconds * safe_rate) / active_points as f64)
+            .round()
+            .max(1.0) as u32;
+        reset_dsp_scope(slot);
+        slot as i32
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn dspScopePtr(slot: u32) -> *const f32 {
+    let slot = slot as usize;
+    if slot >= MAX_DSP_SCOPES {
+        return core::ptr::null();
+    }
+    unsafe { core::ptr::addr_of!(DSP_SCOPE_SAMPLES[slot][0]) }
+}
+
+#[no_mangle]
+pub extern "C" fn dspScopeCount(slot: u32) -> u32 {
+    let slot = slot as usize;
+    if slot >= MAX_DSP_SCOPES {
+        return 0;
+    }
+    unsafe { DSP_SCOPE_COUNTS[slot] }
+}
+
+#[no_mangle]
+pub extern "C" fn dspScopeWriteIndex(slot: u32) -> u32 {
+    let slot = slot as usize;
+    if slot >= MAX_DSP_SCOPES {
+        return 0;
+    }
+    unsafe { DSP_SCOPE_WRITE_INDICES[slot] }
+}
+
+#[no_mangle]
+pub extern "C" fn setDspValue(index: u32, value: f64) {
+    unsafe {
+        let index = index as usize;
+        if index < MAX_DSP_VALUES {
+            let value = if value.is_finite() { value } else { 0.0 };
+            DSP_VALUE_TARGETS[index] = value;
+            if !DSP_VALUE_INITIALIZED[index] {
+                DSP_VALUES[index] = value;
+                DSP_VALUE_INITIALIZED[index] = true;
+            }
+            DSP_VALUE_ACTIVE_COUNT = DSP_VALUE_ACTIVE_COUNT.max(index + 1);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn addDspOp(
+    opcode: i32,
+    out: i32,
+    a: i32,
+    b: i32,
+    c: i32,
+    d: i32,
+    e: i32,
+    state: i32,
+    value: f64,
+) -> i32 {
+    unsafe {
+        if DSP_OP_COUNT >= MAX_DSP_OPS {
+            return -1;
+        }
+        let index = DSP_OP_COUNT;
+        DSP_OPS[index] = DspOp {
+            opcode,
+            out,
+            a,
+            b,
+            c,
+            d,
+            e,
+            state,
+            value,
+        };
+        DSP_OP_COUNT += 1;
+        index as i32
     }
 }
 
@@ -3096,6 +3331,204 @@ fn advance_phases(voice_slot: usize, sample_rate: f64, note_frequency: f64, rele
             PHASES[voice_slot][node_index] = normalize_phase(next_phase);
             FREQUENCY_MODS[node_index] = 0.0;
             FREQUENCY_MOD_ACTIVE[node_index] = false;
+        }
+    }
+}
+
+fn dsp_reg(index: i32) -> f64 {
+    unsafe {
+        if index < 0 || index as usize >= MAX_DSP_REGS {
+            0.0
+        } else {
+            DSP_REGS[index as usize]
+        }
+    }
+}
+
+fn set_dsp_reg(index: i32, value: f64) {
+    unsafe {
+        if index >= 0 && (index as usize) < MAX_DSP_REGS {
+            DSP_REGS[index as usize] = if value.is_finite() {
+                value.clamp(-12_000.0, 12_000.0)
+            } else {
+                0.0
+            };
+        }
+    }
+}
+
+fn dsp_value(index: i32) -> f64 {
+    unsafe {
+        if index < 0 || index as usize >= MAX_DSP_VALUES {
+            0.0
+        } else {
+            DSP_VALUES[index as usize]
+        }
+    }
+}
+
+fn advance_dsp_values(sample_rate: f64) {
+    let alpha = 1.0 - (-1.0 / (sample_rate * DSP_VALUE_SMOOTH_SECONDS.max(0.001))).exp();
+    unsafe {
+        for index in 0..DSP_VALUE_ACTIVE_COUNT {
+            if !DSP_VALUE_INITIALIZED[index] {
+                continue;
+            }
+            let current = DSP_VALUES[index];
+            let target = DSP_VALUE_TARGETS[index];
+            let next = current + (target - current) * alpha;
+            DSP_VALUES[index] = if (target - next).abs() <= DSP_VALUE_SETTLE_EPSILON {
+                target
+            } else {
+                next
+            };
+        }
+    }
+}
+
+fn dsp_oscillator(wave: i32, phase: f64) -> f64 {
+    let p = normalize_phase(phase);
+    match wave {
+        1 => 1.0 - 4.0 * ((p - 0.25).round() - (p - 0.25)).abs(),
+        2 => p * 2.0 - 1.0,
+        3 => 1.0 - p * 2.0,
+        4 => {
+            if p < 0.5 {
+                1.0
+            } else {
+                -1.0
+            }
+        }
+        _ => (TWO_PI * p).sin(),
+    }
+}
+
+fn render_dsp_filter(op: DspOp, sample_rate: f64) -> f64 {
+    unsafe {
+        if op.state < 0 || (op.state as usize + 3) >= MAX_DSP_STATE {
+            return dsp_reg(op.b);
+        }
+
+        let state_index = op.state as usize;
+        let sample = dsp_reg(op.b);
+        let cutoff = dsp_reg(op.c);
+        let resonance = dsp_reg(op.d);
+        let (b0, b1, b2, a1, a2) = filter_coefficients(op.a, cutoff, resonance, sample_rate);
+        let x1 = DSP_STATE[state_index];
+        let x2 = DSP_STATE[state_index + 1];
+        let y1 = DSP_STATE[state_index + 2];
+        let y2 = DSP_STATE[state_index + 3];
+        let output = b0 * sample + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+
+        DSP_STATE[state_index + 1] = sanitize_sample(x1, 4.0);
+        DSP_STATE[state_index] = sanitize_sample(sample, 4.0);
+        DSP_STATE[state_index + 3] = sanitize_sample(y1, 4.0);
+        DSP_STATE[state_index + 2] = sanitize_sample(output, 4.0);
+        sanitize_sample(output, 4.0)
+    }
+}
+
+fn render_dsp_op(op: DspOp, sample_rate: f64, left_sample: &mut f64, right_sample: &mut f64) {
+    let _ = op.value;
+    match op.opcode {
+        DSP_OP_VALUE => set_dsp_reg(op.out, dsp_value(op.a)),
+        DSP_OP_ADD => set_dsp_reg(op.out, dsp_reg(op.a) + dsp_reg(op.b)),
+        DSP_OP_MUL => set_dsp_reg(op.out, dsp_reg(op.a) * dsp_reg(op.b)),
+        DSP_OP_OSC => unsafe {
+            let frequency = dsp_reg(op.b).max(0.0);
+            let phase = if op.state >= 0 && (op.state as usize) < MAX_DSP_STATE {
+                DSP_STATE[op.state as usize]
+            } else {
+                0.0
+            };
+            set_dsp_reg(op.out, dsp_oscillator(op.a, phase));
+            if op.state >= 0 && (op.state as usize) < MAX_DSP_STATE {
+                DSP_STATE[op.state as usize] = normalize_phase(phase + frequency / sample_rate.max(1.0));
+            }
+        },
+        DSP_OP_FILTER => set_dsp_reg(op.out, render_dsp_filter(op, sample_rate)),
+        DSP_OP_OUTPUT => {
+            let sample = sanitize_sample(dsp_reg(op.a), 8.0);
+            if op.b == 0 {
+                *left_sample = sanitize_sample(*left_sample + sample, 8.0);
+            } else if op.b == 1 {
+                *right_sample = sanitize_sample(*right_sample + sample, 8.0);
+            }
+        }
+        DSP_OP_ABS => set_dsp_reg(op.out, dsp_reg(op.a).abs()),
+        DSP_OP_MAP => {
+            let source = dsp_reg(op.a);
+            let src_min = dsp_reg(op.b);
+            let src_max = dsp_reg(op.c);
+            let target_min = dsp_reg(op.d);
+            let target_max = dsp_reg(op.e);
+            let denominator = (src_max - src_min).abs().max(0.000001).copysign(src_max - src_min);
+            let mapped = target_min + ((source - src_min) / denominator) * (target_max - target_min);
+            set_dsp_reg(op.out, mapped);
+        }
+        DSP_OP_FEEDBACK_READ => unsafe {
+            let value = if op.state >= 0 && (op.state as usize) < MAX_DSP_STATE {
+                DSP_STATE[op.state as usize]
+            } else {
+                0.0
+            };
+            set_dsp_reg(op.out, value);
+        },
+        DSP_OP_FEEDBACK_WRITE => unsafe {
+            if op.state >= 0 && (op.state as usize) < MAX_DSP_STATE {
+                DSP_STATE[op.state as usize] = sanitize_sample(dsp_reg(op.a), 8.0);
+            }
+        },
+        _ => {}
+    }
+}
+
+fn capture_dsp_scopes() {
+    unsafe {
+        for slot in 0..MAX_DSP_SCOPES {
+            let register = DSP_SCOPE_REGS[slot];
+            if register < 0 || register as usize >= MAX_DSP_REGS {
+                continue;
+            }
+
+            DSP_SCOPE_DECIMATE_COUNTERS[slot] =
+                DSP_SCOPE_DECIMATE_COUNTERS[slot].saturating_add(1);
+            if DSP_SCOPE_DECIMATE_COUNTERS[slot] < DSP_SCOPE_DECIMATE[slot] {
+                continue;
+            }
+            DSP_SCOPE_DECIMATE_COUNTERS[slot] = 0;
+
+            let active_points = DSP_SCOPE_POINTS_ACTIVE[slot].clamp(32, LINK_SCOPE_POINTS);
+            let write_index = (DSP_SCOPE_WRITE_INDICES[slot] as usize).min(active_points - 1);
+            DSP_SCOPE_SAMPLES[slot][write_index] =
+                sanitize_sample(DSP_REGS[register as usize], 8.0) as f32;
+            DSP_SCOPE_WRITE_INDICES[slot] =
+                ((write_index + 1) % active_points) as u32;
+            if (DSP_SCOPE_COUNTS[slot] as usize) < active_points {
+                DSP_SCOPE_COUNTS[slot] = DSP_SCOPE_COUNTS[slot].saturating_add(1);
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn renderDspProgram(frames: u32, sample_rate: f64) {
+    let frames = (frames as usize).min(MAX_WASM_FRAMES);
+    if frames == 0 || sample_rate <= 0.0 {
+        return;
+    }
+
+    unsafe {
+        for frame in 0..frames {
+            let mut left_sample = 0.0;
+            let mut right_sample = 0.0;
+            advance_dsp_values(sample_rate);
+            for op_index in 0..DSP_OP_COUNT {
+                render_dsp_op(DSP_OPS[op_index], sample_rate, &mut left_sample, &mut right_sample);
+            }
+            capture_dsp_scopes();
+            LEFT[frame] += left_sample as f32;
+            RIGHT[frame] += right_sample as f32;
         }
     }
 }

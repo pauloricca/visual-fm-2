@@ -8,6 +8,8 @@ const seconds = Number(process.argv[2] ?? 5);
 const resendEveryBlock = process.argv.includes('--resend-every-block');
 const modulated = process.argv.includes('--modulated');
 const compiled = process.argv.includes('--compiled');
+const scope = process.argv.includes('--scope');
+const feedback = process.argv.includes('--feedback');
 const modeArg = argValue('--mode') ?? 'multiply';
 const amountArg = Number(argValue('--amount'));
 const weightArg = Number(argValue('--weight'));
@@ -108,7 +110,15 @@ if (printGraph) {
   console.log(JSON.stringify(graph, null, 2));
 }
 
-processor.port.onmessage({ data: { type: 'graph', payload: graph } });
+processor.port.onmessage({ data: { type: graph?.ops ? 'dspProgram' : 'graph', payload: graph } });
+if (scope) {
+  processor.port.onmessage({
+    data: {
+      type: 'setLinkScopes',
+      payload: { linkIds: ['scope'], mode: 'zero-crossing', points: 256, displayPoints: 128, seconds: 0.08 },
+    },
+  });
+}
 
 const windowFrames = Math.round(sampleRate * 0.25);
 const totalBlocks = Math.ceil((seconds * sampleRate) / blockSize);
@@ -156,6 +166,13 @@ for (const row of windows) {
   console.log(`${row.t.toFixed(2)}s rms=${row.rms.toFixed(6)} peak=${row.peak.toFixed(6)} hz=${row.hz.toFixed(2)}`);
 }
 
+if (scope) {
+  const scopeMessages = outboundMessages.filter((message) => message.type === 'linkScope' && message.payload?.id === 'scope');
+  const latest = scopeMessages.at(-1)?.payload?.samples || [];
+  const peak = latest.reduce((max, sample) => Math.max(max, Math.abs(Number(sample) || 0)), 0);
+  console.log(`scope messages=${scopeMessages.length} samples=${latest.length} peak=${peak.toFixed(6)}`);
+}
+
 async function waitForReady() {
   const startedAt = Date.now();
   while (Date.now() - startedAt < 2000) {
@@ -171,24 +188,40 @@ async function compileVisiblePatch() {
   const moduleDir = fs.mkdtempSync('/tmp/visual-fm-compiler-');
   writeTranspiledModule('web/src/graph/expression.ts', `${moduleDir}/expression.mjs`);
   writeTranspiledModule('web/src/graph/subpatch.ts', `${moduleDir}/subpatch.mjs`);
-  writeTranspiledModule('web/src/audio/compiler.ts', `${moduleDir}/compiler.mjs`, (source) => (
+  writeTranspiledModule('web/src/graph/nodeTypes.ts', `${moduleDir}/nodeTypes.mjs`);
+  writeTranspiledModule('web/src/audio/dspProgram.ts', `${moduleDir}/dspProgram.mjs`, (source) => (
     source
-      .replaceAll("'../graph/expression'", "'./expression.mjs'")
       .replaceAll("'../graph/subpatch'", "'./subpatch.mjs'")
+      .replaceAll("'../graph/nodeTypes'", "'./nodeTypes.mjs'")
   ));
-  const compiler = await import(`file://${moduleDir}/compiler.mjs`);
+  const compiler = await import(`file://${moduleDir}/dspProgram.mjs`);
   const patch = {
-    nodes: modulated
+    nodes: feedback
+      ? [
+        { id: 'tri', type: 'TriangleOsc', params: { frequency: 220, ratio: 1, phase: 0, phaseReset: 0, level: 0.7 } },
+        { id: 'sine', type: 'SineOsc', params: { frequency: 200, ratio: 1, phase: 0, phaseReset: 0, level: 0.75 } },
+        ...(scope ? [{ id: 'scope', type: 'Scope', params: {} }] : []),
+        { id: 'out', type: 'AudioOut', params: { level: 0.45 } },
+      ]
+      : modulated
       ? [
         { id: 'tri', type: 'TriangleOsc', params: { frequency: 1, ratio: 1, phase: 0, phaseReset: 0, level: 0.7 } },
         { id: 'sine', type: 'SineOsc', params: { frequency: 61.4288, ratio: 1, phase: 0, phaseReset: 0, level: 1.3672 } },
+        ...(scope ? [{ id: 'scope', type: 'Scope', params: {} }] : []),
         { id: 'out', type: 'AudioOut', params: { level: 0.75 } },
       ]
       : [
         { id: 'sine', type: 'SineOsc', params: { frequency: 61.4288, ratio: 1, phase: 0, phaseReset: 0, level: 1.3672 } },
+        ...(scope ? [{ id: 'scope', type: 'Scope', params: {} }] : []),
         { id: 'out', type: 'AudioOut', params: { level: 0.75 } },
       ],
     links: [
+      ...(feedback
+        ? [
+          { from: { node: 'tri', port: 'signal' }, to: { node: 'sine', port: 'frequency' }, weight: 35, mode: 'add' },
+          { from: { node: 'sine', port: 'signal' }, to: { node: 'tri', port: 'frequency' }, weight: 30, mode: 'add' },
+        ]
+        : []),
       ...(modulated
         ? [{
           from: { node: 'tri', port: 'signal' },
@@ -197,10 +230,24 @@ async function compileVisiblePatch() {
           mode: modeArg,
         }]
         : []),
-      { from: { node: 'sine', port: 'signal' }, to: { node: 'out', port: 'both' }, weight: 1, mode: 'set' },
+      ...(scope
+        ? [
+          { from: { node: feedback ? 'tri' : 'sine', port: 'signal' }, to: { node: 'scope', port: 'signal' }, weight: 1, mode: 'set' },
+          { from: { node: 'scope', port: 'signal' }, to: { node: 'out', port: 'both' }, weight: 1, mode: 'set' },
+        ]
+        : [
+          ...(feedback
+            ? [
+              { from: { node: 'tri', port: 'signal' }, to: { node: 'out', port: 'left' }, weight: 1, mode: 'set' },
+              { from: { node: 'sine', port: 'signal' }, to: { node: 'out', port: 'right' }, weight: 1, mode: 'set' },
+            ]
+            : [
+              { from: { node: 'sine', port: 'signal' }, to: { node: 'out', port: 'both' }, weight: 1, mode: 'set' },
+            ]),
+        ]),
     ],
   };
-  return compiler.compilePatchToWasmGraph(patch);
+  return compiler.compilePatchToDspProgram(patch);
 }
 
 function writeTranspiledModule(sourcePath, outputPath, transform = (source) => source) {

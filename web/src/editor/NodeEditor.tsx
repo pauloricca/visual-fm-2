@@ -18,7 +18,7 @@ import {
   type CoordinateExtent,
 } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent } from 'react';
-import { compilePatchToWasmGraph } from '../audio/compiler';
+import { compilePatchToDspProgram } from '../audio/dspProgram';
 import { useAudioEngine } from '../audio/useAudioEngine';
 import { demoPatch } from '../graph/demoPatch';
 import { extractExpressionInputs } from '../graph/expression';
@@ -1018,15 +1018,11 @@ function NodeEditorInner() {
   const trimmedRootPatchName = rootPatchName.trim();
   const selectedLocalPatch = localPatchLibrary?.patches.find((entry) => entry.name === localPatchLibrary.selectedPatchName) ?? null;
   const selectedSubpatchCandidate = subpatchImportModal?.candidates.find((candidate) => candidate.key === subpatchImportModal.selectedKey) ?? null;
-  const audioGraph = useMemo(() => compilePatchToWasmGraph(patch), [patch]);
+  const audioGraph = useMemo(() => compilePatchToDspProgram(patch), [patch]);
   const monitorLinkIdByNode = useMemo(() => {
     const linkIdsByNode = new Map<string, string>();
-    for (const link of audioGraph.links) {
-      for (const nodeId of link.monitorNodeIds ?? []) {
-        if (!linkIdsByNode.has(nodeId)) {
-          linkIdsByNode.set(nodeId, link.id);
-        }
-      }
+    for (const nodeId of Object.keys(audioGraph.monitorIds)) {
+      linkIdsByNode.set(nodeId, nodeId);
     }
     return linkIdsByNode;
   }, [audioGraph]);

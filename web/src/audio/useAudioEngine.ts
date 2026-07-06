@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { WasmAudioGraph } from './compiler';
+import type { DspProgram } from './dspProgram';
 
 type AudioStatus = 'idle' | 'starting' | 'running' | 'error';
 
@@ -22,11 +22,11 @@ interface AudioEngineState {
   linkScopes: Record<string, LinkScopeReading>;
   start: () => Promise<void>;
   stop: () => void;
-  syncGraph: (graph: WasmAudioGraph) => void;
+  syncGraph: (program: DspProgram) => void;
   setLinkScopes: (linkIds: string[]) => void;
 }
 
-const AUDIO_ENGINE_ASSET_VERSION = '2026-07-06-abs-map';
+const AUDIO_ENGINE_ASSET_VERSION = '2026-07-06-dsp-state-preserve';
 const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const METER_UPDATE_INTERVAL_MS = 80;
@@ -59,8 +59,9 @@ export function useAudioEngine(): AudioEngineState {
   const nodeRef = useRef<AudioWorkletNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const meterFrameRef = useRef<number | null>(null);
-  const graphRef = useRef<WasmAudioGraph | null>(null);
-  const lastSentGraphJsonRef = useRef<string | null>(null);
+  const graphRef = useRef<DspProgram | null>(null);
+  const lastSentProgramStructureRef = useRef<string | null>(null);
+  const lastSentValuesRef = useRef<number[] | null>(null);
   const activeScopeLinkIdsRef = useRef<string[]>([]);
   const sampleDataKeysRef = useRef<Record<string, string>>({});
 
@@ -94,7 +95,12 @@ export function useAudioEngine(): AudioEngineState {
     meterFrameRef.current = window.requestAnimationFrame(tick);
   }, [stopMeter]);
 
-  const syncGraphSamples = useCallback((graph: WasmAudioGraph, context: AudioContext, node: AudioWorkletNode) => {
+  const syncGraphSamples = useCallback((graph: DspProgram, context: AudioContext, node: AudioWorkletNode) => {
+    void graph;
+    void context;
+    void node;
+    return;
+    /*
     const nextKeys: Record<string, string> = {};
 
     for (const graphNode of graph.nodes) {
@@ -121,19 +127,31 @@ export function useAudioEngine(): AudioEngineState {
       delete sampleDataKeysRef.current[nodeId];
       node.port.postMessage({ type: 'sampleData', payload: { nodeId, data: [], sampleRate: context.sampleRate, name: '', storageKey: '' } });
     }
+    */
   }, []);
 
-  const syncGraph = useCallback((graph: WasmAudioGraph) => {
+  const syncGraph = useCallback((graph: DspProgram) => {
     graphRef.current = graph;
-    const graphJson = JSON.stringify(graph);
     if (!nodeRef.current || !contextRef.current) return;
-    if (lastSentGraphJsonRef.current === graphJson) {
+    const structureKey = dspProgramStructureKey(graph);
+    if (
+      lastSentProgramStructureRef.current === structureKey
+      && arraysEqual(lastSentValuesRef.current, graph.values)
+    ) {
       syncGraphSamples(graph, contextRef.current, nodeRef.current);
       return;
     }
 
-    lastSentGraphJsonRef.current = graphJson;
-    nodeRef.current.port.postMessage({ type: 'graph', payload: graph });
+    if (lastSentProgramStructureRef.current === structureKey) {
+      lastSentValuesRef.current = [...graph.values];
+      nodeRef.current.port.postMessage({ type: 'dspValues', payload: { values: graph.values } });
+      syncGraphSamples(graph, contextRef.current, nodeRef.current);
+      return;
+    }
+
+    lastSentProgramStructureRef.current = structureKey;
+    lastSentValuesRef.current = [...graph.values];
+    nodeRef.current.port.postMessage({ type: 'dspProgram', payload: graph });
     syncGraphSamples(graph, contextRef.current, nodeRef.current);
     nodeRef.current.port.postMessage({
       type: 'setLinkScopes',
@@ -223,8 +241,9 @@ export function useAudioEngine(): AudioEngineState {
       analyserRef.current = analyser;
 
       if (graphRef.current) {
-        lastSentGraphJsonRef.current = JSON.stringify(graphRef.current);
-        node.port.postMessage({ type: 'graph', payload: graphRef.current });
+        lastSentProgramStructureRef.current = dspProgramStructureKey(graphRef.current);
+        lastSentValuesRef.current = [...graphRef.current.values];
+        node.port.postMessage({ type: 'dspProgram', payload: graphRef.current });
         syncGraphSamples(graphRef.current, context, node);
       }
       if (activeScopeLinkIdsRef.current.length > 0) {
@@ -250,7 +269,8 @@ export function useAudioEngine(): AudioEngineState {
 
   const stop = useCallback(() => {
     stopAudioContext(contextRef, nodeRef, analyserRef);
-    lastSentGraphJsonRef.current = null;
+    lastSentProgramStructureRef.current = null;
+    lastSentValuesRef.current = null;
     sampleDataKeysRef.current = {};
     stopMeter();
     setLinkMeters({});
@@ -275,6 +295,28 @@ function scopePayload(linkIds: string[]) {
     seconds: SCOPE_SECONDS,
     mode: SCOPE_MODE,
   };
+}
+
+function dspProgramStructureKey(program: DspProgram): string {
+  return JSON.stringify({
+    version: program.version,
+    ops: program.ops,
+    valueBindings: program.valueBindings,
+    stateBindings: program.stateBindings,
+    registerCount: program.registerCount,
+    stateCount: program.stateCount,
+    feedbackLinkIds: program.feedbackLinkIds,
+    monitorIds: program.monitorIds,
+    errors: program.errors,
+  });
+}
+
+function arraysEqual(left: number[] | null, right: number[]): boolean {
+  if (!left || left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
 }
 
 async function resumeAudioContext(context: AudioContext): Promise<void> {

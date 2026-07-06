@@ -143,6 +143,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.nodesById = new Map();
     this.links = [];
     this.linksById = new Map();
+    this.dspProgram = null;
     this.sampleDataByNodeId = new Map();
     this.linkControlSmoothers = new Map();
     this.activeLinkControlSmoothers = new Set();
@@ -174,6 +175,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.linkScopeRequests = [];
     this.linkScopeRequestIndex = 0;
     this.monitorScopeStates = new Map();
+    this.dspScopeStates = new Map();
     this.graphVersion = 0;
     this.linkScopeSamples = null;
     this.masterEffects = this.normalizeEffects();
@@ -196,6 +198,10 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       const { type, payload } = event.data || {};
       if (type === "graph") {
         this.setGraph(payload);
+      } else if (type === "dspProgram") {
+        this.setDspProgram(payload);
+      } else if (type === "dspValues") {
+        this.setDspValues(payload);
       } else if (type === "sampleData") {
         this.setSampleData(payload);
       } else if (type === "nodeParam") {
@@ -260,6 +266,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       this.wasm.resetPhases();
       this.ready = true;
       this.syncRustGraph();
+      this.syncDspProgram();
+      this.configureDspScopes();
       for (const link of this.links) {
         link.controlSmoother = this.syncLinkControlSmoother(link, true);
         this.applyLinkControlSmoother(link);
@@ -274,6 +282,9 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
   }
 
   setGraph(graph = {}) {
+    this.dspProgram = null;
+    this.wasm?.clearDspProgram?.();
+    this.wasm?.clearDspScopes?.();
     this.nodes = (graph.nodes || []).map((node) => this.normalizeNode(node));
     this.nodesById = new Map(this.nodes.map((node) => [node.id, node]));
     this.links = (graph.links || []).map((link) => this.normalizeLink(link));
@@ -290,6 +301,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.masterEffects = this.normalizeEffects(graph.masterEffects);
     this.hasActiveDroneLinks = this.links.some((link) => link.drone && !link.monitorOnly);
     this.graphVersion += 1;
+    this.dspScopeStates.clear();
     this.monitorScopeStates.clear();
     this.syncRustGraph();
     for (const link of this.links) {
@@ -298,6 +310,160 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     }
     if (this.linkScopeRequests.length > 0) this.setLinkScopes({ ...this.linkScopeRequests[0], linkIds: this.linkScopeRequests.map((request) => request.linkId) });
     this.enforceVoiceLimit();
+  }
+
+  setDspProgram(program = {}) {
+    const preservedState = this.captureDspState(this.dspProgram);
+    this.dspProgram = this.normalizeDspProgram(program);
+    this.nodes = [];
+    this.nodesById = new Map();
+    this.links = [];
+    this.linksById = new Map();
+    this.hasActiveDroneLinks = false;
+    this.linkControlSmoothers.clear();
+    this.activeLinkControlSmoothers.clear();
+    this.monitorScopeStates.clear();
+    this.syncDspProgram(preservedState);
+    this.configureDspScopes();
+  }
+
+  setDspValues(payload = {}) {
+    if (!this.dspProgram || !this.wasm?.setDspValue) return;
+    const values = Array.isArray(payload.values)
+      ? payload.values.map(Number).map((value) => Number.isFinite(value) ? value : 0)
+      : [];
+    if (values.length !== this.dspProgram.values.length) return;
+
+    for (let index = 0; index < values.length; index += 1) {
+      if (values[index] === this.dspProgram.values[index]) continue;
+      this.dspProgram.values[index] = values[index];
+      this.wasm.setDspValue(index, values[index]);
+    }
+  }
+
+  normalizeDspProgram(program = {}) {
+    const ops = Array.isArray(program.ops)
+      ? program.ops.map((op) => ({
+        opcode: Math.trunc(Number(op.opcode)),
+        out: Math.trunc(Number(op.out ?? -1)),
+        a: Math.trunc(Number(op.a ?? -1)),
+        b: Math.trunc(Number(op.b ?? -1)),
+        c: Math.trunc(Number(op.c ?? -1)),
+        d: Math.trunc(Number(op.d ?? -1)),
+        e: Math.trunc(Number(op.e ?? -1)),
+        state: Math.trunc(Number(op.state ?? -1)),
+        value: Number(op.value ?? 0),
+      })).filter((op) => Number.isFinite(op.opcode))
+      : [];
+    const values = Array.isArray(program.values)
+      ? program.values.map(Number).map((value) => Number.isFinite(value) ? value : 0)
+      : [];
+    const errors = Array.isArray(program.errors)
+      ? program.errors.map(String).filter(Boolean)
+      : [];
+    const stateBindings = Array.isArray(program.stateBindings)
+      ? program.stateBindings.map((binding) => ({
+        id: String(binding?.id || ""),
+        state: Math.trunc(Number(binding?.state ?? -1)),
+        count: Math.max(0, Math.trunc(Number(binding?.count ?? 0))),
+        kind: binding?.kind === "filter" || binding?.kind === "feedback" ? binding.kind : "oscillator",
+        nodeId: String(binding?.nodeId || ""),
+      })).filter((binding) => binding.id && binding.state >= 0 && binding.count > 0)
+      : [];
+    const monitorIds = {};
+    if (program.monitorIds && typeof program.monitorIds === "object") {
+      for (const [id, register] of Object.entries(program.monitorIds)) {
+        const registerNumber = Math.trunc(Number(register));
+        if (id && Number.isFinite(registerNumber)) monitorIds[String(id)] = registerNumber;
+      }
+    }
+
+    return {
+      version: 1,
+      ops,
+      values,
+      stateBindings,
+      registerCount: Math.max(0, Math.trunc(Number(program.registerCount) || 0)),
+      stateCount: Math.max(0, Math.trunc(Number(program.stateCount) || 0)),
+      monitorIds,
+      feedbackLinkIds: Array.isArray(program.feedbackLinkIds) ? program.feedbackLinkIds.map(String) : [],
+      errors,
+    };
+  }
+
+  captureDspState(program) {
+    if (!program || !this.wasm?.getDspState) return new Map();
+
+    const states = new Map();
+    for (const binding of program.stateBindings || []) {
+      const values = [];
+      for (let offset = 0; offset < binding.count; offset += 1) {
+        values.push(Number(this.wasm.getDspState(binding.state + offset)) || 0);
+      }
+      states.set(binding.id, values);
+    }
+    return states;
+  }
+
+  restoreDspState(preservedState) {
+    if (!preservedState || !this.dspProgram || !this.wasm?.setDspState) return;
+
+    for (const binding of this.dspProgram.stateBindings || []) {
+      const values = preservedState.get(binding.id);
+      if (!values) continue;
+      const count = Math.min(binding.count, values.length);
+      for (let offset = 0; offset < count; offset += 1) {
+        this.wasm.setDspState(binding.state + offset, values[offset]);
+      }
+    }
+  }
+
+  syncDspProgram(preservedState = null) {
+    if (!this.wasm?.clearDspProgram || !this.dspProgram) return;
+
+    this.wasm.clearDspProgram();
+    if (this.dspProgram.errors.length > 0) return;
+
+    for (let index = 0; index < this.dspProgram.values.length; index += 1) {
+      this.wasm.setDspValue?.(index, this.dspProgram.values[index]);
+    }
+    for (const op of this.dspProgram.ops) {
+      this.wasm.addDspOp?.(
+        op.opcode,
+        op.out,
+        op.a,
+        op.b,
+        op.c,
+        op.d,
+        op.e,
+        op.state,
+        op.value,
+      );
+    }
+    this.restoreDspState(preservedState);
+  }
+
+  configureDspScopes() {
+    this.dspScopeStates.clear();
+    this.wasm?.clearDspScopes?.();
+    if (!this.dspProgram || !this.wasm?.setDspScope || !this.wasm?.dspScopePtr) return;
+
+    let slot = 0;
+    for (const request of this.linkScopeRequests) {
+      if (slot >= 32) break;
+      const register = Math.trunc(Number(this.dspProgram.monitorIds?.[request.linkId]));
+      if (!Number.isFinite(register) || register < 0) continue;
+      const scopeSlot = this.wasm.setDspScope(slot, register, request.seconds, request.points, sampleRate);
+      if (scopeSlot < 0) continue;
+      const ptr = this.wasm.dspScopePtr(slot);
+      if (!ptr) continue;
+      this.dspScopeStates.set(request.linkId, {
+        request,
+        slot,
+        samples: new Float32Array(this.wasm.memory.buffer, ptr, 512),
+      });
+      slot += 1;
+    }
   }
 
   normalizeNode(node = {}) {
@@ -1309,7 +1475,9 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       this.linkScopeRequests = [];
       this.linkScopeRequestIndex = 0;
       this.monitorScopeStates.clear();
+      this.dspScopeStates.clear();
       this.wasm?.setLinkScope?.(-1, 0, 0.08, 256, sampleRate);
+      this.wasm?.clearDspScopes?.();
       return;
     }
 
@@ -1328,6 +1496,14 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.linkScopeRequest = this.linkScopeRequests[this.linkScopeRequestIndex] || null;
     this.wasm?.setLinkScope?.(-1, 0, 0.08, 256, sampleRate);
 
+    if (this.dspProgram) {
+      this.monitorScopeStates.clear();
+      this.configureDspScopes();
+      return;
+    }
+
+    this.dspScopeStates.clear();
+    this.wasm?.clearDspScopes?.();
     const requestIds = new Set(this.linkScopeRequests.map((request) => request.linkId));
     for (const linkId of this.monitorScopeStates.keys()) {
       if (!requestIds.has(linkId)) this.monitorScopeStates.delete(linkId);
@@ -1596,6 +1772,34 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     return (crossing > 0 ? samples.slice(crossing, crossing + displayPoints) : samples.slice(-displayPoints));
   }
 
+  dspScopeFrameSamples(state) {
+    if (!state?.samples || !this.wasm) return [];
+    const count = this.clamp(Math.round(this.wasm.dspScopeCount?.(state.slot) || 0), 0, state.request.points);
+    const mode = state.request.mode;
+    const displayPoints = state.request.displayPoints || state.request.points;
+    const writeIndex = mode === "envelope"
+      ? 0
+      : this.clamp(Math.round(this.wasm.dspScopeWriteIndex?.(state.slot) || 0), 0, state.request.points - 1);
+    const raw = Array.from(state.samples.slice(0, state.request.points));
+    const samples = mode === "envelope"
+      ? raw.slice(0, count).concat(Array(Math.max(0, state.request.points - count)).fill(0))
+      : count < state.request.points
+      ? raw.slice(0, count)
+      : raw.slice(writeIndex).concat(raw.slice(0, writeIndex));
+    if (samples.length < displayPoints) {
+      return Array(Math.max(0, displayPoints - samples.length)).fill(0).concat(samples).slice(-displayPoints);
+    }
+    if (mode !== "zero-crossing") return samples.slice(-displayPoints);
+    const maxCrossing = samples.length - displayPoints;
+    const crossing = samples.findIndex((sample, index) => (
+      index > 0
+      && index <= maxCrossing
+      && samples[index - 1] < 0
+      && sample >= 0
+    ));
+    return (crossing > 0 ? samples.slice(crossing, crossing + displayPoints) : samples.slice(-displayPoints));
+  }
+
   flushLinkMeters() {
     if (this.sampleCursor < this.nextLinkMeterPostSample) return;
     this.nextLinkMeterPostSample = this.sampleCursor + Math.max(1, Math.round(sampleRate * LINK_METER_POST_SECONDS));
@@ -1644,6 +1848,16 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         },
       });
     }
+    for (const state of this.dspScopeStates.values()) {
+      this.port.postMessage({
+        type: "linkScope",
+        payload: {
+          id: state.request.linkId,
+          mode: state.request.mode,
+          samples: this.dspScopeFrameSamples(state),
+        },
+      });
+    }
   }
 
   fillSilence(outputs) {
@@ -1667,6 +1881,40 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     }
   }
 
+  renderDspProgramToOutput(inputs, outputs, frames) {
+    const output = outputs[0];
+    const left = output?.[0];
+    const right = output?.[1] || left;
+    if (!left) return true;
+
+    if (!this.ready || !this.dspProgram || this.dspProgram.errors.length > 0 || this.dspProgram.ops.length === 0) {
+      this.fillSilence(outputs);
+      this.sampleCursor += left.length;
+      return true;
+    }
+
+    this.wasm.clear(frames);
+    this.copyInput(inputs, frames);
+    this.wasm.renderDspProgram?.(frames, sampleRate);
+
+    let peak = 0;
+    for (let i = 0; i < frames; i += 1) {
+      const leftSample = this.applyMasterEffects(Math.tanh((this.leftBuffer[i] || 0) * MASTER_GAIN), 0);
+      const rightSample = this.applyMasterEffects(Math.tanh((this.rightBuffer[i] || 0) * MASTER_GAIN), 1);
+      left[i] = leftSample;
+      right[i] = rightSample;
+      peak = Math.max(peak, Math.abs(leftSample), Math.abs(rightSample));
+    }
+    for (let i = frames; i < left.length; i += 1) {
+      left[i] = 0;
+      right[i] = 0;
+    }
+    this.lastOutputPeak = Math.max(this.lastOutputPeak, peak);
+    this.sampleCursor += left.length;
+    this.flushLinkMeters();
+    return true;
+  }
+
   process(inputs, outputs) {
     const output = outputs[0];
     const left = output?.[0];
@@ -1680,6 +1928,10 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     if (this.muted) {
       this.fillSilence(outputs);
       return true;
+    }
+
+    if (this.dspProgram) {
+      return this.renderDspProgramToOutput(inputs, outputs, frames);
     }
 
     const hasMainLinks = this.links.some((link) => link.wasmIndex >= 0);
