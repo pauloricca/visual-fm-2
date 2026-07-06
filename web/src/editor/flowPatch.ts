@@ -30,6 +30,7 @@ export interface ShaderNodeData extends Record<string, unknown> {
   onPortNameChange: (nodeId: string, side: 'input' | 'output', port: string, nextPort: string) => void;
   onPortMove: (nodeId: string, side: 'input' | 'output', port: string, direction: -1 | 1) => void;
   onCompactToggle: (nodeId: string, compact: boolean) => void;
+  onSelectorInputAdd?: (nodeId: string) => void;
   onPortSelect?: (nodeId: string, side: 'input' | 'output', port: string) => void;
   selectedPort?: { side: 'input' | 'output'; name: string } | null;
   selectedLinkPorts?: { inputs: string[]; outputs: string[] };
@@ -102,6 +103,7 @@ type NodeCallbacks = Pick<
   | 'onPortNameChange'
   | 'onPortMove'
   | 'onCompactToggle'
+  | 'onSelectorInputAdd'
 >;
 
 export function toFlowNodes(

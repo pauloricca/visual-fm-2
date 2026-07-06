@@ -16,16 +16,10 @@ export const demoPatch: Patch = {
       position: { x: 380, y: 130 },
     },
     {
-      id: 'gain_1',
-      type: 'Gain',
-      params: { gain: 0.85 },
-      position: { x: 660, y: 130 },
-    },
-    {
       id: 'audio_out',
       type: 'AudioOut',
       params: { level: 0.8 },
-      position: { x: 950, y: 130 },
+      position: { x: 680, y: 130 },
     },
   ],
   links: [
@@ -37,14 +31,8 @@ export const demoPatch: Patch = {
     },
     {
       from: { node: 'filter_1', port: 'signal' },
-      to: { node: 'gain_1', port: 'signal' },
-      weight: 1,
-      mode: 'set',
-    },
-    {
-      from: { node: 'gain_1', port: 'signal' },
       to: { node: 'audio_out', port: 'both' },
-      weight: 1,
+      weight: 0.85,
       mode: 'set',
     },
   ],

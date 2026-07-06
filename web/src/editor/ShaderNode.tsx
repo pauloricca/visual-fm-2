@@ -29,6 +29,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const definition = node.type ? getNodeDefinition(node as PatchNode) : null;
   const isExpression = node.type === 'Expression';
   const isGroup = node.type === 'Group';
+  const isSelector = node.type === 'Selector';
   const canRenameInputs = node.type === 'Outs';
   const canRenameOutputs = node.type === 'Ins';
   const outputCount = definition?.outputs.length ?? 0;
@@ -74,6 +75,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const inputStyle = { '--input-label-width': inputLabelWidth } as CSSProperties;
   const className = [
     'shader-node',
+    showMeterDisplay ? 'shader-node-meter' : '',
     showScopeDisplay ? 'shader-node-scope' : '',
     selected ? 'shader-node-selected' : '',
     dragging ? 'shader-node-dragging' : '',
@@ -316,6 +318,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
         <div className={[
           'shader-node-body',
           isExpression ? 'shader-node-body-expression' : '',
+          showMeterDisplay ? 'shader-node-body-meter' : '',
           showScopeDisplay ? 'shader-node-body-scope' : '',
           visibleOutputPorts.length === 0 || showHeaderOutputPort ? 'shader-node-body-no-outputs' : '',
         ].filter(Boolean).join(' ')}>
@@ -396,21 +399,41 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   }}
                 />
               ) : null}
-              <PortNameLabel
-                name={input.name}
-                editable={canRenameInputs && !input.preview}
-                draggable={canRenameInputs && !input.preview}
-                preview={input.preview}
-                selected={data.selectedPort?.side === 'input' && data.selectedPort.name === input.name}
-                activeDragTarget={dragTarget?.side === 'input' && dragTarget.port === input.name}
-                activeDragSource={dragSource?.side === 'input' && dragSource.port === input.name}
-                onPointerDown={(event) => {
-                  if (input.preview) return;
-                  if (!canRenameInputs) return;
-                  handlePortPointerDown(event, 'input', input.name);
-                }}
-                onChange={(nextName) => data.onPortNameChange(node.id, 'input', input.name, nextName)}
-              />
+              {isSelector && isSelectorValuePort(input.name) && !input.preview ? (
+                <button
+                  className={[
+                    'selector-index-button nodrag nopan',
+                    Math.round(node.params.select ?? 1) === Number(input.name) ? 'selector-index-button-active' : '',
+                  ].filter(Boolean).join(' ')}
+                  type="button"
+                  title={`Select input ${input.name}`}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onDoubleClick={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    data.onParamChange(node.id, 'select', Number(input.name));
+                  }}
+                >
+                  {input.name}
+                </button>
+              ) : (
+                <PortNameLabel
+                  name={input.name}
+                  editable={canRenameInputs && !input.preview}
+                  draggable={canRenameInputs && !input.preview}
+                  preview={input.preview}
+                  selected={data.selectedPort?.side === 'input' && data.selectedPort.name === input.name}
+                  activeDragTarget={dragTarget?.side === 'input' && dragTarget.port === input.name}
+                  activeDragSource={dragSource?.side === 'input' && dragSource.port === input.name}
+                  onPointerDown={(event) => {
+                    if (input.preview) return;
+                    if (!canRenameInputs) return;
+                    handlePortPointerDown(event, 'input', input.name);
+                  }}
+                  onChange={(nextName) => data.onPortNameChange(node.id, 'input', input.name, nextName)}
+                />
+              )}
               {!input.preview && input.valueEditor !== false && input.defaultValue !== undefined ? (
                 <NumericScrubber
                   value={node.params[input.name] ?? input.defaultValue ?? 0}
@@ -422,6 +445,23 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               ) : null}
             </div>
             ))}
+            {isSelector && showAllPorts ? (
+              <button
+                className="selector-add-input-button nodrag nopan"
+                type="button"
+                aria-label="Add selector input"
+                title="Add selector input"
+                onPointerDown={(event) => event.stopPropagation()}
+                onDoubleClick={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  data.onSelectorInputAdd?.(node.id);
+                }}
+              >
+                +
+              </button>
+            ) : null}
           </div>
           {visibleOutputPorts.length > 0 && !showHeaderOutputPort ? (
             <div className="shader-ports shader-outputs">
@@ -534,6 +574,10 @@ function shouldForceCompactPorts(definition: NodeDefinition): boolean {
   return definition.inputs.length === 1
     && definition.inputs[0]?.name === 'signal'
     && definition.outputs.length <= 1;
+}
+
+function isSelectorValuePort(name: string): boolean {
+  return /^[1-9][0-9]*$/.test(name);
 }
 
 function samplesToScopePath(samples: number[], range: number): string {

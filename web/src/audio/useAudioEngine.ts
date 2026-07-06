@@ -26,7 +26,7 @@ interface AudioEngineState {
   setLinkScopes: (linkIds: string[]) => void;
 }
 
-const AUDIO_ENGINE_ASSET_VERSION = '2026-07-06-dsp-state-preserve';
+const AUDIO_ENGINE_ASSET_VERSION = '2026-07-06-dsp-control-nodes';
 const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const METER_UPDATE_INTERVAL_MS = 80;

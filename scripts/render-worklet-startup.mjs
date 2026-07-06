@@ -10,6 +10,9 @@ const modulated = process.argv.includes('--modulated');
 const compiled = process.argv.includes('--compiled');
 const scope = process.argv.includes('--scope');
 const feedback = process.argv.includes('--feedback');
+const newNodes = process.argv.includes('--new-nodes');
+const effects = process.argv.includes('--effects');
+const controlNodes = process.argv.includes('--control-nodes');
 const modeArg = argValue('--mode') ?? 'multiply';
 const amountArg = Number(argValue('--amount'));
 const weightArg = Number(argValue('--weight'));
@@ -58,11 +61,11 @@ await waitForReady();
 const graph = compiled ? await compileVisiblePatch() : {
   nodes: modulated
     ? [
-      { id: 'tri', wave: 'triangle', frequencyMode: 'fixed', ratio: 1, frequency: 1 },
-      { id: 'sine', wave: 'sine', frequencyMode: 'fixed', ratio: 1, frequency: 61.4288 },
+      { id: 'tri', wave: 'triangle', frequencyMode: 'fixed', frequency: 1 },
+      { id: 'sine', wave: 'sine', frequencyMode: 'fixed', frequency: 61.4288 },
     ]
     : [
-      { id: 'sine', wave: 'sine', frequencyMode: 'fixed', ratio: 1, frequency: 61.4288 },
+      { id: 'sine', wave: 'sine', frequencyMode: 'fixed', frequency: 61.4288 },
     ],
   links: [
     ...(modulated
@@ -173,6 +176,13 @@ if (scope) {
   console.log(`scope messages=${scopeMessages.length} samples=${latest.length} peak=${peak.toFixed(6)}`);
 }
 
+if (newNodes || effects) {
+  const meterMessages = outboundMessages.filter((message) => message.type === 'linkMeters');
+  const latestLevels = meterMessages.at(-1)?.payload?.levels || [];
+  const meter = latestLevels.find((level) => level[0] === 'meter') || [];
+  console.log(`meter messages=${meterMessages.length} meter=${Number(meter[2] || 0).toFixed(6)}`);
+}
+
 async function waitForReady() {
   const startedAt = Date.now();
   while (Date.now() - startedAt < 2000) {
@@ -196,26 +206,127 @@ async function compileVisiblePatch() {
   ));
   const compiler = await import(`file://${moduleDir}/dspProgram.mjs`);
   const patch = {
-    nodes: feedback
+    nodes: controlNodes
       ? [
-        { id: 'tri', type: 'TriangleOsc', params: { frequency: 220, ratio: 1, phase: 0, phaseReset: 0, level: 0.7 } },
-        { id: 'sine', type: 'SineOsc', params: { frequency: 200, ratio: 1, phase: 0, phaseReset: 0, level: 0.75 } },
+        { id: 'carrier', type: 'SineOsc', params: { frequency: 180, level: 0.75 } },
+        { id: 'mod', type: 'TriangleOsc', params: { frequency: 0.75, level: 0.45 } },
+        {
+          id: 'expr',
+          type: 'Expression',
+          expression: 'carrier * (0.65 + mod * 0.25)',
+          inputs: [
+            { name: 'carrier', defaultValue: 0 },
+            { name: 'mod', defaultValue: 0 },
+          ],
+          params: { carrier: 0, mod: 0 },
+        },
+        { id: 'hard', type: 'HardClipDistortion', params: { drive: 1.4 } },
+        { id: 'soft', type: 'SoftClipDistortion', params: { drive: 1.8 } },
+        { id: 'gate', type: 'SquareOsc', params: { frequency: 3, level: 1 } },
+        { id: 'env', type: 'Envelope', params: { attack: 0.006, decay: 0.04, sustain: 0.45, release: 0.08 } },
+        { id: 'follower', type: 'Follower', params: { attack: 0.004, release: 0.08 } },
+        { id: 'meter', type: 'Meter', params: { range: 1 } },
+        ...(scope ? [{ id: 'scope', type: 'Scope', params: { range: 1 } }] : []),
+        { id: 'out', type: 'AudioOut', params: { level: 0.65 } },
+      ]
+      : effects
+      ? [
+        { id: 'sine', type: 'SineOsc', params: { frequency: 110, level: 0.6 } },
+        { id: 'ring', type: 'RingMod', params: { amount: 0.85 } },
+        { id: 'fold', type: 'Fold', params: { amount: 0.8 } },
+        { id: 'delay', type: 'Delay', params: { time: 0.06, feedback: 0.24, mix: 0.35 } },
+        { id: 'chorus', type: 'Chorus', params: { rate: 1.1, depth: 0.006, mix: 0.28 } },
+        { id: 'reverb', type: 'Reverb', params: { size: 0.5, decay: 0.32, mix: 0.22 } },
+        { id: 'meter', type: 'Meter', params: { range: 1 } },
+        ...(scope ? [{ id: 'scope', type: 'Scope', params: { range: 1 } }] : []),
+        { id: 'out', type: 'AudioOut', params: { level: 0.6 } },
+      ]
+      : newNodes
+      ? [
+        { id: 'sampleHold', type: 'SampleHoldOsc', params: { frequency: 14, level: 0.6 } },
+        { id: 'perlin', type: 'PerlinNoise', params: { speed: 5, level: 0.7 } },
+        { id: 'noise', type: 'Noise', params: { level: 0.2 } },
+        { id: 'input', type: 'AudioInput', params: { gain: 1, level: 0.5 } },
+        { id: 'selector', type: 'Selector', params: { select: 2, slide: 0.005, 1: 0, 2: 0, 3: 0, 4: 0 } },
+        { id: 'meter', type: 'Meter', params: { range: 1 } },
+        ...(scope ? [{ id: 'scope', type: 'Scope', params: { range: 1 } }] : []),
+        { id: 'out', type: 'AudioOut', params: { level: 0.5 } },
+      ]
+      : feedback
+      ? [
+        { id: 'tri', type: 'TriangleOsc', params: { frequency: 220, phase: 0, phaseReset: 0, level: 0.7 } },
+        { id: 'sine', type: 'SineOsc', params: { frequency: 200, phase: 0, phaseReset: 0, level: 0.75 } },
         ...(scope ? [{ id: 'scope', type: 'Scope', params: {} }] : []),
         { id: 'out', type: 'AudioOut', params: { level: 0.45 } },
       ]
       : modulated
       ? [
-        { id: 'tri', type: 'TriangleOsc', params: { frequency: 1, ratio: 1, phase: 0, phaseReset: 0, level: 0.7 } },
-        { id: 'sine', type: 'SineOsc', params: { frequency: 61.4288, ratio: 1, phase: 0, phaseReset: 0, level: 1.3672 } },
+        { id: 'tri', type: 'TriangleOsc', params: { frequency: 1, phase: 0, phaseReset: 0, level: 0.7 } },
+        { id: 'sine', type: 'SineOsc', params: { frequency: 61.4288, phase: 0, phaseReset: 0, level: 1.3672 } },
         ...(scope ? [{ id: 'scope', type: 'Scope', params: {} }] : []),
         { id: 'out', type: 'AudioOut', params: { level: 0.75 } },
       ]
       : [
-        { id: 'sine', type: 'SineOsc', params: { frequency: 61.4288, ratio: 1, phase: 0, phaseReset: 0, level: 1.3672 } },
+        { id: 'sine', type: 'SineOsc', params: { frequency: 61.4288, phase: 0, phaseReset: 0, level: 1.3672 } },
         ...(scope ? [{ id: 'scope', type: 'Scope', params: {} }] : []),
         { id: 'out', type: 'AudioOut', params: { level: 0.75 } },
       ],
     links: [
+      ...(controlNodes
+        ? [
+          { from: { node: 'carrier', port: 'signal' }, to: { node: 'expr', port: 'carrier' }, weight: 1, mode: 'set' },
+          { from: { node: 'mod', port: 'signal' }, to: { node: 'expr', port: 'mod' }, weight: 1, mode: 'set' },
+          { from: { node: 'expr', port: 'value' }, to: { node: 'hard', port: 'signal' }, weight: 1, mode: 'set' },
+          { from: { node: 'hard', port: 'signal' }, to: { node: 'soft', port: 'signal' }, weight: 1, mode: 'set' },
+          { from: { node: 'soft', port: 'signal' }, to: { node: 'env', port: 'signal' }, weight: 1, mode: 'set' },
+          { from: { node: 'gate', port: 'signal' }, to: { node: 'env', port: 'trigger' }, weight: 1, mode: 'set' },
+          { from: { node: 'env', port: 'signal' }, to: { node: 'follower', port: 'signal' }, weight: 1, mode: 'set' },
+          { from: { node: 'follower', port: 'signal' }, to: { node: 'meter', port: 'signal' }, weight: 1, mode: 'set' },
+          ...(scope
+            ? [
+              { from: { node: 'meter', port: 'signal' }, to: { node: 'scope', port: 'signal' }, weight: 1, mode: 'set' },
+              { from: { node: 'scope', port: 'signal' }, to: { node: 'out', port: 'both' }, weight: 1, mode: 'set' },
+            ]
+            : [
+              { from: { node: 'meter', port: 'signal' }, to: { node: 'out', port: 'both' }, weight: 1, mode: 'set' },
+            ]),
+        ]
+        : []),
+      ...(effects
+        ? [
+          { from: { node: 'sine', port: 'signal' }, to: { node: 'ring', port: 'signal' }, weight: 1, mode: 'set' },
+          { from: { node: 'ring', port: 'signal' }, to: { node: 'fold', port: 'signal' }, weight: 1, mode: 'set' },
+          { from: { node: 'fold', port: 'signal' }, to: { node: 'delay', port: 'signal' }, weight: 1, mode: 'set' },
+          { from: { node: 'delay', port: 'signal' }, to: { node: 'chorus', port: 'signal' }, weight: 1, mode: 'set' },
+          { from: { node: 'chorus', port: 'signal' }, to: { node: 'reverb', port: 'signal' }, weight: 1, mode: 'set' },
+          { from: { node: 'reverb', port: 'signal' }, to: { node: 'meter', port: 'signal' }, weight: 0.9, mode: 'set' },
+          ...(scope
+            ? [
+              { from: { node: 'meter', port: 'signal' }, to: { node: 'scope', port: 'signal' }, weight: 1, mode: 'set' },
+              { from: { node: 'scope', port: 'signal' }, to: { node: 'out', port: 'both' }, weight: 1, mode: 'set' },
+            ]
+            : [
+              { from: { node: 'meter', port: 'signal' }, to: { node: 'out', port: 'both' }, weight: 1, mode: 'set' },
+            ]),
+        ]
+        : []),
+      ...(newNodes
+        ? [
+          { from: { node: 'sampleHold', port: 'signal' }, to: { node: 'selector', port: '1' }, weight: 1, mode: 'set' },
+          { from: { node: 'perlin', port: 'signal' }, to: { node: 'selector', port: '2' }, weight: 1, mode: 'set' },
+          { from: { node: 'noise', port: 'signal' }, to: { node: 'selector', port: '3' }, weight: 1, mode: 'set' },
+          { from: { node: 'input', port: 'signal' }, to: { node: 'selector', port: '4' }, weight: 1, mode: 'set' },
+          { from: { node: 'selector', port: 'signal' }, to: { node: 'meter', port: 'signal' }, weight: 1, mode: 'set' },
+          ...(scope
+            ? [
+              { from: { node: 'meter', port: 'signal' }, to: { node: 'scope', port: 'signal' }, weight: 1, mode: 'set' },
+              { from: { node: 'scope', port: 'signal' }, to: { node: 'out', port: 'both' }, weight: 1, mode: 'set' },
+            ]
+            : [
+              { from: { node: 'meter', port: 'signal' }, to: { node: 'out', port: 'both' }, weight: 1, mode: 'set' },
+            ]),
+        ]
+        : []),
       ...(feedback
         ? [
           { from: { node: 'tri', port: 'signal' }, to: { node: 'sine', port: 'frequency' }, weight: 35, mode: 'add' },
@@ -230,11 +341,13 @@ async function compileVisiblePatch() {
           mode: modeArg,
         }]
         : []),
-      ...(scope
+      ...(scope && !newNodes && !effects && !controlNodes
         ? [
           { from: { node: feedback ? 'tri' : 'sine', port: 'signal' }, to: { node: 'scope', port: 'signal' }, weight: 1, mode: 'set' },
           { from: { node: 'scope', port: 'signal' }, to: { node: 'out', port: 'both' }, weight: 1, mode: 'set' },
         ]
+        : newNodes || effects || controlNodes
+        ? []
         : [
           ...(feedback
             ? [

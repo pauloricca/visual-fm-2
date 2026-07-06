@@ -200,6 +200,20 @@ function NodeEditorInner() {
   }, [audioPlaybackActive, audio.start, audio.stop]);
 
   useEffect(() => {
+    const handlePlaybackKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== ' ' || event.repeat) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (isEditableEventTarget(event.target)) return;
+
+      event.preventDefault();
+      toggleAudioPlayback();
+    };
+
+    window.addEventListener('keydown', handlePlaybackKeyDown);
+    return () => window.removeEventListener('keydown', handlePlaybackKeyDown);
+  }, [toggleAudioPlayback]);
+
+  useEffect(() => {
     nodesRef.current = nodes;
   }, [nodes]);
 
@@ -598,6 +612,38 @@ function NodeEditorInner() {
     ));
   }, [commitHistory]);
 
+  const addSelectorInput = useCallback((nodeId: string) => {
+    const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
+    if (!relatedNode || relatedNode.data.patchNode.type !== 'Selector') return;
+
+    const definition = getNodeDefinition(relatedNode.data.patchNode as PatchNode);
+    const valueInputs = selectorValueInputs(definition.inputs);
+    const nextIndex = valueInputs.length + 1;
+    const nextPort = String(nextIndex);
+    if (definition.inputs.some((input) => input.name === nextPort)) return;
+
+    commitHistory(`selector-input:${nodeId}`);
+    setNodes((current) => current.map((node) => {
+      if (node.id !== nodeId) return node;
+
+      const currentInputs = getNodeDefinition(node.data.patchNode as PatchNode).inputs;
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          patchNode: {
+            ...node.data.patchNode,
+            inputs: [...currentInputs, { name: nextPort, defaultValue: 0 }],
+            params: {
+              ...node.data.patchNode.params,
+              [nextPort]: 0,
+            },
+          },
+        },
+      };
+    }));
+  }, [commitHistory]);
+
   const addDraftNode = useCallback((position: { x: number; y: number }) => {
     const id = makeNodeId('node', new Set(nodesRef.current.map((node) => node.id)));
     commitHistory();
@@ -954,6 +1000,7 @@ function NodeEditorInner() {
       onPortNameChange: updateBoundaryPortName,
       onPortMove: updateBoundaryPortOrder,
       onCompactToggle: updateNodeCompactPorts,
+      onSelectorInputAdd: addSelectorInput,
       selectedLinkPorts: selectedLinkPortsByNode.get(node.id),
       connectedPorts: connectedPortsByNode.get(node.id),
       previewPort: pendingBoundaryPort && pendingBoundaryPort.nodeId === node.id
@@ -978,6 +1025,7 @@ function NodeEditorInner() {
     updateBoundaryPortOrder,
     updateExpression,
     updateGroupSubpatchName,
+    addSelectorInput,
     updateNodeCompactPorts,
     updateNodeId,
     updateNodeParam,
@@ -1877,6 +1925,34 @@ function NodeEditorInner() {
     window.addEventListener('keydown', handleClipboardKeyDown, { capture: true });
     return () => window.removeEventListener('keydown', handleClipboardKeyDown, { capture: true });
   }, [copySelectedNodes, pasteCopiedNodes]);
+
+  useEffect(() => {
+    const handleSelectorIndexKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat) return;
+      if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+      if (isEditableEventTarget(event.target)) return;
+
+      const index = selectorIndexFromKeyboardEvent(event);
+      if (index === null) return;
+
+      const selectedSelectors = nodesRef.current.filter((node) => (
+        node.selected === true && node.data.patchNode.type === 'Selector'
+      ));
+      if (selectedSelectors.length !== 1) return;
+
+      const selector = selectedSelectors[0];
+      const definition = getNodeDefinition(selector.data.patchNode as PatchNode);
+      const port = String(index);
+      if (!definition.inputs.some((input) => input.name === port)) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      updateNodeParam(selector.id, 'select', index);
+    };
+
+    window.addEventListener('keydown', handleSelectorIndexKeyDown, { capture: true });
+    return () => window.removeEventListener('keydown', handleSelectorIndexKeyDown, { capture: true });
+  }, [updateNodeParam]);
 
   useEffect(() => () => {
     if (saveFeedbackTimeoutRef.current !== null) {
@@ -3020,6 +3096,15 @@ function uniquePortName(baseName: string, usedNames: Set<string>): string {
     candidate = `${baseName}_${index}`;
   }
   return candidate;
+}
+
+function selectorValueInputs(inputs: PortDefinition[]): PortDefinition[] {
+  return inputs.filter((input) => /^[1-9][0-9]*$/.test(input.name));
+}
+
+function selectorIndexFromKeyboardEvent(event: KeyboardEvent): number | null {
+  if (!/^[1-9]$/.test(event.key)) return null;
+  return Number(event.key);
 }
 
 function normalizeSubpatchName(requestedName: string, fallback: string): string {

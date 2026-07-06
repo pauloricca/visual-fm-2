@@ -16,6 +16,7 @@ export type NodeType =
   | 'CustomWave'
   | 'SamplePlayer'
   | 'Constant'
+  | 'Selector'
   | 'Gain'
   | 'Abs'
   | 'Map'

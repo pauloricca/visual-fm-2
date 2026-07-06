@@ -176,6 +176,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.linkScopeRequestIndex = 0;
     this.monitorScopeStates = new Map();
     this.dspScopeStates = new Map();
+    this.dspMeterStates = new Map();
     this.graphVersion = 0;
     this.linkScopeSamples = null;
     this.masterEffects = this.normalizeEffects();
@@ -268,6 +269,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       this.syncRustGraph();
       this.syncDspProgram();
       this.configureDspScopes();
+      this.configureDspMeters();
       for (const link of this.links) {
         link.controlSmoother = this.syncLinkControlSmoother(link, true);
         this.applyLinkControlSmoother(link);
@@ -285,6 +287,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.dspProgram = null;
     this.wasm?.clearDspProgram?.();
     this.wasm?.clearDspScopes?.();
+    this.wasm?.clearDspMeters?.();
     this.nodes = (graph.nodes || []).map((node) => this.normalizeNode(node));
     this.nodesById = new Map(this.nodes.map((node) => [node.id, node]));
     this.links = (graph.links || []).map((link) => this.normalizeLink(link));
@@ -302,6 +305,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.hasActiveDroneLinks = this.links.some((link) => link.drone && !link.monitorOnly);
     this.graphVersion += 1;
     this.dspScopeStates.clear();
+    this.dspMeterStates.clear();
     this.monitorScopeStates.clear();
     this.syncRustGraph();
     for (const link of this.links) {
@@ -325,6 +329,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.monitorScopeStates.clear();
     this.syncDspProgram(preservedState);
     this.configureDspScopes();
+    this.configureDspMeters();
   }
 
   setDspValues(payload = {}) {
@@ -366,7 +371,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         id: String(binding?.id || ""),
         state: Math.trunc(Number(binding?.state ?? -1)),
         count: Math.max(0, Math.trunc(Number(binding?.count ?? 0))),
-        kind: binding?.kind === "filter" || binding?.kind === "feedback" ? binding.kind : "oscillator",
+        kind: ["filter", "feedback", "selector", "effect"].includes(binding?.kind) ? binding.kind : "oscillator",
         nodeId: String(binding?.nodeId || ""),
       })).filter((binding) => binding.id && binding.state >= 0 && binding.count > 0)
       : [];
@@ -462,6 +467,23 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         slot,
         samples: new Float32Array(this.wasm.memory.buffer, ptr, 512),
       });
+      slot += 1;
+    }
+  }
+
+  configureDspMeters() {
+    this.dspMeterStates.clear();
+    this.wasm?.clearDspMeters?.();
+    if (!this.dspProgram || !this.wasm?.setDspMeter) return;
+
+    let slot = 0;
+    for (const [id, registerValue] of Object.entries(this.dspProgram.monitorIds || {})) {
+      if (slot >= 128) break;
+      const register = Math.trunc(Number(registerValue));
+      if (!Number.isFinite(register) || register < 0) continue;
+      const meterSlot = this.wasm.setDspMeter(slot, register);
+      if (meterSlot < 0) continue;
+      this.dspMeterStates.set(String(id), { id: String(id), slot });
       slot += 1;
     }
   }
@@ -1834,8 +1856,13 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       }
       state.wasm.clearLinkMeters?.();
     }
+    for (const state of this.dspMeterStates.values()) {
+      const level = Math.max(0, Number(this.wasm?.dspMeterLevel?.(state.slot)) || 0);
+      levels.push([state.id, level, level, level]);
+    }
     this.lastOutputPeak = 0;
     this.wasm?.clearLinkMeters?.();
+    this.wasm?.resetDspMeterLevels?.();
     this.port.postMessage({ type: "linkMeters", payload: { levels } });
     for (const state of this.monitorScopeStates.values()) {
       if (!state.ready) continue;

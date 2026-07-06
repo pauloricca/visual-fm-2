@@ -48,7 +48,6 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   Noise: {
     type: 'Noise',
     inputs: [
-      { name: 'frequency', defaultValue: 440 },
       { name: 'level', defaultValue: 0.4 },
     ],
     outputs: [{ name: 'signal' }],
@@ -65,7 +64,6 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     type: 'CustomWave',
     inputs: [
       { name: 'frequency', defaultValue: 220 },
-      { name: 'ratio', defaultValue: 1 },
       { name: 'phase', defaultValue: 0 },
       { name: 'phaseReset', defaultValue: 0 },
       { name: 'mode', defaultValue: 0, min: 0, max: 5, integer: true },
@@ -79,7 +77,6 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     type: 'SamplePlayer',
     inputs: [
       { name: 'frequency', defaultValue: 220 },
-      { name: 'ratio', defaultValue: 1 },
       { name: 'trigger', defaultValue: 0 },
       { name: 'start', defaultValue: 0, min: 0, max: 1 },
       { name: 'end', defaultValue: 1, min: 0, max: 1 },
@@ -94,6 +91,15 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   Constant: {
     type: 'Constant',
     inputs: [{ name: 'value', defaultValue: 1 }],
+    outputs: [{ name: 'signal' }],
+  },
+  Selector: {
+    type: 'Selector',
+    inputs: [
+      { name: 'select', defaultValue: 1, min: 1, integer: true },
+      { name: 'slide', defaultValue: 0, min: 0 },
+      { name: '1', defaultValue: 0 },
+    ],
     outputs: [{ name: 'signal' }],
   },
   Gain: {
@@ -190,7 +196,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
 };
 
 export const NODE_TYPE_LIST = (Object.keys(NODE_DEFINITIONS) as NodeType[])
-  .filter((type) => type !== 'Filter' && type !== 'Distortion' && type !== 'LinkNoise');
+  .filter((type) => !['Filter', 'Distortion', 'LinkNoise', 'Gain', 'Mix'].includes(type));
 
 const NODE_TYPE_LABELS: Record<NodeType, string> = {
   Expression: 'Expression',
@@ -210,6 +216,7 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   CustomWave: 'Custom Wave',
   SamplePlayer: 'Sample Player',
   Constant: 'Constant',
+  Selector: 'Selector',
   Gain: 'Gain',
   Abs: 'Abs',
   Map: 'Map',

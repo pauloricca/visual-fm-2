@@ -743,10 +743,11 @@ select:hover {
 
 .shader-node-body-meter {
   position: relative;
-  display: flex;
-  align-items: center;
-  min-height: 42px;
-  padding: 8px;
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  padding: 0;
+  background: transparent;
 }
 
 .meter-label {
@@ -788,6 +789,51 @@ select:hover {
   overflow: visible;
   text-overflow: clip;
   white-space: nowrap;
+}
+
+.selector-index-button {
+  width: var(--input-label-width, auto);
+  min-width: 18px;
+  height: 20px;
+  flex: 0 0 auto;
+  padding: 0 4px;
+  border: 1px solid #fff;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+
+.selector-index-button:hover,
+.selector-index-button:focus-visible,
+.selector-index-button-active {
+  background: #fff;
+  color: #000;
+  outline: 0;
+}
+
+.selector-add-input-button {
+  width: calc(var(--input-label-width, 0ch) + 6px + 68px);
+  height: 22px;
+  box-sizing: border-box;
+  padding: 0;
+  border: 1px solid #fff;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  line-height: 20px;
+}
+
+.selector-add-input-button:hover,
+.selector-add-input-button:focus-visible {
+  background: #fff;
+  color: #000;
+  outline: 0;
 }
 
 .numeric-scrubber {
@@ -850,9 +896,11 @@ select:hover {
 
 .audio-node-meter-display {
   position: relative;
-  height: 16px;
+  height: 48px;
   border: 1px solid #fff;
   background:
+    linear-gradient(rgba(255, 255, 255, 0.18) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.18) 1px, transparent 1px),
     repeating-linear-gradient(
       90deg,
       transparent 0,
@@ -861,7 +909,13 @@ select:hover {
       rgba(255, 255, 255, 0.26) 14px
     ),
     #000;
+  background-size: 16px 16px, 16px 16px, auto;
   overflow: hidden;
+}
+
+.shader-node-body-meter .audio-node-meter-display {
+  min-width: 0;
+  border: 0;
 }
 
 .audio-node-meter-scale,
@@ -877,7 +931,7 @@ select:hover {
 }
 
 .audio-node-meter-scale {
-  top: 3px;
+  bottom: 4px;
 }
 
 .audio-node-meter-scale-min {
@@ -890,15 +944,16 @@ select:hover {
 
 .audio-node-meter-fill {
   position: absolute;
-  inset: 0 auto 0 0;
+  inset: 18px auto 18px 0;
   width: 48%;
   background: #7cff00;
+  box-shadow: 0 0 10px rgba(124, 255, 0, 0.38);
 }
 
 .audio-node-meter-peak {
   position: absolute;
-  top: 0;
-  bottom: 0;
+  top: 6px;
+  bottom: 6px;
   left: 70%;
   width: 2px;
   background: #fff;
