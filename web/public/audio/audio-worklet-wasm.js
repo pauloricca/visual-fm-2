@@ -63,12 +63,26 @@ const MODULATION_TARGET_IDS = new Map([
   ["sampleStart", 24],
   ["sampleEnd", 25],
   ["sampleStretch", 26],
+  ["mapSrcMin", 27],
+  ["mapSrcMax", 28],
+  ["mapTargetMin", 29],
+  ["mapTargetMax", 30],
 ]);
 
 const SIGNAL_MODE_IDS = new Map([
   ["raw", 0],
   ["envelope", 1],
   ["inverted-envelope", 2],
+  ["abs", 3],
+  ["map", 4],
+  ["abs-map", 5],
+  ["map-abs", 6],
+]);
+
+const PARAMETER_MODE_IDS = new Map([
+  ["set", 0],
+  ["add", 1],
+  ["multiply", 2],
 ]);
 
 const FILTER_TYPE_IDS = new Map([
@@ -132,10 +146,6 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.sampleDataByNodeId = new Map();
     this.linkControlSmoothers = new Map();
     this.activeLinkControlSmoothers = new Set();
-    this.parameterControlPhases = new Map();
-    this.dynamicAudioPhases = new Map();
-    this.dynamicFrequencyNodeIds = new Set();
-    this.dynamicFrequencyAudioNodeIds = new Set();
     this.hasActiveDroneLinks = false;
     this.maxVoices = 5;
     this.tempo = DEFAULT_TEMPO;
@@ -151,6 +161,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.ready = false;
     this.muted = false;
     this.zeroVoicePhasesOnStart = false;
+    this.wasmBytes = null;
     this.wasm = null;
     this.leftBuffer = null;
     this.rightBuffer = null;
@@ -160,6 +171,10 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.linkMeterEnvelopeSums = null;
     this.linkMeterCounts = null;
     this.linkScopeRequest = null;
+    this.linkScopeRequests = [];
+    this.linkScopeRequestIndex = 0;
+    this.monitorScopeStates = new Map();
+    this.graphVersion = 0;
     this.linkScopeSamples = null;
     this.masterEffects = this.normalizeEffects();
     this.chorusBuffers = [
@@ -196,7 +211,9 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       } else if (type === "setMuted") {
         this.setMuted(Boolean(payload?.muted));
       } else if (type === "setLinkScope") {
-        this.setLinkScope(payload);
+        this.setLinkScopes(payload);
+      } else if (type === "setLinkScopes") {
+        this.setLinkScopes(payload);
       }
     };
 
@@ -217,6 +234,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         bytes = await response.arrayBuffer();
       }
       const { instance } = await WebAssembly.instantiate(bytes, {});
+      this.wasmBytes = bytes;
       this.wasm = instance.exports;
       const leftOffset = typeof this.wasm.leftPtr === "function" ? this.wasm.leftPtr() : LEFT_OFFSET;
       const rightOffset = typeof this.wasm.rightPtr === "function" ? this.wasm.rightPtr() : RIGHT_OFFSET;
@@ -260,16 +278,6 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.nodesById = new Map(this.nodes.map((node) => [node.id, node]));
     this.links = (graph.links || []).map((link) => this.normalizeLink(link));
     this.linksById = new Map(this.links.map((link) => [link.id, link]));
-    this.dynamicFrequencyNodeIds = new Set(
-      this.links
-        .filter((link) => !link.internalTarget && link.to !== "audio" && link.modulationTarget === "frequency")
-        .map((link) => link.to),
-    );
-    this.dynamicFrequencyAudioNodeIds = new Set(
-      this.links
-        .filter((link) => link.to === "audio" && this.dynamicFrequencyNodeIds.has(link.from))
-        .map((link) => link.from),
-    );
     const linkIds = new Set(this.links.map((link) => link.id));
     for (const id of this.linkControlSmoothers.keys()) {
       if (!linkIds.has(id)) {
@@ -280,13 +288,15 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.maxVoices = this.clamp(Math.round(Number(graph.maxVoices) || 5), 1, MAX_ACTIVE_VOICES);
     this.tempo = this.normalizeTempo(graph.tempo);
     this.masterEffects = this.normalizeEffects(graph.masterEffects);
-    this.hasActiveDroneLinks = this.links.some((link) => link.drone);
+    this.hasActiveDroneLinks = this.links.some((link) => link.drone && !link.monitorOnly);
+    this.graphVersion += 1;
+    this.monitorScopeStates.clear();
     this.syncRustGraph();
     for (const link of this.links) {
       link.controlSmoother = this.syncLinkControlSmoother(link, true);
       this.applyLinkControlSmoother(link);
     }
-    if (this.linkScopeRequest) this.setLinkScope(this.linkScopeRequest);
+    if (this.linkScopeRequests.length > 0) this.setLinkScopes({ ...this.linkScopeRequests[0], linkIds: this.linkScopeRequests.map((request) => request.linkId) });
     this.enforceVoiceLimit();
   }
 
@@ -300,12 +310,12 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       id: node.id,
       wave: WAVE_IDS.has(node.wave) ? node.wave : "sine",
       frequencyMode: ["ratio", "fixed", "sync"].includes(node.frequencyMode) ? node.frequencyMode : "ratio",
-      ratio: Number.isFinite(ratio) ? this.clamp(ratio, 0, 16) : 1,
+      ratio: Number.isFinite(ratio) ? ratio : 1,
       frequency: Number.isFinite(frequency)
-        ? node.wave === "constant" ? this.clamp(frequency, -1, 1) : this.clamp(frequency, 0, Math.min(12000, sampleRate * 0.45))
+        ? frequency
         : node.wave === "constant" ? 1 : 440,
       baseFrequency: Number.isFinite(frequency)
-        ? node.wave === "constant" ? this.clamp(frequency, -1, 1) : this.clamp(frequency, 0, Math.min(12000, sampleRate * 0.45))
+        ? frequency
         : node.wave === "constant" ? 1 : 440,
       syncBeats: this.normalizeSyncBeats(node.syncBeats),
       quantise: {
@@ -314,8 +324,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         scale: QUANTISE_SCALE_IDS.has(node.quantise?.scale) ? node.quantise.scale : "chromatic",
         glide: Number.isFinite(quantiseGlide) ? this.clamp(quantiseGlide, 0, 4) : 0,
       },
-      speed: Number.isFinite(speed) ? this.clamp(speed, 0.01, 60) : 8,
-      audioInputGain: Number.isFinite(audioInputGain) ? this.clamp(audioInputGain, 0, 4) : 1,
+      speed: Number.isFinite(speed) ? speed : 8,
+      audioInputGain: Number.isFinite(audioInputGain) ? audioInputGain : 1,
       customWave: this.normalizeCustomWave(node.customWave),
       sample: this.normalizeSample(node.sample),
     };
@@ -337,7 +347,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       stretch: Number.isFinite(stretch) ? Math.max(0.001, stretch) : 1,
       cycleLength: Number.isFinite(cycleLength) ? Math.max(1, Math.round(cycleLength)) : 4096,
       overlapRatio: Number.isFinite(overlapRatio) ? this.clamp(overlapRatio, 0, 1) : 0.09,
-      originalPitch: Number.isFinite(originalPitch) ? this.clamp(originalPitch, 0, 127) : 60,
+      originalPitch: Number.isFinite(originalPitch) ? originalPitch : 60,
     };
   }
 
@@ -398,6 +408,10 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     const release = Number(link.envelope?.release);
     const followerAttack = Number(link.follower?.attack);
     const followerRelease = Number(link.follower?.release);
+    const mapSrcMin = Number(link.map?.srcMin);
+    const mapSrcMax = Number(link.map?.srcMax);
+    const mapTargetMin = Number(link.map?.trgtMin);
+    const mapTargetMax = Number(link.map?.trgtMax);
     const filterCutoff = Number(link.filter?.cutoff);
     const filterResonance = Number(link.filter?.resonance);
     const isComb = link.filter?.type === "comb" || link.filter?.type === "comb-notch";
@@ -407,50 +421,53 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       from: link.from,
       to: link.to,
       amount: this.normalizeLinkAmount(link, amount),
-      delay: Number.isFinite(delay) ? this.clamp(delay, 0, 3) : 0,
+      delay: Number.isFinite(delay) ? Math.max(0, delay) : 0,
       noise: Number.isFinite(noise) ? this.clamp(noise, 0, 1) : 0,
       pan: Number.isFinite(pan) ? this.clamp(pan, -1, 1) : 0,
       velocitySensitivity: Number.isFinite(velocitySensitivity) ? this.clamp(velocitySensitivity, -8, 8) : 0,
       modulationTarget: link.modulationTarget || "phase",
       parameterMode: ["set", "add", "multiply"].includes(link.parameterMode) ? link.parameterMode : "set",
       internalTarget: Boolean(link.internalTarget),
+      monitorOnly: Boolean(link.monitorOnly),
       drone: Boolean(link.drone),
       signalMode: SIGNAL_MODE_IDS.has(link.signalMode) ? link.signalMode : "raw",
       follower: {
-        attack: Number.isFinite(followerAttack) ? this.clamp(followerAttack, 0.001, 2) : 0.01,
-        release: Number.isFinite(followerRelease) ? this.clamp(followerRelease, 0.001, 4) : 0.12,
+        attack: Number.isFinite(followerAttack) ? Math.max(0, followerAttack) : 0.01,
+        release: Number.isFinite(followerRelease) ? Math.max(0, followerRelease) : 0.12,
+      },
+      map: {
+        srcMin: Number.isFinite(mapSrcMin) ? mapSrcMin : 0,
+        srcMax: Number.isFinite(mapSrcMax) ? mapSrcMax : 1,
+        trgtMin: Number.isFinite(mapTargetMin) ? mapTargetMin : 0,
+        trgtMax: Number.isFinite(mapTargetMax) ? mapTargetMax : 1,
       },
       filter: {
         type: FILTER_TYPE_IDS.has(link.filter?.type) ? link.filter.type : "none",
         cutoff: link.filter?.type === "formant"
           ? this.clamp(Number.isFinite(filterCutoff) ? filterCutoff : 0, 0, 1)
-          : Number.isFinite(filterCutoff) ? this.clamp(filterCutoff, 20, Math.min(isComb ? 5000 : 12000, sampleRate * 0.45)) : isComb ? 440 : 5000,
+          : Number.isFinite(filterCutoff) ? Math.max(0, filterCutoff) : isComb ? 440 : 5000,
         resonance: Number.isFinite(filterResonance)
-          ? this.clamp(filterResonance, isComb ? -0.98 : 0.1, link.filter?.type === "formant" ? FORMANT_INTENSITY_MAX : isComb ? 0.98 : 12)
+          ? isComb ? this.clamp(filterResonance, -0.999, 0.999) : Math.max(0, filterResonance)
           : isComb ? 0.45 : 0.7,
       },
       distortion: {
         enabled: Boolean(link.distortion?.enabled),
         type: DISTORTION_TYPE_IDS.has(link.distortion?.type) ? link.distortion.type : "soft-clip",
-        gain: Number.isFinite(distortionGain) ? this.clamp(distortionGain, 0.1, 40) : 1.5,
+        gain: Number.isFinite(distortionGain) ? Math.max(0, distortionGain) : 1.5,
       },
       envelope: {
-        delay: Number.isFinite(envelopeDelay) ? this.clamp(envelopeDelay, 0, 4) : 0,
-        attack: Number.isFinite(attack) ? this.clamp(attack, 0.001, 4) : 0.01,
-        decay: Number.isFinite(decay) ? this.clamp(decay, 0.001, 4) : 0.16,
-        sustain: Number.isFinite(sustain) ? this.clamp(sustain, 0, 1) : 0.72,
-        release: Number.isFinite(release) ? this.clamp(release, 0.001, 6) : 0.24,
+        delay: Number.isFinite(envelopeDelay) ? Math.max(0, envelopeDelay) : 0,
+        attack: Number.isFinite(attack) ? Math.max(0, attack) : 0.01,
+        decay: Number.isFinite(decay) ? Math.max(0, decay) : 0.16,
+        sustain: Number.isFinite(sustain) ? sustain : 0.72,
+        release: Number.isFinite(release) ? Math.max(0, release) : 0.24,
       },
     };
   }
 
   normalizeLinkAmount(link, amount) {
     if (!Number.isFinite(amount)) return 0;
-    const isNodeParameterLink = typeof link.to === "string" && link.to !== "audio" && !link.internalTarget;
-    if (isNodeParameterLink && link.modulationTarget === "frequency") {
-      return this.clamp(amount, -24000, 24000);
-    }
-    return this.clamp(amount, -32, 32);
+    return amount;
   }
 
   syncRustGraph() {
@@ -491,11 +508,15 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       this.copySampleDataToWasm(node);
     }
 
-    this.links.forEach((link, index) => {
-      link.syncIndex = index;
-    });
+    for (const link of this.links) {
+      link.wasmIndex = -1;
+    }
 
     for (const link of this.links) {
+      if (link.monitorOnly || link.internalTarget) {
+        link.wasmIndex = -1;
+        continue;
+      }
       const from = this.nodesById.get(link.from)?.wasmIndex ?? -1;
       let to = AUDIO_TARGET;
       let hasValidTarget = false;
@@ -505,20 +526,17 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       } else if (this.nodesById.has(link.to)) {
         to = this.nodesById.get(link.to).wasmIndex;
         hasValidTarget = to >= 0;
-      } else if (link.internalTarget && this.linksById.has(link.to)) {
-        const targetIndex = this.linksById.get(link.to).syncIndex;
-        to = Number.isInteger(targetIndex) ? LINK_TARGET_BASE - targetIndex : AUDIO_TARGET;
-        hasValidTarget = Number.isInteger(targetIndex);
       }
       link.wasmIndex = from >= 0 && hasValidTarget
         ? this.wasm.addLink(
           from,
           to,
-          this.dynamicFrequencyAudioNodeIds.has(link.from) && link.to === "audio" ? 0 : link.amount,
+          link.amount,
           link.delay || 0,
           link.noise || 0,
           link.pan || 0,
           MODULATION_TARGET_IDS.get(link.modulationTarget) ?? 0,
+          PARAMETER_MODE_IDS.get(link.parameterMode) ?? 0,
           link.velocitySensitivity || 0,
           link.drone ? 1 : 0,
           SIGNAL_MODE_IDS.get(link.signalMode) ?? 0,
@@ -534,6 +552,50 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
           link.envelope?.decay || 0.16,
           link.envelope?.sustain ?? 0.72,
           link.envelope?.release || 0.24,
+          link.map?.srcMin ?? 0,
+          link.map?.srcMax ?? 1,
+          link.map?.trgtMin ?? 0,
+          link.map?.trgtMax ?? 1,
+        )
+        : -1;
+    }
+
+    for (const link of this.links) {
+      if (link.monitorOnly || !link.internalTarget) {
+        continue;
+      }
+      const from = this.nodesById.get(link.from)?.wasmIndex ?? -1;
+      const targetIndex = this.linksById.get(link.to)?.wasmIndex ?? -1;
+      const to = targetIndex >= 0 ? LINK_TARGET_BASE - targetIndex : AUDIO_TARGET;
+      link.wasmIndex = from >= 0 && targetIndex >= 0
+        ? this.wasm.addLink(
+          from,
+          to,
+          link.amount,
+          link.delay || 0,
+          link.noise || 0,
+          link.pan || 0,
+          MODULATION_TARGET_IDS.get(link.modulationTarget) ?? 0,
+          PARAMETER_MODE_IDS.get(link.parameterMode) ?? 0,
+          link.velocitySensitivity || 0,
+          link.drone ? 1 : 0,
+          SIGNAL_MODE_IDS.get(link.signalMode) ?? 0,
+          link.follower?.attack || 0.01,
+          link.follower?.release || 0.12,
+          FILTER_TYPE_IDS.get(link.filter?.type) ?? 0,
+          link.filter?.cutoff ?? 5000,
+          link.filter?.resonance || 0.7,
+          link.distortion?.enabled ? DISTORTION_TYPE_IDS.get(link.distortion?.type) ?? 2 : 0,
+          link.distortion?.gain || 1.5,
+          link.envelope?.delay || 0,
+          link.envelope?.attack || 0.01,
+          link.envelope?.decay || 0.16,
+          link.envelope?.sustain ?? 0.72,
+          link.envelope?.release || 0.24,
+          link.map?.srcMin ?? 0,
+          link.map?.srcMax ?? 1,
+          link.map?.trgtMin ?? 0,
+          link.map?.trgtMax ?? 1,
         )
         : -1;
     }
@@ -553,6 +615,10 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     });
     const node = this.nodesById.get(payload.nodeId);
     if (node) this.copySampleDataToWasm(node);
+    if (this.linkScopeRequests.length > 0) {
+      this.monitorScopeStates.clear();
+      this.setLinkScopes({ ...this.linkScopeRequests[0], linkIds: this.linkScopeRequests.map((request) => request.linkId) });
+    }
   }
 
   copySampleDataToWasm(node) {
@@ -576,12 +642,12 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       node.frequencyMode = ["ratio", "fixed", "sync"].includes(value) ? value : "ratio";
       this.wasm?.setNodeFrequencyMode?.(node.wasmIndex, this.frequencyModeId(node));
     } else if (parameter === "ratio") {
-      node.ratio = this.clamp(Number(value) || 0, 0, 16);
+      node.ratio = Number.isFinite(Number(value)) ? Number(value) : 0;
       this.wasm?.setNodeRatio?.(node.wasmIndex, node.ratio);
     } else if (parameter === "frequency") {
       node.frequency = node.wave === "constant"
-        ? this.clamp(Number.isFinite(Number(value)) ? Number(value) : 1, -1, 1)
-        : this.clamp(Number(value) || 0, 0, Math.min(12000, sampleRate * 0.45));
+        ? (Number.isFinite(Number(value)) ? Number(value) : 1)
+        : (Number.isFinite(Number(value)) ? Number(value) : 0);
       node.baseFrequency = node.frequency;
       this.wasm?.setNodeFrequency?.(node.wasmIndex, node.frequency);
     } else if (parameter === "syncBeats") {
@@ -603,10 +669,10 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       node.quantise.glide = this.clamp(Number(value) || 0, 0, 4);
       this.wasm?.setNodeQuantiseGlide?.(node.wasmIndex, node.quantise.glide);
     } else if (parameter === "speed") {
-      node.speed = this.clamp(Number(value) || 8, 0.01, 60);
+      node.speed = Number.isFinite(Number(value)) ? Number(value) : 8;
       this.wasm?.setNodeSpeed?.(node.wasmIndex, node.speed);
     } else if (parameter === "audioInputGain") {
-      node.audioInputGain = this.clamp(Number(value) || 1, 0, 4);
+      node.audioInputGain = Number.isFinite(Number(value)) ? Number(value) : 1;
       this.wasm?.setNodeAudioInputGain?.(node.wasmIndex, node.audioInputGain);
     } else if (parameter === "sample.mode") {
       node.sample.mode = SAMPLE_MODE_IDS.has(value) ? value : "one-shot";
@@ -627,7 +693,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       node.sample.overlapRatio = this.clamp(Number(value) || 0, 0, 1);
       this.wasm?.setNodeSampleOverlapRatio?.(node.wasmIndex, node.sample.overlapRatio);
     } else if (parameter === "sample.originalPitch") {
-      node.sample.originalPitch = this.clamp(Number(value) || 60, 0, 127);
+      node.sample.originalPitch = Number.isFinite(Number(value)) ? Number(value) : 60;
       this.wasm?.setNodeSampleOriginalPitch?.(node.wasmIndex, node.sample.originalPitch);
     }
   }
@@ -636,9 +702,9 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     const link = this.linksById.get(id);
     if (!link) return;
     if (parameter === "amount") {
-      link.amount = this.clamp(Number(value) || 0, -32, 32);
+      link.amount = Number.isFinite(Number(value)) ? Number(value) : 0;
     } else if (parameter === "delay") {
-      link.delay = this.clamp(Number(value) || 0, 0, 3);
+      link.delay = Math.max(0, Number.isFinite(Number(value)) ? Number(value) : 0);
     } else if (parameter === "noise") {
       link.noise = this.clamp(Number(value) || 0, 0, 1);
     } else if (parameter === "pan") {
@@ -652,7 +718,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       const isComb = link.filter.type === "comb" || link.filter.type === "comb-notch";
       link.filter.cutoff = link.filter.type === "formant"
         ? this.clamp(Number.isFinite(Number(value)) ? Number(value) : 0, 0, 1)
-        : this.clamp(Number(value) || (isComb ? 440 : 5000), 20, Math.min(isComb ? 5000 : 12000, sampleRate * 0.45));
+        : Math.max(0, Number.isFinite(Number(value)) ? Number(value) : isComb ? 440 : 5000);
       if (link.filter.type === "formant" && this.wasm?.setLinkFilterCutoff && link.wasmIndex >= 0) {
         this.wasm.setLinkFilterCutoff(link.wasmIndex, link.filter.cutoff);
       }
@@ -660,8 +726,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       const isComb = link.filter.type === "comb" || link.filter.type === "comb-notch";
       link.filter.resonance = this.clamp(
         Number.isFinite(Number(value)) ? Number(value) : isComb ? 0.45 : 0.7,
-        isComb ? -0.98 : 0.1,
-        link.filter.type === "formant" ? FORMANT_INTENSITY_MAX : isComb ? 0.98 : 12,
+        isComb ? -0.999 : 0,
+        link.filter.type === "formant" ? Infinity : isComb ? 0.999 : Infinity,
       );
       if (link.filter.type === "formant" && this.wasm?.setLinkFilterResonance && link.wasmIndex >= 0) {
         this.wasm.setLinkFilterResonance(link.wasmIndex, link.filter.resonance);
@@ -669,7 +735,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     } else if (parameter === "distortion.gain") {
       link.distortion = {
         ...(link.distortion || { enabled: false, type: "soft-clip", gain: 1.5 }),
-        gain: this.clamp(Number(value) || 1.5, 0.1, 40),
+        gain: Math.max(0, Number.isFinite(Number(value)) ? Number(value) : 1.5),
       };
     } else {
       return;
@@ -680,7 +746,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
 
   linkControlTargets(link) {
     return {
-      amount: this.dynamicFrequencyAudioNodeIds.has(link.from) && link.to === "audio" ? 0 : link.amount,
+      amount: link.amount,
       delay: link.delay,
       noise: link.noise,
       pan: link.pan,
@@ -785,174 +851,6 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       current.distortionGain = this.smoothControlValue(current.distortionGain, target.distortionGain, alpha);
       this.applyLinkControlSmoother(link);
       this.syncActiveLinkControlSmoother(smoother);
-    }
-  }
-
-  advanceNodeParameterControls(frames = this.lastProcessFrames || 128) {
-    if (!this.wasm?.setNodeFrequency) return;
-
-    const frequencyGroups = new Map();
-    for (const link of this.links) {
-      if (link.internalTarget || link.to === "audio" || link.modulationTarget !== "frequency") continue;
-      const target = this.nodesById.get(link.to);
-      const source = this.nodesById.get(link.from);
-      if (this.dynamicFrequencyAudioNodeIds.has(target?.id)) continue;
-      if (!target || target.wasmIndex < 0 || !source) continue;
-      frequencyGroups.set(target.id, [...(frequencyGroups.get(target.id) || []), { link, source }]);
-    }
-
-    if (!frequencyGroups.size) return;
-
-    const sourceValues = new Map();
-    for (const [targetId, entries] of frequencyGroups) {
-      const target = this.nodesById.get(targetId);
-      if (!target || target.wasmIndex < 0) continue;
-
-      let value = Number.isFinite(target.baseFrequency) ? target.baseFrequency : target.frequency || 0;
-      let multiply = 1;
-      for (const { link, source } of entries) {
-        let sourceValue = sourceValues.get(source.id);
-        if (sourceValue === undefined) {
-          sourceValue = this.controlSignalValue(source, frames);
-          sourceValues.set(source.id, sourceValue);
-        }
-        const linkValue = sourceValue * link.amount;
-        if (link.parameterMode === "multiply") {
-          multiply *= linkValue;
-        } else {
-          value += linkValue;
-        }
-      }
-
-      value *= multiply;
-      const nextFrequency = this.clamp(Number.isFinite(value) ? value : 0, 0, Math.min(12000, sampleRate * 0.45));
-      if (target.frequency !== nextFrequency) {
-        target.frequency = nextFrequency;
-        this.wasm.setNodeFrequency(target.wasmIndex, nextFrequency);
-      }
-    }
-  }
-
-  controlSignalValue(node, frames) {
-    if (node.wave === "constant") return node.baseFrequency ?? node.frequency ?? 0;
-
-    const phase = this.parameterControlPhases.get(node.id) || 0;
-    const cycle = ((phase / TWO_PI) % 1 + 1) % 1;
-    let value = 0;
-
-    if (node.wave === "sine") {
-      value = Math.sin(phase);
-    } else if (node.wave === "triangle") {
-      value = 1 - 4 * Math.abs(cycle - 0.5);
-    } else if (node.wave === "saw") {
-      value = cycle * 2 - 1;
-    } else if (node.wave === "ramp") {
-      value = 1 - cycle * 2;
-    } else if (node.wave === "square") {
-      value = cycle < 0.5 ? 1 : -1;
-    } else if (node.wave === "noise" || node.wave === "sample-hold") {
-      value = Math.random() * 2 - 1;
-    } else {
-      value = Math.sin(phase);
-    }
-
-    const frequency = this.baseFrequency(node, 440);
-    const nextPhase = (phase + (TWO_PI * Math.max(0, frequency) * Math.max(1, frames)) / sampleRate) % TWO_PI;
-    this.parameterControlPhases.set(node.id, nextPhase);
-    return this.sanitizeSample(value, 1);
-  }
-
-  oscillatorValue(wave, phase) {
-    const cycle = ((phase / TWO_PI) % 1 + 1) % 1;
-    if (wave === "sine") return Math.sin(phase);
-    if (wave === "triangle") return 1 - 4 * Math.abs(cycle - 0.5);
-    if (wave === "saw") return cycle * 2 - 1;
-    if (wave === "ramp") return 1 - cycle * 2;
-    if (wave === "square") return cycle < 0.5 ? 1 : -1;
-    if (wave === "noise" || wave === "sample-hold") return Math.random() * 2 - 1;
-    return Math.sin(phase);
-  }
-
-  renderDynamicFrequencyAudio(frames) {
-    if (!this.dynamicFrequencyAudioNodeIds.size || !this.leftBuffer || !this.rightBuffer) return;
-
-    const frequencyLinksByTarget = new Map();
-    for (const link of this.links) {
-      if (link.internalTarget || link.to === "audio" || link.modulationTarget !== "frequency") continue;
-      if (!this.dynamicFrequencyAudioNodeIds.has(link.to)) continue;
-      const source = this.nodesById.get(link.from);
-      if (!source) continue;
-      frequencyLinksByTarget.set(link.to, [...(frequencyLinksByTarget.get(link.to) || []), { link, source }]);
-    }
-
-    for (const nodeId of this.dynamicFrequencyAudioNodeIds) {
-      const node = this.nodesById.get(nodeId);
-      if (!node) continue;
-      const outputLinks = this.links.filter((link) => link.from === nodeId && link.to === "audio");
-      if (!outputLinks.length) continue;
-
-      let phase = this.dynamicAudioPhases.get(nodeId) || 0;
-      const frequencyEntries = frequencyLinksByTarget.get(nodeId) || [];
-
-      for (let i = 0; i < frames; i += 1) {
-        const frequency = this.dynamicFrequencyValue(node, frequencyEntries, i);
-        const sample = this.oscillatorValue(node.wave, phase);
-        phase = (phase + (TWO_PI * frequency) / sampleRate) % TWO_PI;
-
-        for (const link of outputLinks) {
-          const amount = link.amount || 0;
-          const pan = link.pan || 0;
-          const leftGain = pan <= 0 ? 1 : 1 - pan;
-          const rightGain = pan >= 0 ? 1 : 1 + pan;
-          this.leftBuffer[i] = this.sanitizeSample((this.leftBuffer[i] || 0) + sample * amount * leftGain, 16);
-          this.rightBuffer[i] = this.sanitizeSample((this.rightBuffer[i] || 0) + sample * amount * rightGain, 16);
-        }
-      }
-
-      this.dynamicAudioPhases.set(nodeId, phase);
-    }
-  }
-
-  dynamicFrequencyValue(node, entries, sampleOffset) {
-    let value = Number.isFinite(node.baseFrequency) ? node.baseFrequency : node.frequency || 0;
-    let multiply = 1;
-
-    for (const { link, source } of entries) {
-      const sourceValue = this.dynamicSourceValue(source, sampleOffset);
-      const linkValue = sourceValue * link.amount;
-      if (link.parameterMode === "multiply") {
-        multiply *= linkValue;
-      } else {
-        value += linkValue;
-      }
-    }
-
-    return this.clamp(Number.isFinite(value * multiply) ? value * multiply : 0, 0, Math.min(12000, sampleRate * 0.45));
-  }
-
-  dynamicSourceValue(node, sampleOffset) {
-    if (node.wave === "constant") return node.baseFrequency ?? node.frequency ?? 0;
-    const phase = ((this.parameterControlPhases.get(node.id) || 0)
-      + (TWO_PI * Math.max(0, this.baseFrequency(node, 440)) * sampleOffset) / sampleRate) % TWO_PI;
-    return this.sanitizeSample(this.oscillatorValue(node.wave, phase), 1);
-  }
-
-  advanceDynamicSourcePhases(frames) {
-    if (!this.dynamicFrequencyAudioNodeIds.size) return;
-    const sourceIds = new Set(
-      this.links
-        .filter((link) => !link.internalTarget && this.dynamicFrequencyAudioNodeIds.has(link.to) && link.modulationTarget === "frequency")
-        .map((link) => link.from),
-    );
-    for (const sourceId of sourceIds) {
-      const source = this.nodesById.get(sourceId);
-      if (!source || source.wave === "constant") continue;
-      const phase = this.parameterControlPhases.get(source.id) || 0;
-      const frequency = this.baseFrequency(source, 440);
-      this.parameterControlPhases.set(
-        source.id,
-        (phase + (TWO_PI * Math.max(0, frequency) * Math.max(1, frames)) / sampleRate) % TWO_PI,
-      );
     }
   }
 
@@ -1288,7 +1186,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
 
   outputReleaseSeconds() {
     const outputReleases = this.links
-      .filter((link) => link.to === "audio")
+      .filter((link) => link.to === "audio" && !link.monitorOnly)
       .map((link) => link.envelope?.release || 0.24);
     return Math.max(0.001, ...outputReleases);
   }
@@ -1399,30 +1297,282 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     );
   }
 
-  setLinkScope(payload = {}) {
-    if (!payload?.linkId) {
+  setLinkScopes(payload = {}) {
+    const linkIds = Array.isArray(payload.linkIds)
+      ? payload.linkIds.map((id) => String(id)).filter(Boolean)
+      : payload.linkId
+      ? [String(payload.linkId)]
+      : [];
+
+    if (linkIds.length === 0) {
       this.linkScopeRequest = null;
+      this.linkScopeRequests = [];
+      this.linkScopeRequestIndex = 0;
+      this.monitorScopeStates.clear();
       this.wasm?.setLinkScope?.(-1, 0, 0.08, 256, sampleRate);
       return;
     }
-    const link = this.linksById.get(String(payload.linkId));
+
     const points = this.clamp(Math.round(Number(payload.points) || 256), 32, 512);
+    const displayPoints = this.clamp(Math.round(Number(payload.displayPoints) || points), 32, points);
     const seconds = this.clamp(Number(payload.seconds) || 0.08, 0.01, LINK_SCOPE_SECONDS_MAX);
     const mode = payload.mode === "zero-crossing" ? "zero-crossing" : payload.mode === "envelope" ? "envelope" : "continuous";
-    this.linkScopeRequest = {
-      linkId: String(payload.linkId),
+    this.linkScopeRequests = [...new Set(linkIds)].map((linkId) => ({
+      linkId,
       mode,
       points,
+      displayPoints,
       seconds,
+    }));
+    this.linkScopeRequestIndex = Math.min(this.linkScopeRequestIndex, this.linkScopeRequests.length - 1);
+    this.linkScopeRequest = this.linkScopeRequests[this.linkScopeRequestIndex] || null;
+    this.wasm?.setLinkScope?.(-1, 0, 0.08, 256, sampleRate);
+
+    const requestIds = new Set(this.linkScopeRequests.map((request) => request.linkId));
+    for (const linkId of this.monitorScopeStates.keys()) {
+      if (!requestIds.has(linkId)) this.monitorScopeStates.delete(linkId);
+    }
+    for (const request of this.linkScopeRequests) {
+      this.ensureMonitorScopeState(request);
+    }
+  }
+
+  applyLinkScopeRequest() {
+    if (!this.linkScopeRequest) {
+      this.wasm?.setLinkScope?.(-1, 0, 0.08, 256, sampleRate);
+      return;
+    }
+
+    const link = this.linksById.get(this.linkScopeRequest.linkId);
+    const modeId = this.linkScopeRequest.mode === "zero-crossing" ? 1 : this.linkScopeRequest.mode === "envelope" ? 2 : 0;
+    this.wasm?.setLinkScope?.(
+      link?.wasmIndex ?? -1,
+      modeId,
+      this.linkScopeRequest.seconds,
+      this.linkScopeRequest.points,
+      sampleRate,
+    );
+  }
+
+  advanceLinkScopeRequest() {
+    if (this.linkScopeRequests.length <= 1) return;
+    this.linkScopeRequestIndex = (this.linkScopeRequestIndex + 1) % this.linkScopeRequests.length;
+    this.linkScopeRequest = this.linkScopeRequests[this.linkScopeRequestIndex];
+    this.applyLinkScopeRequest();
+  }
+
+  ensureMonitorScopeState(request) {
+    const existing = this.monitorScopeStates.get(request.linkId);
+    if (existing?.graphVersion === this.graphVersion) {
+      existing.request = request;
+      return existing;
+    }
+
+    const state = {
+      request,
+      graphVersion: this.graphVersion,
+      ready: false,
+      loading: true,
+      wasm: null,
+      linkIndex: -1,
+      linkScopeSamples: null,
+      sampleCursor: 0,
     };
-    const modeId = mode === "zero-crossing" ? 1 : mode === "envelope" ? 2 : 0;
-    this.wasm?.setLinkScope?.(link?.wasmIndex ?? -1, modeId, seconds, points, sampleRate);
+    this.monitorScopeStates.set(request.linkId, state);
+
+    void this.createMonitorScopeState(state).catch(() => {
+      const current = this.monitorScopeStates.get(request.linkId);
+      if (current === state) this.monitorScopeStates.delete(request.linkId);
+    });
+
+    return state;
+  }
+
+  async createMonitorScopeState(state) {
+    if (!this.wasmBytes) return;
+    const link = this.linksById.get(state.request.linkId);
+    if (!link) return;
+
+    const { instance } = await WebAssembly.instantiate(this.wasmBytes, {});
+    if (this.monitorScopeStates.get(state.request.linkId) !== state) return;
+
+    const wasm = instance.exports;
+    const nodeIndices = new Map();
+    wasm.clearGraph?.();
+    wasm.clearLinkMeters?.();
+    wasm.setTempo?.(this.tempo);
+
+    for (const node of this.nodes) {
+      const nodeIndex = wasm.addNode(
+        this.waveId(node),
+        this.frequencyModeId(node),
+        node.ratio,
+        node.frequency,
+        node.syncBeats,
+        node.quantise.enabled ? 1 : 0,
+        node.quantise.root === QUANTISE_MIDI_ROOT ? -1 : QUANTISE_ROOT_NOTES.indexOf(node.quantise.root),
+        QUANTISE_SCALE_IDS.get(node.quantise.scale) ?? 0,
+        node.quantise.glide,
+        node.speed,
+        node.audioInputGain,
+        CUSTOM_WAVE_MODE_IDS.get(node.customWave?.mode) ?? 0,
+        node.customWave?.sustainStart ?? 0.5,
+        node.customWave?.sustainEnd ?? 0.75,
+        SAMPLE_MODE_IDS.get(node.sample?.mode) ?? 0,
+        node.sample?.start ?? 0,
+        node.sample?.end ?? 1,
+        node.sample?.stretch ?? 1,
+        node.sample?.cycleLength ?? 4096,
+        node.sample?.overlapRatio ?? 0.09,
+        node.sample?.originalPitch ?? 60,
+      );
+      nodeIndices.set(node.id, nodeIndex);
+      if (nodeIndex >= 0 && node.wave === "custom" && typeof wasm.addCustomWavePoint === "function") {
+        for (const point of node.customWave.points) {
+          wasm.addCustomWavePoint(nodeIndex, point.x, point.y);
+        }
+      }
+      this.copySampleDataToWasmInstance(wasm, node, nodeIndex);
+    }
+
+    const linkIndices = new Map();
+    const addLinkToInstance = (candidate, to) => {
+      const from = nodeIndices.get(candidate.from) ?? -1;
+      if (from < 0) return -1;
+      const linkIndex = wasm.addLink(
+        from,
+        to,
+        candidate.amount,
+        candidate.delay || 0,
+        candidate.noise || 0,
+        candidate.pan || 0,
+        MODULATION_TARGET_IDS.get(candidate.modulationTarget) ?? 0,
+        PARAMETER_MODE_IDS.get(candidate.parameterMode) ?? 0,
+        candidate.velocitySensitivity || 0,
+        candidate.drone ? 1 : 0,
+        SIGNAL_MODE_IDS.get(candidate.signalMode) ?? 0,
+        candidate.follower?.attack || 0.01,
+        candidate.follower?.release || 0.12,
+        FILTER_TYPE_IDS.get(candidate.filter?.type) ?? 0,
+        candidate.filter?.cutoff ?? 5000,
+        candidate.filter?.resonance || 0.7,
+        candidate.distortion?.enabled ? DISTORTION_TYPE_IDS.get(candidate.distortion?.type) ?? 2 : 0,
+        candidate.distortion?.gain || 1.5,
+        candidate.envelope?.delay || 0,
+        candidate.envelope?.attack || 0.01,
+        candidate.envelope?.decay || 0.16,
+        candidate.envelope?.sustain ?? 0.72,
+        candidate.envelope?.release || 0.24,
+        candidate.map?.srcMin ?? 0,
+        candidate.map?.srcMax ?? 1,
+        candidate.map?.trgtMin ?? 0,
+        candidate.map?.trgtMax ?? 1,
+      );
+      if (linkIndex >= 0) linkIndices.set(candidate.id, linkIndex);
+      return linkIndex;
+    };
+
+    for (const candidate of this.links) {
+      if (candidate === link || candidate.monitorOnly || candidate.internalTarget || candidate.to === "audio") continue;
+      const to = this.nodesById.has(candidate.to) ? nodeIndices.get(candidate.to) ?? -1 : -1;
+      if (to >= 0) addLinkToInstance(candidate, to);
+    }
+
+    const linkIndex = addLinkToInstance(link, AUDIO_TARGET);
+    if (linkIndex < 0) return;
+
+    let addedInternalLink = true;
+    while (addedInternalLink) {
+      addedInternalLink = false;
+      for (const internalLink of this.links) {
+        if (!internalLink.internalTarget || linkIndices.has(internalLink.id)) continue;
+        const targetIndex = linkIndices.get(internalLink.to);
+        if (targetIndex === undefined) continue;
+        const internalIndex = addLinkToInstance(internalLink, LINK_TARGET_BASE - targetIndex);
+        if (internalIndex >= 0) addedInternalLink = true;
+      }
+    }
+
+    const modeId = state.request.mode === "zero-crossing" ? 1 : state.request.mode === "envelope" ? 2 : 0;
+    wasm.setLinkScope?.(linkIndex, modeId, state.request.seconds, state.request.points, sampleRate);
+    wasm.armCustomOnceTriggers?.(DRONE_SLOT);
+
+    state.wasm = wasm;
+    state.linkIndex = linkIndex;
+    state.linkScopeSamples = typeof wasm.linkScopePtr === "function"
+      ? new Float32Array(wasm.memory.buffer, wasm.linkScopePtr(), 512)
+      : null;
+    state.ready = true;
+    state.loading = false;
+  }
+
+  copySampleDataToWasmInstance(wasm, node, nodeIndex) {
+    if (!wasm || node?.wave !== "sample" || nodeIndex < 0) return;
+    const entry = this.sampleDataByNodeId.get(node.id);
+    if (!entry?.data?.length || typeof wasm.setSampleData !== "function" || typeof wasm.sampleDataPtr !== "function") return;
+    const maxFrames = typeof wasm.maxSampleFrames === "function" ? wasm.maxSampleFrames() : entry.data.length;
+    const length = Math.min(entry.data.length, Math.max(0, maxFrames || 0));
+    if (!length) return;
+    const slot = wasm.setSampleData(nodeIndex, entry.sampleRate || sampleRate, length);
+    if (slot < 0) return;
+    const ptr = wasm.sampleDataPtr(slot);
+    if (!ptr) return;
+    new Float32Array(wasm.memory.buffer, ptr, length).set(entry.data.subarray(0, length));
+  }
+
+  renderMonitorScopes(frames) {
+    for (const state of this.monitorScopeStates.values()) {
+      if (!state.ready || !state.wasm) continue;
+      const now = state.sampleCursor / sampleRate;
+      state.wasm.clear?.(frames);
+      state.wasm.renderVoiceGraph?.(
+        DRONE_SLOT,
+        frames,
+        sampleRate,
+        440,
+        1,
+        1,
+        now,
+        -1,
+        -1,
+      );
+      state.sampleCursor += frames;
+    }
+  }
+
+  monitorScopeFrameSamples(state) {
+    if (!state.ready || !state.linkScopeSamples || !state.wasm) return [];
+    const count = this.clamp(Math.round(state.wasm.linkScopeCount?.() || 0), 0, state.request.points);
+    const mode = state.request.mode;
+    const displayPoints = state.request.displayPoints || state.request.points;
+    const writeIndex = mode === "envelope"
+      ? 0
+      : this.clamp(Math.round(state.wasm.linkScopeWriteIndex?.() || 0), 0, state.request.points - 1);
+    const raw = Array.from(state.linkScopeSamples.slice(0, state.request.points));
+    const samples = mode === "envelope"
+      ? raw.slice(0, count).concat(Array(Math.max(0, state.request.points - count)).fill(0))
+      : count < state.request.points
+      ? raw.slice(0, count)
+      : raw.slice(writeIndex).concat(raw.slice(0, writeIndex));
+    if (samples.length < displayPoints) {
+      return Array(Math.max(0, displayPoints - samples.length)).fill(0).concat(samples).slice(-displayPoints);
+    }
+    if (mode !== "zero-crossing") return samples.slice(-displayPoints);
+    const maxCrossing = samples.length - displayPoints;
+    const crossing = samples.findIndex((sample, index) => (
+      index > 0
+      && index <= maxCrossing
+      && samples[index - 1] < 0
+      && sample >= 0
+    ));
+    return (crossing > 0 ? samples.slice(crossing, crossing + displayPoints) : samples.slice(-displayPoints));
   }
 
   linkScopeFrameSamples() {
     if (!this.linkScopeRequest || !this.linkScopeSamples || !this.wasm) return [];
     const count = this.clamp(Math.round(this.wasm.linkScopeCount?.() || 0), 0, this.linkScopeRequest.points);
     const mode = this.linkScopeRequest.mode;
+    const displayPoints = this.linkScopeRequest.displayPoints || this.linkScopeRequest.points;
     const writeIndex = mode === "envelope"
       ? 0
       : this.clamp(Math.round(this.wasm.linkScopeWriteIndex?.() || 0), 0, this.linkScopeRequest.points - 1);
@@ -1430,40 +1580,67 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     const samples = mode === "envelope"
       ? raw.slice(0, count).concat(Array(Math.max(0, this.linkScopeRequest.points - count)).fill(0))
       : count < this.linkScopeRequest.points
-      ? Array(Math.max(0, this.linkScopeRequest.points - count)).fill(0).concat(raw.slice(0, count))
+      ? raw.slice(0, count)
       : raw.slice(writeIndex).concat(raw.slice(0, writeIndex));
-    if (mode !== "zero-crossing") return samples.slice(0, this.linkScopeRequest.points);
-    const crossing = samples.findIndex((sample, index) => index > 0 && samples[index - 1] < 0 && sample >= 0);
-    return (crossing > 0 ? samples.slice(crossing).concat(samples.slice(0, crossing)) : samples)
-      .slice(0, this.linkScopeRequest.points);
+    if (samples.length < displayPoints) {
+      return Array(Math.max(0, displayPoints - samples.length)).fill(0).concat(samples).slice(-displayPoints);
+    }
+    if (mode !== "zero-crossing") return samples.slice(-displayPoints);
+    const maxCrossing = samples.length - displayPoints;
+    const crossing = samples.findIndex((sample, index) => (
+      index > 0
+      && index <= maxCrossing
+      && samples[index - 1] < 0
+      && sample >= 0
+    ));
+    return (crossing > 0 ? samples.slice(crossing, crossing + displayPoints) : samples.slice(-displayPoints));
   }
 
   flushLinkMeters() {
     if (this.sampleCursor < this.nextLinkMeterPostSample) return;
     this.nextLinkMeterPostSample = this.sampleCursor + Math.max(1, Math.round(sampleRate * LINK_METER_POST_SECONDS));
-    const levels = this.links.map((link) => {
+    const levels = this.links.filter((link) => !link.monitorOnly).map((link) => {
       const index = link.wasmIndex;
       const count = index >= 0 ? this.linkMeterCounts?.[index] || 0 : 0;
       if (count > 0) {
         return [
           link.id,
-          this.clamp((this.linkMeterInputSums?.[index] || 0) / count, 0, 1),
-          this.clamp((this.linkMeterOutputSums?.[index] || 0) / count, 0, 1),
-          this.clamp((this.linkMeterEnvelopeSums?.[index] || 0) / count, 0, 1),
+          Math.max(0, (this.linkMeterInputSums?.[index] || 0) / count),
+          Math.max(0, (this.linkMeterOutputSums?.[index] || 0) / count),
+          Math.max(0, (this.linkMeterEnvelopeSums?.[index] || 0) / count),
         ];
       }
       return [link.id, 0, 0, 0];
     });
+    for (const state of this.monitorScopeStates.values()) {
+      if (!state.ready || !state.wasm || state.linkIndex < 0) continue;
+      const count = state.wasm.linkMeterCountPtr
+        ? new Uint32Array(state.wasm.memory.buffer, state.wasm.linkMeterCountPtr(), 1024)[state.linkIndex] || 0
+        : 0;
+      if (count > 0) {
+        const inputSums = new Float64Array(state.wasm.memory.buffer, state.wasm.linkMeterInputPtr(), 1024);
+        const outputSums = new Float64Array(state.wasm.memory.buffer, state.wasm.linkMeterOutputPtr(), 1024);
+        const envelopeSums = new Float64Array(state.wasm.memory.buffer, state.wasm.linkMeterEnvelopePtr(), 1024);
+        levels.push([
+          state.request.linkId,
+          Math.max(0, (inputSums[state.linkIndex] || 0) / count),
+          Math.max(0, (outputSums[state.linkIndex] || 0) / count),
+          Math.max(0, (envelopeSums[state.linkIndex] || 0) / count),
+        ]);
+      }
+      state.wasm.clearLinkMeters?.();
+    }
     this.lastOutputPeak = 0;
     this.wasm?.clearLinkMeters?.();
     this.port.postMessage({ type: "linkMeters", payload: { levels } });
-    if (this.linkScopeRequest) {
+    for (const state of this.monitorScopeStates.values()) {
+      if (!state.ready) continue;
       this.port.postMessage({
         type: "linkScope",
         payload: {
-          id: this.linkScopeRequest.linkId,
-          mode: this.linkScopeRequest.mode,
-          samples: this.linkScopeFrameSamples(),
+          id: state.request.linkId,
+          mode: state.request.mode,
+          samples: this.monitorScopeFrameSamples(state),
         },
       });
     }
@@ -1505,15 +1682,23 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       return true;
     }
 
-    if (!this.ready || !this.links.some((link) => link.to === "audio" && link.wasmIndex >= 0)) {
+    const hasMainLinks = this.links.some((link) => link.wasmIndex >= 0);
+    if (!this.ready || (!hasMainLinks && this.monitorScopeStates.size === 0)) {
       this.fillSilence(outputs);
       this.sampleCursor += left.length;
       return true;
     }
 
+    if (!hasMainLinks) {
+      this.fillSilence(outputs);
+      this.renderMonitorScopes(frames);
+      this.sampleCursor += left.length;
+      this.flushLinkMeters();
+      return true;
+    }
+
     this.pruneVoices(now);
     this.advanceLinkControlSmoothers(frames);
-    this.advanceNodeParameterControls(frames);
     this.wasm.clear(frames);
     this.copyInput(inputs, frames);
 
@@ -1532,13 +1717,17 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       this.renderVoice(voice, now, frames);
     }
 
-    this.renderDynamicFrequencyAudio(frames);
-    this.advanceDynamicSourcePhases(frames);
+    this.renderMonitorScopes(frames);
 
+    const hasAudibleOutput = this.links.some((link) => link.to === "audio" && !link.monitorOnly && link.wasmIndex >= 0);
     let peak = 0;
     for (let i = 0; i < frames; i += 1) {
-      const leftSample = this.applyMasterEffects(Math.tanh((this.leftBuffer[i] || 0) * MASTER_GAIN), 0);
-      const rightSample = this.applyMasterEffects(Math.tanh((this.rightBuffer[i] || 0) * MASTER_GAIN), 1);
+      const leftSample = hasAudibleOutput
+        ? this.applyMasterEffects(Math.tanh((this.leftBuffer[i] || 0) * MASTER_GAIN), 0)
+        : 0;
+      const rightSample = hasAudibleOutput
+        ? this.applyMasterEffects(Math.tanh((this.rightBuffer[i] || 0) * MASTER_GAIN), 1)
+        : 0;
       left[i] = leftSample;
       right[i] = rightSample;
       peak = Math.max(peak, Math.abs(leftSample), Math.abs(rightSample));

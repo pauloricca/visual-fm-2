@@ -10,6 +10,7 @@ export function normalizePatch(patch: Patch): Patch {
         ...(node.subpatchName ? { subpatchName: node.subpatchName } : {}),
         ...(node.subpatchCloneId ? { subpatchCloneId: node.subpatchCloneId } : {}),
         ...(node.expression !== undefined ? { expression: node.expression } : {}),
+        ...(node.sample ? { sample: { ...node.sample } } : {}),
         params: sortRecord(node.params),
         ...(node.position ? { position: node.position } : {}),
         ...(node.inputs ? { inputs: node.inputs.map((input) => ({ ...input })) } : {}),

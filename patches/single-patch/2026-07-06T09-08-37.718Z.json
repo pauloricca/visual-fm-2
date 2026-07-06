@@ -1,0 +1,294 @@
+{
+  "name": "single-patch",
+  "nodes": [
+    {
+      "id": "audio_out",
+      "type": "AudioOut",
+      "params": {
+        "level": 0.8
+      },
+      "position": {
+        "x": 1120.5374741983637,
+        "y": 157.7619144043848
+      }
+    },
+    {
+      "id": "constant_1",
+      "type": "Constant",
+      "params": {
+        "value": 900
+      },
+      "position": {
+        "x": -108.83730349445887,
+        "y": 140.0686980524725
+      }
+    },
+    {
+      "id": "envelope_1",
+      "type": "Envelope",
+      "params": {
+        "attack": 0.01,
+        "decay": 0.16,
+        "delay": 0,
+        "release": 0.24,
+        "sustain": 0.72
+      },
+      "position": {
+        "x": 122.51198320874789,
+        "y": 169.15260838087565
+      }
+    },
+    {
+      "id": "filter_1",
+      "type": "LowpassFilter",
+      "params": {
+        "cutoff": 900,
+        "resonance": 0.8
+      },
+      "position": {
+        "x": 439.4898165808246,
+        "y": 127.35600815196335
+      }
+    },
+    {
+      "id": "gain_1",
+      "type": "Gain",
+      "params": {
+        "gain": 1
+      },
+      "position": {
+        "x": 901.9252540953534,
+        "y": 156.4399184803665
+      }
+    },
+    {
+      "id": "meter_1",
+      "type": "Meter",
+      "params": {},
+      "position": {
+        "x": 263.74558783852535,
+        "y": -350.83394872161114
+      }
+    },
+    {
+      "id": "meter_2",
+      "type": "Meter",
+      "params": {},
+      "position": {
+        "x": 684.8012896383616,
+        "y": 176.64242496170024
+      }
+    },
+    {
+      "id": "sampleplayer_1",
+      "type": "SamplePlayer",
+      "params": {
+        "cycleLength": 4096,
+        "end": 1,
+        "frequency": 220,
+        "level": 0.7,
+        "originalPitch": 60,
+        "overlapRatio": 0.09,
+        "ratio": 1,
+        "start": 0,
+        "stretch": 1,
+        "trigger": 0
+      },
+      "position": {
+        "x": 836.389782178643,
+        "y": -313.3759038858127
+      }
+    },
+    {
+      "id": "scope_1",
+      "type": "Scope",
+      "params": {},
+      "position": {
+        "x": 333.81137181149654,
+        "y": 333.95993991988087
+      }
+    },
+    {
+      "id": "scope_2",
+      "type": "Scope",
+      "params": {},
+      "position": {
+        "x": 360.25129029186303,
+        "y": -260.9382258883651
+      }
+    },
+    {
+      "id": "scope_3",
+      "type": "Scope",
+      "params": {},
+      "position": {
+        "x": -89.22732387436724,
+        "y": 402.7037279688336
+      }
+    },
+    {
+      "id": "sine_1",
+      "type": "SineOsc",
+      "params": {
+        "frequency": 1,
+        "level": 0.75,
+        "phase": 0,
+        "phaseReset": 0,
+        "ratio": 1
+      },
+      "position": {
+        "x": -134.16333969096854,
+        "y": -224.29490763691092
+      }
+    },
+    {
+      "id": "squareosc_1",
+      "type": "SquareOsc",
+      "params": {
+        "frequency": 1,
+        "level": 0.7,
+        "phase": 0,
+        "phaseReset": 0,
+        "ratio": 1
+      },
+      "position": {
+        "x": -315.06866764131746,
+        "y": 281.52226192243324
+      }
+    }
+  ],
+  "links": [
+    {
+      "from": {
+        "node": "gain_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "audio_out",
+        "port": "both"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "constant_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "envelope_1",
+        "port": "signal"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "squareosc_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "envelope_1",
+        "port": "trigger"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "envelope_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "filter_1",
+        "port": "cutoff"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "sine_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "filter_1",
+        "port": "signal"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "filter_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "gain_1",
+        "port": "signal"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "sine_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "meter_1",
+        "port": "signal"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "filter_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "meter_2",
+        "port": "signal"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "envelope_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "scope_1",
+        "port": "signal"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "sine_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "scope_2",
+        "port": "signal"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "squareosc_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "scope_3",
+        "port": "signal"
+      },
+      "weight": 1,
+      "mode": "set"
+    }
+  ]
+}

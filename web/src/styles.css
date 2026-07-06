@@ -180,19 +180,6 @@ select:hover {
   outline: 0;
 }
 
-.audio-status {
-  height: var(--control-size);
-  display: inline-flex;
-  align-items: center;
-  padding: 0 8px;
-  border: 1px solid rgba(255, 255, 255, 0.72);
-  background: rgba(0, 0, 0, 0.72);
-  color: rgba(255, 255, 255, 0.86);
-  font-size: 12px;
-  line-height: 1;
-  white-space: nowrap;
-}
-
 .import-error-floating {
   position: absolute;
   right: 12px;
@@ -480,12 +467,17 @@ select:hover {
   position: relative;
   display: flex;
   align-items: center;
+  gap: 6px;
   min-height: 31px;
   padding: 4px 8px;
   border-bottom: 1px solid #fff;
   background: #fff;
   color: #000;
   font-weight: 700;
+}
+
+.shader-node-compact .shader-node-title:last-child {
+  border-bottom: 0;
 }
 
 .shader-node-group .shader-node-title {
@@ -496,6 +488,7 @@ select:hover {
 .node-type-picker-button {
   display: inline-block;
   height: 22px;
+  min-width: 0;
   padding: 0;
   overflow: hidden;
   border: 0;
@@ -508,6 +501,43 @@ select:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
   user-select: none;
+}
+
+.node-compact-toggle {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: currentColor;
+  cursor: pointer;
+}
+
+.node-compact-toggle:hover,
+.node-compact-toggle:focus-visible {
+  background: #000;
+  color: #fff;
+  outline: 0;
+}
+
+.node-compact-icon {
+  display: block;
+  width: 14px;
+  border: 1px solid currentColor;
+  background: transparent;
+}
+
+.node-compact-icon-expanded {
+  height: 11px;
+}
+
+.node-compact-icon-compact {
+  height: 5px;
 }
 
 .node-type-picker-button:hover,
@@ -652,6 +682,42 @@ select:hover {
   color: #000;
 }
 
+.sample-upload-row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-width: 156px;
+}
+
+.sample-upload-button {
+  height: 22px;
+  padding: 0;
+  border: 1px solid #fff;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  line-height: 20px;
+}
+
+.sample-upload-button:hover,
+.sample-upload-button:focus {
+  background: #fff;
+  color: #000;
+  outline: 0;
+}
+
+.sample-upload-name {
+  min-width: 0;
+  overflow: hidden;
+  color: #fff;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .shader-node-body-draft {
   grid-template-columns: minmax(52px, 1fr) 52px;
   min-height: 26px;
@@ -661,7 +727,7 @@ select:hover {
   position: relative;
   display: block;
   width: 100%;
-  height: 128px;
+  min-height: 0;
   padding: 0;
   background: transparent;
 }
@@ -798,6 +864,30 @@ select:hover {
   overflow: hidden;
 }
 
+.audio-node-meter-scale,
+.audio-node-scope-scale {
+  position: absolute;
+  z-index: 1;
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  pointer-events: none;
+  text-shadow: 0 1px 0 #000, 1px 0 0 #000, 0 -1px 0 #000, -1px 0 0 #000;
+}
+
+.audio-node-meter-scale {
+  top: 3px;
+}
+
+.audio-node-meter-scale-min {
+  left: 4px;
+}
+
+.audio-node-meter-scale-max {
+  right: 4px;
+}
+
 .audio-node-meter-fill {
   position: absolute;
   inset: 0 auto 0 0;
@@ -815,6 +905,7 @@ select:hover {
 }
 
 .audio-node-scope-display {
+  position: relative;
   height: 48px;
   border: 1px solid #fff;
   background:
@@ -822,6 +913,28 @@ select:hover {
     linear-gradient(90deg, rgba(255, 255, 255, 0.18) 1px, transparent 1px),
     #000;
   background-size: 16px 16px;
+}
+
+.shader-node-body-scope .audio-node-scope-display {
+  min-width: 0;
+  border: 0;
+}
+
+.audio-node-scope-scale {
+  left: 4px;
+}
+
+.audio-node-scope-scale-top {
+  top: 3px;
+}
+
+.audio-node-scope-scale-mid {
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.audio-node-scope-scale-bottom {
+  bottom: 3px;
 }
 
 .audio-node-scope-display svg {

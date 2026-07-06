@@ -25,6 +25,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const [dragSource, setDragSource] = useState<{ side: 'input' | 'output'; port: string } | null>(null);
   const [dragTarget, setDragTarget] = useState<{ side: 'input' | 'output'; port: string } | null>(null);
   const [expressionDraft, setExpressionDraft] = useState(node.expression ?? '');
+  const [pointerOver, setPointerOver] = useState(false);
   const definition = node.type ? getNodeDefinition(node as PatchNode) : null;
   const isExpression = node.type === 'Expression';
   const isGroup = node.type === 'Group';
@@ -35,14 +36,23 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const previewOutputPort = data.previewPort?.side === 'output' ? data.previewPort.name : null;
   const showMeterDisplay = node.type === 'Meter';
   const showScopeDisplay = node.type === 'Scope';
-  const meterLevel = Math.max(0, Math.min(1, data.audioMeter?.output ?? 0));
-  const meterPeak = Math.max(0, Math.min(1, data.audioMeter?.input ?? meterLevel));
-  const scopePath = showScopeDisplay ? samplesToScopePath(data.audioScope?.samples ?? []) : '';
+  const showSampleUpload = node.type === 'SamplePlayer';
+  const amplitudeRange = displayAmplitudeRange(node.params.range);
+  const amplitudeRangeLabel = formatAmplitude(amplitudeRange);
+  const rawMeterLevel = data.audioMeter?.output ?? 0;
+  const meterLevel = Math.max(0, Math.min(1, rawMeterLevel / amplitudeRange));
+  const meterPeak = Math.max(0, Math.min(1, (data.audioMeter?.input ?? rawMeterLevel) / amplitudeRange));
+  const scopePath = showScopeDisplay ? samplesToScopePath(data.audioScope?.samples ?? [], amplitudeRange) : '';
   const previewAddsOutput = Boolean(
     previewOutputPort
     && definition
     && !definition.outputs.some((output) => output.name === previewOutputPort),
   );
+  const connectedInputPorts = useMemo(() => new Set(data.connectedPorts?.inputs ?? []), [data.connectedPorts?.inputs]);
+  const connectedOutputPorts = useMemo(() => new Set(data.connectedPorts?.outputs ?? []), [data.connectedPorts?.outputs]);
+  const compactPorts = node.compactPorts === true;
+  const revealCompactPorts = data.isOnlySelected === true || (data.isConnecting === true && pointerOver);
+  const showAllPorts = !compactPorts || revealCompactPorts;
   const showHeaderInput = Boolean(
     definition?.inputs.some((input) => input.name === 'signal')
     && previewInputPort !== 'signal',
@@ -50,6 +60,8 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const headerInputPort = showHeaderInput ? 'signal' : null;
   const showHeaderOutput = outputCount === 1 && !previewAddsOutput;
   const headerOutputPort = showHeaderOutput && definition ? definition.outputs[0]?.name ?? null : null;
+  const showHeaderInputPort = Boolean(headerInputPort && (showAllPorts || connectedInputPorts.has(headerInputPort)));
+  const showHeaderOutputPort = Boolean(headerOutputPort && (showAllPorts || connectedOutputPorts.has(headerOutputPort)));
   const selectedLinkInputs = data.selectedLinkPorts?.inputs ?? [];
   const selectedLinkOutputs = data.selectedLinkPorts?.outputs ?? [];
   const inputLabelWidth = definition
@@ -61,14 +73,30 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const inputStyle = { '--input-label-width': inputLabelWidth } as CSSProperties;
   const className = [
     'shader-node',
+    showScopeDisplay ? 'shader-node-scope' : '',
     selected ? 'shader-node-selected' : '',
     dragging ? 'shader-node-dragging' : '',
+    compactPorts ? 'shader-node-compact' : '',
   ].filter(Boolean).join(' ');
 
   useLayoutEffect(() => {
     const animationFrame = requestAnimationFrame(() => updateNodeInternals(node.id));
     return () => cancelAnimationFrame(animationFrame);
-  }, [headerInputPort, inputLabelWidth, node.id, outputCount, outputLabelWidth, previewAddsOutput, updateNodeInternals]);
+  }, [
+    compactPorts,
+    connectedInputPorts,
+    connectedOutputPorts,
+    headerInputPort,
+    inputLabelWidth,
+    node.id,
+    outputCount,
+    outputLabelWidth,
+    previewAddsOutput,
+    showHeaderInputPort,
+    showHeaderOutputPort,
+    showAllPorts,
+    updateNodeInternals,
+  ]);
 
   useEffect(() => {
     if (document.activeElement === expressionInputRef.current) return;
@@ -180,9 +208,13 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   }
 
   return (
-    <div className={className}>
+    <div
+      className={className}
+      onPointerEnter={() => setPointerOver(true)}
+      onPointerLeave={() => setPointerOver(false)}
+    >
       <div className="shader-node-title">
-        {headerInputPort ? (
+        {showHeaderInputPort && headerInputPort ? (
           <Handle
             id={`in:${headerInputPort}`}
             type="target"
@@ -207,7 +239,29 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           onChange={(type) => data.onTypeChange(node.id, type)}
           onCustomLabelCommit={isGroup ? (label) => data.onSubpatchNameChange?.(node.id, label) : undefined}
         />
-        {headerOutputPort ? (
+        <button
+          className="node-compact-toggle nodrag nopan"
+          type="button"
+          aria-label={compactPorts ? 'Expand ports' : 'Compact ports'}
+          title={compactPorts ? 'Expand ports' : 'Compact ports'}
+          aria-pressed={compactPorts}
+          onPointerDown={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            data.onCompactToggle(node.id, !compactPorts);
+          }}
+        >
+          <span
+            className={[
+              'node-compact-icon',
+              compactPorts ? 'node-compact-icon-compact' : 'node-compact-icon-expanded',
+            ].join(' ')}
+            aria-hidden="true"
+          />
+        </button>
+        {showHeaderOutputPort && headerOutputPort ? (
           <Handle
             id={`out:${headerOutputPort}`}
             type="source"
@@ -239,12 +293,28 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               ? [{ name: previewOutputPort, preview: true }]
               : []),
           ];
+          const visibleInputPorts = inputPorts.filter((input) => (
+            showAllPorts || connectedInputPorts.has(input.name)
+          ));
+          const visibleOutputPorts = outputPorts.filter((output) => (
+            showAllPorts || connectedOutputPorts.has(output.name)
+          ));
+          const showBody = !compactPorts
+            || isExpression
+            || showSampleUpload
+            || visibleInputPorts.length > 0
+            || (visibleOutputPorts.length > 0 && !showHeaderOutputPort)
+            || showMeterDisplay
+            || showScopeDisplay;
+
+          if (!showBody) return null;
 
           return (
         <div className={[
           'shader-node-body',
           isExpression ? 'shader-node-body-expression' : '',
-          outputPorts.length === 0 || showHeaderOutput ? 'shader-node-body-no-outputs' : '',
+          showScopeDisplay ? 'shader-node-body-scope' : '',
+          visibleOutputPorts.length === 0 || showHeaderOutputPort ? 'shader-node-body-no-outputs' : '',
         ].filter(Boolean).join(' ')}>
           {isExpression ? (
             <input
@@ -274,8 +344,23 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               onPointerDown={(event) => event.stopPropagation()}
             />
           ) : null}
+          {showSampleUpload ? (
+            <div className="sample-upload-row">
+              <button
+                className="sample-upload-button nodrag nopan"
+                type="button"
+                onClick={() => data.onSampleUpload?.(node.id)}
+                onPointerDown={(event) => event.stopPropagation()}
+              >
+                UP
+              </button>
+              <span className="sample-upload-name" title={node.sample?.name ?? 'No sample loaded'}>
+                {node.sample?.name ?? 'no sample'}
+              </span>
+            </div>
+          ) : null}
           <div className="shader-ports shader-inputs" style={inputStyle}>
-            {inputPorts.map((input) => (
+            {visibleInputPorts.map((input) => (
             <div
               className={[
                 'shader-port shader-port-input',
@@ -335,9 +420,9 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             </div>
             ))}
           </div>
-          {outputPorts.length > 0 && !showHeaderOutput ? (
+          {visibleOutputPorts.length > 0 && !showHeaderOutputPort ? (
             <div className="shader-ports shader-outputs">
-              {outputPorts.map((output) => (
+              {visibleOutputPorts.map((output) => (
               <div
                 className={[
                   'shader-port shader-port-output',
@@ -390,10 +475,15 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             <div className="audio-node-meter-display" aria-hidden="true">
               <span className="audio-node-meter-fill" style={{ width: `${meterLevel * 100}%` }} />
               <span className="audio-node-meter-peak" style={{ left: `${meterPeak * 100}%` }} />
+              <span className="audio-node-meter-scale audio-node-meter-scale-min">0</span>
+              <span className="audio-node-meter-scale audio-node-meter-scale-max">{amplitudeRangeLabel}</span>
             </div>
           ) : null}
           {showScopeDisplay ? (
             <div className="audio-node-scope-display" aria-hidden="true">
+              <span className="audio-node-scope-scale audio-node-scope-scale-top">+{amplitudeRangeLabel}</span>
+              <span className="audio-node-scope-scale audio-node-scope-scale-mid">0</span>
+              <span className="audio-node-scope-scale audio-node-scope-scale-bottom">-{amplitudeRangeLabel}</span>
               <svg viewBox="0 0 160 48" preserveAspectRatio="none">
                 <path d={scopePath} />
               </svg>
@@ -432,18 +522,35 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   );
 }
 
-function samplesToScopePath(samples: number[]): string {
+function displayAmplitudeRange(value: number | undefined): number {
+  const range = Math.abs(Number(value ?? 1));
+  return Number.isFinite(range) && range > 0 ? range : 1;
+}
+
+function samplesToScopePath(samples: number[], range: number): string {
   if (samples.length < 2) return 'M0 24 L160 24';
 
   return samples.map((sample, index) => {
     const x = (index / (samples.length - 1)) * 160;
-    const y = 24 - Math.max(-1, Math.min(1, sample)) * 22;
+    const y = 24 - Math.max(-1, Math.min(1, sample / range)) * 22;
     return `${index === 0 ? 'M' : 'L'}${roundPathNumber(x)} ${roundPathNumber(y)}`;
   }).join(' ');
 }
 
 function roundPathNumber(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+function formatAmplitude(value: number): string {
+  if (!Number.isFinite(value)) return '1';
+  if (value >= 100) return `${Math.round(value)}`;
+  if (value >= 10) return trimTrailingZeros(value.toFixed(1));
+  if (value >= 1) return trimTrailingZeros(value.toFixed(2));
+  return trimTrailingZeros(value.toFixed(3));
+}
+
+function trimTrailingZeros(value: string): string {
+  return value.replace(/\.?0+$/, '');
 }
 
 interface NodeTypePickerProps {

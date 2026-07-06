@@ -23,26 +23,46 @@ interface AudioEngineState {
   start: () => Promise<void>;
   stop: () => void;
   syncGraph: (graph: WasmAudioGraph) => void;
-  setLinkScope: (linkId: string | null) => void;
+  setLinkScopes: (linkIds: string[]) => void;
 }
 
-const WORKLET_URL = '/audio/audio-worklet-wasm.js';
-const WASM_URL = '/audio/visual-fm-kernel.wasm';
+const AUDIO_ENGINE_ASSET_VERSION = '2026-07-06-abs-map';
+const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_ENGINE_ASSET_VERSION}`;
+const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const METER_UPDATE_INTERVAL_MS = 80;
+const SCOPE_CAPTURE_POINTS = 512;
+const SCOPE_DISPLAY_POINTS = 160;
+const SCOPE_SECONDS = 0.08;
+const SCOPE_MODE = 'zero-crossing';
+
+function stopAudioContext(
+  contextRef: { current: AudioContext | null },
+  nodeRef: { current: AudioWorkletNode | null },
+  analyserRef: { current: AnalyserNode | null },
+): void {
+  nodeRef.current?.port.postMessage({ type: 'panic' });
+  nodeRef.current?.disconnect();
+  analyserRef.current?.disconnect();
+  void contextRef.current?.close();
+  nodeRef.current = null;
+  analyserRef.current = null;
+  contextRef.current = null;
+}
 
 export function useAudioEngine(): AudioEngineState {
   const [status, setStatus] = useState<AudioStatus>('idle');
   const [message, setMessage] = useState('audio stopped');
   const [peak, setPeak] = useState(0);
   const [linkMeters, setLinkMeters] = useState<Record<string, LinkMeterReading>>({});
-  const [linkScopes, setLinkScopes] = useState<Record<string, LinkScopeReading>>({});
+  const [linkScopes, setLinkScopeReadings] = useState<Record<string, LinkScopeReading>>({});
   const contextRef = useRef<AudioContext | null>(null);
   const nodeRef = useRef<AudioWorkletNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const meterFrameRef = useRef<number | null>(null);
   const graphRef = useRef<WasmAudioGraph | null>(null);
   const lastSentGraphJsonRef = useRef<string | null>(null);
-  const activeScopeLinkIdRef = useRef<string | null>(null);
+  const activeScopeLinkIdsRef = useRef<string[]>([]);
+  const sampleDataKeysRef = useRef<Record<string, string>>({});
 
   const stopMeter = useCallback(() => {
     if (meterFrameRef.current !== null) {
@@ -74,26 +94,62 @@ export function useAudioEngine(): AudioEngineState {
     meterFrameRef.current = window.requestAnimationFrame(tick);
   }, [stopMeter]);
 
+  const syncGraphSamples = useCallback((graph: WasmAudioGraph, context: AudioContext, node: AudioWorkletNode) => {
+    const nextKeys: Record<string, string> = {};
+
+    for (const graphNode of graph.nodes) {
+      if (graphNode.wave !== 'sample') continue;
+      const sampleUrl = graphNode.sample?.url?.trim();
+      if (!sampleUrl) continue;
+
+      const sampleName = graphNode.sample?.name ?? '';
+      const sampleKey = `${sampleUrl}\n${sampleName}`;
+      nextKeys[graphNode.id] = sampleKey;
+      if (sampleDataKeysRef.current[graphNode.id] === sampleKey) continue;
+
+      sampleDataKeysRef.current[graphNode.id] = sampleKey;
+      void loadAndPostSampleData(context, node, graphNode.id, sampleUrl, sampleName, sampleKey, sampleDataKeysRef)
+        .catch(() => {
+          if (sampleDataKeysRef.current[graphNode.id] === sampleKey) {
+            delete sampleDataKeysRef.current[graphNode.id];
+          }
+        });
+    }
+
+    for (const nodeId of Object.keys(sampleDataKeysRef.current)) {
+      if (nextKeys[nodeId]) continue;
+      delete sampleDataKeysRef.current[nodeId];
+      node.port.postMessage({ type: 'sampleData', payload: { nodeId, data: [], sampleRate: context.sampleRate, name: '', storageKey: '' } });
+    }
+  }, []);
+
   const syncGraph = useCallback((graph: WasmAudioGraph) => {
     graphRef.current = graph;
     const graphJson = JSON.stringify(graph);
-    if (!nodeRef.current || lastSentGraphJsonRef.current === graphJson) return;
+    if (!nodeRef.current || !contextRef.current) return;
+    if (lastSentGraphJsonRef.current === graphJson) {
+      syncGraphSamples(graph, contextRef.current, nodeRef.current);
+      return;
+    }
 
     lastSentGraphJsonRef.current = graphJson;
     nodeRef.current.port.postMessage({ type: 'graph', payload: graph });
+    syncGraphSamples(graph, contextRef.current, nodeRef.current);
     nodeRef.current.port.postMessage({
-      type: 'setLinkScope',
-      payload: activeScopeLinkIdRef.current
-        ? { linkId: activeScopeLinkIdRef.current, points: 160, seconds: 0.08, mode: 'zero-crossing' }
+      type: 'setLinkScopes',
+      payload: activeScopeLinkIdsRef.current.length > 0
+        ? scopePayload(activeScopeLinkIdsRef.current)
         : {},
     });
-  }, []);
+  }, [syncGraphSamples]);
 
-  const setLinkScope = useCallback((linkId: string | null) => {
-    activeScopeLinkIdRef.current = linkId;
+  const setLinkScopes = useCallback((linkIds: string[]) => {
+    activeScopeLinkIdsRef.current = [...new Set(linkIds)];
     nodeRef.current?.port.postMessage({
-      type: 'setLinkScope',
-      payload: linkId ? { linkId, points: 160, seconds: 0.08, mode: 'zero-crossing' } : {},
+      type: 'setLinkScopes',
+      payload: activeScopeLinkIdsRef.current.length > 0
+        ? scopePayload(activeScopeLinkIdsRef.current)
+        : {},
     });
   }, []);
 
@@ -112,7 +168,7 @@ export function useAudioEngine(): AudioEngineState {
       const context = new AudioContext();
       await resumeAudioContext(context);
       setMessage(`audio context ${context.state}`);
-      const wasmBytes = await fetch(WASM_URL).then((response) => {
+      const wasmBytes = await fetch(WASM_URL, { cache: 'no-store' }).then((response) => {
         if (!response.ok) {
           throw new Error(`Could not load WASM kernel (${response.status}).`);
         }
@@ -131,30 +187,30 @@ export function useAudioEngine(): AudioEngineState {
       node.port.onmessage = (event) => {
         const { type, payload } = event.data || {};
         if (type === 'backendStatus') {
-        if (payload?.ready) {
-          setStatus('running');
-          setMessage(`WASM audio ${context.state}`);
+          if (payload?.ready) {
+            setStatus('running');
+            setMessage(`WASM audio ${context.state} (${AUDIO_ENGINE_ASSET_VERSION})`);
           } else {
             setStatus('error');
-          setMessage(payload?.error || 'WASM audio failed');
+            setMessage(payload?.error || 'WASM audio failed');
+          }
+          return;
         }
-        return;
-      }
-      if (type === 'linkMeters') {
-        setLinkMeters(linkMetersFromPayload(payload));
-        return;
-      }
-      if (type === 'linkScope') {
-        const id = typeof payload?.id === 'string' ? payload.id : null;
-        if (!id) return;
-        setLinkScopes((current) => ({
-          ...current,
-          [id]: {
-            mode: typeof payload?.mode === 'string' ? payload.mode : 'continuous',
-            samples: Array.isArray(payload?.samples) ? payload.samples.map(Number).filter(Number.isFinite) : [],
-          },
-        }));
-      }
+        if (type === 'linkMeters') {
+          setLinkMeters(linkMetersFromPayload(payload));
+          return;
+        }
+        if (type === 'linkScope') {
+          const id = typeof payload?.id === 'string' ? payload.id : null;
+          if (!id) return;
+          setLinkScopeReadings((current) => ({
+            ...current,
+            [id]: {
+              mode: typeof payload?.mode === 'string' ? payload.mode : 'continuous',
+              samples: Array.isArray(payload?.samples) ? payload.samples.map(Number).filter(Number.isFinite) : [],
+            },
+          }));
+        }
       };
       context.onstatechange = () => {
         setMessage((current) => current.replace(/(audio|context) (running|suspended|interrupted|closed)/, `$1 ${context.state}`));
@@ -169,11 +225,12 @@ export function useAudioEngine(): AudioEngineState {
       if (graphRef.current) {
         lastSentGraphJsonRef.current = JSON.stringify(graphRef.current);
         node.port.postMessage({ type: 'graph', payload: graphRef.current });
+        syncGraphSamples(graphRef.current, context, node);
       }
-      if (activeScopeLinkIdRef.current) {
+      if (activeScopeLinkIdsRef.current.length > 0) {
         node.port.postMessage({
-          type: 'setLinkScope',
-          payload: { linkId: activeScopeLinkIdRef.current, points: 160, seconds: 0.08, mode: 'zero-crossing' },
+          type: 'setLinkScopes',
+          payload: scopePayload(activeScopeLinkIdsRef.current),
         });
       }
       if (context.state !== 'running') {
@@ -189,26 +246,35 @@ export function useAudioEngine(): AudioEngineState {
       setStatus('error');
       setMessage(error instanceof Error ? error.message : 'audio failed');
     }
-  }, [startMeter]);
+  }, [startMeter, syncGraphSamples]);
 
   const stop = useCallback(() => {
-    nodeRef.current?.port.postMessage({ type: 'panic' });
-    void contextRef.current?.suspend();
+    stopAudioContext(contextRef, nodeRef, analyserRef);
+    lastSentGraphJsonRef.current = null;
+    sampleDataKeysRef.current = {};
     stopMeter();
     setLinkMeters({});
-    setLinkScopes({});
+    setLinkScopeReadings({});
     setStatus('idle');
     setMessage('audio stopped');
   }, [stopMeter]);
 
   useEffect(() => () => {
     stopMeter();
-    nodeRef.current?.disconnect();
-    analyserRef.current?.disconnect();
-    void contextRef.current?.close();
+    stopAudioContext(contextRef, nodeRef, analyserRef);
   }, [stopMeter]);
 
-  return { status, message, peak, linkMeters, linkScopes, start, stop, syncGraph, setLinkScope };
+  return { status, message, peak, linkMeters, linkScopes, start, stop, syncGraph, setLinkScopes };
+}
+
+function scopePayload(linkIds: string[]) {
+  return {
+    linkIds,
+    points: SCOPE_CAPTURE_POINTS,
+    displayPoints: SCOPE_DISPLAY_POINTS,
+    seconds: SCOPE_SECONDS,
+    mode: SCOPE_MODE,
+  };
 }
 
 async function resumeAudioContext(context: AudioContext): Promise<void> {
@@ -243,4 +309,48 @@ function linkMetersFromPayload(payload: unknown): Record<string, LinkMeterReadin
 function finiteNumber(value: unknown): number {
   const numberValue = Number(value);
   return Number.isFinite(numberValue) ? numberValue : 0;
+}
+
+async function loadAndPostSampleData(
+  context: AudioContext,
+  node: AudioWorkletNode,
+  nodeId: string,
+  url: string,
+  name: string,
+  key: string,
+  keysRef: { current: Record<string, string> },
+): Promise<void> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Could not load sample "${name || url}" (${response.status}).`);
+  }
+
+  const buffer = await context.decodeAudioData(await response.arrayBuffer());
+  if (keysRef.current[nodeId] !== key) return;
+
+  const data = audioBufferToMonoData(buffer);
+  node.port.postMessage({
+    type: 'sampleData',
+    payload: {
+      nodeId,
+      data,
+      sampleRate: buffer.sampleRate,
+      name,
+      storageKey: url,
+    },
+  }, [data.buffer]);
+}
+
+function audioBufferToMonoData(buffer: AudioBuffer): Float32Array {
+  const output = new Float32Array(buffer.length);
+  if (buffer.numberOfChannels === 0) return output;
+
+  for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+    const input = buffer.getChannelData(channel);
+    for (let index = 0; index < output.length; index += 1) {
+      output[index] += input[index] / buffer.numberOfChannels;
+    }
+  }
+
+  return output;
 }

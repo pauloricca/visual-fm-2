@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, type Connect, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
@@ -9,6 +9,7 @@ export default defineConfig({
   plugins: [
     react(),
     renderSyncPlugin(),
+    localSampleStoragePlugin(),
     ...(process.env.VITE_VISUAL_VISUAL_PATCH_STORAGE === 'browser' ? [] : [localPatchStoragePlugin()]),
   ],
   server: {
@@ -25,6 +26,65 @@ function crossOriginIsolationHeaders() {
   return {
     'Cross-Origin-Opener-Policy': 'same-origin',
     'Cross-Origin-Embedder-Policy': 'require-corp',
+  };
+}
+
+function localSampleStoragePlugin(): Plugin {
+  const samplesDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'samples');
+
+  const middleware: Connect.NextHandleFunction = (request, response, next) => {
+    const url = new URL(request.url ?? '/', 'http://localhost');
+    const path = url.pathname;
+
+    if (path === '/api/local-samples' && request.method === 'POST') {
+      saveUploadedSample(samplesDir, request).then((sample) => {
+        response.statusCode = 201;
+        response.setHeader('Cache-Control', 'no-store');
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify(sample));
+      }).catch((error: unknown) => {
+        sendPatchStorageError(response, error);
+      });
+      return;
+    }
+
+    if (path.startsWith('/samples/') && (request.method === 'GET' || request.method === 'HEAD')) {
+      const fileName = safeDecodedPathSegment(path.slice('/samples/'.length));
+      if (!fileName || !isSafePatchStorageSegment(fileName)) {
+        response.statusCode = 404;
+        response.end();
+        return;
+      }
+
+      const filePath = join(samplesDir, fileName);
+      if (!existsSync(filePath)) {
+        response.statusCode = 404;
+        response.end();
+        return;
+      }
+
+      response.statusCode = 200;
+      response.setHeader('Cache-Control', 'no-store');
+      response.setHeader('Content-Type', sampleContentType(fileName));
+      if (request.method === 'HEAD') {
+        response.end();
+        return;
+      }
+      createReadStream(filePath).pipe(response);
+      return;
+    }
+
+    next();
+  };
+
+  return {
+    name: 'visual-visual-local-sample-storage',
+    configureServer(server) {
+      server.middlewares.use(middleware);
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(middleware);
+    },
   };
 }
 
@@ -214,6 +274,122 @@ interface LocalPatchEntry {
   versions: LocalPatchVersion[];
 }
 
+interface UploadedSampleFile {
+  name: string;
+  contentType: string;
+  data: Buffer;
+}
+
+const MAX_SAMPLE_UPLOAD_BYTES = 100 * 1024 * 1024;
+const SAMPLE_AUDIO_EXTENSIONS = new Set([
+  '.aac',
+  '.aif',
+  '.aiff',
+  '.flac',
+  '.m4a',
+  '.mp3',
+  '.oga',
+  '.ogg',
+  '.wav',
+  '.wave',
+  '.webm',
+]);
+
+async function saveUploadedSample(samplesDir: string, request: Connect.IncomingMessage) {
+  const boundary = multipartBoundary(request.headers['content-type']);
+  if (!boundary) throw new Error('Expected a multipart sample upload.');
+
+  const body = await readRequestBuffer(request, MAX_SAMPLE_UPLOAD_BYTES);
+  const uploaded = parseMultipartSampleFile(body, boundary);
+  if (!uploaded) throw new Error('Expected an audio file named "sample".');
+  if (!uploaded.contentType.startsWith('audio/') && uploaded.contentType !== 'application/octet-stream') {
+    throw new Error('Expected an audio file upload.');
+  }
+
+  const fileName = sanitizeSampleFilename(uploaded.name);
+  await mkdir(samplesDir, { recursive: true });
+  const savedName = await uniqueSampleFilename(samplesDir, fileName);
+  await writeFile(join(samplesDir, savedName), uploaded.data);
+
+  return {
+    name: savedName,
+    url: `/samples/${encodeURIComponent(savedName)}`,
+  };
+}
+
+function multipartBoundary(contentType: string | string[] | undefined): string | null {
+  const header = Array.isArray(contentType) ? contentType[0] : contentType;
+  const match = header?.match(/(?:^|;)\s*boundary=(?:"([^"]+)"|([^;]+))/i);
+  return match?.[1] ?? match?.[2] ?? null;
+}
+
+function parseMultipartSampleFile(body: Buffer, boundary: string): UploadedSampleFile | null {
+  const delimiter = Buffer.from(`--${boundary}`);
+  const headerDelimiter = Buffer.from('\r\n\r\n');
+  let searchFrom = 0;
+
+  while (searchFrom < body.length) {
+    const delimiterStart = body.indexOf(delimiter, searchFrom);
+    if (delimiterStart < 0) return null;
+    let partStart = delimiterStart + delimiter.length;
+    if (body[partStart] === 45 && body[partStart + 1] === 45) return null;
+    if (body[partStart] === 13 && body[partStart + 1] === 10) partStart += 2;
+
+    const headerEnd = body.indexOf(headerDelimiter, partStart);
+    if (headerEnd < 0) return null;
+
+    const nextDelimiter = body.indexOf(delimiter, headerEnd + headerDelimiter.length);
+    if (nextDelimiter < 0) return null;
+
+    const headers = body.subarray(partStart, headerEnd).toString('utf8');
+    let dataEnd = nextDelimiter;
+    if (body[dataEnd - 2] === 13 && body[dataEnd - 1] === 10) dataEnd -= 2;
+
+    const disposition = headers.match(/content-disposition:[^\r\n]*/i)?.[0] ?? '';
+    const fieldName = disposition.match(/\bname="([^"]+)"/i)?.[1] ?? '';
+    const fileName = disposition.match(/\bfilename="([^"]*)"/i)?.[1] ?? '';
+    if (fieldName === 'sample' && fileName) {
+      return {
+        name: fileName,
+        contentType: headers.match(/content-type:\s*([^\r\n]+)/i)?.[1]?.trim().toLowerCase() ?? 'application/octet-stream',
+        data: Buffer.from(body.subarray(headerEnd + headerDelimiter.length, dataEnd)),
+      };
+    }
+
+    searchFrom = nextDelimiter + delimiter.length;
+  }
+
+  return null;
+}
+
+function sanitizeSampleFilename(name: string): string {
+  const extension = extname(name).toLowerCase();
+  if (!SAMPLE_AUDIO_EXTENSIONS.has(extension)) {
+    throw new Error('Unsupported sample file type.');
+  }
+
+  const stem = basename(name, extension)
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001f]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^\.+/, '')
+    .replace(/\.+$/, '') || 'sample';
+
+  return `${stem}${extension}`;
+}
+
+async function uniqueSampleFilename(samplesDir: string, fileName: string): Promise<string> {
+  const extension = extname(fileName);
+  const stem = basename(fileName, extension);
+  let candidate = fileName;
+  let suffix = 2;
+  while (existsSync(join(samplesDir, candidate))) {
+    candidate = `${stem}-${suffix}${extension}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
 async function listLocalPatches(patchesDir: string): Promise<LocalPatchEntry[]> {
   if (!existsSync(patchesDir)) return [];
 
@@ -311,6 +487,40 @@ function isSafePatchVersionFilename(value: string): boolean {
   return /^[0-9TZ_.-]+\.json$/.test(value);
 }
 
+function safeDecodedPathSegment(value: string): string | null {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
+function sampleContentType(fileName: string): string {
+  switch (extname(fileName).toLowerCase()) {
+    case '.aac':
+      return 'audio/aac';
+    case '.aif':
+    case '.aiff':
+      return 'audio/aiff';
+    case '.flac':
+      return 'audio/flac';
+    case '.m4a':
+      return 'audio/mp4';
+    case '.mp3':
+      return 'audio/mpeg';
+    case '.oga':
+    case '.ogg':
+      return 'audio/ogg';
+    case '.wav':
+    case '.wave':
+      return 'audio/wav';
+    case '.webm':
+      return 'audio/webm';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
 function sendPatchStorageError(response: Connect.ServerResponse, error: unknown): void {
   response.statusCode = 400;
   response.setHeader('Content-Type', 'text/plain');
@@ -330,6 +540,27 @@ function readRequestBody(request: Connect.IncomingMessage): Promise<string> {
     });
     request.on('end', () => {
       resolve(Buffer.concat(chunks).toString('utf8'));
+    });
+    request.on('error', reject);
+  });
+}
+
+function readRequestBuffer(request: Connect.IncomingMessage, maxBytes: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let byteLength = 0;
+
+    request.on('data', (chunk: Buffer) => {
+      byteLength += chunk.length;
+      if (byteLength > maxBytes) {
+        reject(new Error('Sample upload is too large.'));
+        request.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on('end', () => {
+      resolve(Buffer.concat(chunks));
     });
     request.on('error', reject);
   });

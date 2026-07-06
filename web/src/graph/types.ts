@@ -17,8 +17,12 @@ export type NodeType =
   | 'SamplePlayer'
   | 'Constant'
   | 'Gain'
+  | 'Abs'
+  | 'Map'
   | 'Multiply'
   | 'Delay'
+  | 'Chorus'
+  | 'Reverb'
   | 'LinkNoise'
   | 'Envelope'
   | 'Follower'
@@ -52,11 +56,17 @@ export interface PatchNode {
   subpatchName?: string;
   subpatchCloneId?: string;
   expression?: string;
+  sample?: SampleAsset;
   params: Record<string, number>;
   position?: Vec2;
   inputs?: PortDefinition[];
   outputs?: PortDefinition[];
   subpatch?: Patch;
+}
+
+export interface SampleAsset {
+  name: string;
+  url: string;
 }
 
 export interface Endpoint {

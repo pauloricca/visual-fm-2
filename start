@@ -2,6 +2,7 @@
 set -eu
 
 SCHEME="http"
+PORT="${VISUAL_FM_HOST_PORT:-5174}"
 CERT_DIR=".cert"
 CERT_KEY="$CERT_DIR/visual-visual.key"
 CERT_CERT="$CERT_DIR/visual-visual.crt"
@@ -11,12 +12,15 @@ HTTPS_ENABLED=0
 PATCH_STORAGE="${VITE_VISUAL_VISUAL_PATCH_STORAGE:-local}"
 
 usage() {
-  printf 'Usage: ./start [--patch-storage=local|browser]\n'
+  printf 'Usage: ./start [--port=PORT] [--patch-storage=local|browser]\n'
   printf '       ./start [--local-storage|--browser-storage]\n'
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --port=*)
+      PORT="${1#*=}"
+      ;;
     --patch-storage=local)
       PATCH_STORAGE="local"
       ;;
@@ -42,6 +46,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 export VITE_VISUAL_VISUAL_PATCH_STORAGE="$PATCH_STORAGE"
+export VISUAL_FM_HOST_PORT="$PORT"
 
 LAN_IP=""
 if command -v ipconfig >/dev/null 2>&1; then
@@ -103,8 +108,8 @@ if command -v openssl >/dev/null 2>&1; then
   fi
 fi
 
-URL="$SCHEME://localhost:5173/"
-VIEWER_URL="$SCHEME://localhost:5173/viewer"
+URL="$SCHEME://localhost:$PORT/"
+VIEWER_URL="$SCHEME://localhost:$PORT/viewer"
 
 cleanup() {
   docker compose down
@@ -151,8 +156,8 @@ if [ "$READY" -eq 1 ]; then
   printf '  Editor: %s\n' "$URL"
   printf '  Viewer: %s\n' "$VIEWER_URL"
   if [ -n "$LAN_IP" ]; then
-    printf '  Editor for another device: %s://%s:5173/\n' "$SCHEME" "$LAN_IP"
-    printf '  Viewer for projector: %s://%s:5173/viewer\n' "$SCHEME" "$LAN_IP"
+    printf '  Editor for another device: %s://%s:%s/\n' "$SCHEME" "$LAN_IP" "$PORT"
+    printf '  Viewer for projector: %s://%s:%s/viewer\n' "$SCHEME" "$LAN_IP" "$PORT"
   fi
   if [ "$PATCH_STORAGE" = "local" ]; then
     printf '  Patch storage: local server patches/ directory. SV and LD use the server from localhost and LAN clients.\n'

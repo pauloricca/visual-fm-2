@@ -3,7 +3,7 @@ services:
     build:
       context: .
     ports:
-      - "5173:5173"
+      - "${VISUAL_FM_HOST_PORT:-5174}:5173"
     environment:
       CHOKIDAR_USEPOLLING: "true"
       WATCHPACK_POLLING: "true"

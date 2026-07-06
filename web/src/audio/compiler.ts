@@ -7,7 +7,28 @@ export interface WasmAudioGraph {
   links: WasmAudioLink[];
   maxVoices: number;
   tempo: number;
-  masterEffects: Record<string, unknown>;
+  masterEffects: MasterEffects;
+}
+
+interface MasterEffects {
+  chorus: {
+    enabled: boolean;
+    rate: number;
+    depth: number;
+    mix: number;
+  };
+  delay: {
+    enabled: boolean;
+    time: number;
+    feedback: number;
+    mix: number;
+  };
+  reverb: {
+    enabled: boolean;
+    size: number;
+    decay: number;
+    mix: number;
+  };
 }
 
 interface WasmAudioNode {
@@ -25,6 +46,8 @@ interface WasmAudioNode {
     points: Array<{ x: number; y: number }>;
   };
   sample?: {
+    name: string;
+    url: string;
     mode: string;
     start: number;
     end: number;
@@ -35,6 +58,13 @@ interface WasmAudioNode {
   };
 }
 
+interface WasmAudioMap {
+  srcMin: number;
+  srcMax: number;
+  trgtMin: number;
+  trgtMax: number;
+}
+
 interface WasmAudioLink {
   id: string;
   from: string;
@@ -43,9 +73,11 @@ interface WasmAudioLink {
   modulationTarget: string;
   parameterMode?: string;
   internalTarget?: boolean;
+  monitorOnly?: boolean;
   pan?: number;
   delay?: number;
   signalMode?: string;
+  map?: WasmAudioMap;
   follower?: {
     attack: number;
     release: number;
@@ -75,16 +107,19 @@ interface SignalState {
   amount: number;
   delay?: number;
   signalMode?: string;
+  map?: WasmAudioMap;
   follower?: WasmAudioLink['follower'];
   filter?: WasmAudioLink['filter'];
   distortion?: WasmAudioLink['distortion'];
   envelope?: WasmAudioLink['envelope'];
   monitorNodeIds?: string[];
   linkParameterModulations?: LinkParameterModulation[];
+  masterEffects?: Partial<MasterEffects>;
 }
 
 interface LinkParameterModulation {
   link: PatchLink;
+  port: string;
   target: string;
 }
 
@@ -92,6 +127,7 @@ interface CompileContext {
   nodeById: Map<string, PatchNode>;
   outgoingByNode: Map<string, PatchLink[]>;
   incomingByInput: Map<string, PatchLink[]>;
+  masterEffects: MasterEffects;
 }
 
 const OSC_WAVES: Partial<Record<NodeType, string>> = {
@@ -119,10 +155,12 @@ const DISTORTION_NODE_TYPES: Partial<Record<NodeType, string>> = {
   WavefoldDistortion: 'wavefold',
 };
 const CUSTOM_WAVE_MODES = ['loop', 'once', 'ping-pong', 'sustain', 'sustain-loop', 'sustain-ping-pong'] as const;
+const RATIO_NODE_TYPES = new Set<NodeType>(['CustomWave', 'SamplePlayer']);
 
 export function compilePatchToWasmGraph(patch: Patch): WasmAudioGraph {
   const expandedPatch = expandGroups(patch);
-  const context = contextForPatch(expandedPatch);
+  const masterEffects = defaultMasterEffects();
+  const context = contextForPatch(expandedPatch, masterEffects);
   const nodes = expandedPatch.nodes.flatMap((node) => compileSourceNode(node, context));
   const links = dedupeWasmLinks(expandedPatch.nodes.flatMap((node) => compileNodeOutput(node, context)));
 
@@ -131,15 +169,19 @@ export function compilePatchToWasmGraph(patch: Patch): WasmAudioGraph {
     links,
     maxVoices: 8,
     tempo: 120,
-    masterEffects: {
-      chorus: { enabled: false },
-      delay: { enabled: false },
-      reverb: { enabled: false },
-    },
+    masterEffects,
   };
 }
 
-function contextForPatch(patch: Patch): CompileContext {
+function defaultMasterEffects(): MasterEffects {
+  return {
+    chorus: { enabled: false, rate: 0.8, depth: 0.012, mix: 0.25 },
+    delay: { enabled: false, time: 0.28, feedback: 0.35, mix: 0.25 },
+    reverb: { enabled: false, size: 0.55, decay: 0.45, mix: 0.25 },
+  };
+}
+
+function contextForPatch(patch: Patch, masterEffects: MasterEffects): CompileContext {
   const nodeById = new Map(patch.nodes.map((node) => [node.id, node]));
   const outgoingByNode = new Map<string, PatchLink[]>();
   const incomingByInput = new Map<string, PatchLink[]>();
@@ -152,14 +194,24 @@ function contextForPatch(patch: Patch): CompileContext {
     ]);
   }
 
-  return { nodeById, outgoingByNode, incomingByInput };
+  return { nodeById, outgoingByNode, incomingByInput, masterEffects };
 }
 
 function compileSourceNode(node: PatchNode, context: CompileContext): WasmAudioNode[] {
+  if (isImplicitEnvelopeSource(node, context)) {
+    return [{
+      id: node.id,
+      wave: 'constant',
+      frequencyMode: 'fixed',
+      ratio: 1,
+      frequency: 1,
+    }];
+  }
+
   const wave = OSC_WAVES[node.type];
   if (!wave) return [];
 
-  const ratio = inputValue(node, 'ratio', 1, context);
+  const ratio = RATIO_NODE_TYPES.has(node.type) ? inputValue(node, 'ratio', 1, context) : 1;
   return [{
     id: node.id,
     wave,
@@ -184,6 +236,8 @@ function compileSourceNode(node: PatchNode, context: CompileContext): WasmAudioN
     } : {}),
     ...(node.type === 'SamplePlayer' ? {
       sample: {
+        name: node.sample?.name ?? '',
+        url: node.sample?.url ?? '',
         mode: 'one-shot',
         start: inputValue(node, 'start', 0, context),
         end: inputValue(node, 'end', 1, context),
@@ -197,14 +251,21 @@ function compileSourceNode(node: PatchNode, context: CompileContext): WasmAudioN
 }
 
 function compileNodeOutput(node: PatchNode, context: CompileContext): WasmAudioLink[] {
-  if (!OSC_WAVES[node.type]) return [];
+  const isImplicitEnvelope = isImplicitEnvelopeSource(node, context);
+  if (!OSC_WAVES[node.type] && !isImplicitEnvelope) return [];
 
-  const initial: SignalState = {
-    amount: inputValue(node, 'level', 1, context),
-  };
+  const initial: SignalState = isImplicitEnvelope
+    ? applyProcessorNode({ amount: 1 }, node, context)
+    : applyAmplitudeInput({ amount: 1 }, node, 'level', context);
   const links: WasmAudioLink[] = [];
   walkSignalOutput(node.id, node.id, initial, context, links, new Set());
   return links;
+}
+
+function isImplicitEnvelopeSource(node: PatchNode, context: CompileContext): boolean {
+  return node.type === 'Envelope'
+    && (context.incomingByInput.get(inputKey(node.id, 'signal')) ?? []).length === 0
+    && (context.outgoingByNode.get(node.id) ?? []).some((link) => link.from.port === 'signal');
 }
 
 function walkSignalOutput(
@@ -229,23 +290,38 @@ function walkSignalOutput(
     if (target.type === 'AudioOut') {
       if (!isAudioOutPort(patchLink.to.port)) continue;
       const linkState = applyCable(state, signalCableScale(patchLink, context));
-      const outputLink = audioOutputLink(originId, patchLink, target, linkState, context);
-      wasmLinks.push(outputLink, ...linkParameterModulationLinks(outputLink, linkState, context));
+      const outputState = applyAmplitudeInput(linkState, target, 'level', context);
+      mergeMasterEffects(context.masterEffects, outputState.masterEffects);
+      const outputLink = audioOutputLink(originId, patchLink, outputState);
+      wasmLinks.push(outputLink, ...linkParameterModulationLinks(outputLink, outputState, context));
       continue;
     }
 
-    const targetParameter = parameterTarget(patchLink.to.port);
+    const targetParameter = parameterTarget(patchLink.to.port, target);
     if (targetParameter) {
-      if (OSC_WAVES[target.type]) {
+      if (OSC_WAVES[target.type] && patchLink.to.port !== 'level') {
         const outputLink = parameterLink(originId, patchLink, target, state, targetParameter, context);
         wasmLinks.push(outputLink, ...linkParameterModulationLinks(outputLink, state, context));
       }
       continue;
     }
 
+    const linkState = applyCable(state, signalCableScale(patchLink, context));
     if (patchLink.to.port !== 'signal') continue;
 
-    const linkState = applyCable(state, signalCableScale(patchLink, context));
+    if (target.type === 'Meter' || target.type === 'Scope') {
+      const hasSignalOutput = (context.outgoingByNode.get(target.id) ?? [])
+        .some((link) => link.from.port === 'signal');
+      if (hasSignalOutput) {
+        const processedState = applyProcessorNode(linkState, target, context);
+        walkSignalOutput(originId, target.id, processedState, context, wasmLinks, nextVisited);
+      } else {
+        const monitorLink = terminalMonitorLink(originId, target, linkState);
+        wasmLinks.push(monitorLink, ...linkParameterModulationLinks(monitorLink, linkState, context));
+      }
+      continue;
+    }
+
     const processedState = applyProcessorNode(linkState, target, context);
     walkSignalOutput(originId, target.id, processedState, context, wasmLinks, nextVisited);
   }
@@ -254,16 +330,14 @@ function walkSignalOutput(
 function audioOutputLink(
   originId: string,
   patchLink: PatchLink,
-  outputNode: PatchNode,
   state: SignalState,
-  context: CompileContext,
 ): WasmAudioLink {
   return {
-    ...state,
+    ...wasmLinkState(state),
     id: linkId({ ...patchLink, from: { ...patchLink.from, node: originId } }),
     from: originId,
     to: 'audio',
-    amount: state.amount * inputValue(outputNode, 'level', 1, context),
+    amount: state.amount,
     modulationTarget: 'amplitude',
     pan: audioOutPan(patchLink.to.port),
     drone: true,
@@ -280,7 +354,7 @@ function parameterLink(
   context: CompileContext,
 ): WasmAudioLink {
   return {
-    ...state,
+    ...wasmLinkState(state),
     id: linkId({ ...patchLink, from: { ...patchLink.from, node: originId } }),
     from: originId,
     to: targetNode.id,
@@ -288,6 +362,20 @@ function parameterLink(
     modulationTarget: target,
     parameterMode: patchLink.mode ?? 'set',
     drone: true,
+  };
+}
+
+function terminalMonitorLink(originId: string, monitorNode: PatchNode, state: SignalState): WasmAudioLink {
+  return {
+    ...wasmLinkState(state),
+    id: `${originId}:signal->${monitorNode.id}:monitor`,
+    from: originId,
+    to: 'audio',
+    amount: state.amount,
+    modulationTarget: 'amplitude',
+    drone: true,
+    monitorOnly: true,
+    monitorNodeIds: [monitorNode.id],
   };
 }
 
@@ -314,21 +402,83 @@ function applyProcessorNode(state: SignalState, node: PatchNode, context: Compil
     };
   }
 
+  if (node.type === 'Abs') {
+    return {
+      ...state,
+      signalMode: signalModeAfterAbs(state.signalMode),
+    };
+  }
+
+  if (node.type === 'Map') {
+    return {
+      ...state,
+      signalMode: signalModeAfterMap(state.signalMode),
+      map: {
+        srcMin: inputValue(node, 'srcMin', 0, context),
+        srcMax: inputValue(node, 'srcMax', 1, context),
+        trgtMin: inputValue(node, 'trgtMin', 0, context),
+        trgtMax: inputValue(node, 'trgtMax', 1, context),
+      },
+      linkParameterModulations: [
+        ...(state.linkParameterModulations ?? []),
+        ...dynamicInputModulations(node, {
+          srcMin: 'mapSrcMin',
+          srcMax: 'mapSrcMax',
+          trgtMin: 'mapTargetMin',
+          trgtMax: 'mapTargetMax',
+        }, context),
+      ],
+    };
+  }
+
   if (node.type === 'Delay') {
     return {
       ...state,
-      delay: inputValue(node, 'time', 0.12, context),
-      linkParameterModulations: [
-        ...(state.linkParameterModulations ?? []),
-        ...dynamicInputModulations(node, { time: 'delay' }, context),
-      ],
+      masterEffects: {
+        ...(state.masterEffects ?? {}),
+        delay: {
+          enabled: true,
+          time: clamp(inputValue(node, 'time', 0.28, context), 0.02, 1.5),
+          feedback: clamp(inputValue(node, 'feedback', 0.35, context), 0, 0.92),
+          mix: clamp(inputValue(node, 'mix', 0.25, context), 0, 1),
+        },
+      },
+    };
+  }
+
+  if (node.type === 'Chorus') {
+    return {
+      ...state,
+      masterEffects: {
+        ...(state.masterEffects ?? {}),
+        chorus: {
+          enabled: true,
+          rate: clamp(inputValue(node, 'rate', 0.8, context), 0.05, 6),
+          depth: clamp(inputValue(node, 'depth', 0.012, context), 0.001, 0.04),
+          mix: clamp(inputValue(node, 'mix', 0.25, context), 0, 1),
+        },
+      },
+    };
+  }
+
+  if (node.type === 'Reverb') {
+    return {
+      ...state,
+      masterEffects: {
+        ...(state.masterEffects ?? {}),
+        reverb: {
+          enabled: true,
+          size: clamp(inputValue(node, 'size', 0.55, context), 0.1, 1),
+          decay: clamp(inputValue(node, 'decay', 0.45, context), 0, 0.94),
+          mix: clamp(inputValue(node, 'mix', 0.25, context), 0, 1),
+        },
+      },
     };
   }
 
   if (node.type === 'Envelope') {
     return {
       ...state,
-      signalMode: 'envelope',
       envelope: {
         delay: inputValue(node, 'delay', 0, context),
         attack: inputValue(node, 'attack', 0.01, context),
@@ -488,18 +638,26 @@ function linkParameterModulationLinks(
 ): WasmAudioLink[] {
   return (state.linkParameterModulations ?? []).flatMap((modulation, index) => {
     const source = context.nodeById.get(modulation.link.from.node);
-    if (!source || !OSC_WAVES[source.type]) return [];
-
-    return [{
+    if (!source || !isWasmSourceNode(source, context)) return [];
+    const sourceState = modulationSourceState(source, context);
+    const modulationLink: WasmAudioLink = {
+      ...wasmLinkState(sourceState),
       id: `${targetLink.id}::${modulation.target}<-${linkId(modulation.link)}:${index}`,
       from: modulation.link.from.node,
       to: targetLink.id,
-      amount: sourceOutputAmount(source, context)
-        * dynamicLinkParameterAmount(modulation.link, modulation.target, targetLink, context),
+      amount: sourceState.amount
+        * dynamicLinkParameterAmount(modulation, targetLink, context),
       modulationTarget: modulation.target,
+      parameterMode: modulation.link.mode ?? 'set',
       drone: true,
       internalTarget: true,
-    }];
+      monitorOnly: Boolean(targetLink.monitorOnly),
+    };
+
+    return [
+      modulationLink,
+      ...linkParameterModulationLinks(modulationLink, sourceState, context),
+    ];
   });
 }
 
@@ -510,9 +668,24 @@ function dynamicInputModulations(
 ): LinkParameterModulation[] {
   return Object.entries(ports).flatMap(([port, target]) => (
     (context.incomingByInput.get(inputKey(node.id, port)) ?? [])
-      .filter((link) => staticLinkValue(link, context) === null)
-      .map((link) => ({ link, target }))
+      .map((link) => ({ link, port, target }))
   ));
+}
+
+function applyAmplitudeInput(
+  state: SignalState,
+  node: PatchNode,
+  port: string,
+  context: CompileContext,
+): SignalState {
+  return {
+    ...state,
+    amount: state.amount * amplitudeInputValue(node, port, 1, context),
+    linkParameterModulations: [
+      ...(state.linkParameterModulations ?? []),
+      ...dynamicInputModulations(node, { [port]: 'amplitude' }, context),
+    ],
+  };
 }
 
 function applyCable(state: SignalState, scale: number): SignalState {
@@ -523,21 +696,8 @@ function applyCable(state: SignalState, scale: number): SignalState {
 }
 
 function signalCableScale(link: PatchLink, context: CompileContext): number {
-  const inputLinks = context.incomingByInput.get(inputKey(link.to.node, link.to.port)) ?? [link];
-  const setLinks = inputLinks.filter((candidate) => (candidate.mode ?? 'set') === 'set');
-  const staticMultiplyScale = inputLinks
-    .filter((candidate) => (candidate.mode ?? 'set') === 'multiply')
-    .reduce((scale, candidate) => {
-      const value = staticLinkValue(candidate, context);
-      return value === null ? scale : scale * value;
-    }, 1);
-
-  if ((link.mode ?? 'set') === 'multiply' && staticLinkValue(link, context) === null) return 0;
-  const baseScale = (link.mode ?? 'set') === 'set' && setLinks.length > 0
-    ? linkWeight(link) / setLinks.length
-    : linkWeight(link);
-
-  return baseScale * staticMultiplyScale;
+  void context;
+  return linkWeight(link);
 }
 
 function inputValue(
@@ -592,6 +752,9 @@ function staticLinkValue(
   context: CompileContext,
   visiting = new Set<string>(),
 ): number | null {
+  const source = context.nodeById.get(link.from.node);
+  if (source && isWasmSourceNode(source, context)) return null;
+
   const value = staticOutputValue(link.from.node, link.from.port, context, visiting);
   return value === null ? null : value * linkWeight(link);
 }
@@ -611,6 +774,10 @@ function staticOutputValue(
   const nextVisiting = new Set(visiting);
   nextVisiting.add(key);
 
+  if (isImplicitEnvelopeSource(node, context) && port === 'signal') {
+    return null;
+  }
+
   if (node.type === 'Constant' && (port === 'signal' || port === 'value')) {
     return inputValue(node, 'value', 1, context, nextVisiting);
   }
@@ -629,6 +796,20 @@ function staticOutputValue(
       * inputValue(node, 'factor', 1, context, nextVisiting);
   }
 
+  if (node.type === 'Abs' && (port === 'signal' || port === 'value')) {
+    return Math.abs(inputValue(node, 'signal', 0, context, nextVisiting));
+  }
+
+  if (node.type === 'Map' && (port === 'signal' || port === 'value')) {
+    return mapValue(
+      inputValue(node, 'signal', 0, context, nextVisiting),
+      inputValue(node, 'srcMin', 0, context, nextVisiting),
+      inputValue(node, 'srcMax', 1, context, nextVisiting),
+      inputValue(node, 'trgtMin', 0, context, nextVisiting),
+      inputValue(node, 'trgtMax', 1, context, nextVisiting),
+    );
+  }
+
   if (isProcessorNode(node) && port === 'signal') {
     return inputValue(node, 'signal', 0, context, nextVisiting);
   }
@@ -637,51 +818,57 @@ function staticOutputValue(
 }
 
 function dynamicParameterAmount(link: PatchLink, context: CompileContext): number {
-  const links = context.incomingByInput.get(inputKey(link.to.node, link.to.port)) ?? [link];
-  const mode = link.mode ?? 'set';
-  const setLinks = links.filter((candidate) => (candidate.mode ?? 'set') === 'set');
-  const staticMultiplyScale = links
-    .filter((candidate) => (candidate.mode ?? 'set') === 'multiply')
-    .reduce((scale, candidate) => {
-      const value = staticLinkValue(candidate, context);
-      return value === null ? scale : scale * value;
-    }, 1);
-
-  const modeAmount = mode === 'set' && setLinks.length > 0
-    ? linkWeight(link) / setLinks.length
-    : linkWeight(link);
-  const amount = modeAmount * staticMultiplyScale;
-
-  return amount;
+  void context;
+  return linkWeight(link);
 }
 
 function dynamicLinkParameterAmount(
-  link: PatchLink,
-  target: string,
+  modulation: LinkParameterModulation,
   targetLink: WasmAudioLink,
   context: CompileContext,
 ): number {
-  const amount = dynamicParameterAmount(link, context);
-  if (target === 'filterCutoff' && (link.mode ?? 'set') === 'add') {
-    const baseCutoff = Math.max(Math.abs(targetLink.filter?.cutoff ?? 1), 1);
-    return amount / (baseCutoff * Math.LN2);
-  }
+  const amount = dynamicParameterAmount(modulation.link, context);
+  if (modulation.target !== 'amplitude') return amount;
 
-  if (target === 'amplitude') {
-    return amount;
-  }
+  const targetNode = context.nodeById.get(modulation.link.to.node);
+  if (!targetNode) return amount;
 
-  return amount;
+  const base = amplitudeInputValue(targetNode, modulation.port, 1, context);
+  if (!Number.isFinite(base) || Math.abs(base) < 1e-9) return amount;
+
+  return amount * (targetLink.amount / base);
 }
 
-function sourceOutputAmount(node: PatchNode, context: CompileContext): number {
-  if (node.type === 'Constant') return 1;
-  return inputValue(node, 'level', 1, context);
+function wasmLinkState(state: SignalState): Omit<SignalState, 'masterEffects'> {
+  const { masterEffects: _masterEffects, ...linkState } = state;
+  return linkState;
+}
+
+function modulationSourceState(node: PatchNode, context: CompileContext): SignalState {
+  if (isImplicitEnvelopeSource(node, context)) {
+    return applyProcessorNode({ amount: 1 }, node, context);
+  }
+
+  return applyAmplitudeInput({ amount: 1 }, node, 'level', context);
+}
+
+function isWasmSourceNode(node: PatchNode, context: CompileContext): boolean {
+  return Boolean(OSC_WAVES[node.type]) || isImplicitEnvelopeSource(node, context);
 }
 
 function averageValues(values: number[], divisor: number): number {
   if (values.length === 0 || divisor <= 0) return 0;
   return values.reduce((sum, value) => sum + value, 0) / divisor;
+}
+
+function mergeMasterEffects(
+  target: MasterEffects,
+  source: Partial<MasterEffects> | undefined,
+): void {
+  if (!source) return;
+  if (source.chorus) target.chorus = source.chorus;
+  if (source.delay) target.delay = source.delay;
+  if (source.reverb) target.reverb = source.reverb;
 }
 
 function frequencyInputValue(node: PatchNode, context: CompileContext): number {
@@ -692,6 +879,20 @@ function frequencyInputValue(node: PatchNode, context: CompileContext): number {
   if (hasDynamicSet && !hasStaticSet) return 0;
 
   return inputValue(node, 'frequency', fallback, context);
+}
+
+function amplitudeInputValue(
+  node: PatchNode,
+  port: string,
+  fallback: number,
+  context: CompileContext,
+): number {
+  const links = context.incomingByInput.get(inputKey(node.id, port)) ?? [];
+  const hasDynamicSet = links.some((link) => (link.mode ?? 'set') === 'set' && staticLinkValue(link, context) === null);
+  const hasStaticSet = links.some((link) => (link.mode ?? 'set') === 'set' && staticLinkValue(link, context) !== null);
+  if (hasDynamicSet && !hasStaticSet) return fallback;
+
+  return inputValue(node, port, fallback, context);
 }
 
 function staticExpressionValue(
@@ -725,8 +926,12 @@ function staticExpressionValue(
 
 function isProcessorNode(node: PatchNode): boolean {
   return node.type === 'Gain'
+    || node.type === 'Abs'
+    || node.type === 'Map'
     || node.type === 'Multiply'
     || node.type === 'Delay'
+    || node.type === 'Chorus'
+    || node.type === 'Reverb'
     || node.type === 'Envelope'
     || node.type === 'Follower'
     || node.type === 'RingMod'
@@ -745,12 +950,29 @@ function isProcessorNode(node: PatchNode): boolean {
     || node.type === 'Scope';
 }
 
-function parameterTarget(port: string): string | null {
+function signalModeAfterAbs(current?: string): string {
+  if (current === 'map') return 'map-abs';
+  if (current === 'abs' || current === 'abs-map') return current;
+  return 'abs';
+}
+
+function signalModeAfterMap(current?: string): string {
+  if (current === 'abs') return 'abs-map';
+  return 'map';
+}
+
+function mapValue(value: number, srcMin: number, srcMax: number, trgtMin: number, trgtMax: number): number {
+  const sourceRange = srcMax - srcMin;
+  const denominator = Math.abs(sourceRange) < 0.000001 ? 0.000001 : sourceRange;
+  return trgtMin + ((value - srcMin) / denominator) * (trgtMax - trgtMin);
+}
+
+function parameterTarget(port: string, targetNode: PatchNode): string | null {
   if (port === 'frequency') return 'frequency';
-  if (port === 'ratio') return 'frequency';
+  if (port === 'ratio' && RATIO_NODE_TYPES.has(targetNode.type)) return 'frequency';
   if (port === 'phase') return 'phase';
   if (port === 'phaseReset') return 'phaseResetTrigger';
-  if (port === 'trigger') return 'sampleTrigger';
+  if (port === 'trigger' && targetNode.type === 'SamplePlayer') return 'sampleTrigger';
   if (port === 'start') return 'sampleStart';
   if (port === 'end') return 'sampleEnd';
   if (port === 'stretch') return 'sampleStretch';
