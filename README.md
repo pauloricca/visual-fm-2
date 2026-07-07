@@ -57,9 +57,11 @@ Static values from nodes like `Constant` and static `Expression` outputs are fol
 
 ## Compiler And Engine Boundary
 
-The compiler in `web/src/audio/compiler.ts` expands subpatches, combines input links with the rule above, and emits a `WasmAudioGraph` for the worklet.
+The active compiler is `web/src/audio/dspProgram.ts`. It expands subpatches, combines input links with the rule above, and emits a `DspProgram` for the worklet. The editor sends that program with `dspProgram` messages, and value-only changes use `dspValues`.
 
-The worklet in `web/public/audio/audio-worklet-wasm.js` loads the `visual-fm` WASM kernel and syncs the compiled graph into it. User-facing patch links target nodes or the audio output. The compiler may generate hidden internal links that target engine links when a processor-node parameter, such as filter cutoff, has audio-rate modulation. That is a lowering detail for the existing kernel ABI, not a visible patch feature.
+`web/src/audio/compiler.ts` is deprecated legacy compatibility for the old link-centric `WasmAudioGraph` payload. Do not use it as the reference path for current playback fixes unless you are intentionally maintaining old graph compatibility.
+
+The worklet in `web/public/audio/audio-worklet-wasm.js` loads the `visual-fm` WASM kernel and syncs the compiled `DspProgram` into it. The same file still contains a quarantined `"graph"` message handler and `Legacy*` methods for old `WasmAudioGraph` payloads and debug tooling. User-facing patch links target nodes or the audio output; any remaining inherited link-centric WASM API names are implementation details, not the patch philosophy.
 
 The current WASM binary still has the inherited `visual-fm` ABI, where some processor settings are named as link parameters. That naming reflects the original engine, not the user-facing model in this app. The app should keep the audio kernel stable unless there is a clear DSP reason to change it.
 
@@ -92,5 +94,11 @@ npm run build
 Render a quick WASM startup smoke test:
 
 ```sh
-node scripts/render-worklet-startup.mjs 1 --compiled
+node scripts/render-worklet-startup.mjs 1
+```
+
+To exercise the old graph compatibility path explicitly:
+
+```sh
+node scripts/render-worklet-startup.mjs 1 --legacy-graph
 ```

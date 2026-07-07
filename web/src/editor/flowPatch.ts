@@ -1,10 +1,24 @@
 import type { Edge, Node } from '@xyflow/react';
+import { normalizeCustomWave } from '../graph/customWave';
 import type { LinkMode, NodeType, Patch, PatchLink, PatchNode, PortDefinition } from '../graph/types';
+
+export interface ScopeNodeSize {
+  width: number;
+  height: number;
+}
+
+export const DEFAULT_SCOPE_NODE_SIZE: ScopeNodeSize = { width: 224, height: 48 };
+export const MIN_SCOPE_NODE_SIZE: ScopeNodeSize = { width: 160, height: 48 };
+export const MAX_SCOPE_NODE_SIZE: ScopeNodeSize = { width: 720, height: 360 };
+export const DEFAULT_CUSTOM_WAVE_NODE_SIZE: ScopeNodeSize = { width: 372, height: 128 };
+export const MIN_CUSTOM_WAVE_NODE_SIZE: ScopeNodeSize = { width: 220, height: 96 };
+export const MAX_CUSTOM_WAVE_NODE_SIZE: ScopeNodeSize = { width: 720, height: 360 };
 
 export type EditorPatchNode = Omit<PatchNode, 'type'> & {
   type: NodeType | null;
   expression?: string;
   compactPorts?: boolean;
+  scopeSize?: ScopeNodeSize;
 };
 
 export interface ShaderNodeData extends Record<string, unknown> {
@@ -17,12 +31,15 @@ export interface ShaderNodeData extends Record<string, unknown> {
   audioScope?: {
     samples: number[];
   };
+  dspErrors?: string[];
   onParamChange: (nodeId: string, port: string, value: number) => void;
+  onCustomWaveChange?: (nodeId: string, customWave: NonNullable<PatchNode['customWave']>, historyKey?: string) => void;
   onExpressionChange?: (nodeId: string, expression: string) => void;
   onExpressionCommit?: (nodeId: string, expression: string) => void;
   onTypeChange: (nodeId: string, type: NodeType) => void;
   onSubpatchNameChange?: (nodeId: string, nextName: string) => void;
-  onSampleUpload?: (nodeId: string) => void;
+  onSampleSelect?: (nodeId: string) => void;
+  onSampleDrop?: (nodeId: string, files: FileList) => void;
   onTypeEditStart: (nodeId: string) => void;
   onTypeEditEnd: () => void;
   onIdChange: (nodeId: string, nextId: string) => void;
@@ -30,6 +47,7 @@ export interface ShaderNodeData extends Record<string, unknown> {
   onPortNameChange: (nodeId: string, side: 'input' | 'output', port: string, nextPort: string) => void;
   onPortMove: (nodeId: string, side: 'input' | 'output', port: string, direction: -1 | 1) => void;
   onCompactToggle: (nodeId: string, compact: boolean) => void;
+  onScopeResize: (nodeId: string, size: ScopeNodeSize, anchor: 'left' | 'right') => void;
   onSelectorInputAdd?: (nodeId: string) => void;
   onPortSelect?: (nodeId: string, side: 'input' | 'output', port: string) => void;
   selectedPort?: { side: 'input' | 'output'; name: string } | null;
@@ -53,6 +71,7 @@ export interface ShaderEdgeData extends Record<string, unknown> {
   showLinkControls?: boolean;
   isFeedback?: boolean;
   isControl?: boolean;
+  dspErrors?: string[];
 }
 
 export type ShaderFlowEdge = Edge<ShaderEdgeData, 'shaderEdge'>;
@@ -74,12 +93,14 @@ export interface PersistedEditorState {
     subpatchCloneId?: string;
     expression?: string;
     sample?: PatchNode['sample'];
+    customWave?: PatchNode['customWave'];
     params: Record<string, number>;
     position: { x: number; y: number };
     inputs?: PortDefinition[];
     outputs?: PortDefinition[];
     subpatch?: Patch;
     compactPorts?: boolean;
+    scopeSize?: ScopeNodeSize;
   }>;
   edges: Array<{
     id: string;
@@ -95,6 +116,7 @@ export interface PersistedEditorState {
 type NodeCallbacks = Pick<
   ShaderNodeData,
   | 'onParamChange'
+  | 'onCustomWaveChange'
   | 'onTypeChange'
   | 'onTypeEditStart'
   | 'onTypeEditEnd'
@@ -103,6 +125,7 @@ type NodeCallbacks = Pick<
   | 'onPortNameChange'
   | 'onPortMove'
   | 'onCompactToggle'
+  | 'onScopeResize'
   | 'onSelectorInputAdd'
 >;
 
@@ -150,12 +173,14 @@ export function editorStateToFlowNodes(
         subpatchCloneId: node.subpatchCloneId,
         expression: node.expression,
         sample: node.sample,
+        customWave: node.customWave ? normalizeCustomWave(node.customWave, node.params) : undefined,
         params: node.params,
         position: node.position,
         inputs: node.inputs,
         outputs: node.outputs,
         subpatch: node.subpatch,
         compactPorts: node.compactPorts,
+        scopeSize: node.scopeSize,
       },
       ...callbacks,
       isTypePickerOpen: editingTypeNodeId === node.id,
@@ -200,12 +225,16 @@ export function flowToEditorState(
       subpatchCloneId: node.data.patchNode.subpatchCloneId,
       expression: node.data.patchNode.expression,
       sample: node.data.patchNode.sample,
+      customWave: node.data.patchNode.customWave
+        ? normalizeCustomWave(node.data.patchNode.customWave, node.data.patchNode.params)
+        : undefined,
       params: node.data.patchNode.params,
       position: node.position,
       inputs: node.data.patchNode.inputs,
       outputs: node.data.patchNode.outputs,
       subpatch: node.data.patchNode.subpatch,
       compactPorts: node.data.patchNode.compactPorts,
+      scopeSize: node.data.patchNode.scopeSize,
     })),
     edges: edges.map((edge) => ({
       id: edge.id,
@@ -217,6 +246,25 @@ export function flowToEditorState(
       mode: edge.data?.mode ?? 'set',
     })),
   };
+}
+
+export function clampScopeNodeSize(size: ScopeNodeSize): ScopeNodeSize {
+  return {
+    width: clampNumber(size.width, MIN_SCOPE_NODE_SIZE.width, MAX_SCOPE_NODE_SIZE.width),
+    height: clampNumber(size.height, MIN_SCOPE_NODE_SIZE.height, MAX_SCOPE_NODE_SIZE.height),
+  };
+}
+
+export function clampCustomWaveNodeSize(size: ScopeNodeSize): ScopeNodeSize {
+  return {
+    width: clampNumber(size.width, MIN_CUSTOM_WAVE_NODE_SIZE.width, MAX_CUSTOM_WAVE_NODE_SIZE.width),
+    height: clampNumber(size.height, MIN_CUSTOM_WAVE_NODE_SIZE.height, MAX_CUSTOM_WAVE_NODE_SIZE.height),
+  };
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, Math.round(value)));
 }
 
 export function patchFromFlow(nodes: ShaderFlowNode[], edges: ShaderFlowEdge[]): Patch {
@@ -239,6 +287,7 @@ export function patchFromFlow(nodes: ShaderFlowNode[], edges: ShaderFlowEdge[]):
       ...(patchNode.subpatchCloneId ? { subpatchCloneId: patchNode.subpatchCloneId } : {}),
       ...(patchNode.expression !== undefined ? { expression: patchNode.expression } : {}),
       ...(patchNode.sample ? { sample: patchNode.sample } : {}),
+      ...(patchNode.customWave ? { customWave: normalizeCustomWave(patchNode.customWave, patchNode.params) } : {}),
       params: patchNode.params,
       position: node.position,
       ...(patchNode.inputs ? { inputs: patchNode.inputs } : {}),

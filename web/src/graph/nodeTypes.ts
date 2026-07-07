@@ -36,20 +36,24 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   SawOsc: oscillator('SawOsc'),
   RampOsc: oscillator('RampOsc'),
   SquareOsc: oscillator('SquareOsc'),
-  SampleHoldOsc: oscillator('SampleHoldOsc'),
+  SampleHoldOsc: {
+    type: 'SampleHoldOsc',
+    inputs: [
+      { name: 'signal', valueEditor: false },
+      { name: 'frequency', defaultValue: 10 },
+    ],
+    outputs: [{ name: 'signal' }],
+  },
   PerlinNoise: {
     type: 'PerlinNoise',
     inputs: [
       { name: 'speed', defaultValue: 8 },
-      { name: 'level', defaultValue: 0.7 },
     ],
     outputs: [{ name: 'signal' }],
   },
   Noise: {
     type: 'Noise',
-    inputs: [
-      { name: 'level', defaultValue: 0.4 },
-    ],
+    inputs: [],
     outputs: [{ name: 'signal' }],
   },
   AudioInput: {
@@ -66,10 +70,6 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
       { name: 'frequency', defaultValue: 220 },
       { name: 'phase', defaultValue: 0 },
       { name: 'phaseReset', defaultValue: 0 },
-      { name: 'mode', defaultValue: 0, min: 0, max: 5, integer: true },
-      { name: 'sustainStart', defaultValue: 0.5, min: 0, max: 1 },
-      { name: 'sustainEnd', defaultValue: 0.75, min: 0, max: 1 },
-      { name: 'level', defaultValue: 0.7 },
     ],
     outputs: [{ name: 'signal' }],
   },
@@ -121,19 +121,19 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     { name: 'factor', defaultValue: 1 },
   ]),
   Delay: processor('Delay', [
-    { name: 'time', defaultValue: 0.28, min: 0.02, max: 1.5, connectable: false },
-    { name: 'feedback', defaultValue: 0.35, min: 0, max: 0.92, connectable: false },
-    { name: 'mix', defaultValue: 0.25, min: 0, max: 1, connectable: false },
+    { name: 'time', defaultValue: 0.28, min: 0.02, max: 1.5 },
+    { name: 'feedback', defaultValue: 0.35, min: 0, max: 0.92 },
+    { name: 'mix', defaultValue: 0.25, min: 0, max: 1 },
   ]),
   Chorus: processor('Chorus', [
-    { name: 'rate', defaultValue: 0.8, min: 0.05, max: 6, connectable: false },
-    { name: 'depth', defaultValue: 0.012, min: 0.001, max: 0.04, connectable: false },
-    { name: 'mix', defaultValue: 0.25, min: 0, max: 1, connectable: false },
+    { name: 'rate', defaultValue: 0.8, min: 0.05, max: 6 },
+    { name: 'depth', defaultValue: 0.012, min: 0.001, max: 0.04 },
+    { name: 'mix', defaultValue: 0.25, min: 0, max: 1 },
   ]),
   Reverb: processor('Reverb', [
-    { name: 'size', defaultValue: 0.55, min: 0.1, max: 1, connectable: false },
-    { name: 'decay', defaultValue: 0.45, min: 0, max: 0.94, connectable: false },
-    { name: 'mix', defaultValue: 0.25, min: 0, max: 1, connectable: false },
+    { name: 'size', defaultValue: 0.55, min: 0.1, max: 1 },
+    { name: 'decay', defaultValue: 0.45, min: 0, max: 0.94 },
+    { name: 'mix', defaultValue: 0.25, min: 0, max: 1 },
   ]),
   LinkNoise: processor('LinkNoise', []),
   Envelope: processor('Envelope', [
@@ -158,10 +158,10 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     { name: 'amount', defaultValue: 0.5 },
   ]),
   Meter: processor('Meter', [
-    { name: 'range', defaultValue: 1, min: 0.001, connectable: false },
+    { name: 'range', defaultValue: 1, min: 0.001 },
   ]),
   Scope: processor('Scope', [
-    { name: 'range', defaultValue: 1, min: 0.001, connectable: false },
+    { name: 'range', defaultValue: 1, min: 0.001 },
   ]),
   Filter: filter('Filter'),
   LowpassFilter: filter('LowpassFilter'),
@@ -214,7 +214,7 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   Noise: 'Noise',
   AudioInput: 'Audio Input',
   CustomWave: 'Custom Wave',
-  SamplePlayer: 'Sample Player',
+  SamplePlayer: 'Sample',
   Constant: 'Constant',
   Selector: 'Selector',
   Gain: 'Gain',
@@ -312,7 +312,6 @@ function oscillator(type: NodeType): NodeDefinition {
       { name: 'frequency', defaultValue: 220 },
       { name: 'phase', defaultValue: 0 },
       { name: 'phaseReset', defaultValue: 0 },
-      { name: 'level', defaultValue: 0.7 },
     ],
     outputs: [{ name: 'signal' }],
   };

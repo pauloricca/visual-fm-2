@@ -1,4 +1,5 @@
 import type { Patch, PatchLink, PatchNode } from './types';
+import { normalizeCustomWave } from './customWave';
 
 const GROUP_DEFAULT_NODE_PREFIX = '__group_default';
 
@@ -150,6 +151,7 @@ function cloneNode(node: PatchNode): PatchNode {
     ...(node.subpatchCloneId ? { subpatchCloneId: node.subpatchCloneId } : {}),
     ...(node.expression !== undefined ? { expression: node.expression } : {}),
     ...(node.sample ? { sample: { ...node.sample } } : {}),
+    ...(node.customWave ? { customWave: normalizeCustomWave(node.customWave, node.params) } : {}),
     params: { ...node.params },
     ...(node.position ? { position: { ...node.position } } : {}),
     ...(node.inputs ? { inputs: node.inputs.map((port) => ({ ...port })) } : {}),

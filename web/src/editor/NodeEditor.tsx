@@ -17,24 +17,30 @@ import {
   Viewport,
   type CoordinateExtent,
 } from '@xyflow/react';
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type MouseEvent as ReactMouseEvent } from 'react';
 import { compilePatchToDspProgram } from '../audio/dspProgram';
 import { useAudioEngine } from '../audio/useAudioEngine';
+import { normalizeCustomWave } from '../graph/customWave';
 import { demoPatch } from '../graph/demoPatch';
 import { extractExpressionInputs } from '../graph/expression';
 import { defaultParamsFor, getDefinition, getNodeDefinition } from '../graph/nodeTypes';
 import { patchToJson } from '../graph/serialize';
-import type { LinkMode, NodeType, Patch, PatchLink, PatchNode, PortDefinition, SampleAsset } from '../graph/types';
+import type { CustomWaveSettings, LinkMode, NodeType, Patch, PatchLink, PatchNode, PortDefinition, SampleAsset } from '../graph/types';
 import { EdgeOverlayProvider } from './EdgeOverlayContext';
 import {
   edgeFromLink,
   edgeId,
+  clampCustomWaveNodeSize,
+  clampScopeNodeSize,
+  DEFAULT_CUSTOM_WAVE_NODE_SIZE,
+  DEFAULT_SCOPE_NODE_SIZE,
   editorStateToFlowEdges,
   editorStateToFlowNodes,
   flowToEditorState,
   linkFromEdge,
   patchFromFlow,
   type PersistedEditorState,
+  type ScopeNodeSize,
   type ShaderFlowEdge,
   type ShaderFlowNode,
   toFlowEdges,
@@ -57,6 +63,10 @@ const DRAFT_NODE_HANDLE_X_OFFSET = 13;
 const DRAFT_NODE_FIRST_PORT_Y = 52;
 const DEFAULT_EXPRESSION = 'a';
 const FLOW_INFINITE_EXTENT: CoordinateExtent = [[Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY], [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY]];
+const MAX_EMPTY_SCREEN_RATIO = 0.7;
+const DEFAULT_NODE_BOUNDS_SIZE = { width: 240, height: 96 };
+const NODE_HEADER_HEIGHT = 32;
+const DSP_ERROR_PANEL_LIMIT = 4;
 
 let subpatchCloneSequence = 0;
 
@@ -93,6 +103,12 @@ interface BoundaryPortSelection {
   port: string;
 }
 
+interface DspEditorDiagnostics {
+  nodeErrors: Map<string, string[]>;
+  edgeErrors: Map<string, string[]>;
+  globalErrors: string[];
+}
+
 interface LocalPatchVersion {
   id: string;
   savedAt: string;
@@ -108,6 +124,14 @@ interface LocalPatchLibraryState {
   patches: LocalPatchEntry[];
   selectedPatchName: string | null;
   selectedVersionId: string | null;
+  loading: boolean;
+  error: string | null;
+}
+
+interface SampleLibraryState {
+  nodeId: string;
+  samples: SampleAsset[];
+  selectedUrl: string | null;
   loading: boolean;
   error: string | null;
 }
@@ -146,6 +170,7 @@ function NodeEditorInner() {
   const initialState = useMemo(() => loadInitialEditorState(), []);
   const [patchName, setPatchName] = useState(initialState?.ui?.patchName ?? 'single-patch');
   const [viewport, setViewport] = useState<Viewport>(initialState?.ui?.viewport ?? { x: 0, y: 0, zoom: 1 });
+  const [editorSize, setEditorSize] = useState({ width: 0, height: 0 });
   const [editingTypeNodeId, setEditingTypeNodeId] = useState<string | null>(null);
   const [reactFlow, setReactFlow] = useState<ReactFlowInstance<ShaderFlowNode, ShaderFlowEdge> | null>(null);
   const [edgeOverlayElement, setEdgeOverlayElement] = useState<HTMLElement | null>(null);
@@ -163,6 +188,7 @@ function NodeEditorInner() {
   const [history, setHistory] = useState<HistoryState>({ past: [], future: [] });
   const nodesRef = useRef(nodes);
   const edgesRef = useRef(edges);
+  const editorShellRef = useRef<HTMLElement | null>(null);
   const historyGroupRef = useRef<{ key: string; time: number } | null>(null);
   const draftNodeConnectionRef = useRef<DraftNodeConnection | null>(null);
   const duplicateDragRef = useRef<DuplicateDragState | null>(null);
@@ -171,9 +197,11 @@ function NodeEditorInner() {
   const [duplicateDrag, setDuplicateDrag] = useState<DuplicateDragState | null>(null);
   const [editingStack, setEditingStack] = useState<SubpatchEditFrame[]>([]);
   const [pendingBoundaryPort, setPendingBoundaryPort] = useState<BoundaryPortSelection | null>(null);
+  const [selectedBoundaryPort, setSelectedBoundaryPort] = useState<BoundaryPortSelection | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [saveFeedbackActive, setSaveFeedbackActive] = useState(false);
   const [localPatchLibrary, setLocalPatchLibrary] = useState<LocalPatchLibraryState | null>(null);
+  const [sampleLibrary, setSampleLibrary] = useState<SampleLibraryState | null>(null);
   const [subpatchImportModal, setSubpatchImportModal] = useState<SubpatchImportModalState | null>(null);
   const copiedGraphRef = useRef<CopiedGraph | null>(null);
   const pasteCountRef = useRef(0);
@@ -220,6 +248,26 @@ function NodeEditorInner() {
   useEffect(() => {
     edgesRef.current = edges;
   }, [edges]);
+
+  useEffect(() => {
+    const element = editorShellRef.current;
+    if (!element) return;
+
+    const updateEditorSize = () => {
+      const rect = element.getBoundingClientRect();
+      setEditorSize((current) => {
+        const width = Math.round(rect.width);
+        const height = Math.round(rect.height);
+        if (current.width === width && current.height === height) return current;
+        return { width, height };
+      });
+    };
+
+    updateEditorSize();
+    const observer = new ResizeObserver(updateEditorSize);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     pendingBoundaryPortRef.current = pendingBoundaryPort;
@@ -272,6 +320,26 @@ function NodeEditorInner() {
             patchNode: {
               ...node.data.patchNode,
               params: { ...node.data.patchNode.params, [port]: value },
+            },
+          },
+        }
+      : node,
+    ));
+  }, [commitHistory]);
+
+  const updateNodeCustomWave = useCallback((nodeId: string, customWave: CustomWaveSettings, historyKey?: string) => {
+    const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
+    if (!relatedNode || relatedNode.data.patchNode.type !== 'CustomWave') return;
+
+    commitHistory(historyKey ?? `custom-wave:${nodeId}`);
+    setNodes((current) => current.map((node) => node.id === nodeId
+      ? {
+          ...node,
+          data: {
+            ...node.data,
+            patchNode: {
+              ...node.data.patchNode,
+              customWave: normalizeCustomWave(customWave),
             },
           },
         }
@@ -370,19 +438,70 @@ function NodeEditorInner() {
     ));
   }, [commitHistory]);
 
+  const openSampleLibrary = useCallback(async (nodeId: string) => {
+    const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
+    if (!relatedNode || relatedNode.data.patchNode.type !== 'SamplePlayer') return;
+
+    const currentSample = relatedNode.data.patchNode.sample ?? null;
+    setSampleLibrary({
+      nodeId,
+      samples: currentSample ? [currentSample] : [],
+      selectedUrl: currentSample?.url ?? null,
+      loading: true,
+      error: null,
+    });
+
+    try {
+      const samples = await fetchLocalSampleLibrary();
+      const visibleSamples = currentSample && !samples.some((sample) => sample.url === currentSample.url)
+        ? [currentSample, ...samples]
+        : samples;
+      setSampleLibrary((current) => current && current.nodeId === nodeId ? {
+        ...current,
+        samples: visibleSamples,
+        selectedUrl: current.selectedUrl ?? visibleSamples[0]?.url ?? null,
+        loading: false,
+        error: visibleSamples.length === 0 ? 'No samples found in samples/.' : null,
+      } : current);
+      setImportError(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSampleLibrary((current) => current && current.nodeId === nodeId ? {
+        ...current,
+        samples: currentSample ? [currentSample] : [],
+        loading: false,
+        error: message,
+      } : current);
+      setImportError(message);
+    }
+  }, []);
+
+  const closeSampleLibrary = useCallback(() => {
+    setSampleLibrary(null);
+  }, []);
+
+  const selectSampleFromLibrary = useCallback((sample: SampleAsset) => {
+    if (!sampleLibrary) return;
+    updateNodeSample(sampleLibrary.nodeId, sample);
+    setSampleLibrary(null);
+    setImportError(null);
+  }, [sampleLibrary, updateNodeSample]);
+
   const requestSampleUpload = useCallback((nodeId: string) => {
     pendingSampleUploadNodeIdRef.current = nodeId;
     sampleFileInputRef.current?.click();
   }, []);
 
-  const uploadSampleFile = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.currentTarget.files?.[0];
-    event.currentTarget.value = '';
-    const nodeId = pendingSampleUploadNodeIdRef.current;
-    pendingSampleUploadNodeIdRef.current = null;
+  const requestSampleUploadFromLibrary = useCallback(() => {
+    if (!sampleLibrary) return;
+    requestSampleUpload(sampleLibrary.nodeId);
+  }, [requestSampleUpload, sampleLibrary]);
+
+  const uploadSampleForNode = useCallback(async (nodeId: string, file: File) => {
     if (!file || !nodeId) return;
 
     try {
+      setSampleLibrary((current) => current && current.nodeId === nodeId ? { ...current, loading: true, error: null } : current);
       const formData = new FormData();
       formData.append('sample', file);
       const response = await fetch('/api/local-samples', {
@@ -396,12 +515,48 @@ function NodeEditorInner() {
       if (!isRecord(payload) || typeof payload.name !== 'string' || typeof payload.url !== 'string') {
         throw new Error('Sample upload returned an invalid response.');
       }
-      updateNodeSample(nodeId, { name: payload.name, url: payload.url });
+      const sample = { name: payload.name, url: payload.url };
+      updateNodeSample(nodeId, sample);
+      setSampleLibrary((current) => current && current.nodeId === nodeId ? null : current);
       setImportError(null);
     } catch (error) {
-      setImportError(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      setSampleLibrary((current) => current && current.nodeId === nodeId ? { ...current, loading: false, error: message } : current);
+      setImportError(message);
     }
   }, [updateNodeSample]);
+
+  const uploadDroppedSampleFiles = useCallback((nodeId: string, files: FileList) => {
+    const file = files[0];
+    if (!file) return;
+    void uploadSampleForNode(nodeId, file);
+  }, [uploadSampleForNode]);
+
+  const uploadSampleFile = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = '';
+    const nodeId = pendingSampleUploadNodeIdRef.current;
+    pendingSampleUploadNodeIdRef.current = null;
+    if (!file || !nodeId) return;
+
+    await uploadSampleForNode(nodeId, file);
+  }, [uploadSampleForNode]);
+
+  const handleSampleLibraryDragOver = useCallback((event: DragEvent<HTMLElement>) => {
+    if (!sampleLibrary || !hasDraggedFiles(event)) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'copy';
+  }, [sampleLibrary]);
+
+  const handleSampleLibraryDrop = useCallback((event: DragEvent<HTMLElement>) => {
+    if (!sampleLibrary || event.dataTransfer.files.length === 0) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    uploadDroppedSampleFiles(sampleLibrary.nodeId, event.dataTransfer.files);
+  }, [sampleLibrary, uploadDroppedSampleFiles]);
 
   const updateEdgeWeight = useCallback((edgeIdToUpdate: string, weight: number) => {
     commitHistory(`weight:${edgeIdToUpdate}`);
@@ -514,6 +669,9 @@ function NodeEditorInner() {
                 subpatch: groupSubpatch,
               } : {}),
               ...(expression !== undefined ? { expression } : {}),
+              ...(type === 'CustomWave' ? {
+                customWave: normalizeCustomWave(node.data.patchNode.customWave, node.data.patchNode.params),
+              } : {}),
               params: nextParams,
               position: node.position,
               ...(expressionInputs ? { inputs: expressionInputs } : {}),
@@ -610,6 +768,55 @@ function NodeEditorInner() {
         }
       : node,
     ));
+  }, [commitHistory]);
+
+  const updateNodeScopeSize = useCallback((nodeId: string, size: ScopeNodeSize, anchor: 'left' | 'right') => {
+    const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
+    if (
+      !relatedNode ||
+      (relatedNode.data.patchNode.type !== 'Scope' && relatedNode.data.patchNode.type !== 'CustomWave')
+    ) {
+      return;
+    }
+
+    const nextSize = relatedNode.data.patchNode.type === 'CustomWave'
+      ? clampCustomWaveNodeSize(size)
+      : clampScopeNodeSize(size);
+    const previousSize = relatedNode.data.patchNode.scopeSize;
+    if (
+      previousSize?.width === nextSize.width &&
+      previousSize.height === nextSize.height
+    ) {
+      return;
+    }
+
+    commitHistory(`node-size:${nodeId}`);
+    setNodes((current) => current.map((node) => {
+      if (node.id !== nodeId) return node;
+
+      const currentSize = node.data.patchNode.scopeSize ?? (
+        node.data.patchNode.type === 'CustomWave'
+          ? DEFAULT_CUSTOM_WAVE_NODE_SIZE
+          : DEFAULT_SCOPE_NODE_SIZE
+      );
+      const positionDeltaX = anchor === 'left' ? currentSize.width - nextSize.width : 0;
+      const position = positionDeltaX === 0
+        ? node.position
+        : { ...node.position, x: node.position.x + positionDeltaX };
+
+      return {
+        ...node,
+        position,
+        data: {
+          ...node.data,
+          patchNode: {
+            ...node.data.patchNode,
+            position,
+            scopeSize: nextSize,
+          },
+        },
+      };
+    }));
   }, [commitHistory]);
 
   const addSelectorInput = useCallback((nodeId: string) => {
@@ -751,6 +958,121 @@ function NodeEditorInner() {
     setEditingTypeNodeId((current) => current && selectedNodeIds.has(current) ? null : current);
     return true;
   }, [commitHistory, updateEdgeMode, updateEdgeWeight]);
+
+  const deleteSelectedBoundaryPort = useCallback(() => {
+    const selected = selectedBoundaryPort;
+    if (!selected) return false;
+
+    const relatedNode = nodesRef.current.find((node) => node.id === selected.nodeId);
+    if (!relatedNode || !canRenameBoundaryPort(relatedNode.data.patchNode as PatchNode, selected.side)) return false;
+
+    commitHistory();
+    setNodes((current) => current.map((node) => {
+      if (node.id !== selected.nodeId) return node;
+
+      const nextInputs = selected.side === 'input'
+        ? (node.data.patchNode.inputs ?? []).filter((port) => port.name !== selected.port)
+        : node.data.patchNode.inputs;
+      const nextOutputs = selected.side === 'output'
+        ? (node.data.patchNode.outputs ?? []).filter((port) => port.name !== selected.port)
+        : node.data.patchNode.outputs;
+      const nextParams = selected.side === 'input'
+        ? Object.fromEntries(Object.entries(node.data.patchNode.params).filter(([key]) => key !== selected.port))
+        : node.data.patchNode.params;
+
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          patchNode: {
+            ...node.data.patchNode,
+            params: nextParams,
+            ...(nextInputs ? { inputs: nextInputs } : {}),
+            ...(nextOutputs ? { outputs: nextOutputs } : {}),
+          },
+        },
+      };
+    }));
+    setEdges((current) => dedupeEdges(current.filter((edge) => {
+      const link = linkFromEdge(edge);
+      if (!link) return true;
+
+      if (selected.side === 'input') {
+        return !(link.to.node === selected.nodeId && link.to.port === selected.port);
+      }
+
+      return !(link.from.node === selected.nodeId && link.from.port === selected.port);
+    })));
+
+    const frame = editingStack[editingStack.length - 1];
+    if (frame) {
+      setEditingStack((current) => current.map((entry, index) => {
+        if (index !== current.length - 1) return entry;
+
+        const parentEdges = dedupeEdges(entry.parentEdges.filter((edge) => {
+          const link = linkFromEdge(edge);
+          if (!link) return true;
+
+          if (relatedNode.data.patchNode.type === 'Ins' && selected.side === 'output') {
+            return !(link.to.node === entry.groupId && link.to.port === selected.port);
+          }
+
+          if (relatedNode.data.patchNode.type === 'Outs' && selected.side === 'input') {
+            return !(link.from.node === entry.groupId && link.from.port === selected.port);
+          }
+
+          return true;
+        }));
+
+        const parentNodes = entry.parentNodes.map((node) => {
+          if (node.id !== entry.groupId) return node;
+
+          if (relatedNode.data.patchNode.type === 'Ins' && selected.side === 'output') {
+            return {
+              ...node,
+              data: {
+                ...node.data,
+                patchNode: {
+                  ...node.data.patchNode,
+                  params: Object.fromEntries(Object.entries(node.data.patchNode.params).filter(([key]) => key !== selected.port)),
+                  inputs: (node.data.patchNode.inputs ?? []).filter((port) => port.name !== selected.port),
+                },
+              },
+            };
+          }
+
+          if (relatedNode.data.patchNode.type === 'Outs' && selected.side === 'input') {
+            return {
+              ...node,
+              data: {
+                ...node.data,
+                patchNode: {
+                  ...node.data.patchNode,
+                  outputs: (node.data.patchNode.outputs ?? []).filter((port) => port.name !== selected.port),
+                },
+              },
+            };
+          }
+
+          return node;
+        });
+
+        return {
+          ...entry,
+          parentEdges,
+          parentNodes,
+        };
+      }));
+    }
+
+    setPendingBoundaryPort((current) => (
+      current && current.nodeId === selected.nodeId && current.side === selected.side && current.port === selected.port
+        ? null
+        : current
+    ));
+    setSelectedBoundaryPort(null);
+    return true;
+  }, [commitHistory, editingStack, selectedBoundaryPort]);
 
   const copySelectedNodes = useCallback(() => {
     const selectedGraph = selectedGraphFromNodes(nodesRef.current, edgesRef.current);
@@ -989,22 +1311,31 @@ function NodeEditorInner() {
     data: {
       ...node.data,
       onParamChange: updateNodeParam,
+      onCustomWaveChange: updateNodeCustomWave,
       onTypeChange: updateNodeType,
       onExpressionCommit: updateExpression,
       onTypeEditStart: setEditingTypeNodeId,
       onTypeEditEnd: () => setEditingTypeNodeId(null),
       onIdChange: updateNodeId,
       onSubpatchNameChange: updateGroupSubpatchName,
-      onSampleUpload: requestSampleUpload,
+      onSampleSelect: openSampleLibrary,
+      onSampleDrop: uploadDroppedSampleFiles,
       onPortDoubleClick: insertNodeOnPort,
+      onPortSelect: (nodeId: string, side: 'input' | 'output', port: string) => {
+        setSelectedBoundaryPort({ nodeId, side, port });
+      },
       onPortNameChange: updateBoundaryPortName,
       onPortMove: updateBoundaryPortOrder,
       onCompactToggle: updateNodeCompactPorts,
+      onScopeResize: updateNodeScopeSize,
       onSelectorInputAdd: addSelectorInput,
       selectedLinkPorts: selectedLinkPortsByNode.get(node.id),
       connectedPorts: connectedPortsByNode.get(node.id),
       previewPort: pendingBoundaryPort && pendingBoundaryPort.nodeId === node.id
         ? { side: pendingBoundaryPort.side, name: pendingBoundaryPort.port }
+        : null,
+      selectedPort: selectedBoundaryPort && selectedBoundaryPort.nodeId === node.id
+        ? { side: selectedBoundaryPort.side, name: selectedBoundaryPort.port }
         : null,
       isOnlySelected: node.selected === true && selectedNodeCount === 1,
       isConnecting: draftNodeConnection !== null,
@@ -1019,7 +1350,9 @@ function NodeEditorInner() {
     insertNodeOnPort,
     nodes,
     pendingBoundaryPort,
-    requestSampleUpload,
+    openSampleLibrary,
+    uploadDroppedSampleFiles,
+    selectedBoundaryPort,
     selectedLinkPortsByNode,
     updateBoundaryPortName,
     updateBoundaryPortOrder,
@@ -1027,6 +1360,8 @@ function NodeEditorInner() {
     updateGroupSubpatchName,
     addSelectorInput,
     updateNodeCompactPorts,
+    updateNodeCustomWave,
+    updateNodeScopeSize,
     updateNodeId,
     updateNodeParam,
     updateNodeType,
@@ -1065,8 +1400,12 @@ function NodeEditorInner() {
   const patchJson = useMemo(() => patchToJson(patch), [patch]);
   const trimmedRootPatchName = rootPatchName.trim();
   const selectedLocalPatch = localPatchLibrary?.patches.find((entry) => entry.name === localPatchLibrary.selectedPatchName) ?? null;
+  const selectedSample = sampleLibrary?.samples.find((sample) => sample.url === sampleLibrary.selectedUrl) ?? null;
   const selectedSubpatchCandidate = subpatchImportModal?.candidates.find((candidate) => candidate.key === subpatchImportModal.selectedKey) ?? null;
-  const audioGraph = useMemo(() => compilePatchToDspProgram(patch), [patch]);
+  const dspPatch = useMemo(() => stripPatchForDsp(patch), [patch]);
+  const dspPatchKey = useMemo(() => patchToDspKey(dspPatch), [dspPatch]);
+  const audioGraph = useMemo(() => compilePatchToDspProgram(dspPatch), [dspPatchKey, dspPatch]);
+  const dspDiagnostics = useMemo(() => classifyDspErrors(audioGraph.errors, dspPatch), [audioGraph.errors, dspPatch]);
   const monitorLinkIdByNode = useMemo(() => {
     const linkIdsByNode = new Map<string, string>();
     for (const nodeId of Object.keys(audioGraph.monitorIds)) {
@@ -1077,17 +1416,33 @@ function NodeEditorInner() {
 
   const renderedNodes = useMemo(() => nodesWithCallbacks.map((node) => {
     const monitorLinkId = monitorLinkIdByNode.get(node.id);
-    if (!monitorLinkId) return node;
+    const dspErrors = dspDiagnostics.nodeErrors.get(node.id) ?? [];
+    const hasAudioMonitor = Boolean(monitorLinkId);
+    if (!hasAudioMonitor && dspErrors.length === 0) return node;
 
     return {
       ...node,
       data: {
         ...node.data,
-        ...(node.data.patchNode.type === 'Meter' ? { audioMeter: audio.linkMeters[monitorLinkId] } : {}),
-        ...(node.data.patchNode.type === 'Scope' ? { audioScope: audio.linkScopes[monitorLinkId] } : {}),
+        ...(dspErrors.length > 0 ? { dspErrors } : {}),
+        ...(monitorLinkId && node.data.patchNode.type === 'Meter' ? { audioMeter: audio.linkMeters[monitorLinkId] } : {}),
+        ...(monitorLinkId && node.data.patchNode.type === 'Scope' ? { audioScope: audio.linkScopes[monitorLinkId] } : {}),
       },
     };
-  }), [audio.linkMeters, audio.linkScopes, monitorLinkIdByNode, nodesWithCallbacks]);
+  }), [audio.linkMeters, audio.linkScopes, dspDiagnostics, monitorLinkIdByNode, nodesWithCallbacks]);
+
+  const renderedEdges = useMemo(() => edgesWithCallbacks.map((edge) => {
+    const dspErrors = dspDiagnostics.edgeErrors.get(edge.id) ?? [];
+    if (dspErrors.length === 0) return edge;
+
+    return {
+      ...edge,
+      data: {
+        ...edge.data,
+        dspErrors,
+      },
+    };
+  }), [dspDiagnostics, edgesWithCallbacks]);
 
   const duplicateDragPreview = useMemo(() => {
     if (!duplicateDrag?.duplicating) return null;
@@ -1122,7 +1477,7 @@ function NodeEditorInner() {
         };
       });
 
-    const previewEdges = edgesWithCallbacks.flatMap((edge) => {
+    const previewEdges = renderedEdges.flatMap((edge) => {
       const link = linkFromEdge(edge);
       if (!link) return [];
 
@@ -1149,7 +1504,7 @@ function NodeEditorInner() {
     });
 
     return { nodes: previewNodes, edges: previewEdges };
-  }, [duplicateDrag, edgesWithCallbacks, renderedNodes]);
+  }, [duplicateDrag, renderedEdges, renderedNodes]);
 
   const draftNodePreview = useMemo(() => {
     if (!draftNodeConnection?.modifierActive || !reactFlow) return null;
@@ -1198,15 +1553,32 @@ function NodeEditorInner() {
   ], [draftNodePreview, duplicateDragPreview, renderedNodes]);
 
   const displayEdges = useMemo(() => [
-    ...edgesWithCallbacks,
+    ...renderedEdges,
     ...(duplicateDragPreview?.edges ?? []),
     ...(reconnectPreviewEdge ? [reconnectPreviewEdge] : []),
     ...(draftNodePreview ? [draftNodePreview.edge] : []),
-  ], [draftNodePreview, duplicateDragPreview, edgesWithCallbacks, reconnectPreviewEdge]);
+  ], [draftNodePreview, duplicateDragPreview, reconnectPreviewEdge, renderedEdges]);
+
+  const panTranslateExtent = useMemo(
+    () => translateExtentForVisibleContent(renderedNodes, viewport, editorSize),
+    [editorSize, renderedNodes, viewport.zoom],
+  );
 
   useEffect(() => {
     audio.syncGraph(audioGraph);
   }, [audio.syncGraph, audioGraph]);
+
+  useEffect(() => {
+    if (!reactFlow || !isFiniteCoordinateExtent(panTranslateExtent)) return;
+
+    const clampedViewport = clampViewportToTranslateExtent(viewport, panTranslateExtent, editorSize);
+    if (clampedViewport.x === viewport.x && clampedViewport.y === viewport.y && clampedViewport.zoom === viewport.zoom) {
+      return;
+    }
+
+    setViewport(clampedViewport);
+    void reactFlow.setViewport(clampedViewport);
+  }, [editorSize, panTranslateExtent, reactFlow, viewport]);
 
   useEffect(() => {
     const scopeLinkIds = nodesWithCallbacks.flatMap((node) => {
@@ -1859,6 +2231,7 @@ function NodeEditorInner() {
     const callbacks = nodeCallbacksPlaceholder();
     setEditingStack([]);
     setPendingBoundaryPort(null);
+    setSelectedBoundaryPort(null);
     setPatchName('single-patch');
     setNodes(toFlowNodes(demoPatch, callbacks, null));
     setEdges(toFlowEdges(demoPatch, updateEdgeWeight, updateEdgeMode, insertNodeOnEdge));
@@ -1886,6 +2259,51 @@ function NodeEditorInner() {
     window.addEventListener('keydown', handleHistoryKeyDown);
     return () => window.removeEventListener('keydown', handleHistoryKeyDown);
   }, [redo, undo]);
+
+  useEffect(() => {
+    if (!selectedBoundaryPort) return;
+
+    const node = nodes.find((entry) => entry.id === selectedBoundaryPort.nodeId);
+    if (!node) {
+      setSelectedBoundaryPort(null);
+      return;
+    }
+
+    const ports = selectedBoundaryPort.side === 'input'
+      ? node.data.patchNode.inputs ?? []
+      : node.data.patchNode.outputs ?? [];
+    if (!ports.some((port) => port.name === selectedBoundaryPort.port)) {
+      setSelectedBoundaryPort(null);
+    }
+  }, [nodes, selectedBoundaryPort]);
+
+  useEffect(() => {
+    if (!selectedBoundaryPort) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (target.closest('.port-name-label')) return;
+      setSelectedBoundaryPort(null);
+    };
+
+    window.addEventListener('pointerdown', handlePointerDown, { capture: true });
+    return () => window.removeEventListener('pointerdown', handlePointerDown, { capture: true });
+  }, [selectedBoundaryPort]);
+
+  useEffect(() => {
+    const handleBoundaryPortDeleteKeyDown = (event: KeyboardEvent) => {
+      if (isEditableEventTarget(event.target)) return;
+      if (event.key !== 'Backspace' && event.key !== 'Delete') return;
+      if (!deleteSelectedBoundaryPort()) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    window.addEventListener('keydown', handleBoundaryPortDeleteKeyDown, { capture: true });
+    return () => window.removeEventListener('keydown', handleBoundaryPortDeleteKeyDown, { capture: true });
+  }, [deleteSelectedBoundaryPort]);
 
   useEffect(() => {
     const handleBridgeDeleteKeyDown = (event: KeyboardEvent) => {
@@ -1964,6 +2382,7 @@ function NodeEditorInner() {
     <div className="app-shell app-shell-panel-closed">
       <EdgeOverlayProvider target={edgeOverlayElement}>
         <main
+          ref={editorShellRef}
           className="editor-shell"
           onDoubleClick={(event) => {
             const target = event.target as HTMLElement;
@@ -2017,7 +2436,7 @@ function NodeEditorInner() {
             defaultViewport={initialState?.ui?.viewport}
             fitView={!initialState?.ui?.viewport}
             fitViewOptions={{ padding: DEFAULT_FIT_VIEW_PADDING }}
-            translateExtent={FLOW_INFINITE_EXTENT}
+            translateExtent={panTranslateExtent}
             nodeExtent={FLOW_INFINITE_EXTENT}
             deleteKeyCode={['Backspace', 'Delete']}
             multiSelectionKeyCode={['Meta', 'Shift']}
@@ -2074,6 +2493,78 @@ function NodeEditorInner() {
           <input ref={importFileInputRef} className="file-input" type="file" accept="application/json,.json" onChange={loadSubpatchImportFile} />
           <input ref={sampleFileInputRef} className="file-input" type="file" accept="audio/*,.wav,.mp3,.aiff,.aif,.flac,.ogg,.m4a" onChange={uploadSampleFile} />
           {importError ? <p className="import-error-floating">{importError}</p> : null}
+          {audioGraph.errors.length > 0 ? (
+            <section className="dsp-error-panel" aria-live="polite" aria-label="DSP compile errors">
+              <div className="dsp-error-panel-heading">
+                <span>DSP errors</span>
+                <span>{audioGraph.errors.length}</span>
+              </div>
+              <ul className="dsp-error-list">
+                {audioGraph.errors.slice(0, DSP_ERROR_PANEL_LIMIT).map((error) => (
+                  <li key={error}>{error}</li>
+                ))}
+              </ul>
+              {audioGraph.errors.length > DSP_ERROR_PANEL_LIMIT ? (
+                <p className="dsp-error-more">+{audioGraph.errors.length - DSP_ERROR_PANEL_LIMIT} more</p>
+              ) : null}
+            </section>
+          ) : null}
+          {sampleLibrary ? (
+            <div
+              className="import-modal-backdrop"
+              role="presentation"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget) closeSampleLibrary();
+              }}
+            >
+              <section
+                className="import-modal sample-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="sample-modal-title"
+                onDragOver={handleSampleLibraryDragOver}
+                onDrop={handleSampleLibraryDrop}
+              >
+                <header className="import-modal-header">
+                  <div>
+                    <h2 id="sample-modal-title">Select sample</h2>
+                    <p>samples/</p>
+                  </div>
+                  <button className="import-modal-close" type="button" onClick={closeSampleLibrary} aria-label="Close sample picker" title="Close">X</button>
+                </header>
+                {sampleLibrary.loading || sampleLibrary.error ? (
+                  <p className={['import-modal-message', sampleLibrary.error ? 'error' : ''].filter(Boolean).join(' ')}>
+                    {sampleLibrary.error ?? 'Reading samples...'}
+                  </p>
+                ) : null}
+                {sampleLibrary.samples.length > 0 ? (
+                  <div className="sample-list" role="listbox" aria-label="Samples">
+                    {sampleLibrary.samples.map((sample) => (
+                      <button
+                        className={[
+                          'sample-option',
+                          sample.url === sampleLibrary.selectedUrl ? 'sample-option-selected' : '',
+                        ].filter(Boolean).join(' ')}
+                        key={sample.url}
+                        type="button"
+                        role="option"
+                        aria-selected={sample.url === sampleLibrary.selectedUrl}
+                        onClick={() => setSampleLibrary((current) => current ? { ...current, selectedUrl: sample.url } : current)}
+                        onDoubleClick={() => selectSampleFromLibrary(sample)}
+                      >
+                        <span>{sample.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+                <footer className="import-modal-actions">
+                  <button type="button" onClick={closeSampleLibrary}>Cancel</button>
+                  <button type="button" onClick={requestSampleUploadFromLibrary}>Upload new</button>
+                  <button type="button" onClick={() => selectedSample && selectSampleFromLibrary(selectedSample)} disabled={!selectedSample}>Select</button>
+                </footer>
+              </section>
+            </div>
+          ) : null}
           {localPatchLibrary ? (
             <div
               className="import-modal-backdrop"
@@ -2243,6 +2734,27 @@ async function fetchLocalPatchLibrary(): Promise<LocalPatchEntry[]> {
   });
 }
 
+async function fetchLocalSampleLibrary(): Promise<SampleAsset[]> {
+  const response = await fetch('/api/local-samples', {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+  });
+  if (!response.ok) {
+    throw new Error(await localPatchStorageError(response));
+  }
+
+  const payload = await response.json() as unknown;
+  if (!isRecord(payload) || !Array.isArray(payload.samples)) {
+    throw new Error('Local sample library response was not valid.');
+  }
+
+  return payload.samples.flatMap((entry): SampleAsset[] => (
+    isRecord(entry) && typeof entry.name === 'string' && typeof entry.url === 'string'
+      ? [{ name: entry.name, url: entry.url }]
+      : []
+  ));
+}
+
 function selectInitialLocalPatch(patches: LocalPatchEntry[], currentPatchName: string): LocalPatchEntry | null {
   const trimmedName = currentPatchName.trim();
   if (!trimmedName) return patches[0] ?? null;
@@ -2288,6 +2800,10 @@ async function fetchLocalPatchVersion(patchName: string, versionId: string): Pro
 async function localPatchStorageError(response: Response): Promise<string> {
   const message = await response.text();
   return message || `Local patch storage failed with HTTP ${response.status}.`;
+}
+
+function hasDraggedFiles(event: DragEvent<HTMLElement>): boolean {
+  return Array.from(event.dataTransfer.types).includes('Files');
 }
 
 function sanitizeLocalPatchStorageSegment(name: string): string {
@@ -2351,6 +2867,131 @@ function parsePatchObject(value: unknown, label: string): Patch {
   };
 }
 
+function patchToDspKey(patch: Patch): string {
+  return JSON.stringify(patch);
+}
+
+function stripPatchForDsp(patch: Patch): Patch {
+  return {
+    nodes: patch.nodes.map(stripPatchNodeForDsp),
+    links: patch.links.map((link) => ({
+      from: { ...link.from },
+      to: { ...link.to },
+      weight: link.weight,
+      mode: link.mode,
+    })),
+  };
+}
+
+function classifyDspErrors(errors: string[], patch: Patch): DspEditorDiagnostics {
+  const diagnostics: DspEditorDiagnostics = {
+    nodeErrors: new Map(),
+    edgeErrors: new Map(),
+    globalErrors: [],
+  };
+  const nodeById = new Set(patch.nodes.map((node) => node.id));
+  const nodeIdsByType = new Map<NodeType, string[]>();
+  for (const node of patch.nodes) {
+    nodeIdsByType.set(node.type, [...(nodeIdsByType.get(node.type) ?? []), node.id]);
+  }
+
+  for (const error of errors) {
+    let localized = false;
+
+    const explicitNodeId = extractDspErrorNodeId(error);
+    if (explicitNodeId && nodeById.has(explicitNodeId)) {
+      addDiagnostic(diagnostics.nodeErrors, explicitNodeId, error);
+      localized = true;
+    }
+
+    const unsupportedType = error.match(/^Node type "([^"]+)"/)?.[1] as NodeType | undefined;
+    if (unsupportedType) {
+      for (const nodeId of nodeIdsByType.get(unsupportedType) ?? []) {
+        addDiagnostic(diagnostics.nodeErrors, nodeId, error);
+        localized = true;
+      }
+    }
+
+    for (const edgeKey of edgeKeysForDspError(error, patch)) {
+      addDiagnostic(diagnostics.edgeErrors, edgeKey, error);
+      localized = true;
+    }
+
+    if (!localized) diagnostics.globalErrors.push(error);
+  }
+
+  return diagnostics;
+}
+
+function extractDspErrorNodeId(error: string): string | null {
+  return error.match(/^(?:Expression node|Audio Out node|Node) "([^"]+)"/)?.[1]
+    ?? error.match(/^Link (?:source|target) node "([^"]+)"/)?.[1]
+    ?? error.match(/ on node "([^"]+)"/)?.[1]
+    ?? null;
+}
+
+function edgeKeysForDspError(error: string, patch: Patch): string[] {
+  const formattedLink = error.match(/^Link "([^"]+)"/)?.[1];
+  if (formattedLink) {
+    const key = edgeKeyFromFormattedLink(formattedLink);
+    return key ? [key] : [];
+  }
+
+  const sourceNode = error.match(/^Link source node "([^"]+)"/)?.[1];
+  if (sourceNode) {
+    return patch.links
+      .filter((link) => link.from.node === sourceNode)
+      .map(edgeId);
+  }
+
+  const targetNode = error.match(/^Link target node "([^"]+)"/)?.[1];
+  if (targetNode) {
+    return patch.links
+      .filter((link) => link.to.node === targetNode)
+      .map(edgeId);
+  }
+
+  const unsupportedOutput = error.match(/^Node "([^"]+)" does not have supported output "([^"]+)"/);
+  if (unsupportedOutput) {
+    const [, nodeId, port] = unsupportedOutput;
+    return patch.links
+      .filter((link) => link.from.node === nodeId && link.from.port === port)
+      .map(edgeId);
+  }
+
+  return [];
+}
+
+function edgeKeyFromFormattedLink(value: string): string | null {
+  const match = value.match(/^(.+):([^:]+) -> (.+):([^:]+)$/);
+  if (!match) return null;
+  const [, fromNode, fromPort, toNode, toPort] = match;
+  return edgeId({
+    from: { node: fromNode, port: fromPort },
+    to: { node: toNode, port: toPort },
+  });
+}
+
+function addDiagnostic(map: Map<string, string[]>, key: string, error: string): void {
+  map.set(key, [...(map.get(key) ?? []), error]);
+}
+
+function stripPatchNodeForDsp(node: PatchNode): PatchNode {
+  return {
+    id: node.id,
+    type: node.type,
+    ...(node.subpatchName ? { subpatchName: node.subpatchName } : {}),
+    ...(node.subpatchCloneId ? { subpatchCloneId: node.subpatchCloneId } : {}),
+    ...(node.expression !== undefined ? { expression: node.expression } : {}),
+    ...(node.sample ? { sample: { ...node.sample } } : {}),
+    ...(node.customWave ? { customWave: normalizeCustomWave(node.customWave, node.params) } : {}),
+    params: { ...node.params },
+    ...(node.inputs ? { inputs: node.inputs.map((port) => ({ ...port })) } : {}),
+    ...(node.outputs ? { outputs: node.outputs.map((port) => ({ ...port })) } : {}),
+    ...(node.subpatch ? { subpatch: stripPatchForDsp(node.subpatch) } : {}),
+  };
+}
+
 function parsePatchNode(value: unknown, index: number): PatchNode {
   if (!isRecord(value)) {
     throw new Error(`Node ${index} must be an object.`);
@@ -2390,6 +3031,9 @@ function parsePatchNode(value: unknown, index: number): PatchNode {
   const params = value.type === 'Expression' && inputs
     ? syncParamsToInputs(value.params, inputs)
     : value.params;
+  const customWave = value.type === 'CustomWave'
+    ? normalizeCustomWave(parseCustomWaveLike(value.customWave, value.id), params)
+    : undefined;
 
   return {
     id: value.id,
@@ -2398,12 +3042,24 @@ function parsePatchNode(value: unknown, index: number): PatchNode {
     ...(value.subpatchCloneId ? { subpatchCloneId: value.subpatchCloneId } : {}),
     ...(expression !== undefined ? { expression } : {}),
     ...(isSampleAsset(value.sample) ? { sample: value.sample } : {}),
+    ...(customWave ? { customWave } : {}),
     params,
     ...(position ? { position } : {}),
     ...(inputs ? { inputs } : {}),
     ...(outputs ? { outputs } : {}),
     ...(subpatch ? { subpatch } : {}),
   };
+}
+
+function parseCustomWaveLike(value: unknown, nodeId: string): Partial<CustomWaveSettings> | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) {
+    throw new Error(`Node "${nodeId}" customWave must be an object.`);
+  }
+  if (value.points !== undefined && !Array.isArray(value.points)) {
+    throw new Error(`Node "${nodeId}" customWave.points must be an array.`);
+  }
+  return value as Partial<CustomWaveSettings>;
 }
 
 function isSampleAsset(value: unknown): value is SampleAsset {
@@ -2926,6 +3582,7 @@ function patchNodeFromFlowNode(node: ShaderFlowNode): PatchNode {
     ...(patchNode.subpatchCloneId ? { subpatchCloneId: patchNode.subpatchCloneId } : {}),
     ...(patchNode.expression !== undefined ? { expression: patchNode.expression } : {}),
     ...(patchNode.sample ? { sample: { ...patchNode.sample } } : {}),
+    ...(patchNode.customWave ? { customWave: normalizeCustomWave(patchNode.customWave, patchNode.params) } : {}),
     params: { ...patchNode.params },
     position: { ...node.position },
     ...(patchNode.inputs ? { inputs: patchNode.inputs.map((port) => ({ ...port })) } : {}),
@@ -2943,6 +3600,7 @@ function clonePatch(patch: ReturnType<typeof patchFromFlow>): ReturnType<typeof 
       ...(node.subpatchCloneId ? { subpatchCloneId: node.subpatchCloneId } : {}),
       ...(node.expression !== undefined ? { expression: node.expression } : {}),
       ...(node.sample ? { sample: { ...node.sample } } : {}),
+      ...(node.customWave ? { customWave: normalizeCustomWave(node.customWave, node.params) } : {}),
       params: { ...node.params },
       ...(node.position ? { position: { ...node.position } } : {}),
       ...(node.inputs ? { inputs: node.inputs.map((port) => ({ ...port })) } : {}),
@@ -2982,6 +3640,128 @@ function boundaryPorts(
   }
 
   return ports.sort((a, b) => a.index - b.index).map(({ endpoint, name }) => ({ endpoint, name }));
+}
+
+function translateExtentForVisibleContent(
+  nodes: ShaderFlowNode[],
+  viewport: Viewport,
+  editorSize: { width: number; height: number },
+): CoordinateExtent {
+  if (editorSize.width <= 0 || editorSize.height <= 0) {
+    return FLOW_INFINITE_EXTENT;
+  }
+
+  const bounds = viewportContentBounds(nodes);
+  const zoom = normalizedViewportZoom(viewport.zoom);
+  const emptyWidth = (editorSize.width / zoom) * MAX_EMPTY_SCREEN_RATIO;
+  const emptyHeight = (editorSize.height / zoom) * MAX_EMPTY_SCREEN_RATIO;
+
+  return [
+    [bounds.x - emptyWidth, bounds.y - emptyHeight],
+    [bounds.x + bounds.width + emptyWidth, bounds.y + bounds.height + emptyHeight],
+  ];
+}
+
+function clampViewportToTranslateExtent(
+  viewport: Viewport,
+  translateExtent: CoordinateExtent,
+  editorSize: { width: number; height: number },
+): Viewport {
+  if (editorSize.width <= 0 || editorSize.height <= 0) return viewport;
+
+  const zoom = normalizedViewportZoom(viewport.zoom);
+  const visibleWidth = editorSize.width / zoom;
+  const visibleHeight = editorSize.height / zoom;
+  const left = -viewport.x / zoom;
+  const top = -viewport.y / zoom;
+  const minLeft = translateExtent[0][0];
+  const minTop = translateExtent[0][1];
+  const maxLeft = translateExtent[1][0] - visibleWidth;
+  const maxTop = translateExtent[1][1] - visibleHeight;
+  const clampedLeft = clampNumber(left, Math.min(minLeft, maxLeft), Math.max(minLeft, maxLeft));
+  const clampedTop = clampNumber(top, Math.min(minTop, maxTop), Math.max(minTop, maxTop));
+
+  return {
+    x: -clampedLeft * zoom,
+    y: -clampedTop * zoom,
+    zoom,
+  };
+}
+
+function viewportContentBounds(nodes: ShaderFlowNode[]): { x: number; y: number; width: number; height: number } {
+  const visibleNodes = nodes.filter((node) => node.hidden !== true);
+  if (visibleNodes.length === 0) {
+    return { x: 0, y: 0, width: 1, height: 1 };
+  }
+
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  for (const node of visibleNodes) {
+    const size = viewportNodeSize(node);
+    minX = Math.min(minX, node.position.x);
+    minY = Math.min(minY, node.position.y);
+    maxX = Math.max(maxX, node.position.x + size.width);
+    maxY = Math.max(maxY, node.position.y + size.height);
+  }
+
+  if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+    return { x: 0, y: 0, width: 1, height: 1 };
+  }
+
+  return {
+    x: minX,
+    y: minY,
+    width: Math.max(1, maxX - minX),
+    height: Math.max(1, maxY - minY),
+  };
+}
+
+function viewportNodeSize(node: ShaderFlowNode): { width: number; height: number } {
+  const measuredWidth = finitePositiveNumber(node.measured?.width ?? node.width ?? node.initialWidth);
+  const measuredHeight = finitePositiveNumber(node.measured?.height ?? node.height ?? node.initialHeight);
+  if (measuredWidth !== null && measuredHeight !== null) {
+    return { width: measuredWidth, height: measuredHeight };
+  }
+
+  const patchNode = node.data.patchNode;
+  if (patchNode.type === 'Scope' || patchNode.type === 'Meter') {
+    const size = clampScopeNodeSize(patchNode.scopeSize ?? DEFAULT_SCOPE_NODE_SIZE);
+    return { width: size.width, height: size.height + NODE_HEADER_HEIGHT };
+  }
+
+  if (patchNode.type === 'CustomWave') {
+    const size = clampCustomWaveNodeSize(patchNode.scopeSize ?? DEFAULT_CUSTOM_WAVE_NODE_SIZE);
+    return { width: size.width, height: size.height + NODE_HEADER_HEIGHT };
+  }
+
+  if (patchNode.type === 'Expression') {
+    return { width: 240, height: DEFAULT_NODE_BOUNDS_SIZE.height };
+  }
+
+  if (patchNode.type === null) {
+    return { width: DRAFT_NODE_WIDTH, height: DEFAULT_NODE_BOUNDS_SIZE.height };
+  }
+
+  return DEFAULT_NODE_BOUNDS_SIZE;
+}
+
+function normalizedViewportZoom(zoom: number): number {
+  return finitePositiveNumber(zoom) ?? 1;
+}
+
+function finitePositiveNumber(value: number | undefined): number | null {
+  return value !== undefined && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function isFiniteCoordinateExtent(extent: CoordinateExtent): boolean {
+  return extent.every((point) => point.every(Number.isFinite));
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 function nodeBounds(nodes: ShaderFlowNode[]): { x: number; y: number; width: number; height: number } {
@@ -3633,6 +4413,7 @@ function nodeCallbacksPlaceholder() {
     onPortNameChange: noopPortNameChange,
     onPortMove: noopPortMove,
     onCompactToggle: noopCompactToggle,
+    onScopeResize: noopScopeResize,
   };
 }
 
@@ -3648,3 +4429,4 @@ function noopPortDoubleClick() {}
 function noopPortNameChange() {}
 function noopPortMove() {}
 function noopCompactToggle() {}
+function noopScopeResize() {}

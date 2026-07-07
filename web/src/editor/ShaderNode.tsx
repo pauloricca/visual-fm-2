@@ -1,4 +1,4 @@
-import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
+import { Handle, Position, useReactFlow, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import {
   useEffect,
   useLayoutEffect,
@@ -6,24 +6,53 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type DragEvent,
   type KeyboardEvent,
+  type MouseEvent,
   type PointerEvent,
+  type RefObject,
 } from 'react';
+import {
+  CUSTOM_WAVE_MODES,
+  customWaveUsesSustainEnd,
+  customWaveUsesSustainStart,
+  normalizeCustomWave,
+} from '../graph/customWave';
 import { getNodeDefinition, getNodeTypeLabel, NODE_TYPE_LIST } from '../graph/nodeTypes';
-import type { NodeDefinition, NodeType, PatchNode } from '../graph/types';
-import type { ShaderFlowNode, ShaderNodeData } from './flowPatch';
+import type { CustomWaveMode, CustomWavePoint, CustomWaveSettings, NodeDefinition, NodeType, PatchNode } from '../graph/types';
+import {
+  clampCustomWaveNodeSize,
+  clampScopeNodeSize,
+  DEFAULT_CUSTOM_WAVE_NODE_SIZE,
+  DEFAULT_SCOPE_NODE_SIZE,
+  type ScopeNodeSize,
+  type ShaderFlowEdge,
+  type ShaderFlowNode,
+  type ShaderNodeData,
+} from './flowPatch';
 
 export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNode>) {
   const node = data.patchNode;
+  const reactFlow = useReactFlow<ShaderFlowNode, ShaderFlowEdge>();
   const updateNodeInternals = useUpdateNodeInternals();
   const draggedPortRef = useRef<{ side: 'input' | 'output'; port: string; pointerId: number } | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
+  const scopeResizeRef = useRef<{
+    pointerId: number;
+    corner: 'bottom-left' | 'bottom-right';
+    startPointer: { x: number; y: number };
+    startSize: ScopeNodeSize;
+  } | null>(null);
+  const customWaveEditorRef = useRef<SVGSVGElement | null>(null);
+  const customWaveDragRef = useRef<{ pointerId: number; index: number } | null>(null);
+  const customWaveClickRef = useRef<{ index: number | null; time: number }>({ index: null, time: 0 });
   const inputPortRowsRef = useRef<Record<string, HTMLDivElement | null>>({});
   const outputPortRowsRef = useRef<Record<string, HTMLDivElement | null>>({});
   const expressionInputRef = useRef<HTMLInputElement | null>(null);
   const skipNextExpressionBlurRef = useRef(false);
   const [dragSource, setDragSource] = useState<{ side: 'input' | 'output'; port: string } | null>(null);
   const [dragTarget, setDragTarget] = useState<{ side: 'input' | 'output'; port: string } | null>(null);
+  const [scopeResizeCorner, setScopeResizeCorner] = useState<'bottom-left' | 'bottom-right' | null>(null);
   const [expressionDraft, setExpressionDraft] = useState(node.expression ?? '');
   const [pointerOver, setPointerOver] = useState(false);
   const definition = node.type ? getNodeDefinition(node as PatchNode) : null;
@@ -37,13 +66,31 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const previewOutputPort = data.previewPort?.side === 'output' ? data.previewPort.name : null;
   const showMeterDisplay = node.type === 'Meter';
   const showScopeDisplay = node.type === 'Scope';
+  const showCustomWaveEditor = node.type === 'CustomWave';
+  const showResizableDisplay = showScopeDisplay || showCustomWaveEditor;
   const showSampleUpload = node.type === 'SamplePlayer';
+  const customWave = showCustomWaveEditor ? normalizeCustomWave(node.customWave, node.params) : null;
   const amplitudeRange = displayAmplitudeRange(node.params.range);
   const amplitudeRangeLabel = formatAmplitude(amplitudeRange);
   const rawMeterLevel = data.audioMeter?.output ?? 0;
   const meterLevel = Math.max(0, Math.min(1, rawMeterLevel / amplitudeRange));
   const meterPeak = Math.max(0, Math.min(1, (data.audioMeter?.input ?? rawMeterLevel) / amplitudeRange));
   const scopePath = showScopeDisplay ? samplesToScopePath(data.audioScope?.samples ?? [], amplitudeRange) : '';
+  const scopeSize = showScopeDisplay
+    ? clampScopeNodeSize(node.scopeSize ?? DEFAULT_SCOPE_NODE_SIZE)
+    : DEFAULT_SCOPE_NODE_SIZE;
+  const customWaveSize = showCustomWaveEditor
+    ? clampCustomWaveNodeSize(node.scopeSize ?? DEFAULT_CUSTOM_WAVE_NODE_SIZE)
+    : DEFAULT_CUSTOM_WAVE_NODE_SIZE;
+  const displaySize = showCustomWaveEditor ? customWaveSize : scopeSize;
+  const nodeSizeStyle = showResizableDisplay
+    ? ({
+        '--node-display-width': `${displaySize.width}px`,
+        '--node-display-height': `${displaySize.height}px`,
+      } as CSSProperties)
+    : undefined;
+  const dspErrors = data.dspErrors ?? [];
+  const hasDspErrors = dspErrors.length > 0;
   const previewAddsOutput = Boolean(
     previewOutputPort
     && definition
@@ -73,10 +120,16 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     ? `${Math.max(0, ...definition.outputs.map((output) => output.name.length))}ch`
     : '0ch';
   const inputStyle = { '--input-label-width': inputLabelWidth } as CSSProperties;
+  const nodeStyle = {
+    ...(nodeSizeStyle ?? {}),
+    '--input-label-width': inputLabelWidth,
+  } as CSSProperties;
   const className = [
     'shader-node',
     showMeterDisplay ? 'shader-node-meter' : '',
     showScopeDisplay ? 'shader-node-scope' : '',
+    showCustomWaveEditor ? 'shader-node-custom-wave' : '',
+    hasDspErrors ? 'shader-node-dsp-error' : '',
     selected ? 'shader-node-selected' : '',
     dragging ? 'shader-node-dragging' : '',
     compactPorts ? 'shader-node-compact' : '',
@@ -98,6 +151,12 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     showHeaderInputPort,
     showHeaderOutputPort,
     showAllPorts,
+    displaySize.height,
+    displaySize.width,
+    customWave?.mode,
+    customWave?.points,
+    customWave?.sustainEnd,
+    customWave?.sustainStart,
     updateNodeInternals,
   ]);
 
@@ -194,6 +253,102 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     };
   }, [definition, node.id]);
 
+  useEffect(() => {
+    function handlePointerMove(event: globalThis.PointerEvent) {
+      const resize = scopeResizeRef.current;
+      if (!resize || resize.pointerId !== event.pointerId) return;
+
+      event.preventDefault();
+      const zoom = reactFlow.getZoom() || 1;
+      const deltaX = (event.clientX - resize.startPointer.x) / zoom;
+      const deltaY = (event.clientY - resize.startPointer.y) / zoom;
+      const nextSize = showCustomWaveEditor ? clampCustomWaveNodeSize({
+        width: resize.corner === 'bottom-left'
+          ? resize.startSize.width - deltaX
+          : resize.startSize.width + deltaX,
+        height: resize.startSize.height + deltaY,
+      }) : clampScopeNodeSize({
+        width: resize.corner === 'bottom-left'
+          ? resize.startSize.width - deltaX
+          : resize.startSize.width + deltaX,
+        height: resize.startSize.height + deltaY,
+      });
+      data.onScopeResize(node.id, nextSize, resize.corner === 'bottom-left' ? 'left' : 'right');
+    }
+
+    function stopResizing(pointerId: number) {
+      if (!scopeResizeRef.current || scopeResizeRef.current.pointerId !== pointerId) return;
+
+      scopeResizeRef.current = null;
+      setScopeResizeCorner(null);
+    }
+
+    function handlePointerUp(event: globalThis.PointerEvent) {
+      stopResizing(event.pointerId);
+    }
+
+    function handlePointerCancel(event: globalThis.PointerEvent) {
+      stopResizing(event.pointerId);
+    }
+
+    window.addEventListener('pointermove', handlePointerMove, { passive: false });
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerCancel);
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerCancel);
+    };
+  }, [data, node.id, reactFlow, showCustomWaveEditor]);
+
+  useEffect(() => {
+    function handlePointerMove(event: globalThis.PointerEvent) {
+      const drag = customWaveDragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId || !customWave) return;
+
+      event.preventDefault();
+      const point = customWavePointFromPointer(event);
+      if (!point) return;
+      const lastIndex = customWave.points.length - 1;
+      const previous = customWave.points[drag.index - 1]?.x ?? 0;
+      const next = customWave.points[drag.index + 1]?.x ?? 1;
+      const x = drag.index === 0
+        ? 0
+        : drag.index === lastIndex
+          ? 1
+          : clamp(point.x, previous + 0.001, next - 0.001);
+      const nextPoints = customWave.points.map((entry, index) => (
+        index === drag.index ? { x, y: point.y } : entry
+      ));
+      commitCustomWave({ ...customWave, points: nextPoints }, `custom-wave-point:${node.id}`);
+    }
+
+    function stopDragging(pointerId: number) {
+      if (!customWaveDragRef.current || customWaveDragRef.current.pointerId !== pointerId) return;
+
+      customWaveDragRef.current = null;
+    }
+
+    function handlePointerUp(event: globalThis.PointerEvent) {
+      stopDragging(event.pointerId);
+    }
+
+    function handlePointerCancel(event: globalThis.PointerEvent) {
+      stopDragging(event.pointerId);
+    }
+
+    window.addEventListener('pointermove', handlePointerMove, { passive: false });
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerCancel);
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerCancel);
+    };
+  }, [customWave, node.id]);
+
   function handlePortPointerDown(
     event: PointerEvent<HTMLSpanElement>,
     side: 'input' | 'output',
@@ -210,11 +365,142 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     setDragTarget(null);
   }
 
+  function handleScopeResizePointerDown(
+    event: PointerEvent<HTMLSpanElement>,
+    corner: 'bottom-left' | 'bottom-right',
+  ) {
+    if (event.button !== 0) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    scopeResizeRef.current = {
+      pointerId: event.pointerId,
+      corner,
+      startPointer: { x: event.clientX, y: event.clientY },
+      startSize: displaySize,
+    };
+    setScopeResizeCorner(corner);
+  }
+
+  function handleSampleDragOver(event: DragEvent<HTMLDivElement>) {
+    if (!showSampleUpload || !hasDraggedFiles(event)) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'copy';
+  }
+
+  function handleSampleDrop(event: DragEvent<HTMLDivElement>) {
+    if (!showSampleUpload || event.dataTransfer.files.length === 0) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    data.onSampleDrop?.(node.id, event.dataTransfer.files);
+  }
+
+  function commitCustomWave(nextCustomWave: CustomWaveSettings, historyKey?: string) {
+    data.onCustomWaveChange?.(node.id, normalizeCustomWave(nextCustomWave), historyKey);
+  }
+
+  function customWavePointFromPointer(event: Pick<globalThis.PointerEvent, 'clientX' | 'clientY'>): CustomWavePoint | null {
+    const editor = customWaveEditorRef.current;
+    if (!editor) return null;
+
+    const rect = editor.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    const padding = 18;
+    const width = 300;
+    const height = 128;
+    const innerWidth = width - padding * 2;
+    const innerHeight = height - padding * 2;
+    const screenX = clamp(((event.clientX - rect.left) / rect.width) * width, padding, width - padding);
+    const screenY = clamp(((event.clientY - rect.top) / rect.height) * height, padding, height - padding);
+
+    return {
+      x: clamp((screenX - padding) / innerWidth, 0, 1),
+      y: clamp((1 - ((screenY - padding) / innerHeight)) * 2 - 1, -1, 1),
+    };
+  }
+
+  function removeCustomWavePoint(index: number): boolean {
+    if (!customWave || index <= 0 || index >= customWave.points.length - 1) return false;
+
+    const nextPoints = customWave.points.filter((_, pointIndex) => pointIndex !== index);
+    customWaveDragRef.current = null;
+    commitCustomWave({ ...customWave, points: nextPoints }, `custom-wave-point:${node.id}`);
+    return true;
+  }
+
+  function handleCustomWavePointerDown(event: PointerEvent<SVGSVGElement>) {
+    if (!customWave || event.button !== 0) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    const target = event.target instanceof Element
+      ? event.target.closest<SVGCircleElement>('.custom-wave-hit-target, .custom-wave-handle')
+      : null;
+    const targetIndex = target?.dataset.index ? Number(target.dataset.index) : null;
+    const lastIndex = customWave.points.length - 1;
+
+    if (target && Number.isInteger(targetIndex)) {
+      const now = performance.now();
+      if (
+        targetIndex !== null &&
+        targetIndex > 0 &&
+        targetIndex < lastIndex &&
+        customWaveClickRef.current.index === targetIndex &&
+        now - customWaveClickRef.current.time < 360
+      ) {
+        customWaveClickRef.current = { index: null, time: 0 };
+        removeCustomWavePoint(targetIndex);
+        return;
+      }
+
+      customWaveClickRef.current = { index: targetIndex, time: now };
+      if (targetIndex === null || targetIndex <= 0 || targetIndex >= lastIndex) return;
+      customWaveDragRef.current = { pointerId: event.pointerId, index: targetIndex };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      return;
+    }
+
+    const point = customWavePointFromPointer(event);
+    if (!point) return;
+
+    customWaveClickRef.current = { index: null, time: 0 };
+    const nextPoints = [...customWave.points, point].sort((a, b) => a.x - b.x);
+    const nextIndex = nextPoints.reduce((bestIndex, item, index) => {
+      const best = nextPoints[bestIndex];
+      const distance = Math.abs(item.x - point.x) + Math.abs(item.y - point.y);
+      const bestDistance = Math.abs(best.x - point.x) + Math.abs(best.y - point.y);
+      return distance < bestDistance ? index : bestIndex;
+    }, 0);
+    commitCustomWave({ ...customWave, points: nextPoints }, `custom-wave-point:${node.id}`);
+    customWaveDragRef.current = { pointerId: event.pointerId, index: nextIndex };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function handleCustomWaveDoubleClick(event: MouseEvent<SVGSVGElement>) {
+    if (!customWave) return;
+
+    const target = event.target instanceof Element
+      ? event.target.closest<SVGCircleElement>('.custom-wave-hit-target, .custom-wave-handle')
+      : null;
+    if (!target?.dataset.index) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    removeCustomWavePoint(Number(target.dataset.index));
+  }
+
   return (
     <div
       className={className}
+      style={nodeStyle}
       onPointerEnter={() => setPointerOver(true)}
       onPointerLeave={() => setPointerOver(false)}
+      onDragOver={handleSampleDragOver}
+      onDrop={handleSampleDrop}
     >
       <div className="shader-node-title">
         {showHeaderInputPort && headerInputPort ? (
@@ -266,6 +552,15 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             />
           </button>
         ) : null}
+        {hasDspErrors ? (
+          <span
+            className="node-dsp-error-marker"
+            title={dspErrors.join('\n')}
+            aria-label={`${dspErrors.length} DSP error${dspErrors.length === 1 ? '' : 's'}`}
+          >
+            !
+          </span>
+        ) : null}
         {showHeaderOutputPort && headerOutputPort ? (
           <Handle
             id={`out:${headerOutputPort}`}
@@ -307,6 +602,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           const showBody = !compactPorts
             || isExpression
             || showSampleUpload
+            || showCustomWaveEditor
             || visibleInputPorts.length > 0
             || (visibleOutputPorts.length > 0 && !showHeaderOutputPort)
             || showMeterDisplay
@@ -320,6 +616,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           isExpression ? 'shader-node-body-expression' : '',
           showMeterDisplay ? 'shader-node-body-meter' : '',
           showScopeDisplay ? 'shader-node-body-scope' : '',
+          showCustomWaveEditor ? 'shader-node-body-custom-wave' : '',
           visibleOutputPorts.length === 0 || showHeaderOutputPort ? 'shader-node-body-no-outputs' : '',
         ].filter(Boolean).join(' ')}>
           {isExpression ? (
@@ -355,15 +652,35 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               <button
                 className="sample-upload-button nodrag nopan"
                 type="button"
-                onClick={() => data.onSampleUpload?.(node.id)}
+                title={node.sample?.name ?? 'Select sample'}
+                onClick={() => data.onSampleSelect?.(node.id)}
                 onPointerDown={(event) => event.stopPropagation()}
               >
-                UP
+                {node.sample?.name ?? 'Select sample'}
               </button>
-              <span className="sample-upload-name" title={node.sample?.name ?? 'No sample loaded'}>
-                {node.sample?.name ?? 'no sample'}
-              </span>
             </div>
+          ) : null}
+          {showCustomWaveEditor && customWave ? (
+            <CustomWaveEditor
+              customWave={customWave}
+              compact={compactPorts}
+              editorRef={customWaveEditorRef}
+              onPointerDown={handleCustomWavePointerDown}
+              onDoubleClick={handleCustomWaveDoubleClick}
+              onModeChange={(mode) => commitCustomWave({ ...customWave, mode }, `custom-wave-mode:${node.id}`)}
+              onSustainStartChange={(sustainStart) => {
+                commitCustomWave({
+                  ...customWave,
+                  sustainStart: clamp(sustainStart, 0, customWave.sustainEnd - 0.001),
+                }, `custom-wave-sustain:${node.id}`);
+              }}
+              onSustainEndChange={(sustainEnd) => {
+                commitCustomWave({
+                  ...customWave,
+                  sustainEnd: clamp(sustainEnd, customWave.sustainStart + 0.001, 1),
+                }, `custom-wave-sustain:${node.id}`);
+              }}
+            />
           ) : null}
           <div className="shader-ports shader-inputs" style={inputStyle}>
             {visibleInputPorts.map((input) => (
@@ -532,6 +849,28 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               </svg>
             </div>
           ) : null}
+          {showResizableDisplay ? (
+            <>
+              <span
+                className={[
+                  'audio-node-scope-resize-handle audio-node-scope-resize-handle-left nodrag nopan',
+                  scopeResizeCorner === 'bottom-left' ? 'audio-node-scope-resize-handle-active' : '',
+                ].filter(Boolean).join(' ')}
+                title={showCustomWaveEditor ? 'Resize custom wave' : 'Resize scope'}
+                onPointerDown={(event) => handleScopeResizePointerDown(event, 'bottom-left')}
+                onDoubleClick={(event) => event.stopPropagation()}
+              />
+              <span
+                className={[
+                  'audio-node-scope-resize-handle audio-node-scope-resize-handle-right nodrag nopan',
+                  scopeResizeCorner === 'bottom-right' ? 'audio-node-scope-resize-handle-active' : '',
+                ].filter(Boolean).join(' ')}
+                title={showCustomWaveEditor ? 'Resize custom wave' : 'Resize scope'}
+                onPointerDown={(event) => handleScopeResizePointerDown(event, 'bottom-right')}
+                onDoubleClick={(event) => event.stopPropagation()}
+              />
+            </>
+          ) : null}
         </div>
           );
         })()
@@ -563,6 +902,182 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
       )}
     </div>
   );
+}
+
+interface CustomWaveEditorProps {
+  customWave: CustomWaveSettings;
+  compact: boolean;
+  editorRef: RefObject<SVGSVGElement | null>;
+  onPointerDown: (event: PointerEvent<SVGSVGElement>) => void;
+  onDoubleClick: (event: MouseEvent<SVGSVGElement>) => void;
+  onModeChange: (mode: CustomWaveMode) => void;
+  onSustainStartChange: (value: number) => void;
+  onSustainEndChange: (value: number) => void;
+}
+
+function CustomWaveEditor({
+  customWave,
+  compact,
+  editorRef,
+  onPointerDown,
+  onDoubleClick,
+  onModeChange,
+  onSustainStartChange,
+  onSustainEndChange,
+}: CustomWaveEditorProps) {
+  const width = 300;
+  const height = 128;
+  const padding = 18;
+  const innerWidth = width - padding * 2;
+  const innerHeight = height - padding * 2;
+  const points = customWave.points;
+  const path = customWavePath(points, width, height, padding);
+  const sustainStartX = padding + customWave.sustainStart * innerWidth;
+  const sustainEndX = padding + customWave.sustainEnd * innerWidth;
+  const showSustainStart = customWaveUsesSustainStart(customWave.mode);
+  const showSustainEnd = customWaveUsesSustainEnd(customWave.mode);
+
+  return (
+    <div className="custom-wave-node-editor nodrag nopan">
+      <svg
+        ref={editorRef}
+        className="custom-wave-node-canvas"
+        viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="none"
+        aria-label="Custom wave editor"
+        role="img"
+        onPointerDown={onPointerDown}
+        onDoubleClick={onDoubleClick}
+      >
+        <g className="custom-wave-chart-chrome">
+          <line className="custom-wave-grid-line" x1={padding} y1={padding} x2={width - padding} y2={padding} />
+          <line className="custom-wave-grid-line custom-wave-zero" x1={padding} y1={height / 2} x2={width - padding} y2={height / 2} />
+          <line className="custom-wave-grid-line" x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} />
+          {showSustainStart ? (
+            <line className="custom-wave-sustain-line" x1={sustainStartX} y1={padding} x2={sustainStartX} y2={height - padding} />
+          ) : null}
+          {showSustainEnd ? (
+            <line className="custom-wave-sustain-line is-end" x1={sustainEndX} y1={padding} x2={sustainEndX} y2={height - padding} />
+          ) : null}
+          <path className="custom-wave-path" d={path} />
+        </g>
+        {points.map((point, index) => {
+          const screen = customWavePointToScreen(point, width, height, padding);
+          const locked = index === 0 || index === points.length - 1;
+          return (
+            <g key={`${point.x}:${point.y}:${index}`}>
+              <circle
+                className={[
+                  'custom-wave-hit-target',
+                  locked ? 'is-locked' : '',
+                ].filter(Boolean).join(' ')}
+                data-index={index}
+                cx={screen.x}
+                cy={screen.y}
+                r={15}
+              />
+              <circle
+                className={[
+                  'custom-wave-handle',
+                  locked ? 'custom-wave-endpoint is-locked' : '',
+                ].filter(Boolean).join(' ')}
+                data-index={index}
+                cx={screen.x}
+                cy={screen.y}
+                r={locked ? 5 : 6}
+              />
+            </g>
+          );
+        })}
+      </svg>
+      {!compact ? (
+      <div className="custom-wave-node-controls">
+        <label className="custom-wave-node-field">
+          <span>mode</span>
+          <select
+            className="custom-wave-mode-select"
+            value={customWave.mode}
+            onChange={(event) => onModeChange(event.currentTarget.value as CustomWaveMode)}
+            onPointerDown={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+          >
+            {CUSTOM_WAVE_MODES.map((mode) => (
+              <option key={mode.value} value={mode.value}>{mode.label}</option>
+            ))}
+          </select>
+        </label>
+        {showSustainStart ? (
+          <CustomWaveRange
+            label="start"
+            value={customWave.sustainStart}
+            min={0}
+            max={Math.max(0, customWave.sustainEnd - 0.001)}
+            onChange={onSustainStartChange}
+          />
+        ) : null}
+        {showSustainEnd ? (
+          <CustomWaveRange
+            label="end"
+            value={customWave.sustainEnd}
+            min={Math.min(1, customWave.sustainStart + 0.001)}
+            max={1}
+            onChange={onSustainEndChange}
+          />
+        ) : null}
+      </div>
+      ) : null}
+    </div>
+  );
+}
+
+interface CustomWaveRangeProps {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (value: number) => void;
+}
+
+function CustomWaveRange({ label, value, min, max, onChange }: CustomWaveRangeProps) {
+  return (
+    <label className="custom-wave-node-field custom-wave-node-range">
+      <span>{label}</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={0.001}
+        value={value}
+        onChange={(event) => onChange(Number(event.currentTarget.value))}
+        onPointerDown={(event) => event.stopPropagation()}
+        onDoubleClick={(event) => event.stopPropagation()}
+      />
+      <input
+        type="number"
+        min={min}
+        max={max}
+        step={0.001}
+        value={formatUnitValue(value)}
+        onChange={(event) => onChange(Number(event.currentTarget.value))}
+        onPointerDown={(event) => event.stopPropagation()}
+        onDoubleClick={(event) => event.stopPropagation()}
+      />
+    </label>
+  );
+}
+
+function customWavePath(points: CustomWavePoint[], width: number, height: number, padding: number): string {
+  return points.map((point, index) => {
+    const screen = customWavePointToScreen(point, width, height, padding);
+    return `${index === 0 ? 'M' : 'L'}${roundPathNumber(screen.x)} ${roundPathNumber(screen.y)}`;
+  }).join(' ');
+}
+
+function customWavePointToScreen(point: CustomWavePoint, width: number, height: number, padding: number): CustomWavePoint {
+  return {
+    x: padding + point.x * (width - padding * 2),
+    y: padding + (1 - ((point.y + 1) / 2)) * (height - padding * 2),
+  };
 }
 
 function displayAmplitudeRange(value: number | undefined): number {
@@ -604,6 +1119,15 @@ function formatAmplitude(value: number): string {
 
 function trimTrailingZeros(value: string): string {
   return value.replace(/\.?0+$/, '');
+}
+
+function formatUnitValue(value: number): string {
+  return trimTrailingZeros(clamp(value, 0, 1).toFixed(3));
+}
+
+function clamp(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, value));
 }
 
 interface NodeTypePickerProps {
@@ -1119,6 +1643,10 @@ function formatDisplayValue(value: number): string {
   if (!Number.isFinite(value)) return '0';
   const rounded = roundValue(value);
   return Number.isInteger(rounded) ? rounded.toString() : rounded.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+function hasDraggedFiles(event: DragEvent<HTMLElement>): boolean {
+  return Array.from(event.dataTransfer.types).includes('Files');
 }
 
 export function makeNodeId(type: PatchNode['type'] | 'node', existingIds: Set<string>): string {

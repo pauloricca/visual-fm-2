@@ -58,6 +58,7 @@ export interface PatchNode {
   subpatchCloneId?: string;
   expression?: string;
   sample?: SampleAsset;
+  customWave?: CustomWaveSettings;
   params: Record<string, number>;
   position?: Vec2;
   inputs?: PortDefinition[];
@@ -68,6 +69,20 @@ export interface PatchNode {
 export interface SampleAsset {
   name: string;
   url: string;
+}
+
+export type CustomWaveMode = 'loop' | 'once' | 'ping-pong' | 'sustain' | 'sustain-loop' | 'sustain-ping-pong';
+
+export interface CustomWavePoint {
+  x: number;
+  y: number;
+}
+
+export interface CustomWaveSettings {
+  mode: CustomWaveMode;
+  sustainStart: number;
+  sustainEnd: number;
+  points: CustomWavePoint[];
 }
 
 export interface Endpoint {

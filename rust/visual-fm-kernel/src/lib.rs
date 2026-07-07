@@ -18,6 +18,7 @@ const MAX_DSP_SCOPES: usize = 32;
 const MAX_DSP_METERS: usize = 128;
 const MAX_DSP_EFFECT_SLOTS: usize = 64;
 const MAX_DSP_DELAY_SAMPLES: usize = 65_536;
+const MAX_DSP_SAMPLE_NODES: usize = 128;
 const LINK_SCOPE_POINTS: usize = 512;
 const LINK_SCOPE_SECONDS_MAX: f64 = 30.0;
 const FORMANT_INTENSITY_MAX: f64 = 36.0;
@@ -96,6 +97,10 @@ const DSP_OP_ENVELOPE: i32 = 19;
 const DSP_OP_FOLLOWER: i32 = 20;
 const DSP_OP_HARD_CLIP: i32 = 21;
 const DSP_OP_SOFT_CLIP: i32 = 22;
+const DSP_OP_DISTORTION: i32 = 23;
+const DSP_OP_SAMPLE: i32 = 24;
+const DSP_OP_SAMPLE_PARAM: i32 = 25;
+const DSP_OP_FUNCTION: i32 = 26;
 
 #[derive(Copy, Clone)]
 struct Node {
@@ -404,6 +409,7 @@ static mut DSP_METER_COUNTS: [u32; MAX_DSP_METERS] = [0; MAX_DSP_METERS];
 static mut DSP_EFFECT_BUFFERS: [[f32; MAX_DSP_DELAY_SAMPLES]; MAX_DSP_EFFECT_SLOTS] =
     [[0.0; MAX_DSP_DELAY_SAMPLES]; MAX_DSP_EFFECT_SLOTS];
 static mut DSP_EFFECT_INDICES: [usize; MAX_DSP_EFFECT_SLOTS] = [0; MAX_DSP_EFFECT_SLOTS];
+static mut DSP_SAMPLE_NODE_INDICES: [i32; MAX_DSP_SAMPLE_NODES] = [-1; MAX_DSP_SAMPLE_NODES];
 static mut SAMPLE_PLAYING: [[bool; MAX_NODES]; MAX_VOICE_SLOTS] =
     [[false; MAX_NODES]; MAX_VOICE_SLOTS];
 static mut SAMPLE_POSITIONS: [[f64; MAX_NODES]; MAX_VOICE_SLOTS] =
@@ -653,6 +659,21 @@ pub extern "C" fn clearDspProgram() {
                 DSP_EFFECT_BUFFERS[slot][index] = 0.0;
             }
         }
+        for index in 0..MAX_DSP_SAMPLE_NODES {
+            DSP_SAMPLE_NODE_INDICES[index] = -1;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn setDspSampleNode(slot: u32, node_index: i32) -> i32 {
+    unsafe {
+        let slot = slot as usize;
+        if slot >= MAX_DSP_SAMPLE_NODES || node_index < 0 || node_index as usize >= MAX_NODES {
+            return -1;
+        }
+        DSP_SAMPLE_NODE_INDICES[slot] = node_index;
+        slot as i32
     }
 }
 
@@ -1688,7 +1709,7 @@ fn oscillator(
         }
         5 => unsafe {
             if !SAMPLE_HOLD_SET[voice_slot][node_index] {
-                SAMPLE_HOLDS[voice_slot][node_index] = random_bipolar(voice_slot);
+                SAMPLE_HOLDS[voice_slot][node_index] = random_unit(voice_slot);
                 SAMPLE_HOLD_SET[voice_slot][node_index] = true;
             }
             SAMPLE_HOLDS[voice_slot][node_index]
@@ -3402,7 +3423,7 @@ fn advance_phases(voice_slot: usize, sample_rate: f64, note_frequency: f64, rele
             }
             let next_phase = PHASES[voice_slot][node_index] + step;
             if node.wave == 5 && next_phase >= 1.0 {
-                SAMPLE_HOLDS[voice_slot][node_index] = random_bipolar(voice_slot);
+                SAMPLE_HOLDS[voice_slot][node_index] = random_unit(voice_slot);
                 SAMPLE_HOLD_SET[voice_slot][node_index] = true;
             }
             if node.wave == 7 && next_phase >= 1.0 {
@@ -3489,17 +3510,25 @@ fn dsp_oscillator(wave: i32, phase: f64) -> f64 {
     }
 }
 
-fn render_dsp_filter(op: DspOp, sample_rate: f64) -> f64 {
+fn dsp_sample_hold_value(input_register: i32) -> f64 {
+    if input_register >= 0 {
+        sanitize_sample(dsp_reg(input_register), 8.0)
+    } else {
+        random_unit(DRONE_VOICE_SLOT)
+    }
+}
+
+fn render_dsp_biquad_state(
+    state_index: usize,
+    sample: f64,
+    coefficients: (f64, f64, f64, f64, f64),
+) -> f64 {
     unsafe {
-        if op.state < 0 || (op.state as usize + 3) >= MAX_DSP_STATE {
-            return dsp_reg(op.b);
+        if state_index + 3 >= MAX_DSP_STATE {
+            return sanitize_sample(sample, 4.0);
         }
 
-        let state_index = op.state as usize;
-        let sample = dsp_reg(op.b);
-        let cutoff = dsp_reg(op.c);
-        let resonance = dsp_reg(op.d);
-        let (b0, b1, b2, a1, a2) = filter_coefficients(op.a, cutoff, resonance, sample_rate);
+        let (b0, b1, b2, a1, a2) = coefficients;
         let x1 = DSP_STATE[state_index];
         let x2 = DSP_STATE[state_index + 1];
         let y1 = DSP_STATE[state_index + 2];
@@ -3512,6 +3541,78 @@ fn render_dsp_filter(op: DspOp, sample_rate: f64) -> f64 {
         DSP_STATE[state_index + 2] = sanitize_sample(output, 4.0);
         sanitize_sample(output, 4.0)
     }
+}
+
+fn render_dsp_formant_filter(op: DspOp, sample_rate: f64) -> f64 {
+    let sample = sanitize_sample(dsp_reg(op.b), 4.0);
+    if op.state < 0 || (op.state as usize + MAX_FORMANT_BANDS * 4 - 1) >= MAX_DSP_STATE {
+        return sample;
+    }
+
+    let state_index = op.state as usize;
+    let morph = dsp_reg(op.c);
+    let intensity = dsp_reg(op.d).clamp(0.1, FORMANT_INTENSITY_MAX);
+    let strength = ((intensity - 0.1) / 11.9).clamp(0.0, 1.0);
+    let overdrive = ((intensity - 12.0) / (FORMANT_INTENSITY_MAX - 12.0)).clamp(0.0, 1.0);
+    let mut wet = 0.0;
+
+    for band_index in 0..MAX_FORMANT_BANDS {
+        let (frequency, q, gain) = formant_band(morph, intensity, band_index, sample_rate);
+        let coefficients = filter_coefficients(3, frequency, q, sample_rate);
+        wet += render_dsp_biquad_state(
+            state_index + band_index * 4,
+            sample,
+            coefficients,
+        ) * gain;
+    }
+
+    let dry_mix = 0.42 - strength * 0.18 - overdrive * 0.16;
+    let wet_mix = 0.46 + strength * 0.38 + overdrive * 0.95;
+    sanitize_sample(sample * dry_mix + wet * wet_mix, 4.0)
+}
+
+fn render_dsp_comb_filter(op: DspOp, sample_rate: f64) -> f64 {
+    let Some(slot) = dsp_effect_slot(op.state) else {
+        return sanitize_sample(dsp_reg(op.b), 4.0);
+    };
+    unsafe {
+        let sample = sanitize_sample(dsp_reg(op.b), 4.0);
+        let frequency = dsp_reg(op.c)
+            .clamp(20.0, sample_rate.max(1.0) * 0.45)
+            .min(5_000.0);
+        let delay_samples =
+            (sample_rate.max(1.0) / frequency).clamp(1.0, (MAX_DSP_DELAY_SAMPLES - 1) as f64);
+        let feedback = dsp_reg(op.d).clamp(-0.98, 0.98);
+        let index = DSP_EFFECT_INDICES[slot];
+        let delayed = sanitize_sample(read_dsp_effect_delay(slot, index, delay_samples), 4.0);
+
+        DSP_EFFECT_BUFFERS[slot][index] =
+            sanitize_sample(sample + delayed * feedback, 4.0) as f32;
+        DSP_EFFECT_INDICES[slot] = (index + 1) % MAX_DSP_DELAY_SAMPLES;
+
+        if op.a == 6 {
+            sanitize_sample(sample - delayed * feedback.abs().max(0.45), 4.0)
+        } else {
+            sanitize_sample(delayed, 4.0)
+        }
+    }
+}
+
+fn render_dsp_filter(op: DspOp, sample_rate: f64) -> f64 {
+    if op.a == 4 {
+        return render_dsp_formant_filter(op, sample_rate);
+    }
+    if op.a == 5 || op.a == 6 {
+        return render_dsp_comb_filter(op, sample_rate);
+    }
+
+    if op.state < 0 {
+        return dsp_reg(op.b);
+    }
+    let cutoff = dsp_reg(op.c);
+    let resonance = dsp_reg(op.d);
+    let coefficients = filter_coefficients(op.a, cutoff, resonance, sample_rate);
+    render_dsp_biquad_state(op.state as usize, dsp_reg(op.b), coefficients)
 }
 
 fn render_dsp_selector(op: DspOp, sample_rate: f64) -> f64 {
@@ -3779,6 +3880,171 @@ fn render_dsp_follower(op: DspOp, sample_rate: f64) -> f64 {
     }
 }
 
+fn render_dsp_distortion(op: DspOp) -> f64 {
+    let distortion_type = dsp_reg(op.c).round() as i32;
+    if distortion_type <= 0 {
+        return dsp_reg(op.a);
+    }
+
+    let gain = dsp_reg(op.b).clamp(0.1, 40.0);
+    let sample = dsp_reg(op.a);
+    let driven = sanitize_sample(sample * gain, 32.0);
+    let output = match distortion_type {
+        1 => driven.clamp(-1.0, 1.0),
+        3 => {
+            let fuzz = driven.signum() * (1.0 - (-driven.abs() * 2.6).exp());
+            fuzz + random_bipolar(DRONE_VOICE_SLOT) * (gain * 0.002).min(0.08)
+        }
+        4 => driven / (1.0 + driven.abs()),
+        5 => fold_sample(sample, gain),
+        _ => driven.tanh(),
+    };
+    sanitize_sample(output, 4.0)
+}
+
+fn dsp_sample_node_index(sample_index: i32) -> Option<usize> {
+    unsafe {
+        if sample_index < 0 || sample_index as usize >= MAX_DSP_SAMPLE_NODES {
+            return None;
+        }
+        let node_index = DSP_SAMPLE_NODE_INDICES[sample_index as usize];
+        if node_index < 0 || node_index as usize >= NODE_COUNT {
+            return None;
+        }
+        Some(node_index as usize)
+    }
+}
+
+fn render_dsp_sample_param(op: DspOp) {
+    let Some(node_index) = dsp_sample_node_index(op.a) else {
+        return;
+    };
+    let value = dsp_reg(op.c);
+    unsafe {
+        match op.b {
+            1 => NODES[node_index].sample_start = value.clamp(0.0, 1.0),
+            2 => NODES[node_index].sample_end = value.clamp(0.0, 1.0),
+            3 => NODES[node_index].sample_stretch = value.max(0.001),
+            4 => NODES[node_index].sample_cycle_length = value.round().max(1.0),
+            5 => NODES[node_index].sample_overlap_ratio = value.clamp(0.0, 1.0),
+            6 => NODES[node_index].sample_original_pitch = value.clamp(0.0, 127.0),
+            _ => {}
+        }
+    }
+}
+
+fn advance_dsp_sample_player(node_index: usize, node: Node, target_frequency: f64, sample_rate: f64) {
+    unsafe {
+        let voice_slot = DRONE_VOICE_SLOT;
+        if !SAMPLE_PLAYING[voice_slot][node_index] {
+            return;
+        }
+
+        let sample_step = sample_playback_step(
+            node_index,
+            node,
+            target_frequency,
+            target_frequency,
+            sample_rate,
+        )
+        .abs()
+        .max(0.0001);
+        let stretch = node.sample_stretch.max(0.001);
+        SAMPLE_POSITIONS[voice_slot][node_index] +=
+            (sample_step / stretch) * SAMPLE_DIRECTIONS[voice_slot][node_index];
+        if (stretch - 1.0).abs() < 0.001 {
+            SAMPLE_STRETCH_PHASES[voice_slot][node_index] = 0.0;
+            SAMPLE_STRETCH_ANCHORS[voice_slot][node_index] = SAMPLE_POSITIONS[voice_slot][node_index];
+            return;
+        }
+
+        let (_, _, _, _, _, length) = sample_range(node_index, node, 0.0, 0.0)
+            .unwrap_or((0.0, 0.0, 0.0, 0.0, 1.0, 512.0));
+        let grain_frames = node.sample_cycle_length.round().clamp(1.0, length.max(1.0));
+        let overlap_frames = if node.sample_overlap_ratio <= 0.0 {
+            0.0
+        } else {
+            (grain_frames * node.sample_overlap_ratio.clamp(0.0, 1.0))
+                .round()
+                .clamp(1.0, (grain_frames - 1.0).max(1.0))
+        };
+        let hop_frames = (grain_frames - overlap_frames).max(1.0);
+        SAMPLE_STRETCH_PHASES[voice_slot][node_index] += sample_step;
+        while SAMPLE_STRETCH_PHASES[voice_slot][node_index] >= grain_frames {
+            SAMPLE_STRETCH_ANCHORS[voice_slot][node_index] +=
+                (hop_frames / stretch) * SAMPLE_DIRECTIONS[voice_slot][node_index];
+            SAMPLE_STRETCH_PHASES[voice_slot][node_index] -= hop_frames;
+        }
+    }
+}
+
+fn render_dsp_sample(op: DspOp, sample_rate: f64) -> f64 {
+    let Some(node_index) = dsp_sample_node_index(op.a) else {
+        return 0.0;
+    };
+    unsafe {
+        if op.state < 0 || (op.state as usize) >= MAX_DSP_STATE {
+            return 0.0;
+        }
+
+        let voice_slot = DRONE_VOICE_SLOT;
+        let trigger = dsp_reg(op.c) >= ENVELOPE_TRIGGER_THRESHOLD;
+        let previous_trigger = DSP_STATE[op.state as usize] >= ENVELOPE_TRIGGER_THRESHOLD;
+        let node = NODES[node_index];
+        let has_sample = sample_slot_for_node(node_index).is_some();
+
+        if !has_sample {
+            DSP_STATE[op.state as usize] = 0.0;
+            return 0.0;
+        }
+
+        if trigger && !previous_trigger {
+            start_sample_player(node_index, voice_slot, node, 0.0, 0.0);
+        }
+        DSP_STATE[op.state as usize] = if trigger { 1.0 } else { 0.0 };
+
+        let value = sample_value(node_index, node, voice_slot, sample_rate, 0.0, 0.0, 0.0);
+        advance_dsp_sample_player(node_index, node, dsp_reg(op.b), sample_rate);
+        sanitize_sample(value, 4.0)
+    }
+}
+
+fn render_dsp_function(op: DspOp) -> f64 {
+    let x = dsp_reg(op.b);
+    let y = dsp_reg(op.c);
+    let z = dsp_reg(op.d);
+    let output = match op.a {
+        1 => x.abs(),
+        2 => x.sin(),
+        3 => x.cos(),
+        4 => x.tan(),
+        5 => x.tanh(),
+        6 => x.min(y),
+        7 => x.max(y),
+        8 => x.clamp(y.min(z), y.max(z)),
+        9 => x.powf(y),
+        10 => x.clamp(-60.0, 60.0).exp(),
+        11 => x.max(0.000001).ln(),
+        12 => x.max(0.0).sqrt(),
+        13 => x.floor(),
+        14 => x.ceil(),
+        15 => x.round(),
+        16 => {
+            if x > 0.0 {
+                1.0
+            } else if x < 0.0 {
+                -1.0
+            } else {
+                0.0
+            }
+        }
+        17 => x - x.floor(),
+        18 => x + (y - x) * z,
+        _ => 0.0,
+    };
+    sanitize_control_value(output)
+}
+
 fn render_dsp_op(
     op: DspOp,
     frame: usize,
@@ -3809,12 +4075,36 @@ fn render_dsp_op(
             } else {
                 None
             };
-            let phase = state_index.map(|index| DSP_STATE[index]).unwrap_or(0.0);
+            let mut phase = state_index.map(|index| DSP_STATE[index]).unwrap_or(0.0);
+            if op.a != 5 && op.a != 7 {
+                if let Some(index) = state_index {
+                    if index + 1 < MAX_DSP_STATE && op.e >= 0 {
+                        let reset_trigger = dsp_reg(op.e) >= ENVELOPE_TRIGGER_THRESHOLD;
+                        let previous_reset_trigger =
+                            DSP_STATE[index + 1] >= ENVELOPE_TRIGGER_THRESHOLD;
+                        if reset_trigger && !previous_reset_trigger {
+                            phase = 0.0;
+                            DSP_STATE[index] = 0.0;
+                            if op.a == 9 && index + 3 < MAX_DSP_STATE {
+                                DSP_STATE[index + 2] = 1.0;
+                                DSP_STATE[index + 3] = 0.0;
+                            }
+                        }
+                        DSP_STATE[index + 1] = if reset_trigger { 1.0 } else { 0.0 };
+                    }
+                }
+            }
+            let render_phase = if op.a != 5 && op.a != 7 && op.d >= 0 {
+                phase + dsp_reg(op.d)
+            } else {
+                phase
+            };
             let output = match op.a {
                 5 => {
                     if let Some(index) = state_index {
-                        if index + 1 < MAX_DSP_STATE && DSP_STATE[index + 1] == 0.0 && phase == 0.0 {
-                            DSP_STATE[index + 1] = random_bipolar(DRONE_VOICE_SLOT);
+                        if index + 2 < MAX_DSP_STATE && DSP_STATE[index + 2] == 0.0 {
+                            DSP_STATE[index + 1] = dsp_sample_hold_value(op.c);
+                            DSP_STATE[index + 2] = 1.0;
                         }
                         if index + 1 < MAX_DSP_STATE {
                             DSP_STATE[index + 1]
@@ -3829,13 +4119,13 @@ fn render_dsp_op(
                 7 => {
                     if let Some(index) = state_index {
                         if index + 2 < MAX_DSP_STATE {
-                            if DSP_STATE[index + 1] == 0.0 && DSP_STATE[index + 2] == 0.0 && phase == 0.0 {
+                            if DSP_STATE[index + 1] == 0.0 && DSP_STATE[index + 2] == 0.0 && render_phase == 0.0 {
                                 DSP_STATE[index + 1] = random_bipolar(DRONE_VOICE_SLOT);
                                 DSP_STATE[index + 2] = random_bipolar(DRONE_VOICE_SLOT);
                             }
                             let current = DSP_STATE[index + 1];
                             let next = DSP_STATE[index + 2];
-                            current + (next - current) * smooth_step(phase)
+                            current + (next - current) * smooth_step(render_phase)
                         } else {
                             0.0
                         }
@@ -3843,19 +4133,105 @@ fn render_dsp_op(
                         0.0
                     }
                 }
-                _ => dsp_oscillator(op.a, phase),
+                9 => {
+                    let node_index = op.value.round() as i32;
+                    if node_index >= 0 && (node_index as usize) < MAX_NODES {
+                        if let Some(index) = state_index {
+                            if index + 3 < MAX_DSP_STATE && DSP_STATE[index + 3] >= 0.5 {
+                                0.0
+                            } else {
+                                custom_wave_value(node_index as usize, render_phase)
+                            }
+                        } else {
+                            custom_wave_value(node_index as usize, render_phase)
+                        }
+                    } else {
+                        0.0
+                    }
+                }
+                _ => dsp_oscillator(op.a, render_phase),
             };
             set_dsp_reg(op.out, output);
             if let Some(index) = state_index {
                 let next_phase = phase + frequency / sample_rate.max(1.0);
                 if op.a == 5 && next_phase >= 1.0 && index + 1 < MAX_DSP_STATE {
-                    DSP_STATE[index + 1] = random_bipolar(DRONE_VOICE_SLOT);
+                    DSP_STATE[index + 1] = dsp_sample_hold_value(op.c);
+                    if index + 2 < MAX_DSP_STATE {
+                        DSP_STATE[index + 2] = 1.0;
+                    }
                 }
                 if op.a == 7 && next_phase >= 1.0 && index + 2 < MAX_DSP_STATE {
                     DSP_STATE[index + 1] = DSP_STATE[index + 2];
                     DSP_STATE[index + 2] = random_bipolar(DRONE_VOICE_SLOT);
                 }
-                DSP_STATE[index] = normalize_phase(next_phase);
+                if op.a == 9 && index + 3 < MAX_DSP_STATE {
+                    let node_index = op.value.round() as i32;
+                    if node_index >= 0 && (node_index as usize) < MAX_NODES {
+                        let node = NODES[node_index as usize];
+                        let start = node.custom_sustain_start.clamp(0.0, 0.999);
+                        let end = node.custom_sustain_end.clamp(start + 0.001, 1.0);
+                        let length = (end - start).max(0.001);
+                        let mut direction = if DSP_STATE[index + 2] == 0.0 {
+                            1.0
+                        } else {
+                            DSP_STATE[index + 2]
+                        };
+                        let mut custom_next = next_phase;
+                        let mut done = DSP_STATE[index + 3] >= 0.5;
+
+                        match node.custom_mode {
+                            CUSTOM_MODE_PING_PONG => {
+                                custom_next = phase + (frequency / sample_rate.max(1.0)) * direction;
+                                if custom_next >= 1.0 {
+                                    custom_next = 1.0 - (custom_next - 1.0);
+                                    direction = -1.0;
+                                } else if custom_next <= 0.0 {
+                                    custom_next = -custom_next;
+                                    direction = 1.0;
+                                }
+                            }
+                            CUSTOM_MODE_ONCE => {
+                                if custom_next >= 1.0 {
+                                    custom_next = 1.0;
+                                    done = true;
+                                }
+                            }
+                            CUSTOM_MODE_SUSTAIN => {
+                                if custom_next >= start {
+                                    custom_next = start;
+                                }
+                            }
+                            CUSTOM_MODE_SUSTAIN_LOOP => {
+                                if custom_next >= start {
+                                    custom_next = start + (((custom_next - start) % length) + length) % length;
+                                }
+                            }
+                            CUSTOM_MODE_SUSTAIN_PING_PONG => {
+                                custom_next = phase + (frequency / sample_rate.max(1.0)) * direction;
+                                if custom_next >= end {
+                                    custom_next = end - (custom_next - end);
+                                    direction = -1.0;
+                                } else if custom_next <= start && phase >= start {
+                                    custom_next = start + (start - custom_next);
+                                    direction = 1.0;
+                                } else if custom_next >= start && phase < start {
+                                    direction = 1.0;
+                                }
+                            }
+                            _ => {
+                                custom_next = normalize_phase(custom_next);
+                            }
+                        }
+
+                        DSP_STATE[index] = custom_next.clamp(0.0, 1.0);
+                        DSP_STATE[index + 2] = direction;
+                        DSP_STATE[index + 3] = if done { 1.0 } else { 0.0 };
+                    } else {
+                        DSP_STATE[index] = normalize_phase(next_phase);
+                    }
+                } else {
+                    DSP_STATE[index] = normalize_phase(next_phase);
+                }
             }
         },
         DSP_OP_INPUT => unsafe {
@@ -3914,6 +4290,10 @@ fn render_dsp_op(
             let drive = dsp_reg(op.b).max(0.0);
             set_dsp_reg(op.out, (dsp_reg(op.a) * drive).tanh());
         }
+        DSP_OP_DISTORTION => set_dsp_reg(op.out, render_dsp_distortion(op)),
+        DSP_OP_SAMPLE_PARAM => render_dsp_sample_param(op),
+        DSP_OP_SAMPLE => set_dsp_reg(op.out, render_dsp_sample(op, sample_rate)),
+        DSP_OP_FUNCTION => set_dsp_reg(op.out, render_dsp_function(op)),
         _ => {}
     }
 }

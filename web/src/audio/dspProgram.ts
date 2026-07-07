@@ -1,6 +1,7 @@
 import { expandGroups } from '../graph/subpatch';
+import { normalizeCustomWave } from '../graph/customWave';
 import { getNodeDefinition } from '../graph/nodeTypes';
-import type { LinkMode, NodeType, Patch, PatchLink, PatchNode } from '../graph/types';
+import type { CustomWaveSettings, LinkMode, NodeType, Patch, PatchLink, PatchNode } from '../graph/types';
 
 export const DSP_OP = {
   Value: 0,
@@ -26,6 +27,10 @@ export const DSP_OP = {
   Follower: 20,
   HardClip: 21,
   SoftClip: 22,
+  Distortion: 23,
+  Sample: 24,
+  SampleParam: 25,
+  Function: 26,
 } as const;
 
 export interface DspProgram {
@@ -38,6 +43,8 @@ export interface DspProgram {
   stateCount: number;
   feedbackLinkIds: string[];
   monitorIds: Record<string, number>;
+  sampleBindings: DspSampleBinding[];
+  customWaveBindings: DspCustomWaveBinding[];
   errors: string[];
 }
 
@@ -70,6 +77,19 @@ export interface DspStateBinding {
   nodeId: string;
 }
 
+export interface DspSampleBinding {
+  nodeId: string;
+  sample: {
+    name: string;
+    url: string;
+  };
+}
+
+export interface DspCustomWaveBinding {
+  nodeId: string;
+  customWave: CustomWaveSettings;
+}
+
 interface FeedbackBinding {
   readRegister: number;
   state: number;
@@ -91,6 +111,8 @@ interface CompileContext {
   errors: string[];
   feedbackLinkIds: string[];
   monitorIds: Record<string, number>;
+  sampleBindings: DspSampleBinding[];
+  customWaveBindings: DspCustomWaveBinding[];
   registerCount: number;
   stateCount: number;
 }
@@ -110,10 +132,41 @@ const FILTER_TYPES: Partial<Record<NodeType, number>> = {
   BandpassFilter: 3,
 };
 
+const DISTORTION_TYPES: Partial<Record<NodeType, number>> = {
+  HardClipDistortion: 1,
+  SoftClipDistortion: 2,
+  FuzzDistortion: 3,
+  SaturateDistortion: 4,
+  WavefoldDistortion: 5,
+};
+
+const EXPRESSION_FUNCTIONS: Record<string, { id: number; minArgs: number; maxArgs: number }> = {
+  abs: { id: 1, minArgs: 1, maxArgs: 1 },
+  sin: { id: 2, minArgs: 1, maxArgs: 1 },
+  cos: { id: 3, minArgs: 1, maxArgs: 1 },
+  tan: { id: 4, minArgs: 1, maxArgs: 1 },
+  tanh: { id: 5, minArgs: 1, maxArgs: 1 },
+  min: { id: 6, minArgs: 2, maxArgs: 2 },
+  max: { id: 7, minArgs: 2, maxArgs: 2 },
+  clamp: { id: 8, minArgs: 3, maxArgs: 3 },
+  pow: { id: 9, minArgs: 2, maxArgs: 2 },
+  exp: { id: 10, minArgs: 1, maxArgs: 1 },
+  log: { id: 11, minArgs: 1, maxArgs: 1 },
+  sqrt: { id: 12, minArgs: 1, maxArgs: 1 },
+  floor: { id: 13, minArgs: 1, maxArgs: 1 },
+  ceil: { id: 14, minArgs: 1, maxArgs: 1 },
+  round: { id: 15, minArgs: 1, maxArgs: 1 },
+  sign: { id: 16, minArgs: 1, maxArgs: 1 },
+  fract: { id: 17, minArgs: 1, maxArgs: 1 },
+  mix: { id: 18, minArgs: 3, maxArgs: 3 },
+};
+
 export function compilePatchToDspProgram(patch: Patch): DspProgram {
   const expandedPatch = expandGroups(patch);
   const context = createContext(expandedPatch);
   const audioOutNodes = expandedPatch.nodes.filter((node) => node.type === 'AudioOut');
+
+  validatePatchLinks(context);
 
   if (audioOutNodes.length === 0) {
     context.errors.push('Patch needs an Audio Out node.');
@@ -134,6 +187,8 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
       stateCount: context.stateCount,
       feedbackLinkIds: context.feedbackLinkIds,
       monitorIds: context.monitorIds,
+      sampleBindings: context.sampleBindings,
+      customWaveBindings: context.customWaveBindings,
       errors: [...new Set(context.errors)],
     };
   }
@@ -148,6 +203,8 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
     stateCount: context.stateCount,
     feedbackLinkIds: context.feedbackLinkIds,
     monitorIds: context.monitorIds,
+    sampleBindings: context.sampleBindings,
+    customWaveBindings: context.customWaveBindings,
     errors: [],
   };
 }
@@ -174,6 +231,8 @@ function createContext(patch: Patch): CompileContext {
     errors: [],
     feedbackLinkIds: [],
     monitorIds: {},
+    sampleBindings: [],
+    customWaveBindings: [],
     registerCount: 0,
     stateCount: 0,
   };
@@ -181,11 +240,13 @@ function createContext(patch: Patch): CompileContext {
 
 function compileAudioOut(node: PatchNode, context: CompileContext): void {
   const level = resolveInput(node, 'level', 0.75, context);
+  let outputLinkCount = 0;
 
   for (const port of ['both', 'left', 'right'] as const) {
     const links = context.incomingByInput.get(inputKey(node.id, port)) ?? [];
     if (links.length === 0) continue;
 
+    outputLinkCount += links.length;
     const input = resolveInput(node, port, 0, context);
     const scaled = emitBinary(DSP_OP.Mul, input, level, context);
     if (port === 'both' || port === 'left') {
@@ -195,6 +256,37 @@ function compileAudioOut(node: PatchNode, context: CompileContext): void {
       context.ops.push({ opcode: DSP_OP.Output, a: scaled, b: 1 });
     }
   }
+
+  if (outputLinkCount === 0) {
+    context.errors.push(`Audio Out node "${node.id}" has no connected audio signal.`);
+  }
+}
+
+function validatePatchLinks(context: CompileContext): void {
+  for (const link of context.patch.links) {
+    const source = context.nodeById.get(link.from.node);
+    const target = context.nodeById.get(link.to.node);
+
+    if (!source) {
+      context.errors.push(`Link source node "${link.from.node}" does not exist.`);
+    } else if (!portExists(getNodeDefinition(source), 'outputs', link.from.port)) {
+      context.errors.push(`Link "${formatLink(link)}" uses invalid output port "${link.from.port}" on node "${link.from.node}".`);
+    }
+
+    if (!target) {
+      context.errors.push(`Link target node "${link.to.node}" does not exist.`);
+    } else if (!portExists(getNodeDefinition(target), 'inputs', link.to.port)) {
+      context.errors.push(`Link "${formatLink(link)}" uses invalid input port "${link.to.port}" on node "${link.to.node}".`);
+    }
+  }
+}
+
+function portExists(definition: ReturnType<typeof getNodeDefinition>, side: 'inputs' | 'outputs', port: string): boolean {
+  return definition[side].some((entry) => entry.name === port);
+}
+
+function formatLink(link: PatchLink): string {
+  return `${link.from.node}:${link.from.port} -> ${link.to.node}:${link.to.port}`;
 }
 
 function resolveInput(
@@ -240,6 +332,10 @@ function resolveInput(
   }
 
   return result;
+}
+
+function hasInput(node: PatchNode, port: string, context: CompileContext): boolean {
+  return (context.incomingByInput.get(inputKey(node.id, port)) ?? []).length > 0;
 }
 
 function resolveLinkValue(link: PatchLink, context: CompileContext): number | null {
@@ -318,18 +414,16 @@ function compileNodeOutput(node: PatchNode, context: CompileContext): number | n
   }
 
   if (node.type === 'Noise') {
-    const level = resolveInput(node, 'level', 0.4, context);
     const output = nextRegister(context);
     context.ops.push({ opcode: DSP_OP.Osc, out: output, a: 6, b: constantRegister(0, context) });
-    return emitBinary(DSP_OP.Mul, output, level, context);
+    return output;
   }
 
   const wave = OSC_WAVES[node.type];
   if (wave !== undefined) {
     const frequency = resolveInput(node, 'frequency', 220, context);
-    const level = resolveInput(node, 'level', 0.7, context);
     const output = nextRegister(context);
-    const stateCount = wave === 5 ? 2 : 1;
+    const stateCount = wave === 5 ? 3 : 2;
     const state = nextState(context, stateCount);
     context.stateBindings.push({
       id: `${node.id}:oscillator`,
@@ -338,13 +432,50 @@ function compileNodeOutput(node: PatchNode, context: CompileContext): number | n
       kind: 'oscillator',
       nodeId: node.id,
     });
-    context.ops.push({ opcode: DSP_OP.Osc, out: output, a: wave, b: frequency, state });
-    return emitBinary(DSP_OP.Mul, output, level, context);
+    context.ops.push({
+      opcode: DSP_OP.Osc,
+      out: output,
+      a: wave,
+      b: frequency,
+      c: hasInput(node, 'signal', context) ? resolveInput(node, 'signal', 0, context) : -1,
+      d: wave === 5 ? -1 : resolveInput(node, 'phase', 0, context),
+      e: wave === 5 ? -1 : resolveInput(node, 'phaseReset', 0, context),
+      state,
+    });
+    return output;
+  }
+
+  if (node.type === 'CustomWave') {
+    const customWaveIndex = context.customWaveBindings.length;
+    context.customWaveBindings.push({
+      nodeId: node.id,
+      customWave: normalizeCustomWave(node.customWave, node.params),
+    });
+    const frequency = resolveInput(node, 'frequency', 220, context);
+    const output = nextRegister(context);
+    const state = nextState(context, 4);
+    context.stateBindings.push({
+      id: `${node.id}:oscillator`,
+      state,
+      count: 4,
+      kind: 'oscillator',
+      nodeId: node.id,
+    });
+    context.ops.push({
+      opcode: DSP_OP.Osc,
+      out: output,
+      a: 9,
+      b: frequency,
+      d: resolveInput(node, 'phase', 0, context),
+      e: resolveInput(node, 'phaseReset', 0, context),
+      state,
+      value: customWaveIndex,
+    });
+    return output;
   }
 
   if (node.type === 'PerlinNoise') {
     const speed = resolveInput(node, 'speed', 8, context);
-    const level = resolveInput(node, 'level', 0.7, context);
     const output = nextRegister(context);
     const state = nextState(context, 3);
     context.stateBindings.push({
@@ -355,7 +486,7 @@ function compileNodeOutput(node: PatchNode, context: CompileContext): number | n
       nodeId: node.id,
     });
     context.ops.push({ opcode: DSP_OP.Osc, out: output, a: 7, b: speed, state });
-    return emitBinary(DSP_OP.Mul, output, level, context);
+    return output;
   }
 
   if (node.type === 'AudioInput') {
@@ -366,6 +497,10 @@ function compileNodeOutput(node: PatchNode, context: CompileContext): number | n
       a: resolveInput(node, 'gain', 1, context),
     });
     return emitBinary(DSP_OP.Mul, output, resolveInput(node, 'level', 0.7, context), context);
+  }
+
+  if (node.type === 'SamplePlayer') {
+    return compileSamplePlayer(node, context);
   }
 
   if (node.type === 'Gain') {
@@ -451,13 +586,27 @@ function compileNodeOutput(node: PatchNode, context: CompileContext): number | n
     return output;
   }
 
-  if (node.type === 'HardClipDistortion' || node.type === 'SoftClipDistortion') {
+  if (node.type === 'Distortion') {
     const output = nextRegister(context);
     context.ops.push({
-      opcode: node.type === 'HardClipDistortion' ? DSP_OP.HardClip : DSP_OP.SoftClip,
+      opcode: DSP_OP.Distortion,
       out: output,
       a: resolveInput(node, 'signal', 0, context),
       b: resolveInput(node, 'drive', 2.5, context),
+      c: resolveInput(node, 'type', 2, context),
+    });
+    return output;
+  }
+
+  const distortionType = DISTORTION_TYPES[node.type];
+  if (distortionType !== undefined) {
+    const output = nextRegister(context);
+    context.ops.push({
+      opcode: DSP_OP.Distortion,
+      out: output,
+      a: resolveInput(node, 'signal', 0, context),
+      b: resolveInput(node, 'drive', 2.5, context),
+      c: constantRegister(distortionType, context),
     });
     return output;
   }
@@ -510,6 +659,50 @@ function compileNodeOutput(node: PatchNode, context: CompileContext): number | n
     return compileSelector(node, context);
   }
 
+  if (node.type === 'FormantFilter') {
+    const output = nextRegister(context);
+    const state = nextState(context, 12);
+    context.stateBindings.push({
+      id: `${node.id}:filter`,
+      state,
+      count: 12,
+      kind: 'filter',
+      nodeId: node.id,
+    });
+    context.ops.push({
+      opcode: DSP_OP.Filter,
+      out: output,
+      a: 4,
+      b: resolveInput(node, 'signal', 0, context),
+      c: resolveInput(node, 'morph', 0, context),
+      d: resolveInput(node, 'intensity', 8, context),
+      state,
+    });
+    return output;
+  }
+
+  if (node.type === 'CombFilter' || node.type === 'CombNotchFilter') {
+    const output = nextRegister(context);
+    const state = nextState(context, 1);
+    context.stateBindings.push({
+      id: `${node.id}:comb`,
+      state,
+      count: 1,
+      kind: 'effect',
+      nodeId: node.id,
+    });
+    context.ops.push({
+      opcode: DSP_OP.Filter,
+      out: output,
+      a: node.type === 'CombFilter' ? 5 : 6,
+      b: resolveInput(node, 'signal', 0, context),
+      c: resolveInput(node, 'frequency', 440, context),
+      d: resolveInput(node, 'feedback', 0.45, context),
+      state,
+    });
+    return output;
+  }
+
   const filterType = FILTER_TYPES[node.type];
   if (filterType !== undefined) {
     const output = nextRegister(context);
@@ -541,6 +734,54 @@ function compileNodeOutput(node: PatchNode, context: CompileContext): number | n
 
   context.errors.push(`Node type "${node.type}" is not supported by the first DSP program slice.`);
   return null;
+}
+
+function compileSamplePlayer(node: PatchNode, context: CompileContext): number {
+  const sampleIndex = context.sampleBindings.length;
+  context.sampleBindings.push({
+    nodeId: node.id,
+    sample: {
+      name: node.sample?.name ?? '',
+      url: node.sample?.url ?? '',
+    },
+  });
+
+  const state = nextState(context, 1);
+  context.stateBindings.push({
+    id: `${node.id}:sample`,
+    state,
+    count: 1,
+    kind: 'effect',
+    nodeId: node.id,
+  });
+
+  const sampleParams: Array<[kind: number, port: string, fallback: number]> = [
+    [1, 'start', 0],
+    [2, 'end', 1],
+    [3, 'stretch', 1],
+    [4, 'cycleLength', 4096],
+    [5, 'overlapRatio', 0.09],
+    [6, 'originalPitch', 60],
+  ];
+  for (const [kind, port, fallback] of sampleParams) {
+    context.ops.push({
+      opcode: DSP_OP.SampleParam,
+      a: sampleIndex,
+      b: kind,
+      c: resolveInput(node, port, fallback, context),
+    });
+  }
+
+  const output = nextRegister(context);
+  context.ops.push({
+    opcode: DSP_OP.Sample,
+    out: output,
+    a: sampleIndex,
+    b: resolveInput(node, 'frequency', 220, context),
+    c: resolveInput(node, 'trigger', 0, context),
+    state,
+  });
+  return emitBinary(DSP_OP.Mul, output, resolveInput(node, 'level', 0.7, context), context);
 }
 
 function compileSelector(node: PatchNode, context: CompileContext): number {
@@ -608,7 +849,7 @@ function compileEffect(
 type ExpressionToken =
   | { type: 'number'; value: number }
   | { type: 'identifier'; value: string }
-  | { type: 'operator'; value: '+' | '-' | '*' | '/' | '(' | ')' };
+  | { type: 'operator'; value: '+' | '-' | '*' | '/' | '(' | ')' | ',' };
 
 function compileExpression(node: PatchNode, context: CompileContext): number {
   const source = typeof node.expression === 'string' && node.expression.trim()
@@ -675,7 +916,11 @@ class ExpressionParser {
     }
     if (this.match('identifier')) {
       const token = this.previous();
-      return resolveInput(this.node, token.type === 'identifier' ? token.value : '', 0, this.context);
+      const name = token.type === 'identifier' ? token.value : '';
+      if (this.matchOperator('(')) {
+        return this.parseFunctionCall(name);
+      }
+      return resolveInput(this.node, name, 0, this.context);
     }
     if (this.matchOperator('(')) {
       const register = this.parseAdditive();
@@ -689,6 +934,44 @@ class ExpressionParser {
     this.context.errors.push(`Expression node "${this.node.id}" has unsupported syntax near "${this.peekLabel()}".`);
     this.advance();
     return constantRegister(0, this.context);
+  }
+
+  private parseFunctionCall(name: string): number {
+    const args: number[] = [];
+    if (!this.matchOperator(')')) {
+      do {
+        args.push(this.parseAdditive());
+        if (this.matchOperator(')')) break;
+        if (!this.matchOperator(',')) {
+          this.context.errors.push(`Expression node "${this.node.id}" is missing a comma or closing parenthesis in "${name}(...)"`);
+          return constantRegister(0, this.context);
+        }
+      } while (!this.isAtEnd());
+    }
+
+    const definition = EXPRESSION_FUNCTIONS[name.toLowerCase()];
+    if (!definition) {
+      this.context.errors.push(`Expression node "${this.node.id}" uses unsupported function "${name}".`);
+      return constantRegister(0, this.context);
+    }
+    if (args.length < definition.minArgs || args.length > definition.maxArgs) {
+      this.context.errors.push(`Expression function "${name}" expects ${arityLabel(definition.minArgs, definition.maxArgs)}.`);
+      return constantRegister(0, this.context);
+    }
+
+    const paddedArgs = [...args];
+    while (paddedArgs.length < 3) paddedArgs.push(constantRegister(0, this.context));
+    const output = nextRegister(this.context);
+    this.context.ops.push({
+      opcode: DSP_OP.Function,
+      out: output,
+      a: definition.id,
+      b: paddedArgs[0],
+      c: paddedArgs[1],
+      d: paddedArgs[2],
+      value: args.length,
+    });
+    return output;
   }
 
   private match(type: ExpressionToken['type']): boolean {
@@ -739,7 +1022,7 @@ function tokenizeExpression(source: string): ExpressionToken[] {
       continue;
     }
 
-    if (/[+\-*/()]/.test(char)) {
+    if (/[+\-*/(),]/.test(char)) {
       tokens.push({ type: 'operator', value: char as Extract<ExpressionToken, { type: 'operator' }>['value'] });
       index += 1;
       continue;
@@ -764,6 +1047,11 @@ function tokenizeExpression(source: string): ExpressionToken[] {
   }
 
   return tokens;
+}
+
+function arityLabel(minArgs: number, maxArgs: number): string {
+  if (minArgs === maxArgs) return `${minArgs} argument${minArgs === 1 ? '' : 's'}`;
+  return `${minArgs}-${maxArgs} arguments`;
 }
 
 function averageRegisters(registers: number[], context: CompileContext): number {

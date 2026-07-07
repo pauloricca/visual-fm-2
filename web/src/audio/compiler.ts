@@ -1,7 +1,15 @@
 import type { NodeType, Patch, PatchLink, PatchNode } from '../graph/types';
+import { normalizeCustomWave } from '../graph/customWave';
 import { replaceExpressionInputs } from '../graph/expression';
 import { expandGroups } from '../graph/subpatch';
 
+/**
+ * @deprecated Legacy compatibility compiler for the old link-centric
+ * WasmAudioGraph runtime. The app's live audio path is
+ * compilePatchToDspProgram() in dspProgram.ts, which posts DspProgram messages
+ * to the worklet. Keep fixes for current playback out of this file unless you
+ * are deliberately maintaining old graph payload compatibility.
+ */
 export interface WasmAudioGraph {
   nodes: WasmAudioNode[];
   links: WasmAudioLink[];
@@ -154,9 +162,13 @@ const DISTORTION_NODE_TYPES: Partial<Record<NodeType, string>> = {
   SaturateDistortion: 'saturate',
   WavefoldDistortion: 'wavefold',
 };
-const CUSTOM_WAVE_MODES = ['loop', 'once', 'ping-pong', 'sustain', 'sustain-loop', 'sustain-ping-pong'] as const;
 const RATIO_NODE_TYPES = new Set<NodeType>(['CustomWave', 'SamplePlayer']);
 
+/**
+ * @deprecated Use compilePatchToDspProgram() from dspProgram.ts for the active
+ * runtime. This function remains only to document and support old graph-shaped
+ * payloads.
+ */
 export function compilePatchToWasmGraph(patch: Patch): WasmAudioGraph {
   const expandedPatch = expandGroups(patch);
   const masterEffects = defaultMasterEffects();
@@ -212,6 +224,7 @@ function compileSourceNode(node: PatchNode, context: CompileContext): WasmAudioN
   if (!wave) return [];
 
   const ratio = RATIO_NODE_TYPES.has(node.type) ? inputValue(node, 'ratio', 1, context) : 1;
+  const customWave = node.type === 'CustomWave' ? normalizeCustomWave(node.customWave, node.params) : null;
   return [{
     id: node.id,
     wave,
@@ -224,14 +237,10 @@ function compileSourceNode(node: PatchNode, context: CompileContext): WasmAudioN
     ...(node.type === 'AudioInput' ? { audioInputGain: inputValue(node, 'gain', 1, context) } : {}),
     ...(node.type === 'CustomWave' ? {
       customWave: {
-        mode: CUSTOM_WAVE_MODES[clamp(Math.round(inputValue(node, 'mode', 0, context)), 0, CUSTOM_WAVE_MODES.length - 1)] ?? 'loop',
-        sustainStart: inputValue(node, 'sustainStart', 0.5, context),
-        sustainEnd: inputValue(node, 'sustainEnd', 0.75, context),
-        points: [
-          { x: 0, y: 0 },
-          { x: 0.5, y: 1 },
-          { x: 1, y: 0 },
-        ],
+        mode: customWave?.mode ?? 'loop',
+        sustainStart: customWave?.sustainStart ?? 0.5,
+        sustainEnd: customWave?.sustainEnd ?? 0.75,
+        points: customWave?.points ?? [],
       },
     } : {}),
     ...(node.type === 'SamplePlayer' ? {
@@ -256,7 +265,9 @@ function compileNodeOutput(node: PatchNode, context: CompileContext): WasmAudioL
 
   const initial: SignalState = isImplicitEnvelope
     ? applyProcessorNode({ amount: 1 }, node, context)
-    : applyAmplitudeInput({ amount: 1 }, node, 'level', context);
+    : sourceHasLevelInput(node)
+      ? applyAmplitudeInput({ amount: 1 }, node, 'level', context)
+      : { amount: 1 };
   const links: WasmAudioLink[] = [];
   walkSignalOutput(node.id, node.id, initial, context, links, new Set());
   return links;
@@ -849,11 +860,18 @@ function modulationSourceState(node: PatchNode, context: CompileContext): Signal
     return applyProcessorNode({ amount: 1 }, node, context);
   }
 
-  return applyAmplitudeInput({ amount: 1 }, node, 'level', context);
+  return sourceHasLevelInput(node)
+    ? applyAmplitudeInput({ amount: 1 }, node, 'level', context)
+    : { amount: 1 };
 }
 
 function isWasmSourceNode(node: PatchNode, context: CompileContext): boolean {
   return Boolean(OSC_WAVES[node.type]) || isImplicitEnvelopeSource(node, context);
+}
+
+function sourceHasLevelInput(node: PatchNode): boolean {
+  return node.type === 'AudioInput'
+    || node.type === 'SamplePlayer';
 }
 
 function averageValues(values: number[], divisor: number): number {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { DspProgram } from './dspProgram';
+import { DSP_OP, type DspProgram } from './dspProgram';
 
 type AudioStatus = 'idle' | 'starting' | 'running' | 'error';
 
@@ -26,7 +26,7 @@ interface AudioEngineState {
   setLinkScopes: (linkIds: string[]) => void;
 }
 
-const AUDIO_ENGINE_ASSET_VERSION = '2026-07-06-dsp-control-nodes';
+const AUDIO_ENGINE_ASSET_VERSION = '2026-07-07-dsp-expression-functions';
 const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const METER_UPDATE_INTERVAL_MS = 80;
@@ -39,11 +39,17 @@ function stopAudioContext(
   contextRef: { current: AudioContext | null },
   nodeRef: { current: AudioWorkletNode | null },
   analyserRef: { current: AnalyserNode | null },
+  inputSourceRef: { current: MediaStreamAudioSourceNode | null },
+  inputStreamRef: { current: MediaStream | null },
 ): void {
   nodeRef.current?.port.postMessage({ type: 'panic' });
+  inputSourceRef.current?.disconnect();
+  inputStreamRef.current?.getTracks().forEach((track) => track.stop());
   nodeRef.current?.disconnect();
   analyserRef.current?.disconnect();
   void contextRef.current?.close();
+  inputSourceRef.current = null;
+  inputStreamRef.current = null;
   nodeRef.current = null;
   analyserRef.current = null;
   contextRef.current = null;
@@ -58,6 +64,9 @@ export function useAudioEngine(): AudioEngineState {
   const contextRef = useRef<AudioContext | null>(null);
   const nodeRef = useRef<AudioWorkletNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
+  const inputSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const inputStreamRef = useRef<MediaStream | null>(null);
+  const inputRequestIdRef = useRef(0);
   const meterFrameRef = useRef<number | null>(null);
   const graphRef = useRef<DspProgram | null>(null);
   const lastSentProgramStructureRef = useRef<string | null>(null);
@@ -95,29 +104,77 @@ export function useAudioEngine(): AudioEngineState {
     meterFrameRef.current = window.requestAnimationFrame(tick);
   }, [stopMeter]);
 
+  const disconnectAudioInput = useCallback(() => {
+    inputRequestIdRef.current += 1;
+    inputSourceRef.current?.disconnect();
+    inputStreamRef.current?.getTracks().forEach((track) => track.stop());
+    inputSourceRef.current = null;
+    inputStreamRef.current = null;
+  }, []);
+
+  const syncAudioInput = useCallback((graph: DspProgram, context: AudioContext, node: AudioWorkletNode) => {
+    if (!programUsesAudioInput(graph)) {
+      disconnectAudioInput();
+      return;
+    }
+
+    if (inputSourceRef.current) return;
+
+    const mediaDevices = navigator.mediaDevices;
+    if (!mediaDevices?.getUserMedia) {
+      setMessage('audio input unavailable: this browser does not expose getUserMedia');
+      return;
+    }
+
+    const requestId = inputRequestIdRef.current + 1;
+    inputRequestIdRef.current = requestId;
+    void mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+      },
+    }).then((stream) => {
+      const stillCurrent = (
+        inputRequestIdRef.current === requestId &&
+        contextRef.current === context &&
+        nodeRef.current === node &&
+        graphRef.current &&
+        programUsesAudioInput(graphRef.current)
+      );
+      if (!stillCurrent) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+
+      const source = context.createMediaStreamSource(stream);
+      source.connect(node);
+      inputStreamRef.current = stream;
+      inputSourceRef.current = source;
+      setMessage(`WASM audio ${context.state} (${AUDIO_ENGINE_ASSET_VERSION})`);
+    }).catch((error) => {
+      if (inputRequestIdRef.current !== requestId) return;
+      setMessage(`audio input unavailable: ${error instanceof Error ? error.message : 'permission denied'}`);
+    });
+  }, [disconnectAudioInput]);
+
   const syncGraphSamples = useCallback((graph: DspProgram, context: AudioContext, node: AudioWorkletNode) => {
-    void graph;
-    void context;
-    void node;
-    return;
-    /*
     const nextKeys: Record<string, string> = {};
 
-    for (const graphNode of graph.nodes) {
-      if (graphNode.wave !== 'sample') continue;
-      const sampleUrl = graphNode.sample?.url?.trim();
+    for (const binding of graph.sampleBindings) {
+      const sampleUrl = binding.sample.url.trim();
       if (!sampleUrl) continue;
 
-      const sampleName = graphNode.sample?.name ?? '';
+      const sampleName = binding.sample.name;
       const sampleKey = `${sampleUrl}\n${sampleName}`;
-      nextKeys[graphNode.id] = sampleKey;
-      if (sampleDataKeysRef.current[graphNode.id] === sampleKey) continue;
+      nextKeys[binding.nodeId] = sampleKey;
+      if (sampleDataKeysRef.current[binding.nodeId] === sampleKey) continue;
 
-      sampleDataKeysRef.current[graphNode.id] = sampleKey;
-      void loadAndPostSampleData(context, node, graphNode.id, sampleUrl, sampleName, sampleKey, sampleDataKeysRef)
+      sampleDataKeysRef.current[binding.nodeId] = sampleKey;
+      void loadAndPostSampleData(context, node, binding.nodeId, sampleUrl, sampleName, sampleKey, sampleDataKeysRef)
         .catch(() => {
-          if (sampleDataKeysRef.current[graphNode.id] === sampleKey) {
-            delete sampleDataKeysRef.current[graphNode.id];
+          if (sampleDataKeysRef.current[binding.nodeId] === sampleKey) {
+            delete sampleDataKeysRef.current[binding.nodeId];
           }
         });
     }
@@ -127,7 +184,6 @@ export function useAudioEngine(): AudioEngineState {
       delete sampleDataKeysRef.current[nodeId];
       node.port.postMessage({ type: 'sampleData', payload: { nodeId, data: [], sampleRate: context.sampleRate, name: '', storageKey: '' } });
     }
-    */
   }, []);
 
   const syncGraph = useCallback((graph: DspProgram) => {
@@ -139,6 +195,7 @@ export function useAudioEngine(): AudioEngineState {
       && arraysEqual(lastSentValuesRef.current, graph.values)
     ) {
       syncGraphSamples(graph, contextRef.current, nodeRef.current);
+      syncAudioInput(graph, contextRef.current, nodeRef.current);
       return;
     }
 
@@ -146,6 +203,7 @@ export function useAudioEngine(): AudioEngineState {
       lastSentValuesRef.current = [...graph.values];
       nodeRef.current.port.postMessage({ type: 'dspValues', payload: { values: graph.values } });
       syncGraphSamples(graph, contextRef.current, nodeRef.current);
+      syncAudioInput(graph, contextRef.current, nodeRef.current);
       return;
     }
 
@@ -153,16 +211,20 @@ export function useAudioEngine(): AudioEngineState {
     lastSentValuesRef.current = [...graph.values];
     nodeRef.current.port.postMessage({ type: 'dspProgram', payload: graph });
     syncGraphSamples(graph, contextRef.current, nodeRef.current);
+    syncAudioInput(graph, contextRef.current, nodeRef.current);
     nodeRef.current.port.postMessage({
       type: 'setLinkScopes',
       payload: activeScopeLinkIdsRef.current.length > 0
         ? scopePayload(activeScopeLinkIdsRef.current)
         : {},
     });
-  }, [syncGraphSamples]);
+  }, [syncAudioInput, syncGraphSamples]);
 
   const setLinkScopes = useCallback((linkIds: string[]) => {
-    activeScopeLinkIdsRef.current = [...new Set(linkIds)];
+    const nextLinkIds = uniqueScopeLinkIds(linkIds);
+    if (stringArraysEqual(activeScopeLinkIdsRef.current, nextLinkIds)) return;
+
+    activeScopeLinkIdsRef.current = nextLinkIds;
     nodeRef.current?.port.postMessage({
       type: 'setLinkScopes',
       payload: activeScopeLinkIdsRef.current.length > 0
@@ -196,7 +258,7 @@ export function useAudioEngine(): AudioEngineState {
       const analyser = context.createAnalyser();
       analyser.fftSize = 1024;
       const node = new AudioWorkletNode(context, 'visual-fm-wasm-engine', {
-        numberOfInputs: 0,
+        numberOfInputs: 1,
         numberOfOutputs: 1,
         outputChannelCount: [2],
         processorOptions: { wasmBytes },
@@ -245,6 +307,7 @@ export function useAudioEngine(): AudioEngineState {
         lastSentValuesRef.current = [...graphRef.current.values];
         node.port.postMessage({ type: 'dspProgram', payload: graphRef.current });
         syncGraphSamples(graphRef.current, context, node);
+        syncAudioInput(graphRef.current, context, node);
       }
       if (activeScopeLinkIdsRef.current.length > 0) {
         node.port.postMessage({
@@ -265,10 +328,11 @@ export function useAudioEngine(): AudioEngineState {
       setStatus('error');
       setMessage(error instanceof Error ? error.message : 'audio failed');
     }
-  }, [startMeter, syncGraphSamples]);
+  }, [startMeter, syncAudioInput, syncGraphSamples]);
 
   const stop = useCallback(() => {
-    stopAudioContext(contextRef, nodeRef, analyserRef);
+    stopAudioContext(contextRef, nodeRef, analyserRef, inputSourceRef, inputStreamRef);
+    inputRequestIdRef.current += 1;
     lastSentProgramStructureRef.current = null;
     lastSentValuesRef.current = null;
     sampleDataKeysRef.current = {};
@@ -281,7 +345,7 @@ export function useAudioEngine(): AudioEngineState {
 
   useEffect(() => () => {
     stopMeter();
-    stopAudioContext(contextRef, nodeRef, analyserRef);
+    stopAudioContext(contextRef, nodeRef, analyserRef, inputSourceRef, inputStreamRef);
   }, [stopMeter]);
 
   return { status, message, peak, linkMeters, linkScopes, start, stop, syncGraph, setLinkScopes };
@@ -307,6 +371,8 @@ function dspProgramStructureKey(program: DspProgram): string {
     stateCount: program.stateCount,
     feedbackLinkIds: program.feedbackLinkIds,
     monitorIds: program.monitorIds,
+    sampleBindings: program.sampleBindings,
+    customWaveBindings: program.customWaveBindings,
     errors: program.errors,
   });
 }
@@ -317,6 +383,22 @@ function arraysEqual(left: number[] | null, right: number[]): boolean {
     if (left[index] !== right[index]) return false;
   }
   return true;
+}
+
+function uniqueScopeLinkIds(linkIds: string[]): string[] {
+  return [...new Set(linkIds.map((id) => String(id)).filter(Boolean))];
+}
+
+function stringArraysEqual(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+function programUsesAudioInput(program: DspProgram | null): boolean {
+  return Boolean(program?.ops.some((op) => op.opcode === DSP_OP.Input));
 }
 
 async function resumeAudioContext(context: AudioContext): Promise<void> {

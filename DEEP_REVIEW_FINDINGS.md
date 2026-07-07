@@ -31,7 +31,7 @@ These checks pass:
 
 - `npm run typecheck`
 - `npm run build`
-- `node scripts/render-worklet-startup.mjs 1 --compiled`
+- `node scripts/render-worklet-startup.mjs 1`
 
 So the project is syntactically healthy. The failures are semantic and architectural.
 
@@ -302,6 +302,8 @@ Treat it consistently with distortion nodes and add dynamic modulation support, 
 
 ### 15. Static folding supports only a subset of processor behavior
 
+Legacy note: this finding refers to the deprecated `WasmAudioGraph` compiler in `web/src/audio/compiler.ts`, not the active `DspProgram` compiler.
+
 Evidence:
 
 - Static output folding handles `Gain`, `Multiply`, `Abs`, and `Map`: `web/src/audio/compiler.ts:789`.
@@ -316,6 +318,8 @@ Likely fix:
 Define which processors can have meaningful static output. For the rest, reject static folding explicitly rather than passing through.
 
 ### 16. There is no equivalent of `visual-visual` patch validation in this project
+
+Legacy note: `compilePatchToWasmGraph` is no longer the active audio compiler. Current validation work should target the `DspProgram` path in `web/src/audio/dspProgram.ts`.
 
 Evidence:
 
@@ -349,10 +353,12 @@ After deciding the architecture, update the README to describe the actual invari
 
 ### 18. The WASM API is still link-centric
 
+Compatibility note: the active worklet path now syncs `DspProgram` payloads. The old graph sync remains in `Legacy*` worklet methods for compatibility with old `WasmAudioGraph` payloads and should not be treated as the current runtime boundary.
+
 Evidence:
 
 - Worklet `normalizeLink` accepts filter, distortion, envelope, follower, map, signal mode, and parameter mode: `web/public/audio/audio-worklet-wasm.js:398`.
-- `syncRustGraph` sends these fields per link to Rust: `web/public/audio/audio-worklet-wasm.js:515`.
+- Legacy `syncLegacyRustGraph` sends these fields per link to Rust.
 
 Impact:
 

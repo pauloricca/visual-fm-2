@@ -29,6 +29,8 @@ export function ShaderEdge(props: EdgeProps<ShaderFlowEdge>) {
   const viewport = useViewport();
   const screenPosition = reactFlow.flowToScreenPosition({ x: labelX, y: labelY });
   const weight = props.data?.weight ?? 1;
+  const dspErrors = props.data?.dspErrors ?? [];
+  const hasDspErrors = dspErrors.length > 0;
   const selected = props.selected ?? false;
   const showLinkControls = selected && props.data?.showLinkControls === true;
   const underlayClassName = [
@@ -36,12 +38,14 @@ export function ShaderEdge(props: EdgeProps<ShaderFlowEdge>) {
     'shader-edge-path-underlay',
     isFeedback ? 'shader-edge-path-feedback' : '',
     isControl ? 'shader-edge-path-control' : '',
+    hasDspErrors ? 'shader-edge-path-dsp-error' : '',
   ].join(' ');
   const edgeClassName = [
     'shader-edge-path',
     'shader-edge-path-foreground',
     isFeedback ? 'shader-edge-path-feedback' : '',
     isControl ? 'shader-edge-path-control' : '',
+    hasDspErrors ? 'shader-edge-path-dsp-error' : '',
     selected ? 'shader-edge-path-selected' : '',
   ].filter(Boolean).join(' ');
   const selectedUnderlayStyle = selected
@@ -94,6 +98,23 @@ export function ShaderEdge(props: EdgeProps<ShaderFlowEdge>) {
               onChange={(nextWeight) => props.data?.onWeightChange(props.id, nextWeight)}
               onModeChange={(nextMode) => props.data?.onModeChange(props.id, nextMode)}
             />
+          </div>,
+          overlayTarget,
+        )
+      ) : null}
+      {hasDspErrors && overlayTarget ? (
+        createPortal(
+          <div
+            className="edge-error-label"
+            style={{
+              left: screenPosition.x,
+              top: screenPosition.y,
+              transform: `translate(-50%, calc(-50% - 18px)) scale(${viewport.zoom})`,
+            }}
+            title={dspErrors.join('\n')}
+            aria-label={`${dspErrors.length} DSP error${dspErrors.length === 1 ? '' : 's'}`}
+          >
+            !
           </div>,
           overlayTarget,
         )

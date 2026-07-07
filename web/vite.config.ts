@@ -36,6 +36,18 @@ function localSampleStoragePlugin(): Plugin {
     const url = new URL(request.url ?? '/', 'http://localhost');
     const path = url.pathname;
 
+    if (path === '/api/local-samples' && request.method === 'GET') {
+      listLocalSamples(samplesDir).then((samples) => {
+        response.statusCode = 200;
+        response.setHeader('Cache-Control', 'no-store');
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify({ samples }));
+      }).catch((error: unknown) => {
+        sendPatchStorageError(response, error);
+      });
+      return;
+    }
+
     if (path === '/api/local-samples' && request.method === 'POST') {
       saveUploadedSample(samplesDir, request).then((sample) => {
         response.statusCode = 201;
@@ -315,6 +327,26 @@ async function saveUploadedSample(samplesDir: string, request: Connect.IncomingM
     name: savedName,
     url: `/samples/${encodeURIComponent(savedName)}`,
   };
+}
+
+async function listLocalSamples(samplesDir: string) {
+  if (!existsSync(samplesDir)) return [];
+
+  const entries = await readdir(samplesDir, { withFileTypes: true });
+  const samples = await Promise.all(entries
+    .filter((entry) => entry.isFile() && isSafePatchStorageSegment(entry.name) && SAMPLE_AUDIO_EXTENSIONS.has(extname(entry.name).toLowerCase()))
+    .map(async (entry) => {
+      const fileStats = await stat(join(samplesDir, entry.name));
+      return {
+        name: entry.name,
+        url: `/samples/${encodeURIComponent(entry.name)}`,
+        updatedAt: fileStats.mtime.getTime(),
+      };
+    }));
+
+  return samples
+    .sort((a, b) => b.updatedAt - a.updatedAt || a.name.localeCompare(b.name))
+    .map(({ name, url }) => ({ name, url }));
 }
 
 function multipartBoundary(contentType: string | string[] | undefined): string | null {

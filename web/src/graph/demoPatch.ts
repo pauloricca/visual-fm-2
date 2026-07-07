@@ -6,7 +6,7 @@ export const demoPatch: Patch = {
     {
       id: 'sine_1',
       type: 'SineOsc',
-      params: { frequency: 110, phase: 0, phaseReset: 0, level: 0.75 },
+      params: { frequency: 110 },
       position: { x: 80, y: 130 },
     },
     {

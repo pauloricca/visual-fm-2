@@ -23,6 +23,10 @@ const FORMANT_INTENSITY_MAX = 36;
 const MAX_CUSTOM_WAVE_POINTS = 64;
 const QUANTISE_MIDI_ROOT = "midi-note";
 
+// Active playback uses DspProgram messages compiled by web/src/audio/dspProgram.ts.
+// The graph message path below is retained only for old WasmAudioGraph payloads
+// and legacy smoke/debug tooling.
+
 const WAVE_IDS = new Map([
   ["sine", 0],
   ["triangle", 1],
@@ -198,7 +202,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.port.onmessage = (event) => {
       const { type, payload } = event.data || {};
       if (type === "graph") {
-        this.setGraph(payload);
+        this.setLegacyGraph(payload);
       } else if (type === "dspProgram") {
         this.setDspProgram(payload);
       } else if (type === "dspValues") {
@@ -206,9 +210,9 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       } else if (type === "sampleData") {
         this.setSampleData(payload);
       } else if (type === "nodeParam") {
-        this.setNodeParam(payload);
+        this.setLegacyNodeParam(payload);
       } else if (type === "linkParam") {
-        this.setLinkParam(payload);
+        this.setLegacyLinkParam(payload);
       } else if (type === "noteOn") {
         if (!this.muted) this.noteOn(payload.note, payload.velocity);
       } else if (type === "noteOff") {
@@ -266,7 +270,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       }
       this.wasm.resetPhases();
       this.ready = true;
-      this.syncRustGraph();
+      this.syncLegacyRustGraph();
       this.syncDspProgram();
       this.configureDspScopes();
       this.configureDspMeters();
@@ -283,7 +287,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     }
   }
 
-  setGraph(graph = {}) {
+  setLegacyGraph(graph = {}) {
     this.dspProgram = null;
     this.wasm?.clearDspProgram?.();
     this.wasm?.clearDspScopes?.();
@@ -307,7 +311,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.dspScopeStates.clear();
     this.dspMeterStates.clear();
     this.monitorScopeStates.clear();
-    this.syncRustGraph();
+    this.syncLegacyRustGraph();
     for (const link of this.links) {
       link.controlSmoother = this.syncLinkControlSmoother(link, true);
       this.applyLinkControlSmoother(link);
@@ -382,6 +386,21 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         if (id && Number.isFinite(registerNumber)) monitorIds[String(id)] = registerNumber;
       }
     }
+    const sampleBindings = Array.isArray(program.sampleBindings)
+      ? program.sampleBindings.map((binding) => ({
+        nodeId: String(binding?.nodeId || ""),
+        sample: {
+          name: String(binding?.sample?.name || ""),
+          url: String(binding?.sample?.url || ""),
+        },
+      })).filter((binding) => binding.nodeId)
+      : [];
+    const customWaveBindings = Array.isArray(program.customWaveBindings)
+      ? program.customWaveBindings.map((binding) => ({
+        nodeId: String(binding?.nodeId || ""),
+        customWave: this.normalizeCustomWave(binding?.customWave),
+      })).filter((binding) => binding.nodeId)
+      : [];
 
     return {
       version: 1,
@@ -391,6 +410,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       registerCount: Math.max(0, Math.trunc(Number(program.registerCount) || 0)),
       stateCount: Math.max(0, Math.trunc(Number(program.stateCount) || 0)),
       monitorIds,
+      sampleBindings,
+      customWaveBindings,
       feedbackLinkIds: Array.isArray(program.feedbackLinkIds) ? program.feedbackLinkIds.map(String) : [],
       errors,
     };
@@ -427,12 +448,106 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     if (!this.wasm?.clearDspProgram || !this.dspProgram) return;
 
     this.wasm.clearDspProgram();
+    this.wasm.clearGraph?.();
+    this.nodes = [];
+    this.nodesById = new Map();
     if (this.dspProgram.errors.length > 0) return;
 
     for (let index = 0; index < this.dspProgram.values.length; index += 1) {
       this.wasm.setDspValue?.(index, this.dspProgram.values[index]);
     }
+    const customWaveNodeIndexes = [];
+    for (let index = 0; index < this.dspProgram.customWaveBindings.length; index += 1) {
+      const binding = this.dspProgram.customWaveBindings[index];
+      const customNode = this.normalizeNode({
+        id: binding.nodeId,
+        wave: "custom",
+        frequencyMode: "fixed",
+        frequency: 220,
+        customWave: binding.customWave,
+      });
+      customNode.wasmIndex = this.wasm.addNode?.(
+        this.waveId(customNode),
+        this.frequencyModeId(customNode),
+        customNode.ratio,
+        customNode.frequency,
+        customNode.syncBeats,
+        customNode.quantise.enabled ? 1 : 0,
+        customNode.quantise.root === QUANTISE_MIDI_ROOT ? -1 : QUANTISE_ROOT_NOTES.indexOf(customNode.quantise.root),
+        QUANTISE_SCALE_IDS.get(customNode.quantise.scale) ?? 0,
+        customNode.quantise.glide,
+        customNode.speed,
+        customNode.audioInputGain,
+        CUSTOM_WAVE_MODE_IDS.get(customNode.customWave?.mode) ?? 0,
+        customNode.customWave?.sustainStart ?? 0.5,
+        customNode.customWave?.sustainEnd ?? 0.75,
+        SAMPLE_MODE_IDS.get(customNode.sample?.mode) ?? 0,
+        customNode.sample?.start ?? 0,
+        customNode.sample?.end ?? 1,
+        customNode.sample?.stretch ?? 1,
+        customNode.sample?.cycleLength ?? 4096,
+        customNode.sample?.overlapRatio ?? 0.09,
+        customNode.sample?.originalPitch ?? 60,
+      ) ?? -1;
+      if (customNode.wasmIndex >= 0 && typeof this.wasm.addCustomWavePoint === "function") {
+        for (const point of customNode.customWave.points) {
+          this.wasm.addCustomWavePoint(customNode.wasmIndex, point.x, point.y);
+        }
+      }
+      customWaveNodeIndexes[index] = customNode.wasmIndex;
+      this.nodes.push(customNode);
+      this.nodesById.set(customNode.id, customNode);
+    }
+    for (let index = 0; index < this.dspProgram.sampleBindings.length; index += 1) {
+      const binding = this.dspProgram.sampleBindings[index];
+      const sampleNode = this.normalizeNode({
+        id: binding.nodeId,
+        wave: "sample",
+        frequencyMode: "fixed",
+        frequency: 220,
+        sample: {
+          name: binding.sample.name,
+          mode: "one-shot",
+          start: 0,
+          end: 1,
+          stretch: 1,
+          cycleLength: 4096,
+          overlapRatio: 0.09,
+          originalPitch: 60,
+        },
+      });
+      sampleNode.wasmIndex = this.wasm.addNode?.(
+        this.waveId(sampleNode),
+        this.frequencyModeId(sampleNode),
+        sampleNode.ratio,
+        sampleNode.frequency,
+        sampleNode.syncBeats,
+        sampleNode.quantise.enabled ? 1 : 0,
+        sampleNode.quantise.root === QUANTISE_MIDI_ROOT ? -1 : QUANTISE_ROOT_NOTES.indexOf(sampleNode.quantise.root),
+        QUANTISE_SCALE_IDS.get(sampleNode.quantise.scale) ?? 0,
+        sampleNode.quantise.glide,
+        sampleNode.speed,
+        sampleNode.audioInputGain,
+        CUSTOM_WAVE_MODE_IDS.get(sampleNode.customWave?.mode) ?? 0,
+        sampleNode.customWave?.sustainStart ?? 0.5,
+        sampleNode.customWave?.sustainEnd ?? 0.75,
+        SAMPLE_MODE_IDS.get(sampleNode.sample?.mode) ?? 0,
+        sampleNode.sample?.start ?? 0,
+        sampleNode.sample?.end ?? 1,
+        sampleNode.sample?.stretch ?? 1,
+        sampleNode.sample?.cycleLength ?? 4096,
+        sampleNode.sample?.overlapRatio ?? 0.09,
+        sampleNode.sample?.originalPitch ?? 60,
+      ) ?? -1;
+      this.nodes.push(sampleNode);
+      this.nodesById.set(sampleNode.id, sampleNode);
+      this.wasm.setDspSampleNode?.(index, sampleNode.wasmIndex);
+      this.copySampleDataToWasm(sampleNode);
+    }
     for (const op of this.dspProgram.ops) {
+      const opValue = op.opcode === 3 && op.a === 9
+        ? customWaveNodeIndexes[Math.trunc(op.value)] ?? -1
+        : op.value;
       this.wasm.addDspOp?.(
         op.opcode,
         op.out,
@@ -442,7 +557,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         op.d,
         op.e,
         op.state,
-        op.value,
+        opValue,
       );
     }
     this.restoreDspState(preservedState);
@@ -658,7 +773,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     return amount;
   }
 
-  syncRustGraph() {
+  // Legacy WasmAudioGraph sync. Active playback uses syncDspProgram() above.
+  syncLegacyRustGraph() {
     if (!this.wasm?.clearGraph) return;
 
     this.wasm.clearGraph();
@@ -823,7 +939,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     new Float32Array(this.wasm.memory.buffer, ptr, length).set(entry.data.subarray(0, length));
   }
 
-  setNodeParam({ id, parameter, value } = {}) {
+  setLegacyNodeParam({ id, parameter, value } = {}) {
     const node = this.nodesById.get(id);
     if (!node || node.wasmIndex < 0) return;
     if (parameter === "frequencyMode") {
@@ -886,7 +1002,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     }
   }
 
-  setLinkParam({ id, parameter, value } = {}) {
+  setLegacyLinkParam({ id, parameter, value } = {}) {
     const link = this.linksById.get(id);
     if (!link) return;
     if (parameter === "amount") {
@@ -1471,7 +1587,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     return 0;
   }
 
-  renderVoice(voice, now, frames) {
+  renderLegacyVoice(voice, now, frames) {
     this.wasm.renderVoiceGraph(
       voice.slot,
       frames,
@@ -1961,6 +2077,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       return this.renderDspProgramToOutput(inputs, outputs, frames);
     }
 
+    // Legacy WasmAudioGraph rendering fallback. The current app should only
+    // arrive here when an old "graph" message was sent intentionally.
     const hasMainLinks = this.links.some((link) => link.wasmIndex >= 0);
     if (!this.ready || (!hasMainLinks && this.monitorScopeStates.size === 0)) {
       this.fillSilence(outputs);
@@ -1982,7 +2100,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.copyInput(inputs, frames);
 
     if (this.hasActiveDroneLinks) {
-      this.renderVoice({
+      this.renderLegacyVoice({
         slot: DRONE_SLOT,
         frequency: 440,
         velocity: 1,
@@ -1993,7 +2111,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     }
 
     for (const voice of this.voices.values()) {
-      this.renderVoice(voice, now, frames);
+      this.renderLegacyVoice(voice, now, frames);
     }
 
     this.renderMonitorScopes(frames);

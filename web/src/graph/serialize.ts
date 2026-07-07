@@ -1,4 +1,5 @@
 import type { Patch } from './types';
+import { normalizeCustomWave } from './customWave';
 
 export function normalizePatch(patch: Patch): Patch {
   return {
@@ -11,6 +12,7 @@ export function normalizePatch(patch: Patch): Patch {
         ...(node.subpatchCloneId ? { subpatchCloneId: node.subpatchCloneId } : {}),
         ...(node.expression !== undefined ? { expression: node.expression } : {}),
         ...(node.sample ? { sample: { ...node.sample } } : {}),
+        ...(node.customWave ? { customWave: normalizeCustomWave(node.customWave, node.params) } : {}),
         params: sortRecord(node.params),
         ...(node.position ? { position: node.position } : {}),
         ...(node.inputs ? { inputs: node.inputs.map((input) => ({ ...input })) } : {}),

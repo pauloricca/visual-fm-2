@@ -9,6 +9,7 @@
     "dev": "npm --workspace web run dev",
     "build:wasm": "sh scripts/build-rust-wasm.sh",
     "build": "npm --workspace web run build",
-    "typecheck": "npm --workspace web run typecheck"
+    "typecheck": "npm --workspace web run typecheck",
+    "smoke:dsp-ports": "node scripts/smoke-dsp-port-links.mjs"
   }
 }
