@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DSP_OP, type DspProgram } from './dspProgram';
 
 type AudioStatus = 'idle' | 'starting' | 'running' | 'error';
@@ -165,7 +165,7 @@ export function useAudioEngine(): AudioEngineState {
   const refreshAudioInputDevices = useCallback(async () => {
     const mediaDevices = navigator.mediaDevices;
     if (!mediaDevices?.enumerateDevices) {
-      setAudioInputDevices([]);
+      setAudioInputDevices((current) => current.length === 0 ? current : []);
       return;
     }
 
@@ -183,7 +183,7 @@ export function useAudioEngine(): AudioEngineState {
         return audioInputs.some((device) => device.deviceId === current) ? current : '';
       });
     } catch {
-      setAudioInputDevices([]);
+      setAudioInputDevices((current) => current.length === 0 ? current : []);
     }
   }, []);
 
@@ -223,7 +223,7 @@ export function useAudioEngine(): AudioEngineState {
     }
     midiAccessRef.current = null;
     midiRequestRef.current = null;
-    setMidiInputDevices([]);
+    setMidiInputDevices((current) => current.length === 0 ? current : []);
     setMidiInputStatus(nextStatus);
     setMidiInputMessage(nextMessage);
   }, []);
@@ -268,7 +268,7 @@ export function useAudioEngine(): AudioEngineState {
       requestMIDIAccess?: (options?: { sysex?: boolean }) => Promise<unknown>;
     };
     if (!navigatorWithMidi.requestMIDIAccess) {
-      setMidiInputDevices([]);
+      setMidiInputDevices((current) => current.length === 0 ? current : []);
       setMidiInputStatus('unsupported');
       setMidiInputMessage('MIDI input is unavailable in this browser.');
       return;
@@ -294,7 +294,7 @@ export function useAudioEngine(): AudioEngineState {
     } catch (error) {
       setMidiInputStatus(error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'SecurityError') ? 'denied' : 'error');
       setMidiInputMessage(error instanceof Error ? error.message : 'MIDI permission was denied.');
-      setMidiInputDevices([]);
+      setMidiInputDevices((current) => current.length === 0 ? current : []);
     }
   }, [attachMidiInputs]);
 
@@ -416,7 +416,7 @@ export function useAudioEngine(): AudioEngineState {
     };
     if (!navigatorWithMidi.requestMIDIAccess) {
       setMidiInputStatus('unsupported');
-      setMidiInputDevices([]);
+      setMidiInputDevices((current) => current.length === 0 ? current : []);
       setMidiInputMessage('MIDI input is unavailable in this browser.');
       setMessage('MIDI input unavailable: this browser does not expose Web MIDI');
       return;
@@ -442,7 +442,7 @@ export function useAudioEngine(): AudioEngineState {
     }).catch((error) => {
       setMidiInputStatus(error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'SecurityError') ? 'denied' : 'error');
       setMidiInputMessage(error instanceof Error ? error.message : 'MIDI permission was denied.');
-      setMidiInputDevices([]);
+      setMidiInputDevices((current) => current.length === 0 ? current : []);
       setMessage(`MIDI input unavailable: ${error instanceof Error ? error.message : 'permission denied'}`);
       midiRequestRef.current = null;
     });
@@ -470,7 +470,7 @@ export function useAudioEngine(): AudioEngineState {
         };
         if (!navigatorWithMidi.requestMIDIAccess) {
           setMidiInputStatus('unsupported');
-          setMidiInputDevices([]);
+          setMidiInputDevices((current) => current.length === 0 ? current : []);
           setMidiInputMessage('MIDI input is unavailable in this browser.');
         } else if (midiAccessRef.current) {
           const devices = updateMidiInputDevices(midiAccessRef.current);
@@ -653,7 +653,7 @@ export function useAudioEngine(): AudioEngineState {
     setMidiInputMessage(programUsesMidi(graphRef.current)
       ? 'Start audio or refresh MIDI to request browser MIDI access.'
       : 'MIDI input is not used by this patch.');
-    setMidiInputDevices([]);
+    setMidiInputDevices((current) => current.length === 0 ? current : []);
   }, [disconnectMidiInput, stopMeter]);
 
   useEffect(() => () => {
@@ -674,21 +674,21 @@ export function useAudioEngine(): AudioEngineState {
     return () => mediaDevices.removeEventListener('devicechange', handleDeviceChange);
   }, [refreshAudioInputDevices]);
 
-  const audioInput: AudioInputState = {
+  const audioInput: AudioInputState = useMemo(() => ({
     status: audioInputStatus,
     message: audioInputMessage,
     devices: audioInputDevices,
     selectedDeviceId: selectedAudioInputDeviceId,
     canSelectDevice: Boolean(navigator.mediaDevices?.enumerateDevices),
-  };
-  const midiInput: MidiInputState = {
+  }), [audioInputDevices, audioInputMessage, audioInputStatus, selectedAudioInputDeviceId]);
+  const midiInput: MidiInputState = useMemo(() => ({
     status: midiInputStatus,
     message: midiInputMessage,
     devices: midiInputDevices,
     canRequestAccess: Boolean((navigator as Navigator & {
       requestMIDIAccess?: (options?: { sysex?: boolean }) => Promise<unknown>;
     }).requestMIDIAccess),
-  };
+  }), [midiInputDevices, midiInputMessage, midiInputStatus]);
 
   return {
     status,

@@ -162,7 +162,10 @@ function EdgeLinkControls({ value, mode, onChange, onModeChange }: EdgeLinkContr
       <select
         className="edge-link-mode nodrag nopan"
         value={mode}
-        onChange={(event) => onModeChange(event.target.value as LinkMode)}
+        onChange={(event) => {
+          onModeChange(event.target.value as LinkMode);
+          event.currentTarget.blur();
+        }}
         onPointerDown={(event) => event.stopPropagation()}
         onMouseDown={(event) => event.stopPropagation()}
         onDoubleClick={(event) => event.stopPropagation()}
@@ -255,7 +258,9 @@ export function EdgeWeightScrubber({ value, onChange }: EdgeWeightScrubberProps)
     event.currentTarget.releasePointerCapture(event.pointerId);
     dragRef.current = null;
 
-    if (!drag.dragging) {
+    if (drag.dragging) {
+      event.currentTarget.blur();
+    } else {
       setEditing(true);
     }
   }
@@ -308,7 +313,7 @@ export function EdgeWeightScrubber({ value, onChange }: EdgeWeightScrubberProps)
     <div
       className="edge-weight-scrubber nodrag nopan"
       role="spinbutton"
-      tabIndex={0}
+      tabIndex={-1}
       aria-valuenow={value}
       onPointerDown={startDrag}
       onPointerMove={updateDrag}
@@ -317,8 +322,8 @@ export function EdgeWeightScrubber({ value, onChange }: EdgeWeightScrubberProps)
       onMouseDown={(event) => event.stopPropagation()}
       onDoubleClick={(event) => event.stopPropagation()}
       onKeyDown={(event) => {
-        event.stopPropagation();
         if (event.key === 'Enter') {
+          event.stopPropagation();
           setEditing(true);
         }
       }}

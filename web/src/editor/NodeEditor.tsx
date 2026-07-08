@@ -69,6 +69,11 @@ const MAX_EMPTY_SCREEN_RATIO = 0.7;
 const DEFAULT_NODE_BOUNDS_SIZE = { width: 240, height: 96 };
 const NODE_HEADER_HEIGHT = 32;
 const DSP_ERROR_PANEL_LIMIT = 4;
+const FIT_VIEW_OPTIONS = { padding: DEFAULT_FIT_VIEW_PADDING };
+const TRANSPARENT_CONNECTION_LINE_STYLE = { stroke: 'transparent' };
+const DELETE_KEY_CODES = ['Backspace', 'Delete'];
+const MULTI_SELECTION_KEY_CODES = ['Meta', 'Shift'];
+const REACT_FLOW_PRO_OPTIONS = { hideAttribution: true };
 
 let subpatchCloneSequence = 0;
 
@@ -242,7 +247,7 @@ function NodeEditorInner() {
     const handlePlaybackKeyDown = (event: KeyboardEvent) => {
       if (event.key !== ' ' || event.repeat) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
-      if (isEditableEventTarget(event.target)) return;
+      if (isEditableEventTarget(event.target) && !isPlaybackShortcutControlEventTarget(event.target)) return;
 
       event.preventDefault();
       toggleAudioPlayback();
@@ -2454,6 +2459,10 @@ function NodeEditorInner() {
     }
   }, []);
 
+  const handleMoveEnd = useCallback((_event: globalThis.MouseEvent | TouchEvent | null, nextViewport: Viewport) => {
+    setViewport(nextViewport);
+  }, []);
+
   return (
     <div className="app-shell app-shell-panel-closed">
       <EdgeOverlayProvider target={edgeOverlayElement}>
@@ -2495,13 +2504,13 @@ function NodeEditorInner() {
             onReconnectStart={onReconnectStart}
             onReconnectEnd={onReconnectEnd}
             reconnectRadius={12}
-            connectionLineStyle={draftNodePreview ? { stroke: 'transparent' } : undefined}
+            connectionLineStyle={draftNodePreview ? TRANSPARENT_CONNECTION_LINE_STYLE : undefined}
             onEdgeDoubleClick={(event, edge) => {
               event.preventDefault();
               event.stopPropagation();
               insertNodeOnEdge(edge.id);
             }}
-            onMoveEnd={(_, nextViewport) => setViewport(nextViewport)}
+            onMoveEnd={handleMoveEnd}
             connectionMode={ConnectionMode.Loose}
             panOnScroll
             panOnDrag={false}
@@ -2514,13 +2523,13 @@ function NodeEditorInner() {
             panActivationKeyCode={null}
             defaultViewport={initialState?.ui?.viewport}
             fitView={!initialState?.ui?.viewport}
-            fitViewOptions={{ padding: DEFAULT_FIT_VIEW_PADDING }}
+            fitViewOptions={FIT_VIEW_OPTIONS}
             translateExtent={panTranslateExtent}
             nodeExtent={FLOW_INFINITE_EXTENT}
-            deleteKeyCode={['Backspace', 'Delete']}
-            multiSelectionKeyCode={['Meta', 'Shift']}
+            deleteKeyCode={DELETE_KEY_CODES}
+            multiSelectionKeyCode={MULTI_SELECTION_KEY_CODES}
             snapToGrid={false}
-            proOptions={{ hideAttribution: true }}
+            proOptions={REACT_FLOW_PRO_OPTIONS}
           >
             <Background color="rgba(255,255,255,0.08)" gap={28} size={1} />
             <Controls showInteractive={false} />
@@ -4396,6 +4405,13 @@ function isEditableEventTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable) return true;
   return ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
+}
+
+function isPlaybackShortcutControlEventTarget(target: EventTarget | null): boolean {
+  if (target instanceof HTMLInputElement) {
+    return target.type === 'range';
+  }
+  return target instanceof HTMLSelectElement;
 }
 
 function selectionById<T extends { id: string; selected?: boolean }>(items: T[]): Record<string, boolean> {

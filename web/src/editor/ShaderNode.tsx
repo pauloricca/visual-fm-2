@@ -807,7 +807,10 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   <select
                     className="slider-direction-select nodrag nopan"
                     value={String(Math.round(node.params.direction ?? input.defaultValue ?? 0))}
-                    onChange={(event) => data.onParamChange(node.id, input.name, Number(event.currentTarget.value))}
+                    onChange={(event) => {
+                      data.onParamChange(node.id, input.name, Number(event.currentTarget.value));
+                      event.currentTarget.blur();
+                    }}
                     onPointerDown={(event) => event.stopPropagation()}
                     onClick={(event) => event.stopPropagation()}
                     onDoubleClick={(event) => event.stopPropagation()}
@@ -831,7 +834,10 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   <select
                     className="sample-mode-select nodrag nopan"
                     value={String(Math.round(node.params.mode ?? input.defaultValue ?? 0))}
-                    onChange={(event) => data.onParamChange(node.id, input.name, Number(event.currentTarget.value))}
+                    onChange={(event) => {
+                      data.onParamChange(node.id, input.name, Number(event.currentTarget.value));
+                      event.currentTarget.blur();
+                    }}
                     onPointerDown={(event) => event.stopPropagation()}
                     onClick={(event) => event.stopPropagation()}
                     onDoubleClick={(event) => event.stopPropagation()}
@@ -857,7 +863,10 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                     className="midi-voices-select nodrag nopan"
                     aria-label="MIDI polyphony voices"
                     value={String(clamp(Math.round(node.params.voices ?? input.defaultValue ?? 8), 1, 16))}
-                    onChange={(event) => data.onParamChange(node.id, input.name, Number(event.currentTarget.value))}
+                    onChange={(event) => {
+                      data.onParamChange(node.id, input.name, Number(event.currentTarget.value));
+                      event.currentTarget.blur();
+                    }}
                     onPointerDown={(event) => event.stopPropagation()}
                     onClick={(event) => event.stopPropagation()}
                     onDoubleClick={(event) => event.stopPropagation()}
@@ -882,7 +891,10 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   <select
                     className="button-mode-select nodrag nopan"
                     value={String(Math.round(node.params.mode ?? input.defaultValue ?? 0))}
-                    onChange={(event) => data.onParamChange(node.id, input.name, Number(event.currentTarget.value))}
+                    onChange={(event) => {
+                      data.onParamChange(node.id, input.name, Number(event.currentTarget.value));
+                      event.currentTarget.blur();
+                    }}
                     onPointerDown={(event) => event.stopPropagation()}
                     onClick={(event) => event.stopPropagation()}
                     onDoubleClick={(event) => event.stopPropagation()}
@@ -1138,7 +1150,10 @@ function AudioInputDisplay({ state, muted, onMutedChange, onDeviceChange, onRefr
             aria-label="Audio input device"
             value={selectedDeviceId}
             disabled={devices.length === 0}
-            onChange={(event) => onDeviceChange(event.currentTarget.value)}
+            onChange={(event) => {
+              onDeviceChange(event.currentTarget.value);
+              event.currentTarget.blur();
+            }}
             onPointerDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
             onDoubleClick={(event) => event.stopPropagation()}
@@ -1300,13 +1315,29 @@ function SliderDisplay({ value, direction, onChange }: SliderDisplayProps) {
       <input
         aria-label="Slider value"
         type="range"
+        tabIndex={-1}
         min={0}
         max={1}
         step={0.001}
         value={normalized}
-        onChange={(event) => onChange(Number(event.currentTarget.value))}
+        onChange={(event) => {
+          onChange(Number(event.currentTarget.value));
+          event.currentTarget.blur();
+        }}
+        onFocus={(event) => event.currentTarget.blur()}
         onPointerDown={(event) => event.stopPropagation()}
-        onClick={(event) => event.stopPropagation()}
+        onPointerUp={(event) => {
+          event.stopPropagation();
+          event.currentTarget.blur();
+        }}
+        onPointerCancel={(event) => {
+          event.stopPropagation();
+          event.currentTarget.blur();
+        }}
+        onClick={(event) => {
+          event.stopPropagation();
+          event.currentTarget.blur();
+        }}
         onDoubleClick={(event) => event.stopPropagation()}
       />
     </div>
@@ -1467,7 +1498,10 @@ function CustomWaveEditor({
           <select
             className="custom-wave-mode-select"
             value={customWave.mode}
-            onChange={(event) => onModeChange(event.currentTarget.value as CustomWaveMode)}
+            onChange={(event) => {
+              onModeChange(event.currentTarget.value as CustomWaveMode);
+              event.currentTarget.blur();
+            }}
             onPointerDown={(event) => event.stopPropagation()}
             onDoubleClick={(event) => event.stopPropagation()}
           >
@@ -1514,12 +1548,25 @@ function CustomWaveRange({ label, value, min, max, onChange }: CustomWaveRangePr
       <span>{label}</span>
       <input
         type="range"
+        tabIndex={-1}
         min={min}
         max={max}
         step={0.001}
         value={value}
-        onChange={(event) => onChange(Number(event.currentTarget.value))}
+        onChange={(event) => {
+          onChange(Number(event.currentTarget.value));
+          event.currentTarget.blur();
+        }}
+        onFocus={(event) => event.currentTarget.blur()}
         onPointerDown={(event) => event.stopPropagation()}
+        onPointerUp={(event) => {
+          event.stopPropagation();
+          event.currentTarget.blur();
+        }}
+        onPointerCancel={(event) => {
+          event.stopPropagation();
+          event.currentTarget.blur();
+        }}
         onDoubleClick={(event) => event.stopPropagation()}
       />
       <input
@@ -2036,7 +2083,9 @@ function NumericScrubber({ value, min, max, integer = false, onChange }: Numeric
     event.currentTarget.releasePointerCapture(event.pointerId);
     dragRef.current = null;
 
-    if (!drag.dragging) {
+    if (drag.dragging) {
+      event.currentTarget.blur();
+    } else {
       setEditing(true);
     }
   }
@@ -2092,7 +2141,7 @@ function NumericScrubber({ value, min, max, integer = false, onChange }: Numeric
     <div
       className="numeric-scrubber nodrag nopan"
       role="spinbutton"
-      tabIndex={0}
+      tabIndex={-1}
       aria-valuenow={value}
       aria-valuemin={min}
       aria-valuemax={max}
@@ -2103,8 +2152,8 @@ function NumericScrubber({ value, min, max, integer = false, onChange }: Numeric
       onMouseDown={(event) => event.stopPropagation()}
       onDoubleClick={(event) => event.stopPropagation()}
       onKeyDown={(event) => {
-        event.stopPropagation();
         if (event.key === 'Enter') {
+          event.stopPropagation();
           setEditing(true);
         }
       }}
