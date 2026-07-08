@@ -232,6 +232,7 @@ function NodeEditorInner() {
   const reconnectingEdgeSnapshotRef = useRef<ShaderFlowEdge | null>(null);
   const audio = useAudioEngine();
   const audioPlaybackActive = audio.status === 'running' || audio.status === 'starting';
+  const audioRecordingActive = audio.recording.status === 'waiting' || audio.recording.status === 'recording';
   const localPatchStorageEnabled = useMemo(() => canUseLocalPatchStorage(), []);
   const [reconnectPreviewEdge, setReconnectPreviewEdge] = useState<ShaderFlowEdge | null>(null);
 
@@ -242,6 +243,14 @@ function NodeEditorInner() {
     }
     void audio.start();
   }, [audioPlaybackActive, audio.start, audio.stop]);
+
+  const toggleAudioRecording = useCallback(() => {
+    if (audioRecordingActive) {
+      audio.stopRecording();
+      return;
+    }
+    audio.startRecording();
+  }, [audio.startRecording, audio.stopRecording, audioRecordingActive]);
 
   useEffect(() => {
     const handlePlaybackKeyDown = (event: KeyboardEvent) => {
@@ -2558,6 +2567,17 @@ function NodeEditorInner() {
               onClick={toggleAudioPlayback}
             >
               PL
+            </button>
+            <button
+              className="viewport-button viewport-button-record"
+              type="button"
+              role="switch"
+              aria-checked={audioRecordingActive}
+              aria-label={audioRecordingActive ? 'Stop recording' : 'Record audio'}
+              title={audio.recording.message}
+              onClick={toggleAudioRecording}
+            >
+              RC
             </button>
             <button
               className={['viewport-button', saveFeedbackActive ? 'viewport-button-save-confirmed' : ''].filter(Boolean).join(' ')}

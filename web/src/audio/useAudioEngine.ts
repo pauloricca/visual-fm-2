@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DSP_OP, type DspProgram } from './dspProgram';
 
 type AudioStatus = 'idle' | 'starting' | 'running' | 'error';
+type RecordingStatus = 'idle' | 'waiting' | 'recording' | 'saving' | 'saved' | 'error';
 export type AudioInputStatus = 'inactive' | 'needs-permission' | 'requesting' | 'connected' | 'denied' | 'unsupported' | 'error';
 export type MidiInputStatus = 'inactive' | 'needs-permission' | 'requesting' | 'connected' | 'denied' | 'unsupported' | 'error';
 
@@ -42,16 +43,25 @@ export interface LinkScopeReading {
   samples: number[];
 }
 
+export interface RecordingState {
+  status: RecordingStatus;
+  message: string;
+  fileName: string | null;
+}
+
 interface AudioEngineState {
   status: AudioStatus;
   message: string;
   peak: number;
   linkMeters: Record<string, LinkMeterReading>;
   linkScopes: Record<string, LinkScopeReading>;
+  recording: RecordingState;
   audioInput: AudioInputState;
   midiInput: MidiInputState;
   start: () => Promise<void>;
   stop: () => void;
+  startRecording: () => void;
+  stopRecording: () => void;
   syncGraph: (program: DspProgram) => void;
   setLinkScopes: (linkIds: string[]) => void;
   setAudioInputDeviceId: (deviceId: string) => void;
@@ -74,10 +84,20 @@ interface MidiAccessLike {
   onstatechange: (() => void) | null;
 }
 
+interface RecordingCapture {
+  processor: ScriptProcessorNode;
+  sink: GainNode;
+  chunks: Float32Array[][];
+  channelCount: number;
+  sampleRate: number;
+}
+
 const AUDIO_ENGINE_ASSET_VERSION = '2026-07-08-button-node';
 const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const METER_UPDATE_INTERVAL_MS = 80;
+const RECORDING_BUFFER_SIZE = 4096;
+const RECORDING_CHANNEL_COUNT = 2;
 const SCOPE_CAPTURE_POINTS = 512;
 const SCOPE_DISPLAY_POINTS = 160;
 const SCOPE_SECONDS = 0.08;
@@ -109,6 +129,9 @@ export function useAudioEngine(): AudioEngineState {
   const [peak, setPeak] = useState(0);
   const [linkMeters, setLinkMeters] = useState<Record<string, LinkMeterReading>>({});
   const [linkScopes, setLinkScopeReadings] = useState<Record<string, LinkScopeReading>>({});
+  const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>('idle');
+  const [recordingMessage, setRecordingMessage] = useState('recording stopped');
+  const [recordingFileName, setRecordingFileName] = useState<string | null>(null);
   const [audioInputStatus, setAudioInputStatus] = useState<AudioInputStatus>('inactive');
   const [audioInputMessage, setAudioInputMessage] = useState('Add an AudioInput node, then start audio.');
   const [audioInputDevices, setAudioInputDevices] = useState<AudioInputDevice[]>([]);
@@ -131,6 +154,9 @@ export function useAudioEngine(): AudioEngineState {
   const lastSentValuesRef = useRef<number[] | null>(null);
   const activeScopeLinkIdsRef = useRef<string[]>([]);
   const sampleDataKeysRef = useRef<Record<string, string>>({});
+  const recordingRequestedRef = useRef(false);
+  const recordingCaptureRef = useRef<RecordingCapture | null>(null);
+  const recordingSaveIdRef = useRef(0);
 
   const stopMeter = useCallback(() => {
     if (meterFrameRef.current !== null) {
@@ -161,6 +187,90 @@ export function useAudioEngine(): AudioEngineState {
     };
     meterFrameRef.current = window.requestAnimationFrame(tick);
   }, [stopMeter]);
+
+  const beginRecordingCapture = useCallback((context: AudioContext, source: AudioNode) => {
+    if (recordingCaptureRef.current || context.state !== 'running') return;
+
+    const processor = context.createScriptProcessor(RECORDING_BUFFER_SIZE, RECORDING_CHANNEL_COUNT, RECORDING_CHANNEL_COUNT);
+    const sink = context.createGain();
+    const chunks: Float32Array[][] = [];
+    sink.gain.value = 0;
+
+    processor.onaudioprocess = (event) => {
+      const input = event.inputBuffer;
+      const frame: Float32Array[] = [];
+      for (let channel = 0; channel < RECORDING_CHANNEL_COUNT; channel += 1) {
+        const sourceChannel = Math.min(channel, Math.max(0, input.numberOfChannels - 1));
+        frame.push(new Float32Array(input.getChannelData(sourceChannel)));
+      }
+      chunks.push(frame);
+    };
+
+    source.connect(processor);
+    processor.connect(sink);
+    sink.connect(context.destination);
+    recordingCaptureRef.current = {
+      processor,
+      sink,
+      chunks,
+      channelCount: RECORDING_CHANNEL_COUNT,
+      sampleRate: context.sampleRate,
+    };
+    setRecordingStatus('recording');
+    setRecordingMessage('recording audio');
+    setRecordingFileName(null);
+  }, []);
+
+  const finishRecordingCapture = useCallback(() => {
+    recordingRequestedRef.current = false;
+    const capture = recordingCaptureRef.current;
+    if (!capture) {
+      setRecordingStatus('idle');
+      setRecordingMessage('recording stopped');
+      return;
+    }
+
+    recordingCaptureRef.current = null;
+    capture.processor.onaudioprocess = null;
+    capture.processor.disconnect();
+    capture.sink.disconnect();
+
+    const saveId = recordingSaveIdRef.current + 1;
+    recordingSaveIdRef.current = saveId;
+    const wavBlob = encodeWav(capture.chunks, capture.sampleRate, capture.channelCount);
+    setRecordingStatus('saving');
+    setRecordingMessage('saving recording');
+
+    void uploadRecording(wavBlob).then((result) => {
+      if (recordingSaveIdRef.current !== saveId) return;
+      setRecordingStatus('saved');
+      setRecordingMessage(`saved ${result.name}`);
+      setRecordingFileName(result.name);
+    }).catch((error) => {
+      if (recordingSaveIdRef.current !== saveId) return;
+      setRecordingStatus('error');
+      setRecordingMessage(error instanceof Error ? error.message : 'recording save failed');
+    });
+  }, []);
+
+  const startRecording = useCallback(() => {
+    recordingSaveIdRef.current += 1;
+    recordingRequestedRef.current = true;
+    setRecordingFileName(null);
+    const context = contextRef.current;
+    const analyser = analyserRef.current;
+    if (context?.state === 'running' && analyser) {
+      beginRecordingCapture(context, analyser);
+      return;
+    }
+
+    setRecordingStatus('waiting');
+    setRecordingMessage('waiting for audio to start');
+  }, [beginRecordingCapture]);
+
+  const stopRecording = useCallback(() => {
+    finishRecordingCapture();
+  }, [finishRecordingCapture]);
 
   const refreshAudioInputDevices = useCallback(async () => {
     const mediaDevices = navigator.mediaDevices;
@@ -539,7 +649,12 @@ export function useAudioEngine(): AudioEngineState {
       await resumeAudioContext(contextRef.current);
       setStatus(contextRef.current.state === 'running' ? 'running' : 'idle');
       setMessage(`audio context ${contextRef.current.state}`);
-      if (contextRef.current.state === 'running') startMeter();
+      if (contextRef.current.state === 'running') {
+        startMeter();
+        if (recordingRequestedRef.current && analyserRef.current) {
+          beginRecordingCapture(contextRef.current, analyserRef.current);
+        }
+      }
       return;
     }
 
@@ -595,6 +710,9 @@ export function useAudioEngine(): AudioEngineState {
       };
       context.onstatechange = () => {
         setMessage((current) => current.replace(/(audio|context) (running|suspended|interrupted|closed)/, `$1 ${context.state}`));
+        if (recordingRequestedRef.current && context.state === 'running') {
+          beginRecordingCapture(context, analyser);
+        }
       };
 
       node.connect(analyser);
@@ -622,6 +740,9 @@ export function useAudioEngine(): AudioEngineState {
       }
       if (context.state === 'running') {
         startMeter();
+        if (recordingRequestedRef.current) {
+          beginRecordingCapture(context, analyser);
+        }
       } else {
         setStatus('idle');
         setMessage(`audio context ${context.state}`);
@@ -630,9 +751,10 @@ export function useAudioEngine(): AudioEngineState {
       setStatus('error');
       setMessage(error instanceof Error ? error.message : 'audio failed');
     }
-  }, [startMeter, syncAudioInput, syncGraphSamples, syncMidiInput]);
+  }, [beginRecordingCapture, startMeter, syncAudioInput, syncGraphSamples, syncMidiInput]);
 
   const stop = useCallback(() => {
+    finishRecordingCapture();
     stopAudioContext(contextRef, nodeRef, analyserRef, inputSourceRef, inputStreamRef);
     disconnectMidiInput();
     inputRequestIdRef.current += 1;
@@ -654,13 +776,14 @@ export function useAudioEngine(): AudioEngineState {
       ? 'Start audio or refresh MIDI to request browser MIDI access.'
       : 'MIDI input is not used by this patch.');
     setMidiInputDevices((current) => current.length === 0 ? current : []);
-  }, [disconnectMidiInput, stopMeter]);
+  }, [disconnectMidiInput, finishRecordingCapture, stopMeter]);
 
   useEffect(() => () => {
+    finishRecordingCapture();
     stopMeter();
     stopAudioContext(contextRef, nodeRef, analyserRef, inputSourceRef, inputStreamRef);
     disconnectMidiInput();
-  }, [disconnectMidiInput, stopMeter]);
+  }, [disconnectMidiInput, finishRecordingCapture, stopMeter]);
 
   useEffect(() => {
     void refreshAudioInputDevices();
@@ -689,6 +812,11 @@ export function useAudioEngine(): AudioEngineState {
       requestMIDIAccess?: (options?: { sysex?: boolean }) => Promise<unknown>;
     }).requestMIDIAccess),
   }), [midiInputDevices, midiInputMessage, midiInputStatus]);
+  const recording: RecordingState = useMemo(() => ({
+    status: recordingStatus,
+    message: recordingMessage,
+    fileName: recordingFileName,
+  }), [recordingFileName, recordingMessage, recordingStatus]);
 
   return {
     status,
@@ -696,16 +824,85 @@ export function useAudioEngine(): AudioEngineState {
     peak,
     linkMeters,
     linkScopes,
+    recording,
     audioInput,
     midiInput,
     start,
     stop,
+    startRecording,
+    stopRecording,
     syncGraph,
     setLinkScopes,
     setAudioInputDeviceId: setSelectedAudioInputDeviceId,
     refreshAudioInputDevices,
     refreshMidiInputDevices,
   };
+}
+
+function encodeWav(chunks: Float32Array[][], sampleRate: number, channelCount: number): Blob {
+  const frameCount = chunks.reduce((total, chunk) => total + (chunk[0]?.length ?? 0), 0);
+  const bytesPerSample = 2;
+  const dataByteLength = frameCount * channelCount * bytesPerSample;
+  const buffer = new ArrayBuffer(44 + dataByteLength);
+  const view = new DataView(buffer);
+
+  writeAscii(view, 0, 'RIFF');
+  view.setUint32(4, 36 + dataByteLength, true);
+  writeAscii(view, 8, 'WAVE');
+  writeAscii(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, channelCount, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * channelCount * bytesPerSample, true);
+  view.setUint16(32, channelCount * bytesPerSample, true);
+  view.setUint16(34, 16, true);
+  writeAscii(view, 36, 'data');
+  view.setUint32(40, dataByteLength, true);
+
+  let offset = 44;
+  for (const chunk of chunks) {
+    const frames = chunk[0]?.length ?? 0;
+    for (let frame = 0; frame < frames; frame += 1) {
+      for (let channel = 0; channel < channelCount; channel += 1) {
+        const channelSamples = chunk[channel] ?? chunk[0];
+        const sample = Math.max(-1, Math.min(1, channelSamples?.[frame] ?? 0));
+        view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+        offset += bytesPerSample;
+      }
+    }
+  }
+
+  return new Blob([view], { type: 'audio/wav' });
+}
+
+function writeAscii(view: DataView, offset: number, value: string): void {
+  for (let index = 0; index < value.length; index += 1) {
+    view.setUint8(offset + index, value.charCodeAt(index));
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+async function uploadRecording(blob: Blob): Promise<{ name: string }> {
+  const response = await fetch('/api/recordings', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'audio/wav',
+    },
+    body: blob,
+  });
+  if (!response.ok) {
+    throw new Error(await response.text() || `Recording save failed (${response.status}).`);
+  }
+
+  const payload = await response.json() as unknown;
+  if (!isRecord(payload) || typeof payload.name !== 'string') {
+    throw new Error('Recording save returned an invalid response.');
+  }
+  return { name: payload.name };
 }
 
 function scopePayload(linkIds: string[]) {
