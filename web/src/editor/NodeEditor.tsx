@@ -233,6 +233,9 @@ function NodeEditorInner() {
   const audio = useAudioEngine();
   const audioPlaybackActive = audio.status === 'running' || audio.status === 'starting';
   const audioRecordingActive = audio.recording.status === 'waiting' || audio.recording.status === 'recording';
+  const recordingButtonLabel = audioRecordingActive
+    ? formatRecordingTimestamp(audio.recording.elapsedSeconds)
+    : 'RC';
   const localPatchStorageEnabled = useMemo(() => canUseLocalPatchStorage(), []);
   const [reconnectPreviewEdge, setReconnectPreviewEdge] = useState<ShaderFlowEdge | null>(null);
 
@@ -2577,7 +2580,7 @@ function NodeEditorInner() {
               title={audio.recording.message}
               onClick={toggleAudioRecording}
             >
-              RC
+              {recordingButtonLabel}
             </button>
             <button
               className={['viewport-button', saveFeedbackActive ? 'viewport-button-save-confirmed' : ''].filter(Boolean).join(' ')}
@@ -2946,6 +2949,13 @@ function formatSavedPatchTimestamp(value: string): string {
   const minute = padDatePart(date.getMinutes());
   const second = padDatePart(date.getSeconds());
   return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
+}
+
+function formatRecordingTimestamp(totalSeconds: number): string {
+  const safeSeconds = Math.max(0, Math.floor(totalSeconds));
+  const minutes = Math.floor(safeSeconds / 60);
+  const seconds = safeSeconds % 60;
+  return `${padDatePart(minutes)}:${padDatePart(seconds)}`;
 }
 
 function padDatePart(value: number): string {

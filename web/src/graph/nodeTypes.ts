@@ -108,6 +108,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   Button: {
     type: 'Button',
     inputs: [
+      { name: 'signal', valueEditor: false },
       { name: 'mode', defaultValue: 0, min: 0, max: 2, integer: true, connectable: false, valueEditor: false },
     ],
     outputs: [{ name: 'signal' }],

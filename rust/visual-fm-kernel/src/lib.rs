@@ -105,6 +105,7 @@ const DSP_OP_MIDI_NOTE: i32 = 27;
 const DSP_OP_MIDI_CC: i32 = 28;
 const DSP_OP_ACCUMULATOR: i32 = 29;
 const DSP_OP_BUTTON: i32 = 30;
+const DSP_OP_SLEW: i32 = 31;
 
 #[derive(Copy, Clone)]
 struct Node {
@@ -4197,6 +4198,38 @@ fn render_dsp_button(op: DspOp) -> f64 {
     }
 }
 
+fn render_dsp_slew(op: DspOp, sample_rate: f64) -> f64 {
+    unsafe {
+        let target = dsp_reg(op.a);
+        if op.state < 0 || op.state as usize >= MAX_DSP_STATE {
+            return target;
+        }
+
+        let state_index = op.state as usize;
+        let seconds = op.value.max(0.0);
+        if seconds <= 0.0 || sample_rate <= 0.0 {
+            DSP_STATE[state_index] = sanitize_control_value(target);
+            return target;
+        }
+
+        let mut current = DSP_STATE[state_index];
+        if !current.is_finite() {
+            current = 0.0;
+        }
+
+        let delta = target - current;
+        let step = 1.0 / (seconds * sample_rate.max(1.0));
+        current = if delta.abs() <= step {
+            target
+        } else {
+            current + step.copysign(delta)
+        };
+
+        DSP_STATE[state_index] = sanitize_control_value(current);
+        DSP_STATE[state_index]
+    }
+}
+
 fn render_dsp_op(
     op: DspOp,
     frame: usize,
@@ -4450,6 +4483,7 @@ fn render_dsp_op(
         DSP_OP_MIDI_CC => set_dsp_reg(op.out, render_dsp_midi_cc(op)),
         DSP_OP_ACCUMULATOR => set_dsp_reg(op.out, render_dsp_accumulator(op)),
         DSP_OP_BUTTON => set_dsp_reg(op.out, render_dsp_button(op)),
+        DSP_OP_SLEW => set_dsp_reg(op.out, render_dsp_slew(op, sample_rate)),
         _ => {}
     }
 }

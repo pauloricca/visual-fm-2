@@ -36,6 +36,7 @@ export const DSP_OP = {
   MidiCc: 28,
   Accumulator: 29,
   Button: 30,
+  Slew: 31,
 } as const;
 
 export interface DspProgram {
@@ -125,6 +126,8 @@ interface CompileContext {
   registerCount: number;
   stateCount: number;
 }
+
+const BUTTON_GATE_FADE_SECONDS = 0.008;
 
 const OSC_WAVES: Partial<Record<NodeType, number>> = {
   SineOsc: 0,
@@ -457,6 +460,25 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       c: valueIndexForNodeParam(node, 'clicks', 0, context),
       state,
     });
+    if (hasInput(node, 'signal', context)) {
+      const smoothedOutput = nextRegister(context);
+      const smoothingState = nextState(context, 1);
+      context.stateBindings.push({
+        id: `${node.id}:button-gate-slew`,
+        state: smoothingState,
+        count: 1,
+        kind: 'effect',
+        nodeId: node.id,
+      });
+      context.ops.push({
+        opcode: DSP_OP.Slew,
+        out: smoothedOutput,
+        a: output,
+        state: smoothingState,
+        value: BUTTON_GATE_FADE_SECONDS,
+      });
+      return emitBinary(DSP_OP.Mul, resolveInput(node, 'signal', 0, context), smoothedOutput, context);
+    }
     return output;
   }
 

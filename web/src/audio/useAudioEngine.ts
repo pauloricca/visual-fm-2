@@ -47,6 +47,7 @@ export interface RecordingState {
   status: RecordingStatus;
   message: string;
   fileName: string | null;
+  elapsedSeconds: number;
 }
 
 interface AudioEngineState {
@@ -102,25 +103,59 @@ const SCOPE_CAPTURE_POINTS = 512;
 const SCOPE_DISPLAY_POINTS = 160;
 const SCOPE_SECONDS = 0.08;
 const SCOPE_MODE = 'zero-crossing';
+const AUDIO_OUTPUT_FADE_SECONDS = 0.008;
+const AUDIO_OUTPUT_STOP_DELAY_MS = Math.ceil(AUDIO_OUTPUT_FADE_SECONDS * 1000) + 24;
 
-function stopAudioContext(
+function closeAudioContext(
   contextRef: { current: AudioContext | null },
   nodeRef: { current: AudioWorkletNode | null },
   analyserRef: { current: AnalyserNode | null },
+  outputGainRef: { current: GainNode | null },
   inputSourceRef: { current: MediaStreamAudioSourceNode | null },
   inputStreamRef: { current: MediaStream | null },
+  stopTimeoutRef?: { current: number | null },
 ): void {
+  if (stopTimeoutRef && stopTimeoutRef.current !== null) {
+    window.clearTimeout(stopTimeoutRef.current);
+    stopTimeoutRef.current = null;
+  }
   nodeRef.current?.port.postMessage({ type: 'panic' });
   inputSourceRef.current?.disconnect();
   inputStreamRef.current?.getTracks().forEach((track) => track.stop());
   nodeRef.current?.disconnect();
   analyserRef.current?.disconnect();
+  outputGainRef.current?.disconnect();
   void contextRef.current?.close();
   inputSourceRef.current = null;
   inputStreamRef.current = null;
   nodeRef.current = null;
   analyserRef.current = null;
+  outputGainRef.current = null;
   contextRef.current = null;
+}
+
+function fadeAudioOutputIn(context: AudioContext, gain: GainNode): void {
+  const now = context.currentTime;
+  holdAudioParamAtCurrentValue(gain.gain, now);
+  gain.gain.linearRampToValueAtTime(1, now + AUDIO_OUTPUT_FADE_SECONDS);
+}
+
+function fadeAudioOutputOut(context: AudioContext, gain: GainNode): void {
+  const now = context.currentTime;
+  holdAudioParamAtCurrentValue(gain.gain, now);
+  gain.gain.linearRampToValueAtTime(0, now + AUDIO_OUTPUT_FADE_SECONDS);
+}
+
+function holdAudioParamAtCurrentValue(param: AudioParam, time: number): void {
+  const holdableParam = param as AudioParam & {
+    cancelAndHoldAtTime?: (cancelTime: number) => AudioParam;
+  };
+  if (typeof holdableParam.cancelAndHoldAtTime === 'function') {
+    holdableParam.cancelAndHoldAtTime(time);
+    return;
+  }
+  param.cancelScheduledValues(time);
+  param.setValueAtTime(param.value, time);
 }
 
 export function useAudioEngine(): AudioEngineState {
@@ -132,6 +167,7 @@ export function useAudioEngine(): AudioEngineState {
   const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>('idle');
   const [recordingMessage, setRecordingMessage] = useState('recording stopped');
   const [recordingFileName, setRecordingFileName] = useState<string | null>(null);
+  const [recordingElapsedSeconds, setRecordingElapsedSeconds] = useState(0);
   const [audioInputStatus, setAudioInputStatus] = useState<AudioInputStatus>('inactive');
   const [audioInputMessage, setAudioInputMessage] = useState('Add an AudioInput node, then start audio.');
   const [audioInputDevices, setAudioInputDevices] = useState<AudioInputDevice[]>([]);
@@ -142,8 +178,10 @@ export function useAudioEngine(): AudioEngineState {
   const contextRef = useRef<AudioContext | null>(null);
   const nodeRef = useRef<AudioWorkletNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
+  const outputGainRef = useRef<GainNode | null>(null);
   const inputSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const inputStreamRef = useRef<MediaStream | null>(null);
+  const stopTimeoutRef = useRef<number | null>(null);
   const inputRequestIdRef = useRef(0);
   const currentInputDeviceIdRef = useRef('');
   const midiAccessRef = useRef<MidiAccessLike | null>(null);
@@ -157,6 +195,8 @@ export function useAudioEngine(): AudioEngineState {
   const recordingRequestedRef = useRef(false);
   const recordingCaptureRef = useRef<RecordingCapture | null>(null);
   const recordingSaveIdRef = useRef(0);
+  const recordingStartedAtRef = useRef(0);
+  const recordingTimerRef = useRef<number | null>(null);
 
   const stopMeter = useCallback(() => {
     if (meterFrameRef.current !== null) {
@@ -188,6 +228,14 @@ export function useAudioEngine(): AudioEngineState {
     meterFrameRef.current = window.requestAnimationFrame(tick);
   }, [stopMeter]);
 
+  const stopRecordingTimer = useCallback(() => {
+    if (recordingTimerRef.current !== null) {
+      window.clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    recordingStartedAtRef.current = 0;
+  }, []);
+
   const beginRecordingCapture = useCallback((context: AudioContext, source: AudioNode) => {
     if (recordingCaptureRef.current || context.state !== 'running') return;
 
@@ -216,17 +264,25 @@ export function useAudioEngine(): AudioEngineState {
       channelCount: RECORDING_CHANNEL_COUNT,
       sampleRate: context.sampleRate,
     };
+    stopRecordingTimer();
+    recordingStartedAtRef.current = performance.now();
+    setRecordingElapsedSeconds(0);
+    recordingTimerRef.current = window.setInterval(() => {
+      setRecordingElapsedSeconds(Math.floor((performance.now() - recordingStartedAtRef.current) / 1000));
+    }, 250);
     setRecordingStatus('recording');
     setRecordingMessage('recording audio');
     setRecordingFileName(null);
-  }, []);
+  }, [stopRecordingTimer]);
 
   const finishRecordingCapture = useCallback(() => {
     recordingRequestedRef.current = false;
+    stopRecordingTimer();
     const capture = recordingCaptureRef.current;
     if (!capture) {
       setRecordingStatus('idle');
       setRecordingMessage('recording stopped');
+      setRecordingElapsedSeconds(0);
       return;
     }
 
@@ -251,12 +307,13 @@ export function useAudioEngine(): AudioEngineState {
       setRecordingStatus('error');
       setRecordingMessage(error instanceof Error ? error.message : 'recording save failed');
     });
-  }, []);
+  }, [stopRecordingTimer]);
 
   const startRecording = useCallback(() => {
     recordingSaveIdRef.current += 1;
     recordingRequestedRef.current = true;
     setRecordingFileName(null);
+    setRecordingElapsedSeconds(0);
     const context = contextRef.current;
     const analyser = analyserRef.current;
     if (context?.state === 'running' && analyser) {
@@ -645,8 +702,15 @@ export function useAudioEngine(): AudioEngineState {
   }, []);
 
   const start = useCallback(async () => {
+    if (stopTimeoutRef.current !== null) {
+      window.clearTimeout(stopTimeoutRef.current);
+      stopTimeoutRef.current = null;
+    }
     if (nodeRef.current && contextRef.current) {
       await resumeAudioContext(contextRef.current);
+      if (outputGainRef.current) {
+        fadeAudioOutputIn(contextRef.current, outputGainRef.current);
+      }
       setStatus(contextRef.current.state === 'running' ? 'running' : 'idle');
       setMessage(`audio context ${contextRef.current.state}`);
       if (contextRef.current.state === 'running') {
@@ -673,6 +737,8 @@ export function useAudioEngine(): AudioEngineState {
       await context.audioWorklet.addModule(WORKLET_URL);
       const analyser = context.createAnalyser();
       analyser.fftSize = 1024;
+      const outputGain = context.createGain();
+      outputGain.gain.value = 0;
       const node = new AudioWorkletNode(context, 'visual-fm-wasm-engine', {
         numberOfInputs: 1,
         numberOfOutputs: 1,
@@ -684,6 +750,7 @@ export function useAudioEngine(): AudioEngineState {
         const { type, payload } = event.data || {};
         if (type === 'backendStatus') {
           if (payload?.ready) {
+            fadeAudioOutputIn(context, outputGain);
             setStatus('running');
             setMessage(`WASM audio ${context.state} (${AUDIO_ENGINE_ASSET_VERSION})`);
           } else {
@@ -716,10 +783,12 @@ export function useAudioEngine(): AudioEngineState {
       };
 
       node.connect(analyser);
-      analyser.connect(context.destination);
+      analyser.connect(outputGain);
+      outputGain.connect(context.destination);
       contextRef.current = context;
       nodeRef.current = node;
       analyserRef.current = analyser;
+      outputGainRef.current = outputGain;
 
       if (graphRef.current) {
         lastSentProgramStructureRef.current = dspProgramStructureKey(graphRef.current);
@@ -755,7 +824,19 @@ export function useAudioEngine(): AudioEngineState {
 
   const stop = useCallback(() => {
     finishRecordingCapture();
-    stopAudioContext(contextRef, nodeRef, analyserRef, inputSourceRef, inputStreamRef);
+    const context = contextRef.current;
+    const outputGain = outputGainRef.current;
+    if (context && outputGain && context.state !== 'closed') {
+      fadeAudioOutputOut(context, outputGain);
+      if (stopTimeoutRef.current !== null) {
+        window.clearTimeout(stopTimeoutRef.current);
+      }
+      stopTimeoutRef.current = window.setTimeout(() => {
+        closeAudioContext(contextRef, nodeRef, analyserRef, outputGainRef, inputSourceRef, inputStreamRef, stopTimeoutRef);
+      }, AUDIO_OUTPUT_STOP_DELAY_MS);
+    } else {
+      closeAudioContext(contextRef, nodeRef, analyserRef, outputGainRef, inputSourceRef, inputStreamRef, stopTimeoutRef);
+    }
     disconnectMidiInput();
     inputRequestIdRef.current += 1;
     currentInputDeviceIdRef.current = '';
@@ -781,7 +862,7 @@ export function useAudioEngine(): AudioEngineState {
   useEffect(() => () => {
     finishRecordingCapture();
     stopMeter();
-    stopAudioContext(contextRef, nodeRef, analyserRef, inputSourceRef, inputStreamRef);
+    closeAudioContext(contextRef, nodeRef, analyserRef, outputGainRef, inputSourceRef, inputStreamRef, stopTimeoutRef);
     disconnectMidiInput();
   }, [disconnectMidiInput, finishRecordingCapture, stopMeter]);
 
@@ -816,7 +897,8 @@ export function useAudioEngine(): AudioEngineState {
     status: recordingStatus,
     message: recordingMessage,
     fileName: recordingFileName,
-  }), [recordingFileName, recordingMessage, recordingStatus]);
+    elapsedSeconds: recordingElapsedSeconds,
+  }), [recordingElapsedSeconds, recordingFileName, recordingMessage, recordingStatus]);
 
   return {
     status,

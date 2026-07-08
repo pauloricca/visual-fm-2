@@ -322,8 +322,10 @@ select:hover {
 .viewport-button-record[aria-checked='true'],
 .viewport-button-record[aria-checked='true']:hover,
 .viewport-button-record[aria-checked='true']:focus-visible {
+  min-width: 58px;
   background: #ff4e64;
   color: #000;
+  font-variant-numeric: tabular-nums;
   outline: 0;
 }
 

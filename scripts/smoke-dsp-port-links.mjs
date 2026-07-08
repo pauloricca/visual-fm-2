@@ -47,6 +47,7 @@ const auditedPorts = {
   LowpassFilter: ['cutoff', 'resonance'],
   SamplePlayer: ['start', 'end', 'stretch', 'cycleLength', 'overlapRatio', 'originalPitch'],
   Slider: ['signal'],
+  Button: ['signal'],
   Clamp: ['min', 'max'],
   Meter: ['range'],
   Scope: ['range'],
@@ -137,6 +138,11 @@ assert(Object.hasOwn(dspProgram.monitorIds, 'scope'), 'Scope signal should be mo
 assert(
   dspProgram.stateBindings.some((binding) => binding.id === 'button:button' && binding.count === 3),
   'Button should compile with click edge state.',
+);
+assert(
+  dspProgram.stateBindings.some((binding) => binding.id === 'button:button-gate-slew' && binding.count === 1)
+    && dspProgram.ops.some((op) => op.opcode === 31),
+  'Button signal gating should compile with a declick slew.',
 );
 assert(
   ['pressed', 'mode', 'clicks'].every((port) => dspProgram.valueBindings.some((binding) => (
