@@ -297,11 +297,24 @@ async function compileVisiblePatch() {
       : newNodes
       ? [
         { id: 'holdSource', type: 'SineOsc', params: { frequency: 0.75 } },
-        { id: 'sampleHold', type: 'SampleHoldOsc', params: { frequency: 14 } },
+        { id: 'holdTrigger', type: 'SquareOsc', params: { frequency: 14 } },
+        { id: 'sampleHold', type: 'SampleHoldOsc', params: { trigger: 0 } },
         { id: 'perlin', type: 'PerlinNoise', params: { speed: 5 } },
         { id: 'noise', type: 'Noise', params: {} },
         { id: 'input', type: 'AudioInput', params: { gain: 1, level: 0.5 } },
-        { id: 'selector', type: 'Selector', params: { select: 2, slide: 0.005, 1: 0, 2: 0, 3: 0, 4: 0 } },
+        {
+          id: 'selector',
+          type: 'Selector',
+          params: { select: 1, slide: 0.005, 0: 0, 1: 0, 2: 0, 3: 0 },
+          inputs: [
+            { name: 'select', defaultValue: 0, min: 0, integer: true },
+            { name: 'slide', defaultValue: 0, min: 0 },
+            { name: '0', defaultValue: 0 },
+            { name: '1', defaultValue: 0 },
+            { name: '2', defaultValue: 0 },
+            { name: '3', defaultValue: 0 },
+          ],
+        },
         { id: 'meter', type: 'Meter', params: { range: 1 } },
         ...(scope ? [{ id: 'scope', type: 'Scope', params: { range: 1 } }] : []),
         { id: 'out', type: 'AudioOut', params: { level: 0.5 } },
@@ -415,10 +428,11 @@ async function compileVisiblePatch() {
       ...(newNodes
         ? [
           { from: { node: 'holdSource', port: 'signal' }, to: { node: 'sampleHold', port: 'signal' }, weight: 1, mode: 'set' },
-          { from: { node: 'sampleHold', port: 'signal' }, to: { node: 'selector', port: '1' }, weight: 0.6, mode: 'set' },
-          { from: { node: 'perlin', port: 'signal' }, to: { node: 'selector', port: '2' }, weight: 0.7, mode: 'set' },
-          { from: { node: 'noise', port: 'signal' }, to: { node: 'selector', port: '3' }, weight: 0.2, mode: 'set' },
-          { from: { node: 'input', port: 'signal' }, to: { node: 'selector', port: '4' }, weight: 1, mode: 'set' },
+          { from: { node: 'holdTrigger', port: 'signal' }, to: { node: 'sampleHold', port: 'trigger' }, weight: 1, mode: 'set' },
+          { from: { node: 'sampleHold', port: 'signal' }, to: { node: 'selector', port: '0' }, weight: 0.6, mode: 'set' },
+          { from: { node: 'perlin', port: 'signal' }, to: { node: 'selector', port: '1' }, weight: 0.7, mode: 'set' },
+          { from: { node: 'noise', port: 'signal' }, to: { node: 'selector', port: '2' }, weight: 0.2, mode: 'set' },
+          { from: { node: 'input', port: 'signal' }, to: { node: 'selector', port: '3' }, weight: 1, mode: 'set' },
           { from: { node: 'selector', port: 'signal' }, to: { node: 'meter', port: 'signal' }, weight: 1, mode: 'set' },
           ...(scope
             ? [

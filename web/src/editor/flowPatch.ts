@@ -10,6 +10,7 @@ export interface ScopeNodeSize {
 export const DEFAULT_SCOPE_NODE_SIZE: ScopeNodeSize = { width: 224, height: 48 };
 export const MIN_SCOPE_NODE_SIZE: ScopeNodeSize = { width: 160, height: 48 };
 export const MAX_SCOPE_NODE_SIZE: ScopeNodeSize = { width: 720, height: 360 };
+export const MIN_CONTROL_NODE_SIZE: ScopeNodeSize = { width: 72, height: 24 };
 export const DEFAULT_CUSTOM_WAVE_NODE_SIZE: ScopeNodeSize = { width: 372, height: 128 };
 export const MIN_CUSTOM_WAVE_NODE_SIZE: ScopeNodeSize = { width: 220, height: 96 };
 export const MAX_CUSTOM_WAVE_NODE_SIZE: ScopeNodeSize = { width: 720, height: 360 };
@@ -252,6 +253,13 @@ export function clampScopeNodeSize(size: ScopeNodeSize): ScopeNodeSize {
   return {
     width: clampNumber(size.width, MIN_SCOPE_NODE_SIZE.width, MAX_SCOPE_NODE_SIZE.width),
     height: clampNumber(size.height, MIN_SCOPE_NODE_SIZE.height, MAX_SCOPE_NODE_SIZE.height),
+  };
+}
+
+export function clampControlNodeSize(size: ScopeNodeSize): ScopeNodeSize {
+  return {
+    width: clampNumber(size.width, MIN_CONTROL_NODE_SIZE.width, MAX_SCOPE_NODE_SIZE.width),
+    height: clampNumber(size.height, MIN_CONTROL_NODE_SIZE.height, MAX_SCOPE_NODE_SIZE.height),
   };
 }
 

@@ -466,13 +466,25 @@ select:hover {
 }
 
 .shader-node-scope {
+  width: max(var(--node-display-width, 224px), 160px);
+  background: var(--surface-bg);
+}
+
+.shader-node-slider {
   width: var(--node-display-width, 224px);
-  background: transparent;
+  min-width: 72px;
+  background: var(--surface-bg);
+}
+
+.shader-node-button {
+  width: var(--node-display-width, 224px);
+  min-width: 72px;
+  background: var(--surface-bg);
 }
 
 .shader-node-custom-wave {
-  width: var(--node-display-width, 372px);
-  background: transparent;
+  width: max(var(--node-display-width, 372px), 220px);
+  background: var(--surface-bg);
 }
 
 .shader-node-expression {
@@ -802,7 +814,7 @@ select:hover {
   background:
     linear-gradient(rgba(255, 255, 255, 0.18) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255, 255, 255, 0.18) 1px, transparent 1px),
-    #000;
+    transparent;
   background-size: 18px 18px;
   cursor: crosshair;
   touch-action: none;
@@ -953,7 +965,21 @@ select:hover {
 
 .shader-node-body-scope {
   position: relative;
-  display: block;
+  display: grid;
+  grid-template-columns: minmax(156px, 1fr);
+  gap: 0;
+  width: 100%;
+  min-height: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.shader-node-body-slider,
+.shader-node-body-button {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(156px, 1fr);
+  gap: 0;
   width: 100%;
   min-height: 0;
   padding: 0;
@@ -1116,7 +1142,9 @@ select:hover {
 }
 
 .audio-node-meter-display,
-.audio-node-scope-display {
+.audio-node-scope-display,
+.audio-node-slider-display,
+.audio-node-button-display {
   grid-column: 1 / -1;
   width: 100%;
   min-width: 156px;
@@ -1136,7 +1164,7 @@ select:hover {
       rgba(255, 255, 255, 0.26) 13px,
       rgba(255, 255, 255, 0.26) 14px
     ),
-    #000;
+    var(--surface-bg);
   background-size: 16px 16px, 16px 16px, auto;
   overflow: hidden;
 }
@@ -1194,7 +1222,7 @@ select:hover {
   background:
     linear-gradient(rgba(255, 255, 255, 0.18) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255, 255, 255, 0.18) 1px, transparent 1px),
-    #000;
+    transparent;
   background-size: 16px 16px;
 }
 
@@ -1232,6 +1260,137 @@ select:hover {
   stroke: #7cff00;
   stroke-width: 2;
   vector-effect: non-scaling-stroke;
+}
+
+.audio-node-slider-display {
+  position: relative;
+  height: var(--node-display-height, 48px);
+  background: transparent;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.shader-node-body-slider .audio-node-slider-display {
+  min-width: 0;
+}
+
+.audio-node-button-display {
+  height: var(--node-display-height, 48px);
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.audio-node-button-display:hover,
+.audio-node-button-display:focus-visible {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  outline: 0;
+}
+
+.audio-node-button-display-active {
+  background: #2fd061;
+  color: #000;
+}
+
+.audio-node-button-display-active:hover,
+.audio-node-button-display-active:focus-visible {
+  background: #2fd061;
+  color: #000;
+}
+
+.shader-node-slider .shader-inputs,
+.shader-node-button .shader-inputs {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 8px 8px 14px;
+  background: transparent;
+}
+
+.shader-node-scope .shader-inputs {
+  width: 100%;
+  min-width: 0;
+  padding: 8px;
+  background: transparent;
+}
+
+.shader-node-slider.shader-node-compact .shader-inputs:empty,
+.shader-node-scope.shader-node-compact .shader-inputs:empty,
+.shader-node-button.shader-node-compact .shader-inputs:empty {
+  display: none;
+  padding: 0;
+}
+
+.shader-node-slider .shader-port-input,
+.shader-node-scope .shader-port-input,
+.shader-node-button .shader-port-input {
+  display: grid;
+  grid-template-columns: var(--input-label-width, auto) minmax(0, 1fr);
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.shader-node-slider .shader-port-input span,
+.shader-node-scope .shader-port-input span,
+.shader-node-button .shader-port-input span {
+  width: var(--input-label-width, auto);
+}
+
+.shader-node-slider .numeric-scrubber,
+.shader-node-slider .slider-direction-select,
+.shader-node-button .button-mode-select {
+  width: 100%;
+  min-width: 44px;
+}
+
+.shader-node-scope .numeric-scrubber {
+  width: 100%;
+  min-width: 68px;
+}
+
+.audio-node-slider-fill {
+  position: absolute;
+  inset: auto auto 0 0;
+  width: 0;
+  height: 100%;
+  background: #2fd061;
+  pointer-events: none;
+}
+
+.audio-node-slider-display-vertical .audio-node-slider-fill {
+  width: 100%;
+  height: 0;
+}
+
+.audio-node-slider-display input[type="range"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.audio-node-slider-display-vertical input[type="range"] {
+  writing-mode: vertical-lr;
+  direction: rtl;
+}
+
+.slider-direction-select,
+.button-mode-select {
+  width: 92px;
+  min-width: 0;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid #fff;
+  background: #000;
+  color: #fff;
+  font: inherit;
+  line-height: 20px;
 }
 
 .audio-node-scope-resize-handle {
@@ -1361,7 +1520,12 @@ select:hover {
 }
 
 .shader-handle-input {
-  left: -13px;
+  left: -12px;
+}
+
+.shader-node-slider .shader-port-input .shader-handle-input,
+.shader-node-button .shader-port-input .shader-handle-input {
+  left: -18px;
 }
 
 .shader-handle-input-title {

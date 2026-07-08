@@ -21,6 +21,7 @@ import {
 import { getNodeDefinition, getNodeTypeLabel, NODE_TYPE_LIST } from '../graph/nodeTypes';
 import type { CustomWaveMode, CustomWavePoint, CustomWaveSettings, NodeDefinition, NodeType, PatchNode } from '../graph/types';
 import {
+  clampControlNodeSize,
   clampCustomWaveNodeSize,
   clampScopeNodeSize,
   DEFAULT_CUSTOM_WAVE_NODE_SIZE,
@@ -66,8 +67,10 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const previewOutputPort = data.previewPort?.side === 'output' ? data.previewPort.name : null;
   const showMeterDisplay = node.type === 'Meter';
   const showScopeDisplay = node.type === 'Scope';
+  const showSliderDisplay = node.type === 'Slider';
+  const showButtonDisplay = node.type === 'Button';
   const showCustomWaveEditor = node.type === 'CustomWave';
-  const showResizableDisplay = showScopeDisplay || showCustomWaveEditor;
+  const showResizableDisplay = showScopeDisplay || showSliderDisplay || showButtonDisplay || showCustomWaveEditor;
   const showSampleUpload = node.type === 'SamplePlayer';
   const customWave = showCustomWaveEditor ? normalizeCustomWave(node.customWave, node.params) : null;
   const amplitudeRange = displayAmplitudeRange(node.params.range);
@@ -76,8 +79,10 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const meterLevel = Math.max(0, Math.min(1, rawMeterLevel / amplitudeRange));
   const meterPeak = Math.max(0, Math.min(1, (data.audioMeter?.input ?? rawMeterLevel) / amplitudeRange));
   const scopePath = showScopeDisplay ? samplesToScopePath(data.audioScope?.samples ?? [], amplitudeRange) : '';
-  const scopeSize = showScopeDisplay
-    ? clampScopeNodeSize(node.scopeSize ?? DEFAULT_SCOPE_NODE_SIZE)
+  const scopeSize = showSliderDisplay || showButtonDisplay
+    ? clampControlNodeSize(node.scopeSize ?? DEFAULT_SCOPE_NODE_SIZE)
+    : showScopeDisplay
+      ? clampScopeNodeSize(node.scopeSize ?? DEFAULT_SCOPE_NODE_SIZE)
     : DEFAULT_SCOPE_NODE_SIZE;
   const customWaveSize = showCustomWaveEditor
     ? clampCustomWaveNodeSize(node.scopeSize ?? DEFAULT_CUSTOM_WAVE_NODE_SIZE)
@@ -128,7 +133,11 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     'shader-node',
     showMeterDisplay ? 'shader-node-meter' : '',
     showScopeDisplay ? 'shader-node-scope' : '',
+    showSliderDisplay ? 'shader-node-slider' : '',
+    showButtonDisplay ? 'shader-node-button' : '',
     showCustomWaveEditor ? 'shader-node-custom-wave' : '',
+    isExpression ? 'shader-node-expression' : '',
+    isGroup ? 'shader-node-group' : '',
     hasDspErrors ? 'shader-node-dsp-error' : '',
     selected ? 'shader-node-selected' : '',
     dragging ? 'shader-node-dragging' : '',
@@ -262,17 +271,17 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
       const zoom = reactFlow.getZoom() || 1;
       const deltaX = (event.clientX - resize.startPointer.x) / zoom;
       const deltaY = (event.clientY - resize.startPointer.y) / zoom;
-      const nextSize = showCustomWaveEditor ? clampCustomWaveNodeSize({
+      const rawNextSize = {
         width: resize.corner === 'bottom-left'
           ? resize.startSize.width - deltaX
           : resize.startSize.width + deltaX,
         height: resize.startSize.height + deltaY,
-      }) : clampScopeNodeSize({
-        width: resize.corner === 'bottom-left'
-          ? resize.startSize.width - deltaX
-          : resize.startSize.width + deltaX,
-        height: resize.startSize.height + deltaY,
-      });
+      };
+      const nextSize = showCustomWaveEditor
+        ? clampCustomWaveNodeSize(rawNextSize)
+        : showSliderDisplay || showButtonDisplay
+          ? clampControlNodeSize(rawNextSize)
+          : clampScopeNodeSize(rawNextSize);
       data.onScopeResize(node.id, nextSize, resize.corner === 'bottom-left' ? 'left' : 'right');
     }
 
@@ -383,6 +392,11 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     setScopeResizeCorner(corner);
   }
 
+  function handleScopeResizeClick(event: MouseEvent<HTMLSpanElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
   function handleSampleDragOver(event: DragEvent<HTMLDivElement>) {
     if (!showSampleUpload || !hasDraggedFiles(event)) return;
 
@@ -438,7 +452,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     event.preventDefault();
     event.stopPropagation();
     const target = event.target instanceof Element
-      ? event.target.closest<SVGCircleElement>('.custom-wave-hit-target, .custom-wave-handle')
+      ? event.target.closest<SVGElement>('.custom-wave-hit-target, .custom-wave-handle')
       : null;
     const targetIndex = target?.dataset.index ? Number(target.dataset.index) : null;
     const lastIndex = customWave.points.length - 1;
@@ -484,7 +498,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     if (!customWave) return;
 
     const target = event.target instanceof Element
-      ? event.target.closest<SVGCircleElement>('.custom-wave-hit-target, .custom-wave-handle')
+      ? event.target.closest<SVGElement>('.custom-wave-hit-target, .custom-wave-handle')
       : null;
     if (!target?.dataset.index) return;
 
@@ -603,6 +617,8 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             || isExpression
             || showSampleUpload
             || showCustomWaveEditor
+            || showSliderDisplay
+            || showButtonDisplay
             || visibleInputPorts.length > 0
             || (visibleOutputPorts.length > 0 && !showHeaderOutputPort)
             || showMeterDisplay
@@ -616,6 +632,8 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           isExpression ? 'shader-node-body-expression' : '',
           showMeterDisplay ? 'shader-node-body-meter' : '',
           showScopeDisplay ? 'shader-node-body-scope' : '',
+          showSliderDisplay ? 'shader-node-body-slider' : '',
+          showButtonDisplay ? 'shader-node-body-button' : '',
           showCustomWaveEditor ? 'shader-node-body-custom-wave' : '',
           visibleOutputPorts.length === 0 || showHeaderOutputPort ? 'shader-node-body-no-outputs' : '',
         ].filter(Boolean).join(' ')}>
@@ -663,7 +681,8 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           {showCustomWaveEditor && customWave ? (
             <CustomWaveEditor
               customWave={customWave}
-              compact={compactPorts}
+              compact={!showAllPorts}
+              displaySize={displaySize}
               editorRef={customWaveEditorRef}
               onPointerDown={handleCustomWavePointerDown}
               onDoubleClick={handleCustomWaveDoubleClick}
@@ -680,6 +699,21 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   sustainEnd: clamp(sustainEnd, customWave.sustainStart + 0.001, 1),
                 }, `custom-wave-sustain:${node.id}`);
               }}
+            />
+          ) : null}
+          {showSliderDisplay ? (
+            <SliderDisplay
+              value={node.params.value ?? 0.5}
+              direction={Math.round(node.params.direction ?? 0) === 1 ? 'vertical' : 'horizontal'}
+              onChange={(value) => data.onParamChange(node.id, 'value', value)}
+            />
+          ) : null}
+          {showButtonDisplay ? (
+            <ButtonDisplay
+              mode={buttonModeFromValue(node.params.mode ?? 0)}
+              pressed={node.params.pressed ?? 0}
+              onPressedChange={(value) => data.onParamChange(node.id, 'pressed', value)}
+              onClickPulse={() => data.onParamChange(node.id, 'clicks', (node.params.clicks ?? 0) + 1)}
             />
           ) : null}
           <div className="shader-ports shader-inputs" style={inputStyle}>
@@ -720,7 +754,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                 <button
                   className={[
                     'selector-index-button nodrag nopan',
-                    Math.round(node.params.select ?? 1) === Number(input.name) ? 'selector-index-button-active' : '',
+                    Math.floor(node.params.select ?? 0) === Number(input.name) ? 'selector-index-button-active' : '',
                   ].filter(Boolean).join(' ')}
                   type="button"
                   title={`Select input ${input.name}`}
@@ -734,6 +768,55 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                 >
                   {input.name}
                 </button>
+              ) : showSliderDisplay && input.name === 'direction' && !input.preview ? (
+                <>
+                  <PortNameLabel
+                    name={input.name}
+                    editable={false}
+                    draggable={false}
+                    preview={false}
+                    selected={data.selectedPort?.side === 'input' && data.selectedPort.name === input.name}
+                    activeDragTarget={false}
+                    activeDragSource={false}
+                    onChange={() => undefined}
+                  />
+                  <select
+                    className="slider-direction-select nodrag nopan"
+                    value={String(Math.round(node.params.direction ?? input.defaultValue ?? 0))}
+                    onChange={(event) => data.onParamChange(node.id, input.name, Number(event.currentTarget.value))}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    <option value="0">horizontal</option>
+                    <option value="1">vertical</option>
+                  </select>
+                </>
+              ) : showButtonDisplay && input.name === 'mode' && !input.preview ? (
+                <>
+                  <PortNameLabel
+                    name={input.name}
+                    editable={false}
+                    draggable={false}
+                    preview={false}
+                    selected={data.selectedPort?.side === 'input' && data.selectedPort.name === input.name}
+                    activeDragTarget={false}
+                    activeDragSource={false}
+                    onChange={() => undefined}
+                  />
+                  <select
+                    className="button-mode-select nodrag nopan"
+                    value={String(Math.round(node.params.mode ?? input.defaultValue ?? 0))}
+                    onChange={(event) => data.onParamChange(node.id, input.name, Number(event.currentTarget.value))}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    <option value="0">toggle</option>
+                    <option value="1">click</option>
+                    <option value="2">temporary</option>
+                  </select>
+                </>
               ) : (
                 <PortNameLabel
                   name={input.name}
@@ -751,7 +834,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   onChange={(nextName) => data.onPortNameChange(node.id, 'input', input.name, nextName)}
                 />
               )}
-              {!input.preview && input.valueEditor !== false && input.defaultValue !== undefined ? (
+              {!input.preview && input.valueEditor !== false && input.defaultValue !== undefined && !(showSliderDisplay && input.name === 'direction') && !(showButtonDisplay && input.name === 'mode') ? (
                 <NumericScrubber
                   value={node.params[input.name] ?? input.defaultValue ?? 0}
                   min={input.min}
@@ -856,8 +939,9 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   'audio-node-scope-resize-handle audio-node-scope-resize-handle-left nodrag nopan',
                   scopeResizeCorner === 'bottom-left' ? 'audio-node-scope-resize-handle-active' : '',
                 ].filter(Boolean).join(' ')}
-                title={showCustomWaveEditor ? 'Resize custom wave' : 'Resize scope'}
+                title={showCustomWaveEditor ? 'Resize custom wave' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : 'Resize scope'}
                 onPointerDown={(event) => handleScopeResizePointerDown(event, 'bottom-left')}
+                onClick={handleScopeResizeClick}
                 onDoubleClick={(event) => event.stopPropagation()}
               />
               <span
@@ -865,8 +949,9 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   'audio-node-scope-resize-handle audio-node-scope-resize-handle-right nodrag nopan',
                   scopeResizeCorner === 'bottom-right' ? 'audio-node-scope-resize-handle-active' : '',
                 ].filter(Boolean).join(' ')}
-                title={showCustomWaveEditor ? 'Resize custom wave' : 'Resize scope'}
+                title={showCustomWaveEditor ? 'Resize custom wave' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : 'Resize scope'}
                 onPointerDown={(event) => handleScopeResizePointerDown(event, 'bottom-right')}
+                onClick={handleScopeResizeClick}
                 onDoubleClick={(event) => event.stopPropagation()}
               />
             </>
@@ -907,6 +992,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
 interface CustomWaveEditorProps {
   customWave: CustomWaveSettings;
   compact: boolean;
+  displaySize: ScopeNodeSize;
   editorRef: RefObject<SVGSVGElement | null>;
   onPointerDown: (event: PointerEvent<SVGSVGElement>) => void;
   onDoubleClick: (event: MouseEvent<SVGSVGElement>) => void;
@@ -915,9 +1001,112 @@ interface CustomWaveEditorProps {
   onSustainEndChange: (value: number) => void;
 }
 
+interface SliderDisplayProps {
+  value: number;
+  direction: 'horizontal' | 'vertical';
+  onChange: (value: number) => void;
+}
+
+function SliderDisplay({ value, direction, onChange }: SliderDisplayProps) {
+  const normalized = clamp(value, 0, 1);
+  const fillStyle = direction === 'vertical'
+    ? { height: `${normalized * 100}%` }
+    : { width: `${normalized * 100}%` };
+
+  return (
+    <div className={[
+      'audio-node-slider-display nodrag nopan',
+      direction === 'vertical' ? 'audio-node-slider-display-vertical' : 'audio-node-slider-display-horizontal',
+    ].join(' ')}
+      onClick={(event) => event.stopPropagation()}
+    >
+      <span className="audio-node-slider-fill" style={fillStyle} aria-hidden="true" />
+      <input
+        aria-label="Slider value"
+        type="range"
+        min={0}
+        max={1}
+        step={0.001}
+        value={normalized}
+        onChange={(event) => onChange(Number(event.currentTarget.value))}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+        onDoubleClick={(event) => event.stopPropagation()}
+      />
+    </div>
+  );
+}
+
+type ButtonMode = 'toggle' | 'click' | 'temporary';
+
+interface ButtonDisplayProps {
+  mode: ButtonMode;
+  pressed: number;
+  onPressedChange: (value: number) => void;
+  onClickPulse: () => void;
+}
+
+function ButtonDisplay({ mode, pressed, onPressedChange, onClickPulse }: ButtonDisplayProps) {
+  const [pointerActive, setPointerActive] = useState(false);
+  const isPressed = pressed >= 0.5;
+  const isLit = mode === 'click' ? pointerActive : isPressed;
+
+  function releaseTemporary() {
+    setPointerActive(false);
+    if (mode === 'temporary') {
+      onPressedChange(0);
+    }
+  }
+
+  return (
+    <button
+      className={[
+        'audio-node-button-display nodrag nopan',
+        isLit ? 'audio-node-button-display-active' : '',
+      ].filter(Boolean).join(' ')}
+      type="button"
+      aria-label="Button value"
+      aria-pressed={isLit}
+      onPointerDown={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        setPointerActive(true);
+        if (mode === 'temporary') {
+          onPressedChange(1);
+        } else if (mode === 'click') {
+          onClickPulse();
+        }
+      }}
+      onPointerUp={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+        releaseTemporary();
+      }}
+      onPointerCancel={(event) => {
+        event.stopPropagation();
+        releaseTemporary();
+      }}
+      onLostPointerCapture={releaseTemporary}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (mode === 'toggle') {
+          onPressedChange(isPressed ? 0 : 1);
+        }
+      }}
+      onDoubleClick={(event) => event.stopPropagation()}
+    />
+  );
+}
+
 function CustomWaveEditor({
   customWave,
   compact,
+  displaySize,
   editorRef,
   onPointerDown,
   onDoubleClick,
@@ -936,6 +1125,9 @@ function CustomWaveEditor({
   const sustainEndX = padding + customWave.sustainEnd * innerWidth;
   const showSustainStart = customWaveUsesSustainStart(customWave.mode);
   const showSustainEnd = customWaveUsesSustainEnd(customWave.mode);
+  const hitRadius = screenCircleRadius(15, width, height, displaySize);
+  const endpointRadius = screenCircleRadius(5, width, height, displaySize);
+  const handleRadius = screenCircleRadius(6, width, height, displaySize);
 
   return (
     <div className="custom-wave-node-editor nodrag nopan">
@@ -966,7 +1158,7 @@ function CustomWaveEditor({
           const locked = index === 0 || index === points.length - 1;
           return (
             <g key={`${point.x}:${point.y}:${index}`}>
-              <circle
+              <ellipse
                 className={[
                   'custom-wave-hit-target',
                   locked ? 'is-locked' : '',
@@ -974,9 +1166,10 @@ function CustomWaveEditor({
                 data-index={index}
                 cx={screen.x}
                 cy={screen.y}
-                r={15}
+                rx={hitRadius.rx}
+                ry={hitRadius.ry}
               />
-              <circle
+              <ellipse
                 className={[
                   'custom-wave-handle',
                   locked ? 'custom-wave-endpoint is-locked' : '',
@@ -984,7 +1177,8 @@ function CustomWaveEditor({
                 data-index={index}
                 cx={screen.x}
                 cy={screen.y}
-                r={locked ? 5 : 6}
+                rx={locked ? endpointRadius.rx : handleRadius.rx}
+                ry={locked ? endpointRadius.ry : handleRadius.ry}
               />
             </g>
           );
@@ -1080,6 +1274,20 @@ function customWavePointToScreen(point: CustomWavePoint, width: number, height: 
   };
 }
 
+function screenCircleRadius(
+  radiusPx: number,
+  viewBoxWidth: number,
+  viewBoxHeight: number,
+  displaySize: ScopeNodeSize,
+): { rx: number; ry: number } {
+  const scaleX = displaySize.width / viewBoxWidth;
+  const scaleY = displaySize.height / viewBoxHeight;
+  return {
+    rx: radiusPx / Math.max(0.001, scaleX),
+    ry: radiusPx / Math.max(0.001, scaleY),
+  };
+}
+
 function displayAmplitudeRange(value: number | undefined): number {
   const range = Math.abs(Number(value ?? 1));
   return Number.isFinite(range) && range > 0 ? range : 1;
@@ -1092,7 +1300,7 @@ function shouldForceCompactPorts(definition: NodeDefinition): boolean {
 }
 
 function isSelectorValuePort(name: string): boolean {
-  return /^[1-9][0-9]*$/.test(name);
+  return /^(0|[1-9][0-9]*)$/.test(name);
 }
 
 function samplesToScopePath(samples: number[], range: number): string {
@@ -1123,6 +1331,13 @@ function trimTrailingZeros(value: string): string {
 
 function formatUnitValue(value: number): string {
   return trimTrailingZeros(clamp(value, 0, 1).toFixed(3));
+}
+
+function buttonModeFromValue(value: number): ButtonMode {
+  const mode = Math.round(value);
+  if (mode === 1) return 'click';
+  if (mode === 2) return 'temporary';
+  return 'toggle';
 }
 
 function clamp(value: number, min: number, max: number): number {

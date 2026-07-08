@@ -26,7 +26,18 @@ interface AudioEngineState {
   setLinkScopes: (linkIds: string[]) => void;
 }
 
-const AUDIO_ENGINE_ASSET_VERSION = '2026-07-07-dsp-expression-functions';
+interface MidiInputLike {
+  onmidimessage: ((event: any) => void) | null;
+}
+
+interface MidiAccessLike {
+  inputs: {
+    values: () => Iterable<MidiInputLike>;
+  };
+  onstatechange: (() => void) | null;
+}
+
+const AUDIO_ENGINE_ASSET_VERSION = '2026-07-08-button-node';
 const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const METER_UPDATE_INTERVAL_MS = 80;
@@ -67,6 +78,8 @@ export function useAudioEngine(): AudioEngineState {
   const inputSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const inputStreamRef = useRef<MediaStream | null>(null);
   const inputRequestIdRef = useRef(0);
+  const midiAccessRef = useRef<MidiAccessLike | null>(null);
+  const midiRequestRef = useRef<Promise<MidiAccessLike> | null>(null);
   const meterFrameRef = useRef<number | null>(null);
   const graphRef = useRef<DspProgram | null>(null);
   const lastSentProgramStructureRef = useRef<string | null>(null);
@@ -110,6 +123,18 @@ export function useAudioEngine(): AudioEngineState {
     inputStreamRef.current?.getTracks().forEach((track) => track.stop());
     inputSourceRef.current = null;
     inputStreamRef.current = null;
+  }, []);
+
+  const disconnectMidiInput = useCallback(() => {
+    const midiAccess = midiAccessRef.current;
+    if (midiAccess) {
+      midiAccess.onstatechange = null;
+      for (const input of midiAccess.inputs.values()) {
+        input.onmidimessage = null;
+      }
+    }
+    midiAccessRef.current = null;
+    midiRequestRef.current = null;
   }, []);
 
   const syncAudioInput = useCallback((graph: DspProgram, context: AudioContext, node: AudioWorkletNode) => {
@@ -186,6 +211,66 @@ export function useAudioEngine(): AudioEngineState {
     }
   }, []);
 
+  const syncMidiInput = useCallback((graph: DspProgram, node: AudioWorkletNode) => {
+    if (!programUsesMidi(graph)) {
+      disconnectMidiInput();
+      return;
+    }
+
+    const navigatorWithMidi = navigator as Navigator & {
+      requestMIDIAccess?: (options?: { sysex?: boolean }) => Promise<unknown>;
+    };
+    if (!navigatorWithMidi.requestMIDIAccess) {
+      setMessage('MIDI input unavailable: this browser does not expose Web MIDI');
+      return;
+    }
+
+    const attachMidiInputs = (midiAccess: MidiAccessLike) => {
+      const handleMidiMessage = (event: { data: ArrayLike<number> }) => {
+        const status = Number(event.data[0] ?? 0);
+        const data1 = Number(event.data[1] ?? 0);
+        const data2 = Number(event.data[2] ?? 0);
+        const command = status & 0xf0;
+        if (command === 0x90 && data2 > 0) {
+          node.port.postMessage({ type: 'noteOn', payload: { note: data1, velocity: data2 / 127 } });
+          return;
+        }
+        if (command === 0x80 || (command === 0x90 && data2 === 0)) {
+          node.port.postMessage({ type: 'noteOff', payload: { note: data1 } });
+          return;
+        }
+        if (command === 0xb0) {
+          node.port.postMessage({ type: 'midiCc', payload: { cc: data1, value: data2 / 127 } });
+        }
+      };
+
+      for (const input of midiAccess.inputs.values()) {
+        input.onmidimessage = handleMidiMessage;
+      }
+      midiAccess.onstatechange = () => attachMidiInputs(midiAccess);
+    };
+
+    if (midiAccessRef.current) {
+      attachMidiInputs(midiAccessRef.current);
+      return;
+    }
+
+    if (!midiRequestRef.current) {
+      midiRequestRef.current = navigatorWithMidi
+        .requestMIDIAccess({ sysex: false })
+        .then((midiAccess) => midiAccess as MidiAccessLike);
+    }
+
+    const midiRequest = midiRequestRef.current as Promise<MidiAccessLike>;
+    void midiRequest.then((midiAccess) => {
+      midiAccessRef.current = midiAccess;
+      attachMidiInputs(midiAccess);
+    }).catch((error) => {
+      setMessage(`MIDI input unavailable: ${error instanceof Error ? error.message : 'permission denied'}`);
+      midiRequestRef.current = null;
+    });
+  }, [disconnectMidiInput]);
+
   const syncGraph = useCallback((graph: DspProgram) => {
     graphRef.current = graph;
     if (!nodeRef.current || !contextRef.current) return;
@@ -196,6 +281,7 @@ export function useAudioEngine(): AudioEngineState {
     ) {
       syncGraphSamples(graph, contextRef.current, nodeRef.current);
       syncAudioInput(graph, contextRef.current, nodeRef.current);
+      syncMidiInput(graph, nodeRef.current);
       return;
     }
 
@@ -204,6 +290,7 @@ export function useAudioEngine(): AudioEngineState {
       nodeRef.current.port.postMessage({ type: 'dspValues', payload: { values: graph.values } });
       syncGraphSamples(graph, contextRef.current, nodeRef.current);
       syncAudioInput(graph, contextRef.current, nodeRef.current);
+      syncMidiInput(graph, nodeRef.current);
       return;
     }
 
@@ -212,13 +299,14 @@ export function useAudioEngine(): AudioEngineState {
     nodeRef.current.port.postMessage({ type: 'dspProgram', payload: graph });
     syncGraphSamples(graph, contextRef.current, nodeRef.current);
     syncAudioInput(graph, contextRef.current, nodeRef.current);
+    syncMidiInput(graph, nodeRef.current);
     nodeRef.current.port.postMessage({
       type: 'setLinkScopes',
       payload: activeScopeLinkIdsRef.current.length > 0
         ? scopePayload(activeScopeLinkIdsRef.current)
         : {},
     });
-  }, [syncAudioInput, syncGraphSamples]);
+  }, [syncAudioInput, syncGraphSamples, syncMidiInput]);
 
   const setLinkScopes = useCallback((linkIds: string[]) => {
     const nextLinkIds = uniqueScopeLinkIds(linkIds);
@@ -308,6 +396,7 @@ export function useAudioEngine(): AudioEngineState {
         node.port.postMessage({ type: 'dspProgram', payload: graphRef.current });
         syncGraphSamples(graphRef.current, context, node);
         syncAudioInput(graphRef.current, context, node);
+        syncMidiInput(graphRef.current, node);
       }
       if (activeScopeLinkIdsRef.current.length > 0) {
         node.port.postMessage({
@@ -328,10 +417,11 @@ export function useAudioEngine(): AudioEngineState {
       setStatus('error');
       setMessage(error instanceof Error ? error.message : 'audio failed');
     }
-  }, [startMeter, syncAudioInput, syncGraphSamples]);
+  }, [startMeter, syncAudioInput, syncGraphSamples, syncMidiInput]);
 
   const stop = useCallback(() => {
     stopAudioContext(contextRef, nodeRef, analyserRef, inputSourceRef, inputStreamRef);
+    disconnectMidiInput();
     inputRequestIdRef.current += 1;
     lastSentProgramStructureRef.current = null;
     lastSentValuesRef.current = null;
@@ -341,12 +431,13 @@ export function useAudioEngine(): AudioEngineState {
     setLinkScopeReadings({});
     setStatus('idle');
     setMessage('audio stopped');
-  }, [stopMeter]);
+  }, [disconnectMidiInput, stopMeter]);
 
   useEffect(() => () => {
     stopMeter();
     stopAudioContext(contextRef, nodeRef, analyserRef, inputSourceRef, inputStreamRef);
-  }, [stopMeter]);
+    disconnectMidiInput();
+  }, [disconnectMidiInput, stopMeter]);
 
   return { status, message, peak, linkMeters, linkScopes, start, stop, syncGraph, setLinkScopes };
 }
@@ -373,6 +464,8 @@ function dspProgramStructureKey(program: DspProgram): string {
     monitorIds: program.monitorIds,
     sampleBindings: program.sampleBindings,
     customWaveBindings: program.customWaveBindings,
+    maxVoices: program.maxVoices,
+    usesMidiNote: program.usesMidiNote,
     errors: program.errors,
   });
 }
@@ -399,6 +492,10 @@ function stringArraysEqual(left: string[], right: string[]): boolean {
 
 function programUsesAudioInput(program: DspProgram | null): boolean {
   return Boolean(program?.ops.some((op) => op.opcode === DSP_OP.Input));
+}
+
+function programUsesMidi(program: DspProgram | null): boolean {
+  return Boolean(program?.ops.some((op) => op.opcode === DSP_OP.MidiNote || op.opcode === DSP_OP.MidiCc));
 }
 
 async function resumeAudioContext(context: AudioContext): Promise<void> {

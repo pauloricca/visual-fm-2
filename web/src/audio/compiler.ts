@@ -821,6 +821,12 @@ function staticOutputValue(
     );
   }
 
+  if (node.type === 'Clamp' && (port === 'signal' || port === 'value')) {
+    const min = inputValue(node, 'min', 0, context, nextVisiting);
+    const max = inputValue(node, 'max', 1, context, nextVisiting);
+    return clamp(inputValue(node, 'signal', 0, context, nextVisiting), Math.min(min, max), Math.max(min, max));
+  }
+
   if (isProcessorNode(node) && port === 'signal') {
     return inputValue(node, 'signal', 0, context, nextVisiting);
   }
@@ -946,6 +952,7 @@ function isProcessorNode(node: PatchNode): boolean {
   return node.type === 'Gain'
     || node.type === 'Abs'
     || node.type === 'Map'
+    || node.type === 'Clamp'
     || node.type === 'Multiply'
     || node.type === 'Delay'
     || node.type === 'Chorus'

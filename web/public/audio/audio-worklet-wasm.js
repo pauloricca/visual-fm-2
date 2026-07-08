@@ -217,6 +217,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         if (!this.muted) this.noteOn(payload.note, payload.velocity);
       } else if (type === "noteOff") {
         this.noteOff(payload.note);
+      } else if (type === "midiCc") {
+        this.setMidiCc(payload);
       } else if (type === "panic") {
         this.resetRuntimeState();
       } else if (type === "setMuted") {
@@ -412,6 +414,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       monitorIds,
       sampleBindings,
       customWaveBindings,
+      maxVoices: this.clamp(Math.round(Number(program.maxVoices) || 1), 1, MAX_ACTIVE_VOICES),
+      usesMidiNote: Boolean(program.usesMidiNote),
       feedbackLinkIds: Array.isArray(program.feedbackLinkIds) ? program.feedbackLinkIds.map(String) : [],
       errors,
     };
@@ -449,6 +453,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
 
     this.wasm.clearDspProgram();
     this.wasm.clearGraph?.();
+    this.maxVoices = this.dspProgram.maxVoices;
     this.nodes = [];
     this.nodesById = new Map();
     if (this.dspProgram.errors.length > 0) return;
@@ -561,6 +566,12 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       );
     }
     this.restoreDspState(preservedState);
+  }
+
+  setMidiCc(payload = {}) {
+    const cc = this.clamp(Math.round(Number(payload.cc)), 0, 127);
+    const value = this.clamp(Number(payload.value), 0, 1);
+    this.wasm?.setDspMidiCc?.(cc, value);
   }
 
   configureDspScopes() {
@@ -1424,6 +1435,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     const slot = this.allocateSlot();
     if (slot === null) return false;
     this.wasm?.resetVoiceSlot?.(slot);
+    this.wasm?.resetDspVoiceState?.(slot);
     if (this.zeroVoicePhasesOnStart) this.wasm?.resetVoiceSlotPhases?.(slot);
     const voice = {
       id: `voice-${this.voiceCounter++}`,
@@ -2036,9 +2048,32 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       return true;
     }
 
+    this.pruneVoices(this.sampleCursor / sampleRate);
+    this.flushPendingVoiceStarts(this.sampleCursor / sampleRate);
     this.wasm.clear(frames);
     this.copyInput(inputs, frames);
-    this.wasm.renderDspProgram?.(frames, sampleRate);
+    if (this.dspProgram.usesMidiNote) {
+      for (const voice of this.voices.values()) {
+        const now = this.sampleCursor / sampleRate;
+        const lifecycleGain = voice.releasedAt === null
+          ? 1
+          : voice.releaseGain * Math.max(0, 1 - ((now - voice.releasedAt) / (voice.releaseSeconds || 0.24)));
+        this.wasm.renderDspProgramVoice?.(
+          voice.slot,
+          frames,
+          sampleRate,
+          voice.note,
+          voice.frequency,
+          voice.velocity,
+          lifecycleGain,
+          now - voice.startedAt,
+          voice.releasedAt === null ? -1 : now - voice.releasedAt,
+          voice.stolenAt === null ? -1 : now - voice.stolenAt,
+        );
+      }
+    } else {
+      this.wasm.renderDspProgram?.(frames, sampleRate);
+    }
 
     let peak = 0;
     for (let i = 0; i < frames; i += 1) {

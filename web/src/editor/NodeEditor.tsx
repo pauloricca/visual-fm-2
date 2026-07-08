@@ -17,7 +17,7 @@ import {
   Viewport,
   type CoordinateExtent,
 } from '@xyflow/react';
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type MouseEvent as ReactMouseEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { compilePatchToDspProgram } from '../audio/dspProgram';
 import { useAudioEngine } from '../audio/useAudioEngine';
 import { normalizeCustomWave } from '../graph/customWave';
@@ -30,6 +30,7 @@ import { EdgeOverlayProvider } from './EdgeOverlayContext';
 import {
   edgeFromLink,
   edgeId,
+  clampControlNodeSize,
   clampCustomWaveNodeSize,
   clampScopeNodeSize,
   DEFAULT_CUSTOM_WAVE_NODE_SIZE,
@@ -87,6 +88,13 @@ interface DuplicateDragState {
   currentPositions: Record<string, { x: number; y: number }>;
   duplicating: boolean;
   linkExternal: boolean;
+}
+
+interface NodeDragSelectionSnapshot {
+  nodeId: string;
+  preserveSelection: boolean;
+  nodeSelection: Record<string, boolean>;
+  edgeSelection: Record<string, boolean>;
 }
 
 interface SubpatchEditFrame {
@@ -192,6 +200,8 @@ function NodeEditorInner() {
   const historyGroupRef = useRef<{ key: string; time: number } | null>(null);
   const draftNodeConnectionRef = useRef<DraftNodeConnection | null>(null);
   const duplicateDragRef = useRef<DuplicateDragState | null>(null);
+  const pendingNodeDragSelectionRef = useRef<NodeDragSelectionSnapshot | null>(null);
+  const activeNodeDragSelectionRef = useRef<NodeDragSelectionSnapshot | null>(null);
   const pendingBoundaryPortRef = useRef<BoundaryPortSelection | null>(null);
   const [draftNodeConnection, setDraftNodeConnection] = useState<DraftNodeConnection | null>(null);
   const [duplicateDrag, setDuplicateDrag] = useState<DuplicateDragState | null>(null);
@@ -774,14 +784,21 @@ function NodeEditorInner() {
     const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
     if (
       !relatedNode ||
-      (relatedNode.data.patchNode.type !== 'Scope' && relatedNode.data.patchNode.type !== 'CustomWave')
+      (
+        relatedNode.data.patchNode.type !== 'Scope' &&
+        relatedNode.data.patchNode.type !== 'CustomWave' &&
+        relatedNode.data.patchNode.type !== 'Slider' &&
+        relatedNode.data.patchNode.type !== 'Button'
+      )
     ) {
       return;
     }
 
     const nextSize = relatedNode.data.patchNode.type === 'CustomWave'
       ? clampCustomWaveNodeSize(size)
-      : clampScopeNodeSize(size);
+      : relatedNode.data.patchNode.type === 'Slider' || relatedNode.data.patchNode.type === 'Button'
+        ? clampControlNodeSize(size)
+        : clampScopeNodeSize(size);
     const previousSize = relatedNode.data.patchNode.scopeSize;
     if (
       previousSize?.width === nextSize.width &&
@@ -825,7 +842,7 @@ function NodeEditorInner() {
 
     const definition = getNodeDefinition(relatedNode.data.patchNode as PatchNode);
     const valueInputs = selectorValueInputs(definition.inputs);
-    const nextIndex = valueInputs.length + 1;
+    const nextIndex = valueInputs.length;
     const nextPort = String(nextIndex);
     if (definition.inputs.some((input) => input.name === nextPort)) return;
 
@@ -1611,7 +1628,10 @@ function NodeEditorInner() {
     if (changes.some((change) => change.type === 'remove')) {
       commitHistory();
     }
-    setNodes((current) => applyNodeChanges(changes, current));
+    setNodes((current) => restoreNodeSelectionAfterDeselectedDrag(
+      applyNodeChanges(changes, current),
+      activeNodeDragSelectionRef.current,
+    ));
   }, [commitHistory, updateDuplicateDrag]);
 
   const onEdgesChange = useCallback((changes: EdgeChange<ShaderFlowEdge>[]) => {
@@ -1626,6 +1646,11 @@ function NodeEditorInner() {
     node: ShaderFlowNode,
     dragNodes: ShaderFlowNode[],
   ) => {
+    const selectionSnapshot = pendingNodeDragSelectionRef.current;
+    const duplicating = isDuplicateModifierPressed(event);
+    activeNodeDragSelectionRef.current = !duplicating && selectionSnapshot?.nodeId === node.id && selectionSnapshot.preserveSelection
+      ? selectionSnapshot
+      : null;
     const relatedNodes = dragNodes.length > 0 ? dragNodes : [node];
     const positions = Object.fromEntries(relatedNodes.map((entry) => [
       entry.id,
@@ -1635,9 +1660,13 @@ function NodeEditorInner() {
       nodeIds: new Set(relatedNodes.map((entry) => entry.id)),
       originalPositions: positions,
       currentPositions: positions,
-      duplicating: isDuplicateModifierPressed(event),
+      duplicating,
       linkExternal: isCommandModifierPressed(event),
     });
+    if (!activeNodeDragSelectionRef.current) return;
+
+    setNodes((current) => restoreNodeSelectionAfterDeselectedDrag(current, activeNodeDragSelectionRef.current));
+    setEdges((current) => restoreEdgeSelectionAfterDeselectedDrag(current, activeNodeDragSelectionRef.current));
   }, [updateDuplicateDrag]);
 
   const onNodeDrag = useCallback((
@@ -1654,6 +1683,8 @@ function NodeEditorInner() {
     dragNodes: ShaderFlowNode[],
   ) => {
     const dragState = duplicateDragRef.current;
+    activeNodeDragSelectionRef.current = null;
+    pendingNodeDragSelectionRef.current = null;
     updateDuplicateDrag(null);
     if (!dragState?.duplicating) return;
 
@@ -2378,12 +2409,49 @@ function NodeEditorInner() {
     }
   }, []);
 
+  const handleEditorPointerDownCapture = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0) {
+      pendingNodeDragSelectionRef.current = null;
+      return;
+    }
+
+    const target = event.target instanceof Element ? event.target : null;
+    const nodeElement = target?.closest<HTMLElement>('.react-flow__node[data-id]');
+    const nodeId = nodeElement?.dataset.id;
+    if (!nodeId) {
+      pendingNodeDragSelectionRef.current = null;
+      return;
+    }
+
+    const node = nodesRef.current.find((entry) => entry.id === nodeId);
+    if (!node) {
+      pendingNodeDragSelectionRef.current = null;
+      return;
+    }
+
+    pendingNodeDragSelectionRef.current = {
+      nodeId,
+      preserveSelection: node.selected !== true,
+      nodeSelection: selectionById(nodesRef.current),
+      edgeSelection: selectionById(edgesRef.current),
+    };
+  }, []);
+
+  const clearPendingNodeDragSelection = useCallback(() => {
+    if (!activeNodeDragSelectionRef.current) {
+      pendingNodeDragSelectionRef.current = null;
+    }
+  }, []);
+
   return (
     <div className="app-shell app-shell-panel-closed">
       <EdgeOverlayProvider target={edgeOverlayElement}>
         <main
           ref={editorShellRef}
           className="editor-shell"
+          onPointerDownCapture={handleEditorPointerDownCapture}
+          onPointerUpCapture={clearPendingNodeDragSelection}
+          onPointerCancelCapture={clearPendingNodeDragSelection}
           onDoubleClick={(event) => {
             const target = event.target as HTMLElement;
             if (!target.classList.contains('react-flow__pane')) return;
@@ -3727,6 +3795,11 @@ function viewportNodeSize(node: ShaderFlowNode): { width: number; height: number
   }
 
   const patchNode = node.data.patchNode;
+  if (patchNode.type === 'Slider' || patchNode.type === 'Button') {
+    const size = clampControlNodeSize(patchNode.scopeSize ?? DEFAULT_SCOPE_NODE_SIZE);
+    return { width: size.width, height: size.height + NODE_HEADER_HEIGHT };
+  }
+
   if (patchNode.type === 'Scope' || patchNode.type === 'Meter') {
     const size = clampScopeNodeSize(patchNode.scopeSize ?? DEFAULT_SCOPE_NODE_SIZE);
     return { width: size.width, height: size.height + NODE_HEADER_HEIGHT };
@@ -3879,11 +3952,11 @@ function uniquePortName(baseName: string, usedNames: Set<string>): string {
 }
 
 function selectorValueInputs(inputs: PortDefinition[]): PortDefinition[] {
-  return inputs.filter((input) => /^[1-9][0-9]*$/.test(input.name));
+  return inputs.filter((input) => /^(0|[1-9][0-9]*)$/.test(input.name));
 }
 
 function selectorIndexFromKeyboardEvent(event: KeyboardEvent): number | null {
-  if (!/^[1-9]$/.test(event.key)) return null;
+  if (!/^[0-9]$/.test(event.key)) return null;
   return Number(event.key);
 }
 
@@ -4312,6 +4385,44 @@ function isEditableEventTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable) return true;
   return ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
+}
+
+function selectionById<T extends { id: string; selected?: boolean }>(items: T[]): Record<string, boolean> {
+  return Object.fromEntries(items.map((item) => [item.id, item.selected === true]));
+}
+
+function restoreNodeSelectionAfterDeselectedDrag(
+  nodes: ShaderFlowNode[],
+  snapshot: NodeDragSelectionSnapshot | null,
+): ShaderFlowNode[] {
+  return restoreSelectionAfterDeselectedDrag(nodes, snapshot, snapshot?.nodeSelection);
+}
+
+function restoreEdgeSelectionAfterDeselectedDrag(
+  edges: ShaderFlowEdge[],
+  snapshot: NodeDragSelectionSnapshot | null,
+): ShaderFlowEdge[] {
+  return restoreSelectionAfterDeselectedDrag(edges, snapshot, snapshot?.edgeSelection);
+}
+
+function restoreSelectionAfterDeselectedDrag<T extends { id: string; selected?: boolean }>(
+  items: T[],
+  snapshot: NodeDragSelectionSnapshot | null,
+  selectedById: Record<string, boolean> | undefined,
+): T[] {
+  if (!snapshot?.preserveSelection || !selectedById) return items;
+
+  let changed = false;
+  const restoredItems = items.map((item) => {
+    if (!Object.prototype.hasOwnProperty.call(selectedById, item.id)) return item;
+    const selected = selectedById[item.id] === true;
+    if ((item.selected === true) === selected) return item;
+
+    changed = true;
+    return { ...item, selected };
+  });
+
+  return changed ? restoredItems : items;
 }
 
 function dedupeEdges(edges: ShaderFlowEdge[]): ShaderFlowEdge[] {

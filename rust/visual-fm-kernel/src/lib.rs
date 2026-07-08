@@ -101,6 +101,10 @@ const DSP_OP_DISTORTION: i32 = 23;
 const DSP_OP_SAMPLE: i32 = 24;
 const DSP_OP_SAMPLE_PARAM: i32 = 25;
 const DSP_OP_FUNCTION: i32 = 26;
+const DSP_OP_MIDI_NOTE: i32 = 27;
+const DSP_OP_MIDI_CC: i32 = 28;
+const DSP_OP_ACCUMULATOR: i32 = 29;
+const DSP_OP_BUTTON: i32 = 30;
 
 #[derive(Copy, Clone)]
 struct Node {
@@ -395,6 +399,14 @@ static mut DSP_VALUE_INITIALIZED: [bool; MAX_DSP_VALUES] = [false; MAX_DSP_VALUE
 static mut DSP_VALUE_ACTIVE_COUNT: usize = 0;
 static mut DSP_REGS: [f64; MAX_DSP_REGS] = [0.0; MAX_DSP_REGS];
 static mut DSP_STATE: [f64; MAX_DSP_STATE] = [0.0; MAX_DSP_STATE];
+static mut DSP_VOICE_STATES: [[f64; MAX_DSP_STATE]; MAX_VOICE_SLOTS] =
+    [[0.0; MAX_DSP_STATE]; MAX_VOICE_SLOTS];
+static mut DSP_CURRENT_NOTE: f64 = 0.0;
+static mut DSP_CURRENT_FREQUENCY: f64 = 0.0;
+static mut DSP_CURRENT_VELOCITY: f64 = 0.0;
+static mut DSP_CURRENT_GATE: f64 = 0.0;
+static mut DSP_CURRENT_TRIGGER: f64 = 0.0;
+static mut DSP_MIDI_CC_VALUES: [f64; 128] = [0.0; 128];
 static mut DSP_SCOPE_REGS: [i32; MAX_DSP_SCOPES] = [-1; MAX_DSP_SCOPES];
 static mut DSP_SCOPE_SAMPLES: [[f32; LINK_SCOPE_POINTS]; MAX_DSP_SCOPES] =
     [[0.0; LINK_SCOPE_POINTS]; MAX_DSP_SCOPES];
@@ -650,6 +662,11 @@ pub extern "C" fn clearDspProgram() {
         for index in 0..MAX_DSP_STATE {
             DSP_STATE[index] = 0.0;
         }
+        for slot in 0..MAX_VOICE_SLOTS {
+            for index in 0..MAX_DSP_STATE {
+                DSP_VOICE_STATES[slot][index] = 0.0;
+            }
+        }
         for index in 0..MAX_DSP_VALUES {
             DSP_VALUE_INITIALIZED[index] = false;
         }
@@ -661,6 +678,33 @@ pub extern "C" fn clearDspProgram() {
         }
         for index in 0..MAX_DSP_SAMPLE_NODES {
             DSP_SAMPLE_NODE_INDICES[index] = -1;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn resetDspVoiceState(slot: u32) {
+    unsafe {
+        let slot = slot as usize;
+        if slot >= MAX_VOICE_SLOTS {
+            return;
+        }
+        for index in 0..MAX_DSP_STATE {
+            DSP_VOICE_STATES[slot][index] = 0.0;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn setDspMidiCc(cc: u32, value: f64) {
+    unsafe {
+        let cc = cc as usize;
+        if cc < 128 {
+            DSP_MIDI_CC_VALUES[cc] = if value.is_finite() {
+                value.clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
         }
     }
 }
@@ -3474,6 +3518,16 @@ fn dsp_value(index: i32) -> f64 {
     }
 }
 
+fn dsp_value_target(index: i32) -> f64 {
+    unsafe {
+        if index < 0 || index as usize >= MAX_DSP_VALUES {
+            0.0
+        } else {
+            DSP_VALUE_TARGETS[index as usize]
+        }
+    }
+}
+
 fn advance_dsp_values(sample_rate: f64) {
     let alpha = 1.0 - (-1.0 / (sample_rate * DSP_VALUE_SMOOTH_SECONDS.max(0.001))).exp();
     unsafe {
@@ -3623,15 +3677,19 @@ fn render_dsp_selector(op: DspOp, sample_rate: f64) -> f64 {
 
         let state_index = op.state as usize;
         let input = dsp_reg(op.c);
-        let max_index = op.e.max(1) as f64;
-        let selected_index = dsp_reg(op.a).round().clamp(1.0, max_index) as i32;
+        let max_index = op.e.max(0) as f64;
+        let selected_index = dsp_reg(op.a).floor().clamp(0.0, max_index) as i32;
 
         if selected_index == op.d {
             let previous_index = DSP_STATE[state_index + 1].round() as i32;
+            let uninitialized = DSP_STATE[state_index] == 0.0
+                && DSP_STATE[state_index + 1] == 0.0
+                && DSP_STATE[state_index + 2] == 0.0
+                && DSP_STATE[state_index + 3] == 0.0;
             let slide = dsp_reg(op.b).max(0.0);
             let sample_rate = sample_rate.max(1.0);
 
-            if previous_index < 1 {
+            if uninitialized {
                 DSP_STATE[state_index] = sanitize_control_value(input);
                 DSP_STATE[state_index + 1] = selected_index as f64;
                 DSP_STATE[state_index + 2] = sanitize_control_value(input);
@@ -4045,6 +4103,96 @@ fn render_dsp_function(op: DspOp) -> f64 {
     sanitize_control_value(output)
 }
 
+fn render_dsp_midi_note(op: DspOp) -> f64 {
+    unsafe {
+        match op.a {
+            1 => DSP_CURRENT_FREQUENCY,
+            2 => DSP_CURRENT_VELOCITY,
+            3 => DSP_CURRENT_GATE,
+            4 => DSP_CURRENT_TRIGGER,
+            _ => DSP_CURRENT_NOTE,
+        }
+    }
+}
+
+fn render_dsp_midi_cc(op: DspOp) -> f64 {
+    let cc = dsp_reg(op.a).round().clamp(0.0, 127.0) as usize;
+    unsafe { DSP_MIDI_CC_VALUES[cc] }
+}
+
+fn render_dsp_accumulator(op: DspOp) -> f64 {
+    unsafe {
+        if op.state < 0 || (op.state as usize + 1) >= MAX_DSP_STATE {
+            return dsp_reg(op.b);
+        }
+
+        let state_index = op.state as usize;
+        let trigger = dsp_reg(op.a) >= ENVELOPE_TRIGGER_THRESHOLD;
+        let previous_trigger = DSP_STATE[state_index + 1] >= ENVELOPE_TRIGGER_THRESHOLD;
+        let min = dsp_reg(op.b);
+        let max = dsp_reg(op.c);
+        let low = min.min(max);
+        let high = min.max(max);
+        let span = (high - low).max(0.0);
+        let mut value = DSP_STATE[state_index].clamp(low, high);
+
+        if !DSP_STATE[state_index].is_finite() || (value == 0.0 && low > 0.0) {
+            value = low;
+        }
+
+        if trigger && !previous_trigger {
+            value += 1.0;
+            if span <= 0.0 || value > high {
+                value = low;
+            }
+        }
+
+        DSP_STATE[state_index] = sanitize_control_value(value);
+        DSP_STATE[state_index + 1] = if trigger { 1.0 } else { 0.0 };
+        DSP_STATE[state_index]
+    }
+}
+
+fn render_dsp_button(op: DspOp) -> f64 {
+    unsafe {
+        if op.state < 0 || (op.state as usize + 2) >= MAX_DSP_STATE {
+            return if dsp_value_target(op.a) >= ENVELOPE_TRIGGER_THRESHOLD {
+                1.0
+            } else {
+                0.0
+            };
+        }
+
+        let state_index = op.state as usize;
+        let pressed = dsp_value_target(op.a) >= ENVELOPE_TRIGGER_THRESHOLD;
+        let mode = dsp_value_target(op.b).round() as i32;
+        let clicks = dsp_value_target(op.c).round();
+        let initialized = DSP_STATE[state_index + 2] >= 0.5;
+        let previous_clicks = if initialized {
+            DSP_STATE[state_index + 1].round()
+        } else {
+            clicks
+        };
+
+        let output = if mode == 1 {
+            if initialized && (clicks - previous_clicks).abs() >= 0.5 {
+                1.0
+            } else {
+                0.0
+            }
+        } else if pressed {
+            1.0
+        } else {
+            0.0
+        };
+
+        DSP_STATE[state_index] = if pressed { 1.0 } else { 0.0 };
+        DSP_STATE[state_index + 1] = clicks;
+        DSP_STATE[state_index + 2] = 1.0;
+        output
+    }
+}
+
 fn render_dsp_op(
     op: DspOp,
     frame: usize,
@@ -4106,6 +4254,12 @@ fn render_dsp_op(
                             DSP_STATE[index + 1] = dsp_sample_hold_value(op.c);
                             DSP_STATE[index + 2] = 1.0;
                         }
+                        let trigger = dsp_reg(op.d) >= ENVELOPE_TRIGGER_THRESHOLD;
+                        let previous_trigger = DSP_STATE[index] >= ENVELOPE_TRIGGER_THRESHOLD;
+                        if trigger && !previous_trigger {
+                            DSP_STATE[index + 1] = dsp_sample_hold_value(op.c);
+                        }
+                        DSP_STATE[index] = if trigger { 1.0 } else { 0.0 };
                         if index + 1 < MAX_DSP_STATE {
                             DSP_STATE[index + 1]
                         } else {
@@ -4154,12 +4308,6 @@ fn render_dsp_op(
             set_dsp_reg(op.out, output);
             if let Some(index) = state_index {
                 let next_phase = phase + frequency / sample_rate.max(1.0);
-                if op.a == 5 && next_phase >= 1.0 && index + 1 < MAX_DSP_STATE {
-                    DSP_STATE[index + 1] = dsp_sample_hold_value(op.c);
-                    if index + 2 < MAX_DSP_STATE {
-                        DSP_STATE[index + 2] = 1.0;
-                    }
-                }
                 if op.a == 7 && next_phase >= 1.0 && index + 2 < MAX_DSP_STATE {
                     DSP_STATE[index + 1] = DSP_STATE[index + 2];
                     DSP_STATE[index + 2] = random_bipolar(DRONE_VOICE_SLOT);
@@ -4229,7 +4377,7 @@ fn render_dsp_op(
                     } else {
                         DSP_STATE[index] = normalize_phase(next_phase);
                     }
-                } else {
+                } else if op.a != 5 {
                     DSP_STATE[index] = normalize_phase(next_phase);
                 }
             }
@@ -4294,6 +4442,10 @@ fn render_dsp_op(
         DSP_OP_SAMPLE_PARAM => render_dsp_sample_param(op),
         DSP_OP_SAMPLE => set_dsp_reg(op.out, render_dsp_sample(op, sample_rate)),
         DSP_OP_FUNCTION => set_dsp_reg(op.out, render_dsp_function(op)),
+        DSP_OP_MIDI_NOTE => set_dsp_reg(op.out, render_dsp_midi_note(op)),
+        DSP_OP_MIDI_CC => set_dsp_reg(op.out, render_dsp_midi_cc(op)),
+        DSP_OP_ACCUMULATOR => set_dsp_reg(op.out, render_dsp_accumulator(op)),
+        DSP_OP_BUTTON => set_dsp_reg(op.out, render_dsp_button(op)),
         _ => {}
     }
 }
@@ -4358,6 +4510,80 @@ pub extern "C" fn renderDspProgram(frames: u32, sample_rate: f64) {
             capture_dsp_scopes();
             LEFT[frame] += left_sample as f32;
             RIGHT[frame] += right_sample as f32;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn renderDspProgramVoice(
+    slot: u32,
+    frames: u32,
+    sample_rate: f64,
+    note: f64,
+    note_frequency: f64,
+    velocity: f64,
+    lifecycle_gain: f64,
+    voice_age: f64,
+    release_age: f64,
+    stolen_age: f64,
+) {
+    let frames = (frames as usize).min(MAX_WASM_FRAMES);
+    if frames == 0 || sample_rate <= 0.0 {
+        return;
+    }
+
+    let voice_slot = (slot as usize).min(MAX_VOICE_SLOTS - 1);
+    let base_amp = velocity.clamp(0.0, 1.0) * lifecycle_gain.clamp(0.0, 1.0);
+
+    unsafe {
+        for index in 0..MAX_DSP_STATE {
+            DSP_STATE[index] = DSP_VOICE_STATES[voice_slot][index];
+        }
+
+        for frame in 0..frames {
+            let mut left_sample = 0.0;
+            let mut right_sample = 0.0;
+            let sample_offset = frame as f64 / sample_rate;
+            let age = voice_age + sample_offset;
+            let sample_release_age = if release_age < 0.0 {
+                -1.0
+            } else {
+                release_age + sample_offset
+            };
+            let sample_stolen_age = if stolen_age < 0.0 {
+                -1.0
+            } else {
+                stolen_age + sample_offset
+            };
+            let steal_gain = if sample_stolen_age < 0.0 {
+                1.0
+            } else {
+                1.0 - smooth_step(sample_stolen_age / VOICE_STEAL_FADE_SECONDS)
+            };
+            let amp = base_amp * smooth_step(age / VOICE_START_FADE_SECONDS) * steal_gain;
+
+            DSP_CURRENT_NOTE = note.clamp(0.0, 127.0);
+            DSP_CURRENT_FREQUENCY = note_frequency.max(0.0);
+            DSP_CURRENT_VELOCITY = velocity.clamp(0.0, 1.0);
+            DSP_CURRENT_GATE = if sample_release_age < 0.0 && sample_stolen_age < 0.0 { 1.0 } else { 0.0 };
+            DSP_CURRENT_TRIGGER = if sample_release_age < 0.0 && sample_stolen_age < 0.0 && age <= 1.0 / sample_rate {
+                1.0
+            } else {
+                0.0
+            };
+
+            advance_dsp_values(sample_rate);
+            for op_index in 0..DSP_OP_COUNT {
+                render_dsp_op(DSP_OPS[op_index], frame, sample_rate, &mut left_sample, &mut right_sample);
+            }
+            capture_dsp_meters();
+            capture_dsp_scopes();
+            LEFT[frame] += (left_sample * amp) as f32;
+            RIGHT[frame] += (right_sample * amp) as f32;
+        }
+
+        for index in 0..MAX_DSP_STATE {
+            DSP_VOICE_STATES[voice_slot][index] = DSP_STATE[index];
         }
     }
 }

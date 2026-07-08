@@ -46,6 +46,8 @@ const auditedPorts = {
   Reverb: ['size', 'decay', 'mix'],
   LowpassFilter: ['cutoff', 'resonance'],
   SamplePlayer: ['start', 'end', 'stretch', 'cycleLength', 'overlapRatio', 'originalPitch'],
+  Slider: ['signal'],
+  Clamp: ['min', 'max'],
   Meter: ['range'],
   Scope: ['range'],
 };
@@ -78,6 +80,9 @@ const patch = {
       originalPitch: 60,
       level: 0.7,
     }),
+    node('slider', 'Slider', { value: 0.25, min: 10, max: 20, direction: 0 }),
+    node('clamp', 'Clamp', { min: -0.5, max: 0.5 }),
+    node('button', 'Button', { mode: 1, pressed: 0, clicks: 0 }),
     node('meter', 'Meter', { range: 1 }),
     node('scope', 'Scope', { range: 1 }),
     node('out', 'AudioOut', { level: 0.75 }),
@@ -89,9 +94,13 @@ const patch = {
     link('reverb', 'signal', 'filter', 'signal'),
     link('filter', 'signal', 'meter', 'signal'),
     link('filter', 'signal', 'scope', 'signal'),
+    link('source', 'signal', 'clamp', 'signal'),
+    link('clamp', 'signal', 'out', 'both'),
     link('meter', 'signal', 'out', 'left'),
     link('scope', 'signal', 'out', 'right'),
     link('sample', 'signal', 'out', 'both'),
+    link('slider', 'signal', 'out', 'both'),
+    link('button', 'signal', 'out', 'both'),
     ...Object.entries(auditedPorts).flatMap(([type, ports]) => {
       const nodeId = type === 'LowpassFilter' ? 'filter' : type === 'SamplePlayer' ? 'sample' : type.toLowerCase();
       return ports.map((port) => link('control', 'signal', nodeId, port));
@@ -114,8 +123,48 @@ for (const [type, ports] of Object.entries(auditedPorts)) {
   }
 }
 
+for (const ignoredPort of ['min', 'max']) {
+  const staticBinding = dspProgram.valueBindings.find((binding) => (
+    binding.kind === 'node-param'
+    && binding.nodeId === 'slider'
+    && binding.port === ignoredPort
+  ));
+  assert(!staticBinding, `Slider.${ignoredPort} compiled despite linked signal input.`);
+}
+
 assert(Object.hasOwn(dspProgram.monitorIds, 'meter'), 'Meter signal should be monitored.');
 assert(Object.hasOwn(dspProgram.monitorIds, 'scope'), 'Scope signal should be monitored.');
+assert(
+  dspProgram.stateBindings.some((binding) => binding.id === 'button:button' && binding.count === 3),
+  'Button should compile with click edge state.',
+);
+assert(
+  ['pressed', 'mode', 'clicks'].every((port) => dspProgram.valueBindings.some((binding) => (
+    binding.kind === 'node-param'
+    && binding.nodeId === 'button'
+    && binding.port === port
+  ))),
+  'Button should compile pressed, mode, and clicks value bindings.',
+);
+
+const terminalScopeProgram = compilePatchToDspProgram({
+  nodes: [
+    node('button_scope_source', 'Button', { mode: 0, pressed: 1, clicks: 0 }),
+    node('button_scope', 'Scope', { range: 1 }),
+  ],
+  links: [
+    link('button_scope_source', 'signal', 'button_scope', 'signal'),
+  ],
+});
+assert(
+  terminalScopeProgram.errors.length === 0,
+  `Terminal Scope compile failed: ${terminalScopeProgram.errors.join('; ')}`,
+);
+assert(Object.hasOwn(terminalScopeProgram.monitorIds, 'button_scope'), 'Terminal Scope signal should be monitored.');
+assert(
+  terminalScopeProgram.ops.some((op) => op.opcode === 30),
+  'Terminal Button -> Scope patch should compile the Button op.',
+);
 
 const invalidExpressionProgram = compilePatchToDspProgram({
   nodes: [

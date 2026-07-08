@@ -40,7 +40,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     type: 'SampleHoldOsc',
     inputs: [
       { name: 'signal', valueEditor: false },
-      { name: 'frequency', defaultValue: 10 },
+      { name: 'trigger', defaultValue: 0 },
     ],
     outputs: [{ name: 'signal' }],
   },
@@ -93,12 +93,59 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     inputs: [{ name: 'value', defaultValue: 1 }],
     outputs: [{ name: 'signal' }],
   },
+  Slider: {
+    type: 'Slider',
+    inputs: [
+      { name: 'signal', valueEditor: false },
+      { name: 'value', defaultValue: 0.5, min: 0, max: 1 },
+      { name: 'min', defaultValue: 0 },
+      { name: 'max', defaultValue: 1 },
+      { name: 'direction', defaultValue: 0, min: 0, max: 1, integer: true },
+    ],
+    outputs: [{ name: 'signal' }],
+  },
+  Button: {
+    type: 'Button',
+    inputs: [
+      { name: 'mode', defaultValue: 0, min: 0, max: 2, integer: true, connectable: false, valueEditor: false },
+    ],
+    outputs: [{ name: 'signal' }],
+  },
+  MidiNote: {
+    type: 'MidiNote',
+    inputs: [
+      { name: 'voices', defaultValue: 8, min: 1, max: 16, integer: true },
+    ],
+    outputs: [
+      { name: 'note' },
+      { name: 'frequency' },
+      { name: 'velocity' },
+      { name: 'gate' },
+      { name: 'trigger' },
+    ],
+  },
+  MidiCc: {
+    type: 'MidiCc',
+    inputs: [
+      { name: 'cc', defaultValue: 1, min: 0, max: 127, integer: true },
+    ],
+    outputs: [{ name: 'signal' }],
+  },
   Selector: {
     type: 'Selector',
     inputs: [
-      { name: 'select', defaultValue: 1, min: 1, integer: true },
+      { name: 'select', defaultValue: 0, min: 0, integer: true },
       { name: 'slide', defaultValue: 0, min: 0 },
-      { name: '1', defaultValue: 0 },
+      { name: '0', defaultValue: 0 },
+    ],
+    outputs: [{ name: 'signal' }],
+  },
+  Accumulator: {
+    type: 'Accumulator',
+    inputs: [
+      { name: 'trigger', defaultValue: 0 },
+      { name: 'min', defaultValue: 0 },
+      { name: 'max', defaultValue: 1 },
     ],
     outputs: [{ name: 'signal' }],
   },
@@ -116,6 +163,10 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     { name: 'srcMax', defaultValue: 1 },
     { name: 'trgtMin', defaultValue: 0 },
     { name: 'trgtMax', defaultValue: 1 },
+  ]),
+  Clamp: processor('Clamp', [
+    { name: 'min', defaultValue: 0 },
+    { name: 'max', defaultValue: 1 },
   ]),
   Multiply: processor('Multiply', [
     { name: 'factor', defaultValue: 1 },
@@ -216,10 +267,16 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   CustomWave: 'Custom Wave',
   SamplePlayer: 'Sample',
   Constant: 'Constant',
+  Slider: 'Slider',
+  Button: 'Button',
+  MidiNote: 'MIDI Note',
+  MidiCc: 'MIDI CC',
   Selector: 'Selector',
+  Accumulator: 'Accumulator',
   Gain: 'Gain',
   Abs: 'Abs',
   Map: 'Map',
+  Clamp: 'Clamp',
   Multiply: 'Multiply',
   Delay: 'Delay',
   Chorus: 'Chorus',
