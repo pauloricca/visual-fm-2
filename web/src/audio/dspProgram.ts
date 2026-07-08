@@ -1,5 +1,6 @@
 import { expandGroups } from '../graph/subpatch';
 import { normalizeCustomWave } from '../graph/customWave';
+import { migratePatchForCompatibility } from '../graph/migrations';
 import { getNodeDefinition } from '../graph/nodeTypes';
 import type { CustomWaveSettings, LinkMode, NodeType, Patch, PatchLink, PatchNode } from '../graph/types';
 
@@ -170,7 +171,7 @@ const EXPRESSION_FUNCTIONS: Record<string, { id: number; minArgs: number; maxArg
 };
 
 export function compilePatchToDspProgram(patch: Patch): DspProgram {
-  const expandedPatch = expandGroups(patch);
+  const expandedPatch = expandGroups(migratePatchForCompatibility(patch));
   const context = createContext(expandedPatch);
   const audioOutNodes = expandedPatch.nodes.filter((node) => node.type === 'AudioOut');
   const monitorNodes = expandedPatch.nodes.filter((node) => node.type === 'Meter' || node.type === 'Scope');
@@ -563,10 +564,13 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
 
   if (node.type === 'AudioInput') {
     const output = nextRegister(context);
+    const gain = Math.round(node.params.muted ?? 0) === 1
+      ? 0
+      : resolveInput(node, 'gain', 1, context);
     context.ops.push({
       opcode: DSP_OP.Input,
       out: output,
-      a: resolveInput(node, 'gain', 1, context),
+      a: gain,
     });
     return emitBinary(DSP_OP.Mul, output, resolveInput(node, 'level', 0.7, context), context);
   }

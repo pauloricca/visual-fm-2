@@ -482,6 +482,11 @@ select:hover {
   background: var(--surface-bg);
 }
 
+.shader-node-audio-input {
+  width: 244px;
+  background: var(--surface-bg);
+}
+
 .shader-node-custom-wave {
   width: max(var(--node-display-width, 372px), 220px);
   background: var(--surface-bg);
@@ -789,6 +794,123 @@ select:hover {
   background: #fff;
   color: #000;
   outline: 0;
+}
+
+.shader-node-body-audio-input {
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+}
+
+.audio-input-node-panel {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 6px;
+  min-width: 0;
+}
+
+.audio-input-node-status-row,
+.audio-input-node-device-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.audio-input-node-status-dot {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border: 1px solid #fff;
+  background: transparent;
+}
+
+.audio-input-node-status-dot-connected {
+  background: #7cff00;
+}
+
+.audio-input-node-status-dot-requesting,
+.audio-input-node-status-dot-needs-permission {
+  background: #ffff8a;
+}
+
+.audio-input-node-status-dot-denied,
+.audio-input-node-status-dot-unsupported,
+.audio-input-node-status-dot-error {
+  background: #ff7474;
+}
+
+.audio-input-node-status-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audio-input-node-message {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 10px;
+  line-height: 1.25;
+}
+
+.audio-input-node-message-warning {
+  color: #ffb0b0;
+}
+
+.audio-input-node-mute-button,
+.audio-input-node-refresh-button,
+.audio-input-node-device-select {
+  height: 22px;
+  min-width: 0;
+  border: 1px solid #fff;
+  background: #000;
+  color: #fff;
+  font: inherit;
+  font-size: 11px;
+  line-height: 20px;
+}
+
+.audio-input-node-mute-button,
+.audio-input-node-refresh-button {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.audio-input-node-mute-button:hover,
+.audio-input-node-mute-button:focus-visible,
+.audio-input-node-refresh-button:hover,
+.audio-input-node-refresh-button:focus-visible {
+  background: #fff;
+  color: #000;
+  outline: 0;
+}
+
+.audio-input-node-mute-button-active {
+  background: #ff7474;
+  color: #000;
+}
+
+.audio-input-node-mute-button-active:hover,
+.audio-input-node-mute-button-active:focus-visible {
+  background: #ffb0b0;
+  color: #000;
+}
+
+.audio-input-node-device-select {
+  flex: 1 1 auto;
+  padding: 0 4px;
+}
+
+.audio-input-node-device-select:disabled {
+  opacity: 0.5;
 }
 
 .shader-node-body-custom-wave {

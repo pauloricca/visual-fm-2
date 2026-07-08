@@ -2,6 +2,20 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { DSP_OP, type DspProgram } from './dspProgram';
 
 type AudioStatus = 'idle' | 'starting' | 'running' | 'error';
+export type AudioInputStatus = 'inactive' | 'needs-permission' | 'requesting' | 'connected' | 'denied' | 'unsupported' | 'error';
+
+export interface AudioInputDevice {
+  deviceId: string;
+  label: string;
+}
+
+export interface AudioInputState {
+  status: AudioInputStatus;
+  message: string;
+  devices: AudioInputDevice[];
+  selectedDeviceId: string;
+  canSelectDevice: boolean;
+}
 
 export interface LinkMeterReading {
   input: number;
@@ -20,10 +34,13 @@ interface AudioEngineState {
   peak: number;
   linkMeters: Record<string, LinkMeterReading>;
   linkScopes: Record<string, LinkScopeReading>;
+  audioInput: AudioInputState;
   start: () => Promise<void>;
   stop: () => void;
   syncGraph: (program: DspProgram) => void;
   setLinkScopes: (linkIds: string[]) => void;
+  setAudioInputDeviceId: (deviceId: string) => void;
+  refreshAudioInputDevices: () => Promise<void>;
 }
 
 interface MidiInputLike {
@@ -72,12 +89,17 @@ export function useAudioEngine(): AudioEngineState {
   const [peak, setPeak] = useState(0);
   const [linkMeters, setLinkMeters] = useState<Record<string, LinkMeterReading>>({});
   const [linkScopes, setLinkScopeReadings] = useState<Record<string, LinkScopeReading>>({});
+  const [audioInputStatus, setAudioInputStatus] = useState<AudioInputStatus>('inactive');
+  const [audioInputMessage, setAudioInputMessage] = useState('Add an AudioInput node, then start audio.');
+  const [audioInputDevices, setAudioInputDevices] = useState<AudioInputDevice[]>([]);
+  const [selectedAudioInputDeviceId, setSelectedAudioInputDeviceId] = useState('');
   const contextRef = useRef<AudioContext | null>(null);
   const nodeRef = useRef<AudioWorkletNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const inputSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const inputStreamRef = useRef<MediaStream | null>(null);
   const inputRequestIdRef = useRef(0);
+  const currentInputDeviceIdRef = useRef('');
   const midiAccessRef = useRef<MidiAccessLike | null>(null);
   const midiRequestRef = useRef<Promise<MidiAccessLike> | null>(null);
   const meterFrameRef = useRef<number | null>(null);
@@ -117,12 +139,40 @@ export function useAudioEngine(): AudioEngineState {
     meterFrameRef.current = window.requestAnimationFrame(tick);
   }, [stopMeter]);
 
-  const disconnectAudioInput = useCallback(() => {
+  const refreshAudioInputDevices = useCallback(async () => {
+    const mediaDevices = navigator.mediaDevices;
+    if (!mediaDevices?.enumerateDevices) {
+      setAudioInputDevices([]);
+      return;
+    }
+
+    try {
+      const devices = await mediaDevices.enumerateDevices();
+      const audioInputs = devices
+        .filter((device) => device.kind === 'audioinput')
+        .map((device, index) => ({
+          deviceId: device.deviceId,
+          label: device.label || `Input ${index + 1}`,
+        }));
+      setAudioInputDevices(audioInputs);
+      setSelectedAudioInputDeviceId((current) => {
+        if (!current) return current;
+        return audioInputs.some((device) => device.deviceId === current) ? current : '';
+      });
+    } catch {
+      setAudioInputDevices([]);
+    }
+  }, []);
+
+  const disconnectAudioInput = useCallback((nextStatus: AudioInputStatus = 'inactive', nextMessage = 'Audio input is not used by this patch.') => {
     inputRequestIdRef.current += 1;
     inputSourceRef.current?.disconnect();
     inputStreamRef.current?.getTracks().forEach((track) => track.stop());
     inputSourceRef.current = null;
     inputStreamRef.current = null;
+    currentInputDeviceIdRef.current = '';
+    setAudioInputStatus(nextStatus);
+    setAudioInputMessage(nextMessage);
   }, []);
 
   const disconnectMidiInput = useCallback(() => {
@@ -143,22 +193,33 @@ export function useAudioEngine(): AudioEngineState {
       return;
     }
 
-    if (inputSourceRef.current) return;
+    if (inputSourceRef.current && currentInputDeviceIdRef.current === selectedAudioInputDeviceId) return;
+    if (inputSourceRef.current) {
+      disconnectAudioInput('requesting', 'Switching audio input device...');
+    }
 
     const mediaDevices = navigator.mediaDevices;
     if (!mediaDevices?.getUserMedia) {
+      setAudioInputStatus('unsupported');
+      setAudioInputMessage('Audio input is unavailable in this browser.');
       setMessage('audio input unavailable: this browser does not expose getUserMedia');
       return;
     }
 
+    setAudioInputStatus('requesting');
+    setAudioInputMessage(selectedAudioInputDeviceId
+      ? `Requesting ${audioInputDeviceLabel(audioInputDevices, selectedAudioInputDeviceId)}...`
+      : 'Requesting microphone permission...');
     const requestId = inputRequestIdRef.current + 1;
     inputRequestIdRef.current = requestId;
+    const audioConstraints: MediaTrackConstraints = {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      ...(selectedAudioInputDeviceId ? { deviceId: { exact: selectedAudioInputDeviceId } } : {}),
+    };
     void mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
-      },
+      audio: audioConstraints,
     }).then((stream) => {
       const stillCurrent = (
         inputRequestIdRef.current === requestId &&
@@ -176,12 +237,34 @@ export function useAudioEngine(): AudioEngineState {
       source.connect(node);
       inputStreamRef.current = stream;
       inputSourceRef.current = source;
+      const track = stream.getAudioTracks()[0] ?? null;
+      const connectedDeviceId = track?.getSettings().deviceId ?? selectedAudioInputDeviceId;
+      currentInputDeviceIdRef.current = selectedAudioInputDeviceId;
+      setAudioInputStatus('connected');
+      setAudioInputMessage(`${track?.label || audioInputDeviceLabel(audioInputDevices, connectedDeviceId) || 'Audio input'} connected.`);
+      void refreshAudioInputDevices();
       setMessage(`WASM audio ${context.state} (${AUDIO_ENGINE_ASSET_VERSION})`);
     }).catch((error) => {
       if (inputRequestIdRef.current !== requestId) return;
+      const errorName = error instanceof DOMException ? error.name : '';
+      if (errorName === 'NotAllowedError' || errorName === 'SecurityError') {
+        setAudioInputStatus('denied');
+        setAudioInputMessage('Microphone permission was denied. Allow microphone access for this site and try again.');
+      } else if (errorName === 'NotFoundError' || errorName === 'DevicesNotFoundError') {
+        setAudioInputStatus('unsupported');
+        setAudioInputMessage('No microphone or audio input device was found.');
+      } else if (errorName === 'OverconstrainedError') {
+        setAudioInputStatus('error');
+        setAudioInputMessage('The selected input device is unavailable. Choose another input.');
+        setSelectedAudioInputDeviceId('');
+      } else {
+        setAudioInputStatus('error');
+        setAudioInputMessage(error instanceof Error ? error.message : 'Audio input failed.');
+      }
+      void refreshAudioInputDevices();
       setMessage(`audio input unavailable: ${error instanceof Error ? error.message : 'permission denied'}`);
     });
-  }, [disconnectAudioInput]);
+  }, [audioInputDevices, disconnectAudioInput, refreshAudioInputDevices, selectedAudioInputDeviceId]);
 
   const syncGraphSamples = useCallback((graph: DspProgram, context: AudioContext, node: AudioWorkletNode) => {
     const nextKeys: Record<string, string> = {};
@@ -273,7 +356,22 @@ export function useAudioEngine(): AudioEngineState {
 
   const syncGraph = useCallback((graph: DspProgram) => {
     graphRef.current = graph;
-    if (!nodeRef.current || !contextRef.current) return;
+    if (!nodeRef.current || !contextRef.current) {
+      if (programUsesAudioInput(graph)) {
+        const mediaDevices = navigator.mediaDevices;
+        if (!mediaDevices?.getUserMedia) {
+          setAudioInputStatus('unsupported');
+          setAudioInputMessage('Audio input is unavailable in this browser.');
+        } else {
+          setAudioInputStatus('needs-permission');
+          setAudioInputMessage('Start audio to request microphone access.');
+          void refreshAudioInputDevices();
+        }
+      } else {
+        disconnectAudioInput();
+      }
+      return;
+    }
     const structureKey = dspProgramStructureKey(graph);
     if (
       lastSentProgramStructureRef.current === structureKey
@@ -306,7 +404,7 @@ export function useAudioEngine(): AudioEngineState {
         ? scopePayload(activeScopeLinkIdsRef.current)
         : {},
     });
-  }, [syncAudioInput, syncGraphSamples, syncMidiInput]);
+  }, [disconnectAudioInput, refreshAudioInputDevices, syncAudioInput, syncGraphSamples, syncMidiInput]);
 
   const setLinkScopes = useCallback((linkIds: string[]) => {
     const nextLinkIds = uniqueScopeLinkIds(linkIds);
@@ -423,6 +521,7 @@ export function useAudioEngine(): AudioEngineState {
     stopAudioContext(contextRef, nodeRef, analyserRef, inputSourceRef, inputStreamRef);
     disconnectMidiInput();
     inputRequestIdRef.current += 1;
+    currentInputDeviceIdRef.current = '';
     lastSentProgramStructureRef.current = null;
     lastSentValuesRef.current = null;
     sampleDataKeysRef.current = {};
@@ -431,6 +530,10 @@ export function useAudioEngine(): AudioEngineState {
     setLinkScopeReadings({});
     setStatus('idle');
     setMessage('audio stopped');
+    setAudioInputStatus(programUsesAudioInput(graphRef.current) ? 'needs-permission' : 'inactive');
+    setAudioInputMessage(programUsesAudioInput(graphRef.current)
+      ? 'Start audio to request microphone access.'
+      : 'Audio input is not used by this patch.');
   }, [disconnectMidiInput, stopMeter]);
 
   useEffect(() => () => {
@@ -439,7 +542,40 @@ export function useAudioEngine(): AudioEngineState {
     disconnectMidiInput();
   }, [disconnectMidiInput, stopMeter]);
 
-  return { status, message, peak, linkMeters, linkScopes, start, stop, syncGraph, setLinkScopes };
+  useEffect(() => {
+    void refreshAudioInputDevices();
+    const mediaDevices = navigator.mediaDevices;
+    if (!mediaDevices?.addEventListener) return;
+
+    const handleDeviceChange = () => {
+      void refreshAudioInputDevices();
+    };
+    mediaDevices.addEventListener('devicechange', handleDeviceChange);
+    return () => mediaDevices.removeEventListener('devicechange', handleDeviceChange);
+  }, [refreshAudioInputDevices]);
+
+  const audioInput: AudioInputState = {
+    status: audioInputStatus,
+    message: audioInputMessage,
+    devices: audioInputDevices,
+    selectedDeviceId: selectedAudioInputDeviceId,
+    canSelectDevice: Boolean(navigator.mediaDevices?.enumerateDevices),
+  };
+
+  return {
+    status,
+    message,
+    peak,
+    linkMeters,
+    linkScopes,
+    audioInput,
+    start,
+    stop,
+    syncGraph,
+    setLinkScopes,
+    setAudioInputDeviceId: setSelectedAudioInputDeviceId,
+    refreshAudioInputDevices,
+  };
 }
 
 function scopePayload(linkIds: string[]) {
@@ -492,6 +628,10 @@ function stringArraysEqual(left: string[], right: string[]): boolean {
 
 function programUsesAudioInput(program: DspProgram | null): boolean {
   return Boolean(program?.ops.some((op) => op.opcode === DSP_OP.Input));
+}
+
+function audioInputDeviceLabel(devices: AudioInputDevice[], deviceId: string): string {
+  return devices.find((device) => device.deviceId === deviceId)?.label ?? '';
 }
 
 function programUsesMidi(program: DspProgram | null): boolean {

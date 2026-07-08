@@ -1,10 +1,12 @@
 import type { Patch } from './types';
 import { normalizeCustomWave } from './customWave';
+import { migratePatchForCompatibility } from './migrations';
 
 export function normalizePatch(patch: Patch): Patch {
+  const migratedPatch = migratePatchForCompatibility(patch);
   return {
-    ...(patch.name ? { name: patch.name } : {}),
-    nodes: [...patch.nodes]
+    ...(migratedPatch.name ? { name: migratedPatch.name } : {}),
+    nodes: [...migratedPatch.nodes]
       .map((node) => ({
         id: node.id,
         type: node.type,
@@ -20,7 +22,7 @@ export function normalizePatch(patch: Patch): Patch {
         ...(node.subpatch ? { subpatch: normalizePatch(node.subpatch) } : {}),
       }))
       .sort((a, b) => a.id.localeCompare(b.id)),
-    links: [...patch.links].sort(compareLinks),
+    links: [...migratedPatch.links].sort(compareLinks),
   };
 }
 

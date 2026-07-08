@@ -234,7 +234,7 @@ function compileSourceNode(node: PatchNode, context: CompileContext): WasmAudioN
       ? inputValue(node, 'value', 1, context)
       : frequencyInputValue(node, context) * ratio,
     ...(node.type === 'PerlinNoise' ? { speed: inputValue(node, 'speed', 8, context) } : {}),
-    ...(node.type === 'AudioInput' ? { audioInputGain: inputValue(node, 'gain', 1, context) } : {}),
+    ...(node.type === 'AudioInput' ? { audioInputGain: Math.round(node.params.muted ?? 0) === 1 ? 0 : inputValue(node, 'gain', 1, context) } : {}),
     ...(node.type === 'CustomWave' ? {
       customWave: {
         mode: customWave?.mode ?? 'loop',

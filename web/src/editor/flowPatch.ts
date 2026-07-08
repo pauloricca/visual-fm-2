@@ -1,5 +1,7 @@
 import type { Edge, Node } from '@xyflow/react';
+import type { AudioInputState } from '../audio/useAudioEngine';
 import { normalizeCustomWave } from '../graph/customWave';
+import { migratePatchForCompatibility } from '../graph/migrations';
 import type { LinkMode, NodeType, Patch, PatchLink, PatchNode, PortDefinition } from '../graph/types';
 
 export interface ScopeNodeSize {
@@ -32,8 +34,11 @@ export interface ShaderNodeData extends Record<string, unknown> {
   audioScope?: {
     samples: number[];
   };
+  audioInput?: AudioInputState;
   dspErrors?: string[];
   onParamChange: (nodeId: string, port: string, value: number) => void;
+  onAudioInputDeviceChange?: (deviceId: string) => void;
+  onAudioInputRefresh?: () => void;
   onCustomWaveChange?: (nodeId: string, customWave: NonNullable<PatchNode['customWave']>, historyKey?: string) => void;
   onExpressionChange?: (nodeId: string, expression: string) => void;
   onExpressionCommit?: (nodeId: string, expression: string) => void;
@@ -454,69 +459,83 @@ function parseHandle(handle: string | null | undefined): { kind: 'in' | 'out'; p
 }
 
 function normalizePersistedState(state: PersistedEditorState): PersistedEditorState {
-  const audioOutIds = new Set(
-    state.nodes
-      .filter((node) => node.type === 'AudioOut')
-      .map((node) => node.id),
-  );
+  const originalNodesById = new Map(state.nodes.map((node) => [node.id, node]));
+  const passthroughNodes = state.nodes.filter((node) => node.type === null);
+  const typedPatch: Patch = {
+    nodes: state.nodes
+      .filter((node): node is PersistedEditorState['nodes'][number] & { type: NodeType } => node.type !== null)
+      .map((node) => ({
+        id: node.id,
+        type: node.type,
+        ...(node.subpatchName ? { subpatchName: node.subpatchName } : {}),
+        ...(node.subpatchCloneId ? { subpatchCloneId: node.subpatchCloneId } : {}),
+        ...(node.expression !== undefined ? { expression: node.expression } : {}),
+        ...(node.sample ? { sample: node.sample } : {}),
+        ...(node.customWave ? { customWave: normalizeCustomWave(node.customWave, node.params) } : {}),
+        params: node.params,
+        position: node.position,
+        ...(node.inputs ? { inputs: node.inputs } : {}),
+        ...(node.outputs ? { outputs: node.outputs } : {}),
+        ...(node.subpatch ? { subpatch: node.subpatch } : {}),
+      })),
+    links: state.edges
+      .map(patchLinkFromPersistedEdge)
+      .filter((link): link is PatchLink => link !== null),
+  };
+  const migratedPatch = migratePatchForCompatibility(typedPatch);
 
   return {
     ...state,
-    nodes: state.nodes.map(normalizePersistedNode),
-    edges: state.edges.map((edge) => {
-      if (!audioOutIds.has(edge.target) || edge.targetHandle !== 'in:signal') {
-        return edge;
-      }
-
-      return {
-        ...edge,
-        targetHandle: 'in:both',
-        id: edge.id.replace(/->([^:]+):signal$/, '->$1:both'),
-      };
-    }),
+    nodes: [
+      ...migratedPatch.nodes.map((node) => persistedNodeFromPatchNode(node, originalNodesById.get(node.id))),
+      ...passthroughNodes,
+    ],
+    edges: migratedPatch.links.map(persistedEdgeFromPatchLink),
   };
 }
 
-function normalizePersistedNode(node: PersistedEditorState['nodes'][number]): PersistedEditorState['nodes'][number] {
-  if (node.type === 'LinkNoise') {
-    return {
-      ...node,
-      type: 'Gain',
-      params: { gain: 1 },
-    };
-  }
+function patchLinkFromPersistedEdge(edge: PersistedEditorState['edges'][number]): PatchLink | null {
+  const sourcePort = parseHandle(edge.sourceHandle);
+  const targetPort = parseHandle(edge.targetHandle);
+  if (!sourcePort || !targetPort || sourcePort.kind !== 'out' || targetPort.kind !== 'in') return null;
+  return {
+    from: { node: edge.source, port: sourcePort.port },
+    to: { node: edge.target, port: targetPort.port },
+    ...(edge.weight !== undefined ? { weight: edge.weight } : {}),
+    ...(edge.mode !== undefined ? { mode: edge.mode } : {}),
+  };
+}
 
-  if (node.type === 'Filter') {
-    const filterType = Math.round(node.params.type ?? 1);
-    const { type: _oldType, ...params } = node.params;
-    return {
-      ...node,
-      type: filterType === 2
-        ? 'HighpassFilter'
-        : filterType === 3
-          ? 'BandpassFilter'
-          : 'LowpassFilter',
-      params,
-    };
-  }
+function persistedNodeFromPatchNode(
+  node: PatchNode,
+  original?: PersistedEditorState['nodes'][number],
+): PersistedEditorState['nodes'][number] {
+  return {
+    id: node.id,
+    type: node.type,
+    subpatchName: node.subpatchName,
+    subpatchCloneId: node.subpatchCloneId,
+    expression: node.expression,
+    sample: node.sample,
+    customWave: node.customWave,
+    params: node.params,
+    position: node.position ?? original?.position ?? { x: 0, y: 0 },
+    inputs: node.inputs,
+    outputs: node.outputs,
+    subpatch: node.subpatch,
+    compactPorts: original?.compactPorts,
+    scopeSize: original?.scopeSize,
+  };
+}
 
-  if (node.type === 'Distortion') {
-    const distortionType = Math.round(node.params.type ?? 2);
-    const { type: _oldType, ...params } = node.params;
-    return {
-      ...node,
-      type: distortionType === 1
-        ? 'HardClipDistortion'
-        : distortionType === 3
-          ? 'FuzzDistortion'
-          : distortionType === 4
-            ? 'SaturateDistortion'
-            : distortionType === 5
-              ? 'WavefoldDistortion'
-              : 'SoftClipDistortion',
-      params,
-    };
-  }
-
-  return node;
+function persistedEdgeFromPatchLink(link: PatchLink): PersistedEditorState['edges'][number] {
+  return {
+    id: edgeId(link),
+    source: link.from.node,
+    sourceHandle: `out:${link.from.port}`,
+    target: link.to.node,
+    targetHandle: `in:${link.to.port}`,
+    weight: link.weight ?? 1,
+    mode: link.mode ?? 'set',
+  };
 }

@@ -69,6 +69,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const showScopeDisplay = node.type === 'Scope';
   const showSliderDisplay = node.type === 'Slider';
   const showButtonDisplay = node.type === 'Button';
+  const showAudioInputDisplay = node.type === 'AudioInput';
   const showCustomWaveEditor = node.type === 'CustomWave';
   const showResizableDisplay = showScopeDisplay || showSliderDisplay || showButtonDisplay || showCustomWaveEditor;
   const showSampleUpload = node.type === 'SamplePlayer';
@@ -135,6 +136,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     showScopeDisplay ? 'shader-node-scope' : '',
     showSliderDisplay ? 'shader-node-slider' : '',
     showButtonDisplay ? 'shader-node-button' : '',
+    showAudioInputDisplay ? 'shader-node-audio-input' : '',
     showCustomWaveEditor ? 'shader-node-custom-wave' : '',
     isExpression ? 'shader-node-expression' : '',
     isGroup ? 'shader-node-group' : '',
@@ -616,6 +618,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           const showBody = !compactPorts
             || isExpression
             || showSampleUpload
+            || showAudioInputDisplay
             || showCustomWaveEditor
             || showSliderDisplay
             || showButtonDisplay
@@ -634,6 +637,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           showScopeDisplay ? 'shader-node-body-scope' : '',
           showSliderDisplay ? 'shader-node-body-slider' : '',
           showButtonDisplay ? 'shader-node-body-button' : '',
+          showAudioInputDisplay ? 'shader-node-body-audio-input' : '',
           showCustomWaveEditor ? 'shader-node-body-custom-wave' : '',
           visibleOutputPorts.length === 0 || showHeaderOutputPort ? 'shader-node-body-no-outputs' : '',
         ].filter(Boolean).join(' ')}>
@@ -677,6 +681,15 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                 {node.sample?.name ?? 'Select sample'}
               </button>
             </div>
+          ) : null}
+          {showAudioInputDisplay ? (
+            <AudioInputDisplay
+              state={data.audioInput}
+              muted={Math.round(node.params.muted ?? 0) === 1}
+              onMutedChange={(muted) => data.onParamChange(node.id, 'muted', muted ? 1 : 0)}
+              onDeviceChange={(deviceId) => data.onAudioInputDeviceChange?.(deviceId)}
+              onRefresh={() => data.onAudioInputRefresh?.()}
+            />
           ) : null}
           {showCustomWaveEditor && customWave ? (
             <CustomWaveEditor
@@ -999,6 +1012,121 @@ interface CustomWaveEditorProps {
   onModeChange: (mode: CustomWaveMode) => void;
   onSustainStartChange: (value: number) => void;
   onSustainEndChange: (value: number) => void;
+}
+
+interface AudioInputDisplayProps {
+  state: ShaderNodeData['audioInput'];
+  muted: boolean;
+  onMutedChange: (muted: boolean) => void;
+  onDeviceChange: (deviceId: string) => void;
+  onRefresh: () => void;
+}
+
+function AudioInputDisplay({ state, muted, onMutedChange, onDeviceChange, onRefresh }: AudioInputDisplayProps) {
+  const status = state?.status ?? 'inactive';
+  const message = state?.message ?? 'Start audio to request microphone access.';
+  const devices = state?.devices ?? [];
+  const selectedDeviceId = state?.selectedDeviceId ?? '';
+  const canSelectDevice = state?.canSelectDevice ?? false;
+  const unavailable = status === 'unsupported' || status === 'denied' || status === 'error';
+
+  return (
+    <div className="audio-input-node-panel nodrag nopan">
+      <div className="audio-input-node-status-row">
+        <span
+          className={[
+            'audio-input-node-status-dot',
+            `audio-input-node-status-dot-${status}`,
+          ].join(' ')}
+          aria-hidden="true"
+        />
+        <span className="audio-input-node-status-text" title={message}>
+          {audioInputStatusLabel(status)}
+        </span>
+        <button
+          className={[
+            'audio-input-node-mute-button',
+            muted ? 'audio-input-node-mute-button-active' : '',
+          ].filter(Boolean).join(' ')}
+          type="button"
+          aria-label={muted ? 'Unmute audio input' : 'Mute audio input'}
+          aria-pressed={muted}
+          title={muted ? 'Unmute input' : 'Mute input'}
+          onPointerDown={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onMutedChange(!muted);
+          }}
+        >
+          {muted ? 'muted' : 'live'}
+        </button>
+      </div>
+      <div className={[
+        'audio-input-node-message',
+        unavailable ? 'audio-input-node-message-warning' : '',
+      ].filter(Boolean).join(' ')}>
+        {message}
+      </div>
+      {canSelectDevice ? (
+        <div className="audio-input-node-device-row">
+          <select
+            className="audio-input-node-device-select"
+            aria-label="Audio input device"
+            value={selectedDeviceId}
+            disabled={devices.length === 0}
+            onChange={(event) => onDeviceChange(event.currentTarget.value)}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+          >
+            <option value="">Default input</option>
+            {devices.map((device) => (
+              <option key={device.deviceId || device.label} value={device.deviceId}>
+                {device.label}
+              </option>
+            ))}
+          </select>
+          <button
+            className="audio-input-node-refresh-button"
+            type="button"
+            aria-label="Refresh audio input devices"
+            title="Refresh devices"
+            onPointerDown={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onRefresh();
+            }}
+          >
+            refresh
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function audioInputStatusLabel(status: NonNullable<ShaderNodeData['audioInput']>['status']): string {
+  switch (status) {
+    case 'connected':
+      return 'connected';
+    case 'requesting':
+      return 'requesting';
+    case 'needs-permission':
+      return 'permission';
+    case 'denied':
+      return 'denied';
+    case 'unsupported':
+      return 'unavailable';
+    case 'error':
+      return 'check input';
+    case 'inactive':
+    default:
+      return 'idle';
+  }
 }
 
 interface SliderDisplayProps {
