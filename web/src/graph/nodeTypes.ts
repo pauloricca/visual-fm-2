@@ -102,6 +102,8 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
       { name: 'min', defaultValue: 0 },
       { name: 'max', defaultValue: 1 },
       { name: 'direction', defaultValue: 0, min: 0, max: 1, integer: true },
+      { name: 'midiChannel', defaultValue: 0, min: 0, max: 16, integer: true, connectable: false },
+      { name: 'midiCc', defaultValue: 1, min: 0, max: 127, integer: true, connectable: false },
     ],
     outputs: [{ name: 'signal' }],
   },
@@ -110,6 +112,8 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     inputs: [
       { name: 'signal', valueEditor: false },
       { name: 'mode', defaultValue: 0, min: 0, max: 2, integer: true, connectable: false, valueEditor: false },
+      { name: 'midiChannel', defaultValue: 0, min: 0, max: 16, integer: true, connectable: false },
+      { name: 'midiCc', defaultValue: 1, min: 0, max: 127, integer: true, connectable: false },
     ],
     outputs: [{ name: 'signal' }],
   },

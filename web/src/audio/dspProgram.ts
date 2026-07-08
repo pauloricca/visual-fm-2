@@ -44,6 +44,7 @@ export interface DspProgram {
   ops: DspOp[];
   values: number[];
   valueBindings: DspValueBinding[];
+  midiControlBindings: DspMidiControlBinding[];
   stateBindings: DspStateBinding[];
   registerCount: number;
   stateCount: number;
@@ -85,6 +86,16 @@ export interface DspStateBinding {
   nodeId: string;
 }
 
+export interface DspMidiControlBinding {
+  nodeId: string;
+  kind: 'slider' | 'button';
+  channel: number;
+  cc: number;
+  valueIndex: number;
+  modeValueIndex?: number;
+  clicksValueIndex?: number;
+}
+
 export interface DspSampleBinding {
   nodeId: string;
   sample: {
@@ -114,6 +125,7 @@ interface CompileContext {
   ops: DspOp[];
   values: number[];
   valueBindings: DspValueBinding[];
+  midiControlBindings: DspMidiControlBinding[];
   stateBindings: DspStateBinding[];
   constantValueIndexes: Map<number, number>;
   errors: string[];
@@ -199,6 +211,7 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
       ops: [],
       values: context.values,
       valueBindings: context.valueBindings,
+      midiControlBindings: context.midiControlBindings,
       stateBindings: context.stateBindings,
       registerCount: context.registerCount,
       stateCount: context.stateCount,
@@ -217,6 +230,7 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
     ops: context.ops,
     values: context.values,
     valueBindings: context.valueBindings,
+    midiControlBindings: context.midiControlBindings,
     stateBindings: context.stateBindings,
     registerCount: context.registerCount,
     stateCount: context.stateCount,
@@ -247,6 +261,7 @@ function createContext(patch: Patch): CompileContext {
     ops: [],
     values: [],
     valueBindings: [],
+    midiControlBindings: [],
     stateBindings: [],
     constantValueIndexes: new Map(),
     errors: [],
@@ -433,7 +448,7 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
   }
 
   if (node.type === 'Slider') {
-    const unitValue = resolveInput(node, 'value', 0.5, context);
+    const unitValue = resolveSliderUnitValue(node, context);
     if (hasInput(node, 'signal', context)) {
       return emitBinary(DSP_OP.Mul, resolveInput(node, 'signal', 0, context), unitValue, context);
     }
@@ -445,6 +460,13 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
   if (node.type === 'Button') {
     const output = nextRegister(context);
     const state = nextState(context, 3);
+    const pressedValueIndex = valueIndexForNodeParam(node, 'pressed', 0, context);
+    const modeValueIndex = valueIndexForNodeParam(node, 'mode', 0, context);
+    const clicksValueIndex = valueIndexForNodeParam(node, 'clicks', 0, context);
+    addMidiControlBinding(node, 'button', pressedValueIndex, context, {
+      modeValueIndex,
+      clicksValueIndex,
+    });
     context.stateBindings.push({
       id: `${node.id}:button`,
       state,
@@ -455,9 +477,9 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     context.ops.push({
       opcode: DSP_OP.Button,
       out: output,
-      a: valueIndexForNodeParam(node, 'pressed', 0, context),
-      b: valueIndexForNodeParam(node, 'mode', 0, context),
-      c: valueIndexForNodeParam(node, 'clicks', 0, context),
+      a: pressedValueIndex,
+      b: modeValueIndex,
+      c: clicksValueIndex,
       state,
     });
     if (hasInput(node, 'signal', context)) {
@@ -518,7 +540,7 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
   if (wave !== undefined) {
     const frequency = wave === 5 ? constantRegister(0, context) : resolveInput(node, 'frequency', 220, context);
     const output = nextRegister(context);
-    const stateCount = wave === 5 ? 3 : 2;
+    const stateCount = wave === 5 ? 3 : 4;
     const state = nextState(context, stateCount);
     context.stateBindings.push({
       id: `${node.id}:oscillator`,
@@ -548,11 +570,11 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     });
     const frequency = resolveInput(node, 'frequency', 220, context);
     const output = nextRegister(context);
-    const state = nextState(context, 4);
+    const state = nextState(context, 6);
     context.stateBindings.push({
       id: `${node.id}:oscillator`,
       state,
-      count: 4,
+      count: 6,
       kind: 'oscillator',
       nodeId: node.id,
     });
@@ -867,6 +889,37 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
 
   context.errors.push(`Node type "${node.type}" is not supported by the first DSP program slice.`);
   return null;
+}
+
+function resolveSliderUnitValue(node: PatchNode, context: CompileContext): number {
+  if (hasInput(node, 'value', context)) {
+    return resolveInput(node, 'value', 0.5, context);
+  }
+
+  const valueIndex = valueIndexForNodeParam(node, 'value', 0.5, context);
+  addMidiControlBinding(node, 'slider', valueIndex, context);
+  return emitValue(valueIndex, context);
+}
+
+function addMidiControlBinding(
+  node: PatchNode,
+  kind: DspMidiControlBinding['kind'],
+  valueIndex: number,
+  context: CompileContext,
+  indexes: Pick<DspMidiControlBinding, 'modeValueIndex' | 'clicksValueIndex'> = {},
+): void {
+  const channel = clampInteger(node.params.midiChannel ?? 0, 0, 16);
+  const cc = clampInteger(node.params.midiCc ?? 1, 0, 127);
+  if (channel === 0) return;
+
+  context.midiControlBindings.push({
+    nodeId: node.id,
+    kind,
+    channel,
+    cc,
+    valueIndex,
+    ...indexes,
+  });
 }
 
 function compileSamplePlayer(node: PatchNode, context: CompileContext): number {

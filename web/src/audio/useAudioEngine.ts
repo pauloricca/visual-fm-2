@@ -93,7 +93,7 @@ interface RecordingCapture {
   sampleRate: number;
 }
 
-const AUDIO_ENGINE_ASSET_VERSION = '2026-07-08-button-node';
+const AUDIO_ENGINE_ASSET_VERSION = '2026-07-08-midi-control-nodes';
 const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const METER_UPDATE_INTERVAL_MS = 80;
@@ -408,6 +408,7 @@ export function useAudioEngine(): AudioEngineState {
       const data1 = Number(event.data[1] ?? 0);
       const data2 = Number(event.data[2] ?? 0);
       const command = status & 0xf0;
+      const channel = (status & 0x0f) + 1;
       if (command === 0x90 && data2 > 0) {
         node.port.postMessage({ type: 'noteOn', payload: { note: data1, velocity: data2 / 127 } });
         return;
@@ -417,7 +418,7 @@ export function useAudioEngine(): AudioEngineState {
         return;
       }
       if (command === 0xb0) {
-        node.port.postMessage({ type: 'midiCc', payload: { cc: data1, value: data2 / 127 } });
+        node.port.postMessage({ type: 'midiCc', payload: { channel, cc: data1, value: data2 / 127 } });
       }
     };
 
@@ -1002,6 +1003,7 @@ function dspProgramStructureKey(program: DspProgram): string {
     version: program.version,
     ops: program.ops,
     valueBindings: program.valueBindings,
+    midiControlBindings: program.midiControlBindings,
     stateBindings: program.stateBindings,
     registerCount: program.registerCount,
     stateCount: program.stateCount,
@@ -1044,7 +1046,10 @@ function audioInputDeviceLabel(devices: AudioInputDevice[], deviceId: string): s
 }
 
 function programUsesMidi(program: DspProgram | null): boolean {
-  return Boolean(program?.ops.some((op) => op.opcode === DSP_OP.MidiNote || op.opcode === DSP_OP.MidiCc));
+  return Boolean(
+    program?.ops.some((op) => op.opcode === DSP_OP.MidiNote || op.opcode === DSP_OP.MidiCc) ||
+    (program?.midiControlBindings.length ?? 0) > 0
+  );
 }
 
 async function resumeAudioContext(context: AudioContext): Promise<void> {

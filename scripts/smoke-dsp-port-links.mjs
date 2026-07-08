@@ -153,6 +153,43 @@ assert(
   'Button should compile pressed, mode, and clicks value bindings.',
 );
 
+const midiControlProgram = compilePatchToDspProgram({
+  nodes: [
+    node('midi_slider', 'Slider', { value: 0.25, min: 0, max: 1, direction: 0, midiChannel: 2, midiCc: 74 }),
+    node('midi_button', 'Button', { mode: 1, pressed: 0, clicks: 0, midiChannel: 3, midiCc: 75 }),
+    node('midi_scope_slider', 'Scope', { range: 1 }),
+    node('midi_scope_button', 'Scope', { range: 1 }),
+  ],
+  links: [
+    link('midi_slider', 'signal', 'midi_scope_slider', 'signal'),
+    link('midi_button', 'signal', 'midi_scope_button', 'signal'),
+  ],
+});
+assert(
+  midiControlProgram.midiControlBindings.some((binding) => (
+    binding.kind === 'slider' &&
+    binding.nodeId === 'midi_slider' &&
+    binding.channel === 2 &&
+    binding.cc === 74
+  )),
+  'Slider should compile an enabled MIDI CC control binding.',
+);
+assert(
+  midiControlProgram.midiControlBindings.some((binding) => (
+    binding.kind === 'button' &&
+    binding.nodeId === 'midi_button' &&
+    binding.channel === 3 &&
+    binding.cc === 75 &&
+    Number.isInteger(binding.modeValueIndex) &&
+    Number.isInteger(binding.clicksValueIndex)
+  )),
+  'Button should compile an enabled MIDI CC control binding with mode and click indexes.',
+);
+assert(
+  !dspProgram.midiControlBindings.some((binding) => binding.nodeId === 'slider' || binding.nodeId === 'button'),
+  'MIDI control bindings should stay disabled until midiChannel is set.',
+);
+
 const terminalScopeProgram = compilePatchToDspProgram({
   nodes: [
     node('button_scope_source', 'Button', { mode: 0, pressed: 1, clicks: 0 }),

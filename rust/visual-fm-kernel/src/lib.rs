@@ -27,6 +27,7 @@ const CUSTOM_ONESHOT_EDGE_FADE_SECONDS: f64 = 0.002;
 const SAMPLE_EDGE_FADE_SECONDS: f64 = 0.002;
 const VOICE_START_FADE_SECONDS: f64 = 0.006;
 const VOICE_STEAL_FADE_SECONDS: f64 = 0.03;
+const PHASE_RESET_FADE_SECONDS: f64 = 0.008;
 const DSP_VALUE_SMOOTH_SECONDS: f64 = 0.012;
 const DSP_VALUE_SETTLE_EPSILON: f64 = 0.0000001;
 const CUSTOM_MODE_LOOP: i32 = 0;
@@ -4198,6 +4199,48 @@ fn render_dsp_button(op: DspOp) -> f64 {
     }
 }
 
+fn render_dsp_phase_oscillator_output(op: DspOp, render_phase: f64, state_index: Option<usize>) -> f64 {
+    unsafe {
+        match op.a {
+            6 => random_bipolar(DRONE_VOICE_SLOT),
+            7 => {
+                if let Some(index) = state_index {
+                    if index + 2 < MAX_DSP_STATE {
+                        if DSP_STATE[index + 1] == 0.0 && DSP_STATE[index + 2] == 0.0 && render_phase == 0.0 {
+                            DSP_STATE[index + 1] = random_bipolar(DRONE_VOICE_SLOT);
+                            DSP_STATE[index + 2] = random_bipolar(DRONE_VOICE_SLOT);
+                        }
+                        let current = DSP_STATE[index + 1];
+                        let next = DSP_STATE[index + 2];
+                        current + (next - current) * smooth_step(render_phase)
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                }
+            }
+            9 => {
+                let node_index = op.value.round() as i32;
+                if node_index >= 0 && (node_index as usize) < MAX_NODES {
+                    if let Some(index) = state_index {
+                        if index + 3 < MAX_DSP_STATE && DSP_STATE[index + 3] >= 0.5 {
+                            0.0
+                        } else {
+                            custom_wave_value(node_index as usize, render_phase)
+                        }
+                    } else {
+                        custom_wave_value(node_index as usize, render_phase)
+                    }
+                } else {
+                    0.0
+                }
+            }
+            _ => dsp_oscillator(op.a, render_phase),
+        }
+    }
+}
+
 fn render_dsp_slew(op: DspOp, sample_rate: f64) -> f64 {
     unsafe {
         let target = dsp_reg(op.a);
@@ -4261,6 +4304,7 @@ fn render_dsp_op(
                 None
             };
             let mut phase = state_index.map(|index| DSP_STATE[index]).unwrap_or(0.0);
+            let mut phase_reset_fade_started = false;
             if op.a != 5 && op.a != 7 {
                 if let Some(index) = state_index {
                     if index + 1 < MAX_DSP_STATE && op.e >= 0 {
@@ -4268,6 +4312,18 @@ fn render_dsp_op(
                         let previous_reset_trigger =
                             DSP_STATE[index + 1] >= ENVELOPE_TRIGGER_THRESHOLD;
                         if reset_trigger && !previous_reset_trigger {
+                            let reset_fade_index = if op.a == 9 { index + 4 } else { index + 2 };
+                            if reset_fade_index + 1 < MAX_DSP_STATE {
+                                let previous_render_phase = if op.d >= 0 {
+                                    phase + dsp_reg(op.d)
+                                } else {
+                                    phase
+                                };
+                                DSP_STATE[reset_fade_index] =
+                                    render_dsp_phase_oscillator_output(op, previous_render_phase, state_index);
+                                DSP_STATE[reset_fade_index + 1] = 0.0;
+                                phase_reset_fade_started = true;
+                            }
                             phase = 0.0;
                             DSP_STATE[index] = 0.0;
                             if op.a == 9 && index + 3 < MAX_DSP_STATE {
@@ -4284,7 +4340,7 @@ fn render_dsp_op(
             } else {
                 phase
             };
-            let output = match op.a {
+            let mut output = match op.a {
                 5 => {
                     if let Some(index) = state_index {
                         if index + 2 < MAX_DSP_STATE && DSP_STATE[index + 2] == 0.0 {
@@ -4306,42 +4362,22 @@ fn render_dsp_op(
                         0.0
                     }
                 }
-                6 => random_bipolar(DRONE_VOICE_SLOT),
-                7 => {
-                    if let Some(index) = state_index {
-                        if index + 2 < MAX_DSP_STATE {
-                            if DSP_STATE[index + 1] == 0.0 && DSP_STATE[index + 2] == 0.0 && render_phase == 0.0 {
-                                DSP_STATE[index + 1] = random_bipolar(DRONE_VOICE_SLOT);
-                                DSP_STATE[index + 2] = random_bipolar(DRONE_VOICE_SLOT);
-                            }
-                            let current = DSP_STATE[index + 1];
-                            let next = DSP_STATE[index + 2];
-                            current + (next - current) * smooth_step(render_phase)
-                        } else {
-                            0.0
-                        }
-                    } else {
-                        0.0
-                    }
-                }
-                9 => {
-                    let node_index = op.value.round() as i32;
-                    if node_index >= 0 && (node_index as usize) < MAX_NODES {
-                        if let Some(index) = state_index {
-                            if index + 3 < MAX_DSP_STATE && DSP_STATE[index + 3] >= 0.5 {
-                                0.0
-                            } else {
-                                custom_wave_value(node_index as usize, render_phase)
-                            }
-                        } else {
-                            custom_wave_value(node_index as usize, render_phase)
-                        }
-                    } else {
-                        0.0
-                    }
-                }
-                _ => dsp_oscillator(op.a, render_phase),
+                _ => render_dsp_phase_oscillator_output(op, render_phase, state_index),
             };
+            if op.a != 5 && op.a != 7 {
+                if let Some(index) = state_index {
+                    let reset_fade_index = if op.a == 9 { index + 4 } else { index + 2 };
+                    if reset_fade_index + 1 < MAX_DSP_STATE {
+                        let fade_age = DSP_STATE[reset_fade_index + 1].max(0.0);
+                        if phase_reset_fade_started || (fade_age > 0.0 && fade_age < PHASE_RESET_FADE_SECONDS) {
+                            let mix = smooth_step(fade_age / PHASE_RESET_FADE_SECONDS);
+                            let previous_output = DSP_STATE[reset_fade_index];
+                            output = previous_output + (output - previous_output) * mix;
+                            DSP_STATE[reset_fade_index + 1] = fade_age + 1.0 / sample_rate.max(1.0);
+                        }
+                    }
+                }
+            }
             set_dsp_reg(op.out, output);
             if let Some(index) = state_index {
                 let next_phase = phase + frequency / sample_rate.max(1.0);

@@ -181,6 +181,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.monitorScopeStates = new Map();
     this.dspScopeStates = new Map();
     this.dspMeterStates = new Map();
+    this.midiButtonControlValues = new Map();
     this.graphVersion = 0;
     this.linkScopeSamples = null;
     this.masterEffects = this.normalizeEffects();
@@ -352,6 +353,17 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     }
   }
 
+  setDspValueAt(index, value) {
+    if (!this.dspProgram || !this.wasm?.setDspValue) return;
+    const valueIndex = Math.trunc(Number(index));
+    if (!Number.isFinite(valueIndex) || valueIndex < 0 || valueIndex >= this.dspProgram.values.length) return;
+    const normalized = Number(value);
+    const nextValue = Number.isFinite(normalized) ? normalized : 0;
+    if (this.dspProgram.values[valueIndex] === nextValue) return;
+    this.dspProgram.values[valueIndex] = nextValue;
+    this.wasm.setDspValue(valueIndex, nextValue);
+  }
+
   normalizeDspProgram(program = {}) {
     const ops = Array.isArray(program.ops)
       ? program.ops.map((op) => ({
@@ -403,11 +415,31 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         customWave: this.normalizeCustomWave(binding?.customWave),
       })).filter((binding) => binding.nodeId)
       : [];
+    const midiControlBindings = Array.isArray(program.midiControlBindings)
+      ? program.midiControlBindings.map((binding) => ({
+        nodeId: String(binding?.nodeId || ""),
+        kind: binding?.kind === "button" ? "button" : "slider",
+        channel: this.clamp(Math.round(Number(binding?.channel)), 1, 16),
+        cc: this.clamp(Math.round(Number(binding?.cc)), 0, 127),
+        valueIndex: Math.trunc(Number(binding?.valueIndex ?? -1)),
+        modeValueIndex: Math.trunc(Number(binding?.modeValueIndex ?? -1)),
+        clicksValueIndex: Math.trunc(Number(binding?.clicksValueIndex ?? -1)),
+      })).filter((binding) => (
+        binding.nodeId &&
+        binding.valueIndex >= 0 &&
+        binding.valueIndex < values.length &&
+        binding.cc >= 0 &&
+        binding.cc <= 127 &&
+        binding.channel >= 1 &&
+        binding.channel <= 16
+      ))
+      : [];
 
     return {
       version: 1,
       ops,
       values,
+      midiControlBindings,
       stateBindings,
       registerCount: Math.max(0, Math.trunc(Number(program.registerCount) || 0)),
       stateCount: Math.max(0, Math.trunc(Number(program.stateCount) || 0)),
@@ -456,6 +488,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.maxVoices = this.dspProgram.maxVoices;
     this.nodes = [];
     this.nodesById = new Map();
+    this.midiButtonControlValues.clear();
     if (this.dspProgram.errors.length > 0) return;
 
     for (let index = 0; index < this.dspProgram.values.length; index += 1) {
@@ -569,9 +602,42 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
   }
 
   setMidiCc(payload = {}) {
+    if (!this.dspProgram) return;
+    const channel = this.clamp(Math.round(Number(payload.channel ?? 1)), 1, 16);
     const cc = this.clamp(Math.round(Number(payload.cc)), 0, 127);
     const value = this.clamp(Number(payload.value), 0, 1);
     this.wasm?.setDspMidiCc?.(cc, value);
+
+    for (const binding of this.dspProgram.midiControlBindings || []) {
+      if (binding.channel !== channel || binding.cc !== cc) continue;
+
+      if (binding.kind === "slider") {
+        this.setDspValueAt(binding.valueIndex, value);
+        continue;
+      }
+
+      const key = `${binding.nodeId}:${binding.valueIndex}:${binding.channel}:${binding.cc}`;
+      const previousValue = this.midiButtonControlValues.get(key) ?? 0;
+      const pressed = value >= 0.5;
+      const wasPressed = previousValue >= 0.5;
+      const mode = Math.round(Number(this.dspProgram.values[binding.modeValueIndex] ?? 0));
+
+      if (mode === 1) {
+        if (pressed && !wasPressed && binding.clicksValueIndex >= 0) {
+          const clicks = Math.round(Number(this.dspProgram.values[binding.clicksValueIndex] ?? 0)) + 1;
+          this.setDspValueAt(binding.clicksValueIndex, clicks);
+        }
+      } else if (mode === 0) {
+        if (pressed && !wasPressed) {
+          const current = Number(this.dspProgram.values[binding.valueIndex] ?? 0) >= 0.5;
+          this.setDspValueAt(binding.valueIndex, current ? 0 : 1);
+        }
+      } else {
+        this.setDspValueAt(binding.valueIndex, pressed ? 1 : 0);
+      }
+
+      this.midiButtonControlValues.set(key, value);
+    }
   }
 
   configureDspScopes() {

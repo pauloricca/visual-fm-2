@@ -1554,6 +1554,7 @@ select:hover {
 
 .shader-node-slider .numeric-scrubber,
 .shader-node-slider .slider-direction-select,
+.shader-node-button .numeric-scrubber,
 .shader-node-button .button-mode-select,
 .shader-node-sampleplayer .sample-mode-select,
 .shader-node-midi-note .midi-voices-select {
