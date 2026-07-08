@@ -97,6 +97,19 @@ Render a quick WASM startup smoke test:
 node scripts/render-worklet-startup.mjs 1
 ```
 
+Render the compiled MIDI/polyphony path:
+
+```sh
+node scripts/render-worklet-startup.mjs 1 --midi-note
+```
+
+Manual MIDI check:
+
+1. Add a MIDI Note node, Sine Osc, and Audio Out.
+2. Connect `MIDI Note.frequency` to `Sine Osc.frequency`, then `Sine Osc.signal` to `Audio Out.both`.
+3. Set `MIDI Note.voices` to `2`, start audio, and allow MIDI access when prompted.
+4. Play and release notes on a MIDI keyboard. Note-on should start voices, note-off should release them, and holding more than two notes should steal the oldest voice with a short fade.
+
 To exercise the old graph compatibility path explicitly:
 
 ```sh

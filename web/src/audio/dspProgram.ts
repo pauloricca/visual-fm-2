@@ -867,6 +867,7 @@ function compileSamplePlayer(node: PatchNode, context: CompileContext): number {
   });
 
   const sampleParams: Array<[kind: number, port: string, fallback: number]> = [
+    [0, 'mode', 0],
     [1, 'start', 0],
     [2, 'end', 1],
     [3, 'stretch', 1],

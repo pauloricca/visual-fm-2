@@ -3,6 +3,7 @@ import { DSP_OP, type DspProgram } from './dspProgram';
 
 type AudioStatus = 'idle' | 'starting' | 'running' | 'error';
 export type AudioInputStatus = 'inactive' | 'needs-permission' | 'requesting' | 'connected' | 'denied' | 'unsupported' | 'error';
+export type MidiInputStatus = 'inactive' | 'needs-permission' | 'requesting' | 'connected' | 'denied' | 'unsupported' | 'error';
 
 export interface AudioInputDevice {
   deviceId: string;
@@ -15,6 +16,19 @@ export interface AudioInputState {
   devices: AudioInputDevice[];
   selectedDeviceId: string;
   canSelectDevice: boolean;
+}
+
+export interface MidiInputDevice {
+  id: string;
+  label: string;
+  state: string;
+}
+
+export interface MidiInputState {
+  status: MidiInputStatus;
+  message: string;
+  devices: MidiInputDevice[];
+  canRequestAccess: boolean;
 }
 
 export interface LinkMeterReading {
@@ -35,15 +49,21 @@ interface AudioEngineState {
   linkMeters: Record<string, LinkMeterReading>;
   linkScopes: Record<string, LinkScopeReading>;
   audioInput: AudioInputState;
+  midiInput: MidiInputState;
   start: () => Promise<void>;
   stop: () => void;
   syncGraph: (program: DspProgram) => void;
   setLinkScopes: (linkIds: string[]) => void;
   setAudioInputDeviceId: (deviceId: string) => void;
   refreshAudioInputDevices: () => Promise<void>;
+  refreshMidiInputDevices: () => Promise<void>;
 }
 
 interface MidiInputLike {
+  id?: string;
+  name?: string;
+  manufacturer?: string;
+  state?: string;
   onmidimessage: ((event: any) => void) | null;
 }
 
@@ -93,6 +113,9 @@ export function useAudioEngine(): AudioEngineState {
   const [audioInputMessage, setAudioInputMessage] = useState('Add an AudioInput node, then start audio.');
   const [audioInputDevices, setAudioInputDevices] = useState<AudioInputDevice[]>([]);
   const [selectedAudioInputDeviceId, setSelectedAudioInputDeviceId] = useState('');
+  const [midiInputStatus, setMidiInputStatus] = useState<MidiInputStatus>('inactive');
+  const [midiInputMessage, setMidiInputMessage] = useState('Add a MIDI Note or MIDI CC node, then start audio.');
+  const [midiInputDevices, setMidiInputDevices] = useState<MidiInputDevice[]>([]);
   const contextRef = useRef<AudioContext | null>(null);
   const nodeRef = useRef<AudioWorkletNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -175,7 +198,22 @@ export function useAudioEngine(): AudioEngineState {
     setAudioInputMessage(nextMessage);
   }, []);
 
-  const disconnectMidiInput = useCallback(() => {
+  const updateMidiInputDevices = useCallback((midiAccess: MidiAccessLike): MidiInputDevice[] => {
+    const inputs = [...midiAccess.inputs.values()];
+    const devices = inputs.map((input, index) => {
+      const name = input.name?.trim();
+      const manufacturer = input.manufacturer?.trim();
+      return {
+        id: input.id || `${manufacturer || 'midi'}-${name || index}`,
+        label: [manufacturer, name].filter(Boolean).join(' ') || `MIDI input ${index + 1}`,
+        state: input.state || 'connected',
+      };
+    });
+    setMidiInputDevices(devices);
+    return devices;
+  }, []);
+
+  const disconnectMidiInput = useCallback((nextStatus: MidiInputStatus = 'inactive', nextMessage = 'MIDI input is not used by this patch.') => {
     const midiAccess = midiAccessRef.current;
     if (midiAccess) {
       midiAccess.onstatechange = null;
@@ -185,7 +223,80 @@ export function useAudioEngine(): AudioEngineState {
     }
     midiAccessRef.current = null;
     midiRequestRef.current = null;
+    setMidiInputDevices([]);
+    setMidiInputStatus(nextStatus);
+    setMidiInputMessage(nextMessage);
   }, []);
+
+  const attachMidiInputs = useCallback((midiAccess: MidiAccessLike, node: AudioWorkletNode | null) => {
+    const devices = updateMidiInputDevices(midiAccess);
+    setMidiInputStatus(devices.length > 0 ? 'connected' : 'unsupported');
+    setMidiInputMessage(devices.length > 0
+      ? `${devices.length} MIDI input${devices.length === 1 ? '' : 's'} connected.`
+      : 'MIDI permission is granted, but no input devices were found.');
+
+    const handleMidiMessage = (event: { data: ArrayLike<number> }) => {
+      if (!node) return;
+      const status = Number(event.data[0] ?? 0);
+      const data1 = Number(event.data[1] ?? 0);
+      const data2 = Number(event.data[2] ?? 0);
+      const command = status & 0xf0;
+      if (command === 0x90 && data2 > 0) {
+        node.port.postMessage({ type: 'noteOn', payload: { note: data1, velocity: data2 / 127 } });
+        return;
+      }
+      if (command === 0x80 || (command === 0x90 && data2 === 0)) {
+        node.port.postMessage({ type: 'noteOff', payload: { note: data1 } });
+        return;
+      }
+      if (command === 0xb0) {
+        node.port.postMessage({ type: 'midiCc', payload: { cc: data1, value: data2 / 127 } });
+      }
+    };
+
+    for (const input of midiAccess.inputs.values()) {
+      input.onmidimessage = node ? handleMidiMessage : null;
+    }
+    midiAccess.onstatechange = () => attachMidiInputs(
+      midiAccess,
+      graphRef.current && programUsesMidi(graphRef.current) ? nodeRef.current : null,
+    );
+  }, [updateMidiInputDevices]);
+
+  const refreshMidiInputDevices = useCallback(async () => {
+    const navigatorWithMidi = navigator as Navigator & {
+      requestMIDIAccess?: (options?: { sysex?: boolean }) => Promise<unknown>;
+    };
+    if (!navigatorWithMidi.requestMIDIAccess) {
+      setMidiInputDevices([]);
+      setMidiInputStatus('unsupported');
+      setMidiInputMessage('MIDI input is unavailable in this browser.');
+      return;
+    }
+
+    if (midiAccessRef.current) {
+      attachMidiInputs(
+        midiAccessRef.current,
+        graphRef.current && programUsesMidi(graphRef.current) ? nodeRef.current : null,
+      );
+      return;
+    }
+
+    setMidiInputStatus('requesting');
+    setMidiInputMessage('Requesting MIDI permission...');
+    try {
+      const midiAccess = await navigatorWithMidi.requestMIDIAccess({ sysex: false }) as MidiAccessLike;
+      midiAccessRef.current = midiAccess;
+      attachMidiInputs(
+        midiAccess,
+        graphRef.current && programUsesMidi(graphRef.current) ? nodeRef.current : null,
+      );
+    } catch (error) {
+      setMidiInputStatus(error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'SecurityError') ? 'denied' : 'error');
+      setMidiInputMessage(error instanceof Error ? error.message : 'MIDI permission was denied.');
+      setMidiInputDevices([]);
+    }
+  }, [attachMidiInputs]);
 
   const syncAudioInput = useCallback((graph: DspProgram, context: AudioContext, node: AudioWorkletNode) => {
     if (!programUsesAudioInput(graph)) {
@@ -304,41 +415,21 @@ export function useAudioEngine(): AudioEngineState {
       requestMIDIAccess?: (options?: { sysex?: boolean }) => Promise<unknown>;
     };
     if (!navigatorWithMidi.requestMIDIAccess) {
+      setMidiInputStatus('unsupported');
+      setMidiInputDevices([]);
+      setMidiInputMessage('MIDI input is unavailable in this browser.');
       setMessage('MIDI input unavailable: this browser does not expose Web MIDI');
       return;
     }
 
-    const attachMidiInputs = (midiAccess: MidiAccessLike) => {
-      const handleMidiMessage = (event: { data: ArrayLike<number> }) => {
-        const status = Number(event.data[0] ?? 0);
-        const data1 = Number(event.data[1] ?? 0);
-        const data2 = Number(event.data[2] ?? 0);
-        const command = status & 0xf0;
-        if (command === 0x90 && data2 > 0) {
-          node.port.postMessage({ type: 'noteOn', payload: { note: data1, velocity: data2 / 127 } });
-          return;
-        }
-        if (command === 0x80 || (command === 0x90 && data2 === 0)) {
-          node.port.postMessage({ type: 'noteOff', payload: { note: data1 } });
-          return;
-        }
-        if (command === 0xb0) {
-          node.port.postMessage({ type: 'midiCc', payload: { cc: data1, value: data2 / 127 } });
-        }
-      };
-
-      for (const input of midiAccess.inputs.values()) {
-        input.onmidimessage = handleMidiMessage;
-      }
-      midiAccess.onstatechange = () => attachMidiInputs(midiAccess);
-    };
-
     if (midiAccessRef.current) {
-      attachMidiInputs(midiAccessRef.current);
+      attachMidiInputs(midiAccessRef.current, node);
       return;
     }
 
     if (!midiRequestRef.current) {
+      setMidiInputStatus('requesting');
+      setMidiInputMessage('Requesting MIDI permission...');
       midiRequestRef.current = navigatorWithMidi
         .requestMIDIAccess({ sysex: false })
         .then((midiAccess) => midiAccess as MidiAccessLike);
@@ -347,12 +438,15 @@ export function useAudioEngine(): AudioEngineState {
     const midiRequest = midiRequestRef.current as Promise<MidiAccessLike>;
     void midiRequest.then((midiAccess) => {
       midiAccessRef.current = midiAccess;
-      attachMidiInputs(midiAccess);
+      attachMidiInputs(midiAccess, node);
     }).catch((error) => {
+      setMidiInputStatus(error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'SecurityError') ? 'denied' : 'error');
+      setMidiInputMessage(error instanceof Error ? error.message : 'MIDI permission was denied.');
+      setMidiInputDevices([]);
       setMessage(`MIDI input unavailable: ${error instanceof Error ? error.message : 'permission denied'}`);
       midiRequestRef.current = null;
     });
-  }, [disconnectMidiInput]);
+  }, [attachMidiInputs, disconnectMidiInput]);
 
   const syncGraph = useCallback((graph: DspProgram) => {
     graphRef.current = graph;
@@ -369,6 +463,27 @@ export function useAudioEngine(): AudioEngineState {
         }
       } else {
         disconnectAudioInput();
+      }
+      if (programUsesMidi(graph)) {
+        const navigatorWithMidi = navigator as Navigator & {
+          requestMIDIAccess?: (options?: { sysex?: boolean }) => Promise<unknown>;
+        };
+        if (!navigatorWithMidi.requestMIDIAccess) {
+          setMidiInputStatus('unsupported');
+          setMidiInputDevices([]);
+          setMidiInputMessage('MIDI input is unavailable in this browser.');
+        } else if (midiAccessRef.current) {
+          const devices = updateMidiInputDevices(midiAccessRef.current);
+          setMidiInputStatus(devices.length > 0 ? 'connected' : 'unsupported');
+          setMidiInputMessage(devices.length > 0
+            ? `${devices.length} MIDI input${devices.length === 1 ? '' : 's'} connected.`
+            : 'MIDI permission is granted, but no input devices were found.');
+        } else {
+          setMidiInputStatus('needs-permission');
+          setMidiInputMessage('Start audio or refresh MIDI to request browser MIDI access.');
+        }
+      } else {
+        disconnectMidiInput();
       }
       return;
     }
@@ -404,7 +519,7 @@ export function useAudioEngine(): AudioEngineState {
         ? scopePayload(activeScopeLinkIdsRef.current)
         : {},
     });
-  }, [disconnectAudioInput, refreshAudioInputDevices, syncAudioInput, syncGraphSamples, syncMidiInput]);
+  }, [disconnectAudioInput, disconnectMidiInput, refreshAudioInputDevices, syncAudioInput, syncGraphSamples, syncMidiInput, updateMidiInputDevices]);
 
   const setLinkScopes = useCallback((linkIds: string[]) => {
     const nextLinkIds = uniqueScopeLinkIds(linkIds);
@@ -534,6 +649,11 @@ export function useAudioEngine(): AudioEngineState {
     setAudioInputMessage(programUsesAudioInput(graphRef.current)
       ? 'Start audio to request microphone access.'
       : 'Audio input is not used by this patch.');
+    setMidiInputStatus(programUsesMidi(graphRef.current) ? 'needs-permission' : 'inactive');
+    setMidiInputMessage(programUsesMidi(graphRef.current)
+      ? 'Start audio or refresh MIDI to request browser MIDI access.'
+      : 'MIDI input is not used by this patch.');
+    setMidiInputDevices([]);
   }, [disconnectMidiInput, stopMeter]);
 
   useEffect(() => () => {
@@ -561,6 +681,14 @@ export function useAudioEngine(): AudioEngineState {
     selectedDeviceId: selectedAudioInputDeviceId,
     canSelectDevice: Boolean(navigator.mediaDevices?.enumerateDevices),
   };
+  const midiInput: MidiInputState = {
+    status: midiInputStatus,
+    message: midiInputMessage,
+    devices: midiInputDevices,
+    canRequestAccess: Boolean((navigator as Navigator & {
+      requestMIDIAccess?: (options?: { sysex?: boolean }) => Promise<unknown>;
+    }).requestMIDIAccess),
+  };
 
   return {
     status,
@@ -569,12 +697,14 @@ export function useAudioEngine(): AudioEngineState {
     linkMeters,
     linkScopes,
     audioInput,
+    midiInput,
     start,
     stop,
     syncGraph,
     setLinkScopes,
     setAudioInputDeviceId: setSelectedAudioInputDeviceId,
     refreshAudioInputDevices,
+    refreshMidiInputDevices,
   };
 }
 

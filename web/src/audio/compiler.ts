@@ -247,7 +247,7 @@ function compileSourceNode(node: PatchNode, context: CompileContext): WasmAudioN
       sample: {
         name: node.sample?.name ?? '',
         url: node.sample?.url ?? '',
-        mode: 'one-shot',
+        mode: sampleModeFromValue(inputValue(node, 'mode', 0, context)),
         start: inputValue(node, 'start', 0, context),
         end: inputValue(node, 'end', 1, context),
         stretch: inputValue(node, 'stretch', 1, context),
@@ -257,6 +257,13 @@ function compileSourceNode(node: PatchNode, context: CompileContext): WasmAudioN
       },
     } : {}),
   }];
+}
+
+function sampleModeFromValue(value: number): 'one-shot' | 'loop' | 'ping-pong' {
+  const mode = Math.round(value);
+  if (mode === 1) return 'loop';
+  if (mode === 2) return 'ping-pong';
+  return 'one-shot';
 }
 
 function compileNodeOutput(node: PatchNode, context: CompileContext): WasmAudioLink[] {

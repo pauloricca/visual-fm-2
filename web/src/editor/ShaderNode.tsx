@@ -70,6 +70,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const showSliderDisplay = node.type === 'Slider';
   const showButtonDisplay = node.type === 'Button';
   const showAudioInputDisplay = node.type === 'AudioInput';
+  const showMidiNoteDisplay = node.type === 'MidiNote';
   const showCustomWaveEditor = node.type === 'CustomWave';
   const showResizableDisplay = showScopeDisplay || showSliderDisplay || showButtonDisplay || showCustomWaveEditor;
   const showSampleUpload = node.type === 'SamplePlayer';
@@ -136,7 +137,9 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     showScopeDisplay ? 'shader-node-scope' : '',
     showSliderDisplay ? 'shader-node-slider' : '',
     showButtonDisplay ? 'shader-node-button' : '',
+    showSampleUpload ? 'shader-node-sampleplayer' : '',
     showAudioInputDisplay ? 'shader-node-audio-input' : '',
+    showMidiNoteDisplay ? 'shader-node-midi-note' : '',
     showCustomWaveEditor ? 'shader-node-custom-wave' : '',
     isExpression ? 'shader-node-expression' : '',
     isGroup ? 'shader-node-group' : '',
@@ -619,6 +622,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             || isExpression
             || showSampleUpload
             || showAudioInputDisplay
+            || showMidiNoteDisplay
             || showCustomWaveEditor
             || showSliderDisplay
             || showButtonDisplay
@@ -638,6 +642,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           showSliderDisplay ? 'shader-node-body-slider' : '',
           showButtonDisplay ? 'shader-node-body-button' : '',
           showAudioInputDisplay ? 'shader-node-body-audio-input' : '',
+          showMidiNoteDisplay ? 'shader-node-body-midi-note' : '',
           showCustomWaveEditor ? 'shader-node-body-custom-wave' : '',
           visibleOutputPorts.length === 0 || showHeaderOutputPort ? 'shader-node-body-no-outputs' : '',
         ].filter(Boolean).join(' ')}>
@@ -689,6 +694,12 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               onMutedChange={(muted) => data.onParamChange(node.id, 'muted', muted ? 1 : 0)}
               onDeviceChange={(deviceId) => data.onAudioInputDeviceChange?.(deviceId)}
               onRefresh={() => data.onAudioInputRefresh?.()}
+            />
+          ) : null}
+          {showMidiNoteDisplay ? (
+            <MidiInputDisplay
+              state={data.midiInput}
+              onRefresh={() => data.onMidiInputRefresh?.()}
             />
           ) : null}
           {showCustomWaveEditor && customWave ? (
@@ -805,6 +816,57 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                     <option value="1">vertical</option>
                   </select>
                 </>
+              ) : showSampleUpload && input.name === 'mode' && !input.preview ? (
+                <>
+                  <PortNameLabel
+                    name={input.name}
+                    editable={false}
+                    draggable={false}
+                    preview={false}
+                    selected={data.selectedPort?.side === 'input' && data.selectedPort.name === input.name}
+                    activeDragTarget={false}
+                    activeDragSource={false}
+                    onChange={() => undefined}
+                  />
+                  <select
+                    className="sample-mode-select nodrag nopan"
+                    value={String(Math.round(node.params.mode ?? input.defaultValue ?? 0))}
+                    onChange={(event) => data.onParamChange(node.id, input.name, Number(event.currentTarget.value))}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    <option value="0">one-shot</option>
+                    <option value="1">loop</option>
+                    <option value="2">ping-pong</option>
+                  </select>
+                </>
+              ) : showMidiNoteDisplay && input.name === 'voices' && !input.preview ? (
+                <>
+                  <PortNameLabel
+                    name={input.name}
+                    editable={false}
+                    draggable={false}
+                    preview={false}
+                    selected={data.selectedPort?.side === 'input' && data.selectedPort.name === input.name}
+                    activeDragTarget={false}
+                    activeDragSource={false}
+                    onChange={() => undefined}
+                  />
+                  <select
+                    className="midi-voices-select nodrag nopan"
+                    aria-label="MIDI polyphony voices"
+                    value={String(clamp(Math.round(node.params.voices ?? input.defaultValue ?? 8), 1, 16))}
+                    onChange={(event) => data.onParamChange(node.id, input.name, Number(event.currentTarget.value))}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    {Array.from({ length: 16 }, (_, index) => index + 1).map((voiceCount) => (
+                      <option key={voiceCount} value={voiceCount}>{voiceCount}</option>
+                    ))}
+                  </select>
+                </>
               ) : showButtonDisplay && input.name === 'mode' && !input.preview ? (
                 <>
                   <PortNameLabel
@@ -847,7 +909,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   onChange={(nextName) => data.onPortNameChange(node.id, 'input', input.name, nextName)}
                 />
               )}
-              {!input.preview && input.valueEditor !== false && input.defaultValue !== undefined && !(showSliderDisplay && input.name === 'direction') && !(showButtonDisplay && input.name === 'mode') ? (
+              {!input.preview && input.valueEditor !== false && input.defaultValue !== undefined && !(showSliderDisplay && input.name === 'direction') && !(showButtonDisplay && input.name === 'mode') && !(showSampleUpload && input.name === 'mode') && !(showMidiNoteDisplay && input.name === 'voices') ? (
                 <NumericScrubber
                   value={node.params[input.name] ?? input.defaultValue ?? 0}
                   min={input.min}
@@ -1109,6 +1171,72 @@ function AudioInputDisplay({ state, muted, onMutedChange, onDeviceChange, onRefr
   );
 }
 
+interface MidiInputDisplayProps {
+  state: ShaderNodeData['midiInput'];
+  onRefresh: () => void;
+}
+
+function MidiInputDisplay({ state, onRefresh }: MidiInputDisplayProps) {
+  const status = state?.status ?? 'inactive';
+  const message = state?.message ?? 'Start audio or refresh MIDI to request browser MIDI access.';
+  const devices = state?.devices ?? [];
+  const canRequestAccess = state?.canRequestAccess ?? false;
+  const unavailable = status === 'unsupported' || status === 'denied' || status === 'error';
+  const deviceSummary = devices.length === 0
+    ? 'No MIDI inputs'
+    : devices.map((device) => device.label).join('\n');
+
+  return (
+    <div className="midi-input-node-panel nodrag nopan">
+      <div className="midi-input-node-status-row">
+        <span
+          className={[
+            'midi-input-node-status-dot',
+            `midi-input-node-status-dot-${status}`,
+          ].join(' ')}
+          aria-hidden="true"
+        />
+        <span className="midi-input-node-status-text" title={message}>
+          {midiInputStatusLabel(status)}
+        </span>
+        <span className="midi-input-node-device-count" title={deviceSummary}>
+          {devices.length} in
+        </span>
+        {canRequestAccess ? (
+          <button
+            className="midi-input-node-refresh-button"
+            type="button"
+            aria-label="Refresh MIDI input devices"
+            title="Refresh MIDI devices"
+            onPointerDown={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onRefresh();
+            }}
+          >
+            refresh
+          </button>
+        ) : null}
+      </div>
+      <div className={[
+        'midi-input-node-message',
+        unavailable ? 'midi-input-node-message-warning' : '',
+      ].filter(Boolean).join(' ')}>
+        {message}
+      </div>
+      {devices.length > 0 ? (
+        <div className="midi-input-node-device-list" title={deviceSummary}>
+          {devices.map((device) => (
+            <span key={device.id}>{device.label}</span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function audioInputStatusLabel(status: NonNullable<ShaderNodeData['audioInput']>['status']): string {
   switch (status) {
     case 'connected':
@@ -1126,6 +1254,26 @@ function audioInputStatusLabel(status: NonNullable<ShaderNodeData['audioInput']>
     case 'inactive':
     default:
       return 'idle';
+  }
+}
+
+function midiInputStatusLabel(status: NonNullable<ShaderNodeData['midiInput']>['status']): string {
+  switch (status) {
+    case 'connected':
+      return 'MIDI connected';
+    case 'requesting':
+      return 'requesting MIDI';
+    case 'needs-permission':
+      return 'MIDI permission';
+    case 'denied':
+      return 'MIDI denied';
+    case 'unsupported':
+      return 'MIDI unavailable';
+    case 'error':
+      return 'check MIDI';
+    case 'inactive':
+    default:
+      return 'MIDI idle';
   }
 }
 

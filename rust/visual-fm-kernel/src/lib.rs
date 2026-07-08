@@ -3980,6 +3980,10 @@ fn render_dsp_sample_param(op: DspOp) {
     let value = dsp_reg(op.c);
     unsafe {
         match op.b {
+            0 => {
+                NODES[node_index].sample_mode =
+                    (value.round() as i32).clamp(SAMPLE_MODE_ONE_SHOT, SAMPLE_MODE_PING_PONG)
+            }
             1 => NODES[node_index].sample_start = value.clamp(0.0, 1.0),
             2 => NODES[node_index].sample_end = value.clamp(0.0, 1.0),
             3 => NODES[node_index].sample_stretch = value.max(0.001),

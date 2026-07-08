@@ -84,6 +84,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
       { name: 'cycleLength', defaultValue: 4096, min: 1 },
       { name: 'overlapRatio', defaultValue: 0.09, min: 0, max: 1 },
       { name: 'originalPitch', defaultValue: 60 },
+      { name: 'mode', defaultValue: 0, min: 0, max: 2, integer: true, connectable: false, valueEditor: false },
       { name: 'level', defaultValue: 0.7 },
     ],
     outputs: [{ name: 'signal' }],
@@ -114,7 +115,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   MidiNote: {
     type: 'MidiNote',
     inputs: [
-      { name: 'voices', defaultValue: 8, min: 1, max: 16, integer: true },
+      { name: 'voices', defaultValue: 8, min: 1, max: 16, integer: true, connectable: false, valueEditor: false },
     ],
     outputs: [
       { name: 'note' },

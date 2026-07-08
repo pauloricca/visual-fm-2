@@ -17,13 +17,18 @@ const controlNodes = process.argv.includes('--control-nodes');
 const filtersDistortions = process.argv.includes('--filters-distortions');
 const samplePlayer = process.argv.includes('--sample-player');
 const audioInput = process.argv.includes('--audio-input');
+const midiNote = process.argv.includes('--midi-note');
 const modeArg = argValue('--mode') ?? 'multiply';
+const sampleModeArg = argValue('--sample-mode');
 const amountArg = Number(argValue('--amount'));
 const weightArg = Number(argValue('--weight'));
 const targetArg = argValue('--target') ?? 'frequency';
 const printGraph = process.argv.includes('--print-graph');
 const keepalive = process.argv.includes('--keepalive');
 const internalOutputTarget = process.argv.includes('--internal-output-target');
+const sampleModes = ['one-shot', 'loop', 'ping-pong'];
+const sampleModeParams = new Map(sampleModes.map((mode, index) => [mode, index]));
+let activeSampleMode = normalizeSampleMode(sampleModeArg ?? 'one-shot');
 
 let ProcessorClass = null;
 const outboundMessages = [];
@@ -61,6 +66,16 @@ const processor = new ProcessorClass({
 });
 
 await waitForReady();
+
+if (compiled && samplePlayer && !sampleModeArg) {
+  await runSamplePlayerModeSmoke();
+  process.exit(0);
+}
+
+if (compiled && midiNote) {
+  await runMidiNoteSmoke();
+  process.exit(0);
+}
 
 const graph = compiled ? await compileVisiblePatch() : {
   nodes: modulated
@@ -117,76 +132,9 @@ if (printGraph) {
   console.log(JSON.stringify(graph, null, 2));
 }
 
-processor.port.onmessage({ data: { type: graph?.ops ? 'dspProgram' : 'graph', payload: graph } });
-if (samplePlayer) {
-  const data = syntheticSampleData(sampleRate);
-  processor.port.onmessage({
-    data: {
-      type: 'sampleData',
-      payload: {
-        nodeId: 'sample',
-        data,
-        sampleRate,
-        name: 'synthetic.wav',
-        storageKey: 'synthetic://sample',
-      },
-    },
-  });
-}
-if (scope) {
-  processor.port.onmessage({
-    data: {
-      type: 'setLinkScopes',
-      payload: { linkIds: ['scope'], mode: 'zero-crossing', points: 256, displayPoints: 128, seconds: 0.08 },
-    },
-  });
-}
-
-const windowFrames = Math.round(sampleRate * 0.25);
-const totalBlocks = Math.ceil((seconds * sampleRate) / blockSize);
-let windowSum = 0;
-let windowPeak = 0;
-let windowCount = 0;
-let previousSample = 0;
-let zeroCrossings = 0;
-const windows = [];
-
-for (let block = 0; block < totalBlocks; block += 1) {
-  if (resendEveryBlock) {
-    processor.port.onmessage({ data: { type: graph?.ops ? 'dspProgram' : 'graph', payload: graph } });
-  }
-
-  const left = new Float32Array(blockSize);
-  const right = new Float32Array(blockSize);
-  processor.process(audioInput ? [syntheticInputBlock(block)] : [], [[left, right]]);
-
-  for (const sample of left) {
-    const abs = Math.abs(sample);
-    windowSum += sample * sample;
-    windowPeak = Math.max(windowPeak, abs);
-    if (previousSample < 0 && sample >= 0) {
-      zeroCrossings += 1;
-    }
-    previousSample = sample;
-    windowCount += 1;
-    if (windowCount >= windowFrames) {
-      windows.push({
-        t: Number(((windows.length + 1) * windowFrames / sampleRate).toFixed(2)),
-        rms: Math.sqrt(windowSum / windowCount),
-        peak: windowPeak,
-        hz: zeroCrossings / (windowCount / sampleRate),
-      });
-      windowSum = 0;
-      windowPeak = 0;
-      windowCount = 0;
-      zeroCrossings = 0;
-    }
-  }
-}
-
-for (const row of windows) {
-  console.log(`${row.t.toFixed(2)}s rms=${row.rms.toFixed(6)} peak=${row.peak.toFixed(6)} hz=${row.hz.toFixed(2)}`);
-}
+configureProcessorGraph(graph);
+const windows = renderAudioWindows(graph, seconds);
+printWindows(windows);
 
 if (scope) {
   const scopeMessages = outboundMessages.filter((message) => message.type === 'linkScope' && message.payload?.id === 'scope');
@@ -195,7 +143,192 @@ if (scope) {
   console.log(`scope messages=${scopeMessages.length} samples=${latest.length} peak=${peak.toFixed(6)}`);
 }
 
-if (newNodes || effects || samplePlayer || audioInput) {
+async function runSamplePlayerModeSmoke() {
+  const results = [];
+  const renderSeconds = Math.max(seconds, 1);
+
+  for (const mode of sampleModes) {
+    activeSampleMode = mode;
+    outboundMessages.length = 0;
+    const graph = await compileVisiblePatch();
+    configureProcessorGraph(graph);
+    rearmSampleTrigger(graph);
+    const windows = renderAudioWindows(graph, renderSeconds);
+    printWindows(windows, `[${mode}] `);
+    const peak = windows.reduce((max, row) => Math.max(max, row.peak), 0);
+    const tailRms = windows.at(-1)?.rms ?? 0;
+    results.push({ mode, peak, tailRms });
+  }
+
+  const oneShot = results.find((result) => result.mode === 'one-shot');
+  const loop = results.find((result) => result.mode === 'loop');
+  const pingPong = results.find((result) => result.mode === 'ping-pong');
+  if (!oneShot || !loop || !pingPong) {
+    throw new Error('SamplePlayer mode smoke did not render all modes.');
+  }
+  if (oneShot.peak <= 0.01 || loop.peak <= 0.01 || pingPong.peak <= 0.01) {
+    throw new Error(`SamplePlayer mode smoke rendered silence: ${JSON.stringify(results)}`);
+  }
+  if (oneShot.tailRms >= oneShot.peak * 0.1) {
+    throw new Error(`SamplePlayer one-shot tail should decay after the sample: ${JSON.stringify(oneShot)}`);
+  }
+  if (loop.tailRms <= loop.peak * 0.1) {
+    throw new Error(`SamplePlayer loop tail should continue playing: ${JSON.stringify(loop)}`);
+  }
+  if (pingPong.tailRms <= pingPong.peak * 0.1) {
+    throw new Error(`SamplePlayer ping-pong tail should continue playing: ${JSON.stringify(pingPong)}`);
+  }
+
+  console.log(`sample-player modes ok ${results.map((result) => `${result.mode}:peak=${result.peak.toFixed(6)} tail=${result.tailRms.toFixed(6)}`).join(' ')}`);
+}
+
+async function runMidiNoteSmoke() {
+  const graph = await compileVisiblePatch();
+  if (!graph.usesMidiNote || graph.maxVoices !== 2) {
+    throw new Error(`MidiNote smoke compiled unexpected MIDI metadata: ${JSON.stringify({ usesMidiNote: graph.usesMidiNote, maxVoices: graph.maxVoices })}`);
+  }
+
+  processor.port.onmessage({ data: { type: 'panic' } });
+  configureProcessorGraph(graph);
+  processor.port.onmessage({ data: { type: 'noteOn', payload: { note: 69, velocity: 1 } } });
+  const windows = renderAudioWindows(graph, 0.75);
+  printWindows(windows, '[midi 69] ');
+  const voicedWindow = windows.findLast((row) => row.peak > 0.01 && Number.isFinite(row.hz));
+  if (!voicedWindow || voicedWindow.peak <= 0.01) {
+    throw new Error(`MidiNote smoke rendered silence after noteOn: ${JSON.stringify(windows)}`);
+  }
+  if (Math.abs(voicedWindow.hz - 440) > 12) {
+    throw new Error(`MidiNote.frequency did not drive oscillator near A4: ${JSON.stringify(voicedWindow)}`);
+  }
+
+  processor.port.onmessage({ data: { type: 'noteOff', payload: { note: 69 } } });
+  const releasedVoice = [...processor.voices.values()].find((voice) => voice.note === 69 && voice.releasedAt !== null);
+  if (!releasedVoice || processor.activeVoicesByNote.has(69)) {
+    throw new Error('MidiNote noteOff did not release the active A4 voice.');
+  }
+  renderAudioWindows(graph, 0.5);
+  if ([...processor.voices.values()].some((voice) => voice.note === 69 && voice.releasedAt === null && voice.stolenAt === null)) {
+    throw new Error('MidiNote A4 voice remained active after release tail.');
+  }
+
+  processor.port.onmessage({ data: { type: 'panic' } });
+  configureProcessorGraph(graph);
+  for (const note of [60, 64, 67]) {
+    processor.port.onmessage({ data: { type: 'noteOn', payload: { note, velocity: 0.9 } } });
+    renderAudioWindows(graph, 0.04);
+  }
+  renderAudioWindows(graph, 0.12);
+  const liveVoices = [...processor.voices.values()].filter((voice) => voice.releasedAt === null && voice.stolenAt === null);
+  const stolenVoices = [...processor.voices.values()].filter((voice) => voice.stolenAt !== null);
+  if (liveVoices.length > 2) {
+    throw new Error(`MidiNote voices limit allowed too many live voices: ${liveVoices.length}`);
+  }
+  if (stolenVoices.length === 0 && processor.activeVoicesByNote.has(60)) {
+    throw new Error('MidiNote voice stealing did not retire the oldest note under a 2 voice limit.');
+  }
+
+  console.log(`midi-note ok hz=${voicedWindow.hz.toFixed(2)} live=${liveVoices.length} stolen=${stolenVoices.length}`);
+}
+
+function configureProcessorGraph(graph) {
+  processor.port.onmessage({ data: { type: graph?.ops ? 'dspProgram' : 'graph', payload: graph } });
+  if (samplePlayer) {
+    const data = syntheticSampleData(sampleRate);
+    processor.port.onmessage({
+      data: {
+        type: 'sampleData',
+        payload: {
+          nodeId: 'sample',
+          data,
+          sampleRate,
+          name: 'synthetic.wav',
+          storageKey: 'synthetic://sample',
+        },
+      },
+    });
+  }
+  if (scope) {
+    processor.port.onmessage({
+      data: {
+        type: 'setLinkScopes',
+        payload: { linkIds: ['scope'], mode: 'zero-crossing', points: 256, displayPoints: 128, seconds: 0.08 },
+      },
+    });
+  }
+}
+
+function renderAudioWindows(graph, renderSeconds) {
+  const windowFrames = Math.round(sampleRate * 0.25);
+  const totalBlocks = Math.ceil((renderSeconds * sampleRate) / blockSize);
+  let windowSum = 0;
+  let windowPeak = 0;
+  let windowCount = 0;
+  let previousSample = 0;
+  let zeroCrossings = 0;
+  const windows = [];
+
+  for (let block = 0; block < totalBlocks; block += 1) {
+    if (resendEveryBlock) {
+      processor.port.onmessage({ data: { type: graph?.ops ? 'dspProgram' : 'graph', payload: graph } });
+    }
+
+    const left = new Float32Array(blockSize);
+    const right = new Float32Array(blockSize);
+    processor.process(audioInput ? [syntheticInputBlock(block)] : [], [[left, right]]);
+
+    for (const sample of left) {
+      const abs = Math.abs(sample);
+      windowSum += sample * sample;
+      windowPeak = Math.max(windowPeak, abs);
+      if (previousSample < 0 && sample >= 0) {
+        zeroCrossings += 1;
+      }
+      previousSample = sample;
+      windowCount += 1;
+      if (windowCount >= windowFrames) {
+        windows.push({
+          t: Number(((windows.length + 1) * windowFrames / sampleRate).toFixed(2)),
+          rms: Math.sqrt(windowSum / windowCount),
+          peak: windowPeak,
+          hz: zeroCrossings / (windowCount / sampleRate),
+        });
+        windowSum = 0;
+        windowPeak = 0;
+        windowCount = 0;
+        zeroCrossings = 0;
+      }
+    }
+  }
+
+  return windows;
+}
+
+function rearmSampleTrigger(graph) {
+  const triggerBinding = graph.valueBindings?.find((binding) => (
+    binding.kind === 'node-param'
+    && binding.nodeId === 'sample'
+    && binding.port === 'trigger'
+  ));
+  if (!triggerBinding) return;
+
+  const values = [...graph.values];
+  values[triggerBinding.valueIndex] = 0;
+  processor.port.onmessage({ data: { type: 'dspValues', payload: { values } } });
+  const resetBlocks = Math.ceil((sampleRate * 0.05) / blockSize);
+  for (let block = 0; block < resetBlocks; block += 1) {
+    processor.process([], [[new Float32Array(blockSize), new Float32Array(blockSize)]]);
+  }
+  values[triggerBinding.valueIndex] = 1;
+  processor.port.onmessage({ data: { type: 'dspValues', payload: { values } } });
+}
+
+function printWindows(windows, prefix = '') {
+  for (const row of windows) {
+    console.log(`${prefix}${row.t.toFixed(2)}s rms=${row.rms.toFixed(6)} peak=${row.peak.toFixed(6)} hz=${row.hz.toFixed(2)}`);
+  }
+}
+
+if (newNodes || effects || samplePlayer || audioInput || midiNote) {
   const meterMessages = outboundMessages.filter((message) => message.type === 'linkMeters');
   const latestLevels = meterMessages.at(-1)?.payload?.levels || [];
   const meter = latestLevels.find((level) => level[0] === 'meter') || [];
@@ -220,16 +353,26 @@ async function compileVisiblePatch() {
   writeTranspiledModule('web/src/graph/subpatch.ts', `${moduleDir}/subpatch.mjs`, (source) => (
     source.replaceAll("'./customWave'", "'./customWave.mjs'")
   ));
+  writeTranspiledModule('web/src/graph/migrations.ts', `${moduleDir}/migrations.mjs`, (source) => (
+    source.replaceAll("'./customWave'", "'./customWave.mjs'")
+  ));
   writeTranspiledModule('web/src/graph/nodeTypes.ts', `${moduleDir}/nodeTypes.mjs`);
   writeTranspiledModule('web/src/audio/dspProgram.ts', `${moduleDir}/dspProgram.mjs`, (source) => (
     source
       .replaceAll("'../graph/subpatch'", "'./subpatch.mjs'")
       .replaceAll("'../graph/customWave'", "'./customWave.mjs'")
+      .replaceAll("'../graph/migrations'", "'./migrations.mjs'")
       .replaceAll("'../graph/nodeTypes'", "'./nodeTypes.mjs'")
   ));
   const compiler = await import(`file://${moduleDir}/dspProgram.mjs`);
   const patch = {
-    nodes: audioInput
+    nodes: midiNote
+      ? [
+        { id: 'midi', type: 'MidiNote', params: { voices: 2 } },
+        { id: 'sine', type: 'SineOsc', params: { frequency: 220 } },
+        { id: 'out', type: 'AudioOut', params: { level: 0.7 } },
+      ]
+      : audioInput
       ? [
         { id: 'input', type: 'AudioInput', params: { gain: 1, level: 0.8 } },
         { id: 'meter', type: 'Meter', params: { range: 1 } },
@@ -238,7 +381,7 @@ async function compileVisiblePatch() {
       ]
       : samplePlayer
       ? [
-        { id: 'sample', type: 'SamplePlayer', sample: { name: 'synthetic.wav', url: 'synthetic://sample' }, params: { frequency: 110, trigger: 1, start: 0, end: 1, stretch: 1, cycleLength: 1024, overlapRatio: 0.09, originalPitch: 69, level: 0.85 } },
+        { id: 'sample', type: 'SamplePlayer', sample: { name: 'synthetic.wav', url: 'synthetic://sample' }, params: { frequency: 440, trigger: 1, start: 0, end: 1, stretch: 1, cycleLength: 1024, overlapRatio: 0.09, originalPitch: 69, mode: sampleModeParams.get(activeSampleMode) ?? 0, level: 0.85 } },
         { id: 'meter', type: 'Meter', params: { range: 1 } },
         ...(scope ? [{ id: 'scope', type: 'Scope', params: { range: 1 } }] : []),
         { id: 'out', type: 'AudioOut', params: { level: 0.7 } },
@@ -339,6 +482,12 @@ async function compileVisiblePatch() {
         { id: 'out', type: 'AudioOut', params: { level: 0.75 } },
       ],
     links: [
+      ...(midiNote
+        ? [
+          { from: { node: 'midi', port: 'frequency' }, to: { node: 'sine', port: 'frequency' }, weight: 1, mode: 'set' },
+          { from: { node: 'sine', port: 'signal' }, to: { node: 'out', port: 'both' }, weight: 1, mode: 'set' },
+        ]
+        : []),
       ...(samplePlayer
         ? [
           { from: { node: 'sample', port: 'signal' }, to: { node: 'meter', port: 'signal' }, weight: 1, mode: 'set' },
@@ -458,12 +607,12 @@ async function compileVisiblePatch() {
           mode: modeArg,
         }]
         : []),
-      ...(scope && !newNodes && !effects && !controlNodes && !filtersDistortions && !samplePlayer && !audioInput
+      ...(scope && !newNodes && !effects && !controlNodes && !filtersDistortions && !samplePlayer && !audioInput && !midiNote
         ? [
           { from: { node: feedback ? 'tri' : 'sine', port: 'signal' }, to: { node: 'scope', port: 'signal' }, weight: feedback ? 0.7 : 1.3672, mode: 'set' },
           { from: { node: 'scope', port: 'signal' }, to: { node: 'out', port: 'both' }, weight: 1, mode: 'set' },
         ]
-        : newNodes || effects || controlNodes || filtersDistortions || samplePlayer || audioInput
+        : newNodes || effects || controlNodes || filtersDistortions || samplePlayer || audioInput || midiNote
         ? []
         : [
           ...(feedback
@@ -516,4 +665,8 @@ function writeTranspiledModule(sourcePath, outputPath, transform = (source) => s
 function argValue(name) {
   const index = process.argv.indexOf(name);
   return index >= 0 ? process.argv[index + 1] : null;
+}
+
+function normalizeSampleMode(mode) {
+  return sampleModeParams.has(mode) ? mode : 'one-shot';
 }

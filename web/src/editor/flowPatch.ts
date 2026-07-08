@@ -1,5 +1,5 @@
 import type { Edge, Node } from '@xyflow/react';
-import type { AudioInputState } from '../audio/useAudioEngine';
+import type { AudioInputState, MidiInputState } from '../audio/useAudioEngine';
 import { normalizeCustomWave } from '../graph/customWave';
 import { migratePatchForCompatibility } from '../graph/migrations';
 import type { LinkMode, NodeType, Patch, PatchLink, PatchNode, PortDefinition } from '../graph/types';
@@ -35,10 +35,12 @@ export interface ShaderNodeData extends Record<string, unknown> {
     samples: number[];
   };
   audioInput?: AudioInputState;
+  midiInput?: MidiInputState;
   dspErrors?: string[];
   onParamChange: (nodeId: string, port: string, value: number) => void;
   onAudioInputDeviceChange?: (deviceId: string) => void;
   onAudioInputRefresh?: () => void;
+  onMidiInputRefresh?: () => void;
   onCustomWaveChange?: (nodeId: string, customWave: NonNullable<PatchNode['customWave']>, historyKey?: string) => void;
   onExpressionChange?: (nodeId: string, expression: string) => void;
   onExpressionCommit?: (nodeId: string, expression: string) => void;

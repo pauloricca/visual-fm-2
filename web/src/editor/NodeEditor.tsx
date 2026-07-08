@@ -1332,6 +1332,7 @@ function NodeEditorInner() {
       onCustomWaveChange: updateNodeCustomWave,
       onAudioInputDeviceChange: audio.setAudioInputDeviceId,
       onAudioInputRefresh: audio.refreshAudioInputDevices,
+      onMidiInputRefresh: audio.refreshMidiInputDevices,
       onTypeChange: updateNodeType,
       onExpressionCommit: updateExpression,
       onTypeEditStart: setEditingTypeNodeId,
@@ -1351,6 +1352,7 @@ function NodeEditorInner() {
       onSelectorInputAdd: addSelectorInput,
       selectedLinkPorts: selectedLinkPortsByNode.get(node.id),
       ...(node.data.patchNode.type === 'AudioInput' ? { audioInput: audio.audioInput } : {}),
+      ...(node.data.patchNode.type === 'MidiNote' ? { midiInput: audio.midiInput } : {}),
       connectedPorts: connectedPortsByNode.get(node.id),
       previewPort: pendingBoundaryPort && pendingBoundaryPort.nodeId === node.id
         ? { side: pendingBoundaryPort.side, name: pendingBoundaryPort.port }
@@ -1381,7 +1383,9 @@ function NodeEditorInner() {
     updateGroupSubpatchName,
     addSelectorInput,
     audio.audioInput,
+    audio.midiInput,
     audio.refreshAudioInputDevices,
+    audio.refreshMidiInputDevices,
     audio.setAudioInputDeviceId,
     updateNodeCompactPorts,
     updateNodeCustomWave,
