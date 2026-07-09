@@ -17,9 +17,61 @@ All signals are mono inside the graph. `Audio Out` has `both`, `left`, and `righ
 - `left` sends it to the left channel.
 - `right` sends it to the right channel.
 
-Nodes own the audio behavior. Oscillators generate signals. Filters filter signals. Distortion nodes distort signals. Delay, gain, multiply, meter, scope, and other processors are explicit nodes in the graph.
+Nodes own the audio behavior. Oscillators generate signals. Filters filter signals. Distortion nodes distort signals. Delay, multiply, meter, scope, and other processors are explicit nodes in the graph.
 
 Cables do not contain filters, distortion, delay, envelopes, or other processors as user-facing behavior. The compiler may still lower explicit processor nodes onto the existing `visual-fm` WASM link fields internally, because that is the proven ABI the engine already exposes. Those fields are implementation details here, not the patch philosophy.
+
+## Nodes
+
+Most node types are available from the node picker. `Ins` and `Outs` appear while editing subpatches.
+
+- `Expression`: evaluates a typed expression and outputs the result as a signal/control value.
+- `Group`: wraps a subpatch so a reusable patch can live inside a single node.
+- `Ins`: exposes subpatch input ports while editing a subpatch.
+- `Outs`: exposes subpatch output ports while editing a subpatch.
+- `Audio Out`: sends mono graph signals to the stereo hardware output via `both`, `left`, or `right`.
+- `Sine Osc`: generates a sine oscillator signal.
+- `Triangle Osc`: generates a triangle oscillator signal.
+- `Saw Osc`: generates a falling/rising saw oscillator signal.
+- `Ramp Osc`: generates a ramp-style oscillator signal.
+- `Square Osc`: generates a square oscillator signal.
+- `Sample Hold`: samples an incoming signal when triggered and holds that value.
+- `Perlin Noise`: generates smooth noise at a controllable speed.
+- `Noise`: generates raw noise.
+- `Audio Input`: brings a microphone or input device into the patch with gain/level controls.
+- `Custom Wave`: generates an editable breakpoint waveform with loop, one-shot, ping-pong, and sustain modes.
+- `Sample`: plays an uploaded sample with trigger, region, pitch, stretch, and granular-style controls.
+- `Constant`: outputs a fixed numeric value.
+- `Slider`: provides a playable UI control, optionally driven by MIDI CC, that outputs a mapped signal.
+- `Button`: provides a playable UI button, optionally driven by MIDI CC, for gate/toggle/trigger-style control.
+- `MIDI Note`: converts MIDI note input into note, frequency, velocity, gate, and trigger outputs.
+- `MIDI CC`: outputs the current value of a selected MIDI CC.
+- `Selector`: selects one of several input values and can glide between selections.
+- `Accumulator`: steps through a min/max range when triggered.
+- `Abs`: outputs the absolute value of the input signal.
+- `Map`: remaps a signal from one numeric range to another.
+- `Clamp`: limits a signal to a minimum and maximum.
+- `Multiply`: multiplies a signal by a factor.
+- `Delay`: applies delay with time, feedback, and wet/dry mix controls.
+- `Chorus`: applies a modulated delay chorus effect.
+- `Reverb`: applies a reverb effect with size, decay, and mix controls.
+- `Envelope`: creates an ADSR-style envelope from a trigger input.
+- `Follower`: follows the amplitude contour of a signal with attack/release smoothing.
+- `Ring Mod`: multiplies a signal by a modulation amount for ring-mod-style tones.
+- `Fold`: folds a signal back on itself for wavefolding.
+- `Meter`: measures a signal level for display and downstream control.
+- `Scope`: shows an oscilloscope-style view of the signal.
+- `Lowpass Filter`: filters out frequencies above the cutoff.
+- `Highpass Filter`: filters out frequencies below the cutoff.
+- `Bandpass Filter`: keeps frequencies around the cutoff and attenuates the rest.
+- `Formant Filter`: applies a vowel/formant-style filter with morph and intensity controls.
+- `Comb Filter`: applies a resonant comb filter tuned by frequency and feedback.
+- `Comb Notch`: applies a comb-style notch filter tuned by frequency and feedback.
+- `Hard Clip`: clips a signal sharply for hard distortion.
+- `Soft Clip`: clips a signal smoothly for warmer distortion.
+- `Fuzz`: applies fuzz-style distortion.
+- `Saturate`: applies saturation-style distortion.
+- `Wavefold`: applies wavefolding distortion.
 
 ## Links
 
@@ -59,9 +111,9 @@ Static values from nodes like `Constant` and static `Expression` outputs are fol
 
 The active compiler is `web/src/audio/dspProgram.ts`. It expands subpatches, combines input links with the rule above, and emits a `DspProgram` for the worklet. The editor sends that program with `dspProgram` messages, and value-only changes use `dspValues`.
 
-`web/src/audio/compiler.ts` is deprecated legacy compatibility for the old link-centric `WasmAudioGraph` payload. Do not use it as the reference path for current playback fixes unless you are intentionally maintaining old graph compatibility.
+The old link-centric `WasmAudioGraph` TypeScript compiler has been removed. Current playback fixes should target `web/src/audio/dspProgram.ts` and the `DspProgram` sync path in the worklet.
 
-The worklet in `web/public/audio/audio-worklet-wasm.js` loads the `visual-fm` WASM kernel and syncs the compiled `DspProgram` into it. The same file still contains a quarantined `"graph"` message handler and `Legacy*` methods for old `WasmAudioGraph` payloads and debug tooling. User-facing patch links target nodes or the audio output; any remaining inherited link-centric WASM API names are implementation details, not the patch philosophy.
+The worklet in `web/public/audio/audio-worklet-wasm.js` loads the `visual-fm` WASM kernel and syncs the compiled `DspProgram` into it. User-facing patch links target nodes or the audio output; any remaining inherited link-centric WASM API names are implementation details, not the patch philosophy.
 
 The current WASM binary still has the inherited `visual-fm` ABI, where some processor settings are named as link parameters. That naming reflects the original engine, not the user-facing model in this app. The app should keep the audio kernel stable unless there is a clear DSP reason to change it.
 
@@ -79,6 +131,14 @@ Run the app:
 npm run dev
 ```
 
+Run the app through Docker with the local helper:
+
+```sh
+./start
+```
+
+`./start` serves the editor on port `5174` by default, generates a self-signed HTTPS certificate when `openssl` is available, prints LAN URLs for another device or projector, and supports `--port=PORT`, `--patch-storage=local`, and `--patch-storage=browser`.
+
 Typecheck:
 
 ```sh
@@ -89,6 +149,18 @@ Build:
 
 ```sh
 npm run build
+```
+
+Rebuild the Rust/WASM kernel and copy it into the web public/dist audio assets:
+
+```sh
+npm run build:wasm
+```
+
+Check compiled DSP port/link behavior:
+
+```sh
+npm run smoke:dsp-ports
 ```
 
 Render a quick WASM startup smoke test:
@@ -109,9 +181,3 @@ Manual MIDI check:
 2. Connect `MIDI Note.frequency` to `Sine Osc.frequency`, then `Sine Osc.signal` to `Audio Out.both`.
 3. Set `MIDI Note.voices` to `2`, start audio, and allow MIDI access when prompted.
 4. Play and release notes on a MIDI keyboard. Note-on should start voices, note-off should release them, and holding more than two notes should steal the oldest voice with a short fade.
-
-To exercise the old graph compatibility path explicitly:
-
-```sh
-node scripts/render-worklet-startup.mjs 1 --legacy-graph
-```

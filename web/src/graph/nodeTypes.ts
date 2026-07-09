@@ -155,14 +155,6 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     ],
     outputs: [{ name: 'signal' }],
   },
-  Gain: {
-    type: 'Gain',
-    inputs: [
-      { name: 'signal', valueEditor: false },
-      { name: 'gain', defaultValue: 1 },
-    ],
-    outputs: [{ name: 'signal' }],
-  },
   Abs: processor('Abs', []),
   Map: processor('Map', [
     { name: 'srcMin', defaultValue: 0 },
@@ -192,7 +184,6 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     { name: 'decay', defaultValue: 0.45, min: 0, max: 0.94 },
     { name: 'mix', defaultValue: 0.25, min: 0, max: 1 },
   ]),
-  LinkNoise: processor('LinkNoise', []),
   Envelope: processor('Envelope', [
     { name: 'trigger', valueEditor: false },
     { name: 'delay', defaultValue: 0, min: 0 },
@@ -211,16 +202,12 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   Fold: processor('Fold', [
     { name: 'amount', defaultValue: 1 },
   ]),
-  Mix: processor('Mix', [
-    { name: 'amount', defaultValue: 0.5 },
-  ]),
   Meter: processor('Meter', [
     { name: 'range', defaultValue: 1, min: 0.001 },
   ]),
   Scope: processor('Scope', [
     { name: 'range', defaultValue: 1, min: 0.001 },
   ]),
-  Filter: filter('Filter'),
   LowpassFilter: filter('LowpassFilter'),
   HighpassFilter: filter('HighpassFilter'),
   BandpassFilter: filter('BandpassFilter'),
@@ -241,19 +228,9 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   FuzzDistortion: distortion('FuzzDistortion'),
   SaturateDistortion: distortion('SaturateDistortion'),
   WavefoldDistortion: distortion('WavefoldDistortion'),
-  Distortion: {
-    type: 'Distortion',
-    inputs: [
-      { name: 'signal', valueEditor: false },
-      { name: 'type', defaultValue: 2, min: 1, max: 5, integer: true },
-      { name: 'drive', defaultValue: 2.5, min: 0 },
-    ],
-    outputs: [{ name: 'signal' }],
-  },
 };
 
-export const NODE_TYPE_LIST = (Object.keys(NODE_DEFINITIONS) as NodeType[])
-  .filter((type) => !['Filter', 'Distortion', 'LinkNoise', 'Gain', 'Mix'].includes(type));
+export const NODE_TYPE_LIST = Object.keys(NODE_DEFINITIONS) as NodeType[];
 
 const NODE_TYPE_LABELS: Record<NodeType, string> = {
   Expression: 'Expression',
@@ -279,7 +256,6 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   MidiCc: 'MIDI CC',
   Selector: 'Selector',
   Accumulator: 'Accumulator',
-  Gain: 'Gain',
   Abs: 'Abs',
   Map: 'Map',
   Clamp: 'Clamp',
@@ -287,15 +263,12 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   Delay: 'Delay',
   Chorus: 'Chorus',
   Reverb: 'Reverb',
-  LinkNoise: 'Link Noise',
   Envelope: 'Envelope',
   Follower: 'Follower',
   RingMod: 'Ring Mod',
   Fold: 'Fold',
-  Mix: 'Mix',
   Meter: 'Meter',
   Scope: 'Scope',
-  Filter: 'Filter',
   LowpassFilter: 'Lowpass Filter',
   HighpassFilter: 'Highpass Filter',
   BandpassFilter: 'Bandpass Filter',
@@ -307,7 +280,6 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   FuzzDistortion: 'Fuzz',
   SaturateDistortion: 'Saturate',
   WavefoldDistortion: 'Wavefold',
-  Distortion: 'Distortion',
 };
 
 export function getDefinition(type: NodeType): NodeDefinition {

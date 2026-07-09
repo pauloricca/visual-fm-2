@@ -93,7 +93,7 @@ interface RecordingCapture {
   sampleRate: number;
 }
 
-const AUDIO_ENGINE_ASSET_VERSION = '2026-07-08-midi-control-nodes';
+const AUDIO_ENGINE_ASSET_VERSION = '2026-07-09-start-declick';
 const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const METER_UPDATE_INTERVAL_MS = 80;
@@ -103,7 +103,7 @@ const SCOPE_CAPTURE_POINTS = 512;
 const SCOPE_DISPLAY_POINTS = 160;
 const SCOPE_SECONDS = 0.08;
 const SCOPE_MODE = 'zero-crossing';
-const AUDIO_OUTPUT_FADE_SECONDS = 0.008;
+const AUDIO_OUTPUT_FADE_SECONDS = 0.02;
 const AUDIO_OUTPUT_STOP_DELAY_MS = Math.ceil(AUDIO_OUTPUT_FADE_SECONDS * 1000) + 24;
 
 function closeAudioContext(
@@ -134,6 +134,25 @@ function closeAudioContext(
   contextRef.current = null;
 }
 
+function parkAudioContext(
+  nodeRef: { current: AudioWorkletNode | null },
+  outputGainRef: { current: GainNode | null },
+  inputSourceRef: { current: MediaStreamAudioSourceNode | null },
+  inputStreamRef: { current: MediaStream | null },
+  stopTimeoutRef: { current: number | null },
+): void {
+  stopTimeoutRef.current = null;
+  nodeRef.current?.port.postMessage({ type: 'setMuted', payload: { muted: true } });
+  inputSourceRef.current?.disconnect();
+  inputStreamRef.current?.getTracks().forEach((track) => track.stop());
+  outputGainRef.current?.gain.cancelScheduledValues(0);
+  if (outputGainRef.current) {
+    outputGainRef.current.gain.value = 0;
+  }
+  inputSourceRef.current = null;
+  inputStreamRef.current = null;
+}
+
 function fadeAudioOutputIn(context: AudioContext, gain: GainNode): void {
   const now = context.currentTime;
   holdAudioParamAtCurrentValue(gain.gain, now);
@@ -142,7 +161,8 @@ function fadeAudioOutputIn(context: AudioContext, gain: GainNode): void {
 
 function fadeAudioOutputOut(context: AudioContext, gain: GainNode): void {
   const now = context.currentTime;
-  holdAudioParamAtCurrentValue(gain.gain, now);
+  gain.gain.cancelScheduledValues(now);
+  gain.gain.setValueAtTime(1, now);
   gain.gain.linearRampToValueAtTime(0, now + AUDIO_OUTPUT_FADE_SECONDS);
 }
 
@@ -709,8 +729,14 @@ export function useAudioEngine(): AudioEngineState {
     }
     if (nodeRef.current && contextRef.current) {
       await resumeAudioContext(contextRef.current);
+      nodeRef.current.port.postMessage({ type: 'setMuted', payload: { muted: false } });
       if (outputGainRef.current) {
         fadeAudioOutputIn(contextRef.current, outputGainRef.current);
+      }
+      if (graphRef.current) {
+        syncGraphSamples(graphRef.current, contextRef.current, nodeRef.current);
+        syncAudioInput(graphRef.current, contextRef.current, nodeRef.current);
+        syncMidiInput(graphRef.current, nodeRef.current);
       }
       setStatus(contextRef.current.state === 'running' ? 'running' : 'idle');
       setMessage(`audio context ${contextRef.current.state}`);
@@ -727,7 +753,6 @@ export function useAudioEngine(): AudioEngineState {
       setStatus('starting');
       setMessage('starting audio');
       const context = new AudioContext();
-      await resumeAudioContext(context);
       setMessage(`audio context ${context.state}`);
       const wasmBytes = await fetch(WASM_URL, { cache: 'no-store' }).then((response) => {
         if (!response.ok) {
@@ -833,7 +858,7 @@ export function useAudioEngine(): AudioEngineState {
         window.clearTimeout(stopTimeoutRef.current);
       }
       stopTimeoutRef.current = window.setTimeout(() => {
-        closeAudioContext(contextRef, nodeRef, analyserRef, outputGainRef, inputSourceRef, inputStreamRef, stopTimeoutRef);
+        parkAudioContext(nodeRef, outputGainRef, inputSourceRef, inputStreamRef, stopTimeoutRef);
       }, AUDIO_OUTPUT_STOP_DELAY_MS);
     } else {
       closeAudioContext(contextRef, nodeRef, analyserRef, outputGainRef, inputSourceRef, inputStreamRef, stopTimeoutRef);
@@ -841,9 +866,6 @@ export function useAudioEngine(): AudioEngineState {
     disconnectMidiInput();
     inputRequestIdRef.current += 1;
     currentInputDeviceIdRef.current = '';
-    lastSentProgramStructureRef.current = null;
-    lastSentValuesRef.current = null;
-    sampleDataKeysRef.current = {};
     stopMeter();
     setLinkMeters({});
     setLinkScopeReadings({});

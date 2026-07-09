@@ -22,7 +22,6 @@ export type NodeType =
   | 'MidiCc'
   | 'Selector'
   | 'Accumulator'
-  | 'Gain'
   | 'Abs'
   | 'Map'
   | 'Clamp'
@@ -30,15 +29,12 @@ export type NodeType =
   | 'Delay'
   | 'Chorus'
   | 'Reverb'
-  | 'LinkNoise'
   | 'Envelope'
   | 'Follower'
   | 'RingMod'
   | 'Fold'
-  | 'Mix'
   | 'Meter'
   | 'Scope'
-  | 'Filter'
   | 'LowpassFilter'
   | 'HighpassFilter'
   | 'BandpassFilter'
@@ -49,8 +45,7 @@ export type NodeType =
   | 'SoftClipDistortion'
   | 'FuzzDistortion'
   | 'SaturateDistortion'
-  | 'WavefoldDistortion'
-  | 'Distortion';
+  | 'WavefoldDistortion';
 
 export interface Vec2 {
   x: number;

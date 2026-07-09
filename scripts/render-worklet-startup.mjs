@@ -6,9 +6,7 @@ const sampleRate = 48000;
 const blockSize = 128;
 const seconds = Number(process.argv[2] ?? 5);
 const resendEveryBlock = process.argv.includes('--resend-every-block');
-const legacyGraph = process.argv.includes('--legacy-graph');
 const modulated = process.argv.includes('--modulated');
-const compiled = !legacyGraph;
 const scope = process.argv.includes('--scope');
 const feedback = process.argv.includes('--feedback');
 const newNodes = process.argv.includes('--new-nodes');
@@ -24,8 +22,6 @@ const amountArg = Number(argValue('--amount'));
 const weightArg = Number(argValue('--weight'));
 const targetArg = argValue('--target') ?? 'frequency';
 const printGraph = process.argv.includes('--print-graph');
-const keepalive = process.argv.includes('--keepalive');
-const internalOutputTarget = process.argv.includes('--internal-output-target');
 const sampleModes = ['one-shot', 'loop', 'ping-pong'];
 const sampleModeParams = new Map(sampleModes.map((mode, index) => [mode, index]));
 let activeSampleMode = normalizeSampleMode(sampleModeArg ?? 'one-shot');
@@ -67,66 +63,17 @@ const processor = new ProcessorClass({
 
 await waitForReady();
 
-if (compiled && samplePlayer && !sampleModeArg) {
+if (samplePlayer && !sampleModeArg) {
   await runSamplePlayerModeSmoke();
   process.exit(0);
 }
 
-if (compiled && midiNote) {
+if (midiNote) {
   await runMidiNoteSmoke();
   process.exit(0);
 }
 
-const graph = compiled ? await compileVisiblePatch() : {
-  nodes: modulated
-    ? [
-      { id: 'tri', wave: 'triangle', frequencyMode: 'fixed', frequency: 1 },
-      { id: 'sine', wave: 'sine', frequencyMode: 'fixed', frequency: 61.4288 },
-    ]
-    : [
-      { id: 'sine', wave: 'sine', frequencyMode: 'fixed', frequency: 61.4288 },
-    ],
-  links: [
-    ...(modulated
-      ? [{
-        id: 'tri:signal->sine:frequency',
-        from: 'tri',
-        to: internalOutputTarget ? 'sine:signal->out:both' : 'sine',
-        amount: Number.isFinite(amountArg) ? amountArg : 0.7,
-        modulationTarget: targetArg,
-        ...(internalOutputTarget ? { internalTarget: true } : {}),
-      }]
-      : []),
-    ...(modulated && keepalive
-      ? [{
-        id: 'tri:signal->audio:keepalive',
-        from: 'tri',
-        to: 'audio',
-        amount: 0,
-        modulationTarget: 'amplitude',
-        pan: 0,
-        drone: true,
-      }]
-      : []),
-    {
-      id: 'sine:signal->out:both',
-      from: 'sine',
-      to: 'audio',
-      amount: 1.0254,
-      modulationTarget: 'amplitude',
-      pan: 0,
-      drone: true,
-      envelope: { attack: 0.01, decay: 0.12, sustain: 0.86, release: 0.18 },
-    },
-  ],
-  maxVoices: 8,
-  tempo: 120,
-  masterEffects: {
-    chorus: { enabled: false },
-    delay: { enabled: false },
-    reverb: { enabled: false },
-  },
-};
+const graph = await compileVisiblePatch();
 
 if (printGraph) {
   console.log(JSON.stringify(graph, null, 2));
@@ -231,7 +178,7 @@ async function runMidiNoteSmoke() {
 }
 
 function configureProcessorGraph(graph) {
-  processor.port.onmessage({ data: { type: graph?.ops ? 'dspProgram' : 'graph', payload: graph } });
+  processor.port.onmessage({ data: { type: 'dspProgram', payload: graph } });
   if (samplePlayer) {
     const data = syntheticSampleData(sampleRate);
     processor.port.onmessage({
@@ -269,7 +216,7 @@ function renderAudioWindows(graph, renderSeconds) {
 
   for (let block = 0; block < totalBlocks; block += 1) {
     if (resendEveryBlock) {
-      processor.port.onmessage({ data: { type: graph?.ops ? 'dspProgram' : 'graph', payload: graph } });
+      processor.port.onmessage({ data: { type: 'dspProgram', payload: graph } });
     }
 
     const left = new Float32Array(blockSize);
@@ -353,15 +300,11 @@ async function compileVisiblePatch() {
   writeTranspiledModule('web/src/graph/subpatch.ts', `${moduleDir}/subpatch.mjs`, (source) => (
     source.replaceAll("'./customWave'", "'./customWave.mjs'")
   ));
-  writeTranspiledModule('web/src/graph/migrations.ts', `${moduleDir}/migrations.mjs`, (source) => (
-    source.replaceAll("'./customWave'", "'./customWave.mjs'")
-  ));
   writeTranspiledModule('web/src/graph/nodeTypes.ts', `${moduleDir}/nodeTypes.mjs`);
   writeTranspiledModule('web/src/audio/dspProgram.ts', `${moduleDir}/dspProgram.mjs`, (source) => (
     source
       .replaceAll("'../graph/subpatch'", "'./subpatch.mjs'")
       .replaceAll("'../graph/customWave'", "'./customWave.mjs'")
-      .replaceAll("'../graph/migrations'", "'./migrations.mjs'")
       .replaceAll("'../graph/nodeTypes'", "'./nodeTypes.mjs'")
   ));
   const compiler = await import(`file://${moduleDir}/dspProgram.mjs`);
@@ -397,7 +340,6 @@ async function compileVisiblePatch() {
         { id: 'fuzz', type: 'FuzzDistortion', params: { drive: 2.2 } },
         { id: 'saturate', type: 'SaturateDistortion', params: { drive: 1.5 } },
         { id: 'wavefold', type: 'WavefoldDistortion', params: { drive: 2.4 } },
-        { id: 'distortion', type: 'Distortion', params: { type: 4, drive: 1.2 } },
         { id: 'meter', type: 'Meter', params: { range: 1 } },
         ...(scope ? [{ id: 'scope', type: 'Scope', params: { range: 1 } }] : []),
         { id: 'out', type: 'AudioOut', params: { level: 0.45 } },
@@ -524,8 +466,7 @@ async function compileVisiblePatch() {
           { from: { node: 'soft', port: 'signal' }, to: { node: 'fuzz', port: 'signal' }, weight: 1, mode: 'set' },
           { from: { node: 'fuzz', port: 'signal' }, to: { node: 'saturate', port: 'signal' }, weight: 1, mode: 'set' },
           { from: { node: 'saturate', port: 'signal' }, to: { node: 'wavefold', port: 'signal' }, weight: 1, mode: 'set' },
-          { from: { node: 'wavefold', port: 'signal' }, to: { node: 'distortion', port: 'signal' }, weight: 1, mode: 'set' },
-          { from: { node: 'distortion', port: 'signal' }, to: { node: 'meter', port: 'signal' }, weight: 1, mode: 'set' },
+          { from: { node: 'wavefold', port: 'signal' }, to: { node: 'meter', port: 'signal' }, weight: 1, mode: 'set' },
           ...(scope
             ? [
               { from: { node: 'meter', port: 'signal' }, to: { node: 'scope', port: 'signal' }, weight: 1, mode: 'set' },

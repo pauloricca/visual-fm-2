@@ -23,7 +23,6 @@ import { useAudioEngine } from '../audio/useAudioEngine';
 import { normalizeCustomWave } from '../graph/customWave';
 import { demoPatch } from '../graph/demoPatch';
 import { extractExpressionInputs } from '../graph/expression';
-import { migratePatchForCompatibility } from '../graph/migrations';
 import { defaultParamsFor, getDefinition, getNodeDefinition } from '../graph/nodeTypes';
 import { patchToJson } from '../graph/serialize';
 import type { CustomWaveSettings, LinkMode, NodeType, Patch, PatchLink, PatchNode, PortDefinition, SampleAsset } from '../graph/types';
@@ -2964,7 +2963,7 @@ function padDatePart(value: number): string {
 
 function parsePatchJson(json: string): Patch {
   const parsed = JSON.parse(json) as unknown;
-  return migratePatchForCompatibility(parsePatchObject(parsed, 'Patch JSON'));
+  return parsePatchObject(parsed, 'Patch JSON');
 }
 
 function parsePatchObject(value: unknown, label: string): Patch {

@@ -11,10 +11,9 @@ const DRONE_SLOT = MAX_ACTIVE_VOICES;
 const AUDIO_TARGET = -1;
 const LINK_TARGET_BASE = -2;
 const MASTER_GAIN = 0.18;
+const DSP_OUTPUT_START_FADE_SECONDS = 0.02;
 const VOICE_START_FADE_SECONDS = 0.006;
 const VOICE_STEAL_FADE_SECONDS = 0.03;
-const LINK_CONTROL_SMOOTH_SECONDS = 0.012;
-const LINK_CONTROL_SETTLE_EPSILON = 1e-7;
 const LINK_METER_POST_SECONDS = 1 / 30;
 const LINK_SCOPE_SECONDS_MAX = 30;
 const MASTER_DC_BLOCK_HZ = 10;
@@ -24,8 +23,6 @@ const MAX_CUSTOM_WAVE_POINTS = 64;
 const QUANTISE_MIDI_ROOT = "midi-note";
 
 // Active playback uses DspProgram messages compiled by web/src/audio/dspProgram.ts.
-// The graph message path below is retained only for old WasmAudioGraph payloads
-// and legacy smoke/debug tooling.
 
 const WAVE_IDS = new Map([
   ["sine", 0],
@@ -149,9 +146,6 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.linksById = new Map();
     this.dspProgram = null;
     this.sampleDataByNodeId = new Map();
-    this.linkControlSmoothers = new Map();
-    this.activeLinkControlSmoothers = new Set();
-    this.hasActiveDroneLinks = false;
     this.maxVoices = 5;
     this.tempo = DEFAULT_TEMPO;
     this.voices = new Map();
@@ -163,6 +157,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.nextLinkMeterPostSample = 0;
     this.lastOutputPeak = 0;
     this.lastProcessFrames = 128;
+    this.outputLifecycleGain = 0;
     this.ready = false;
     this.muted = false;
     this.zeroVoicePhasesOnStart = false;
@@ -202,18 +197,12 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
 
     this.port.onmessage = (event) => {
       const { type, payload } = event.data || {};
-      if (type === "graph") {
-        this.setLegacyGraph(payload);
-      } else if (type === "dspProgram") {
+      if (type === "dspProgram") {
         this.setDspProgram(payload);
       } else if (type === "dspValues") {
         this.setDspValues(payload);
       } else if (type === "sampleData") {
         this.setSampleData(payload);
-      } else if (type === "nodeParam") {
-        this.setLegacyNodeParam(payload);
-      } else if (type === "linkParam") {
-        this.setLegacyLinkParam(payload);
       } else if (type === "noteOn") {
         if (!this.muted) this.noteOn(payload.note, payload.velocity);
       } else if (type === "noteOff") {
@@ -273,14 +262,9 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       }
       this.wasm.resetPhases();
       this.ready = true;
-      this.syncLegacyRustGraph();
       this.syncDspProgram();
       this.configureDspScopes();
       this.configureDspMeters();
-      for (const link of this.links) {
-        link.controlSmoother = this.syncLinkControlSmoother(link, true);
-        this.applyLinkControlSmoother(link);
-      }
       this.port.postMessage({ type: "backendStatus", payload: { backend: "wasm", ready: true } });
     } catch (error) {
       this.port.postMessage({
@@ -290,49 +274,14 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     }
   }
 
-  setLegacyGraph(graph = {}) {
-    this.dspProgram = null;
-    this.wasm?.clearDspProgram?.();
-    this.wasm?.clearDspScopes?.();
-    this.wasm?.clearDspMeters?.();
-    this.nodes = (graph.nodes || []).map((node) => this.normalizeNode(node));
-    this.nodesById = new Map(this.nodes.map((node) => [node.id, node]));
-    this.links = (graph.links || []).map((link) => this.normalizeLink(link));
-    this.linksById = new Map(this.links.map((link) => [link.id, link]));
-    const linkIds = new Set(this.links.map((link) => link.id));
-    for (const id of this.linkControlSmoothers.keys()) {
-      if (!linkIds.has(id)) {
-        this.linkControlSmoothers.delete(id);
-        this.activeLinkControlSmoothers.delete(id);
-      }
-    }
-    this.maxVoices = this.clamp(Math.round(Number(graph.maxVoices) || 5), 1, MAX_ACTIVE_VOICES);
-    this.tempo = this.normalizeTempo(graph.tempo);
-    this.masterEffects = this.normalizeEffects(graph.masterEffects);
-    this.hasActiveDroneLinks = this.links.some((link) => link.drone && !link.monitorOnly);
-    this.graphVersion += 1;
-    this.dspScopeStates.clear();
-    this.dspMeterStates.clear();
-    this.monitorScopeStates.clear();
-    this.syncLegacyRustGraph();
-    for (const link of this.links) {
-      link.controlSmoother = this.syncLinkControlSmoother(link, true);
-      this.applyLinkControlSmoother(link);
-    }
-    if (this.linkScopeRequests.length > 0) this.setLinkScopes({ ...this.linkScopeRequests[0], linkIds: this.linkScopeRequests.map((request) => request.linkId) });
-    this.enforceVoiceLimit();
-  }
-
   setDspProgram(program = {}) {
     const preservedState = this.captureDspState(this.dspProgram);
     this.dspProgram = this.normalizeDspProgram(program);
+    this.outputLifecycleGain = 0;
     this.nodes = [];
     this.nodesById = new Map();
     this.links = [];
     this.linksById = new Map();
-    this.hasActiveDroneLinks = false;
-    this.linkControlSmoothers.clear();
-    this.activeLinkControlSmoothers.clear();
     this.monitorScopeStates.clear();
     this.syncDspProgram(preservedState);
     this.configureDspScopes();
@@ -850,139 +799,6 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     return amount;
   }
 
-  // Legacy WasmAudioGraph sync. Active playback uses syncDspProgram() above.
-  syncLegacyRustGraph() {
-    if (!this.wasm?.clearGraph) return;
-
-    this.wasm.clearGraph();
-    this.wasm.clearLinkMeters?.();
-    this.wasm.setTempo?.(this.tempo);
-    for (const node of this.nodes) {
-      node.wasmIndex = this.wasm.addNode(
-        this.waveId(node),
-        this.frequencyModeId(node),
-        node.ratio,
-        node.frequency,
-        node.syncBeats,
-        node.quantise.enabled ? 1 : 0,
-        node.quantise.root === QUANTISE_MIDI_ROOT ? -1 : QUANTISE_ROOT_NOTES.indexOf(node.quantise.root),
-        QUANTISE_SCALE_IDS.get(node.quantise.scale) ?? 0,
-        node.quantise.glide,
-        node.speed,
-        node.audioInputGain,
-        CUSTOM_WAVE_MODE_IDS.get(node.customWave?.mode) ?? 0,
-        node.customWave?.sustainStart ?? 0.5,
-        node.customWave?.sustainEnd ?? 0.75,
-        SAMPLE_MODE_IDS.get(node.sample?.mode) ?? 0,
-        node.sample?.start ?? 0,
-        node.sample?.end ?? 1,
-        node.sample?.stretch ?? 1,
-        node.sample?.cycleLength ?? 4096,
-        node.sample?.overlapRatio ?? 0.09,
-        node.sample?.originalPitch ?? 60,
-      );
-      if (node.wasmIndex >= 0 && node.wave === "custom" && typeof this.wasm.addCustomWavePoint === "function") {
-        for (const point of node.customWave.points) {
-          this.wasm.addCustomWavePoint(node.wasmIndex, point.x, point.y);
-        }
-      }
-      this.copySampleDataToWasm(node);
-    }
-
-    for (const link of this.links) {
-      link.wasmIndex = -1;
-    }
-
-    for (const link of this.links) {
-      if (link.monitorOnly || link.internalTarget) {
-        link.wasmIndex = -1;
-        continue;
-      }
-      const from = this.nodesById.get(link.from)?.wasmIndex ?? -1;
-      let to = AUDIO_TARGET;
-      let hasValidTarget = false;
-      if (link.to === "audio") {
-        to = AUDIO_TARGET;
-        hasValidTarget = true;
-      } else if (this.nodesById.has(link.to)) {
-        to = this.nodesById.get(link.to).wasmIndex;
-        hasValidTarget = to >= 0;
-      }
-      link.wasmIndex = from >= 0 && hasValidTarget
-        ? this.wasm.addLink(
-          from,
-          to,
-          link.amount,
-          link.delay || 0,
-          link.noise || 0,
-          link.pan || 0,
-          MODULATION_TARGET_IDS.get(link.modulationTarget) ?? 0,
-          PARAMETER_MODE_IDS.get(link.parameterMode) ?? 0,
-          link.velocitySensitivity || 0,
-          link.drone ? 1 : 0,
-          SIGNAL_MODE_IDS.get(link.signalMode) ?? 0,
-          link.follower?.attack || 0.01,
-          link.follower?.release || 0.12,
-          FILTER_TYPE_IDS.get(link.filter?.type) ?? 0,
-          link.filter?.cutoff ?? 5000,
-          link.filter?.resonance || 0.7,
-          link.distortion?.enabled ? DISTORTION_TYPE_IDS.get(link.distortion?.type) ?? 2 : 0,
-          link.distortion?.gain || 1.5,
-          link.envelope?.delay || 0,
-          link.envelope?.attack || 0.01,
-          link.envelope?.decay || 0.16,
-          link.envelope?.sustain ?? 0.72,
-          link.envelope?.release || 0.24,
-          link.map?.srcMin ?? 0,
-          link.map?.srcMax ?? 1,
-          link.map?.trgtMin ?? 0,
-          link.map?.trgtMax ?? 1,
-        )
-        : -1;
-    }
-
-    for (const link of this.links) {
-      if (link.monitorOnly || !link.internalTarget) {
-        continue;
-      }
-      const from = this.nodesById.get(link.from)?.wasmIndex ?? -1;
-      const targetIndex = this.linksById.get(link.to)?.wasmIndex ?? -1;
-      const to = targetIndex >= 0 ? LINK_TARGET_BASE - targetIndex : AUDIO_TARGET;
-      link.wasmIndex = from >= 0 && targetIndex >= 0
-        ? this.wasm.addLink(
-          from,
-          to,
-          link.amount,
-          link.delay || 0,
-          link.noise || 0,
-          link.pan || 0,
-          MODULATION_TARGET_IDS.get(link.modulationTarget) ?? 0,
-          PARAMETER_MODE_IDS.get(link.parameterMode) ?? 0,
-          link.velocitySensitivity || 0,
-          link.drone ? 1 : 0,
-          SIGNAL_MODE_IDS.get(link.signalMode) ?? 0,
-          link.follower?.attack || 0.01,
-          link.follower?.release || 0.12,
-          FILTER_TYPE_IDS.get(link.filter?.type) ?? 0,
-          link.filter?.cutoff ?? 5000,
-          link.filter?.resonance || 0.7,
-          link.distortion?.enabled ? DISTORTION_TYPE_IDS.get(link.distortion?.type) ?? 2 : 0,
-          link.distortion?.gain || 1.5,
-          link.envelope?.delay || 0,
-          link.envelope?.attack || 0.01,
-          link.envelope?.decay || 0.16,
-          link.envelope?.sustain ?? 0.72,
-          link.envelope?.release || 0.24,
-          link.map?.srcMin ?? 0,
-          link.map?.srcMax ?? 1,
-          link.map?.trgtMin ?? 0,
-          link.map?.trgtMax ?? 1,
-        )
-        : -1;
-    }
-    this.wasm.armCustomOnceTriggers?.(DRONE_SLOT);
-  }
-
   setSampleData(payload = {}) {
     if (!payload.nodeId) return;
     const data = payload.data instanceof Float32Array
@@ -1014,225 +830,6 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     const ptr = this.wasm.sampleDataPtr(slot);
     if (!ptr) return;
     new Float32Array(this.wasm.memory.buffer, ptr, length).set(entry.data.subarray(0, length));
-  }
-
-  setLegacyNodeParam({ id, parameter, value } = {}) {
-    const node = this.nodesById.get(id);
-    if (!node || node.wasmIndex < 0) return;
-    if (parameter === "frequencyMode") {
-      node.frequencyMode = ["ratio", "fixed", "sync"].includes(value) ? value : "ratio";
-      this.wasm?.setNodeFrequencyMode?.(node.wasmIndex, this.frequencyModeId(node));
-    } else if (parameter === "ratio") {
-      node.ratio = Number.isFinite(Number(value)) ? Number(value) : 0;
-      this.wasm?.setNodeRatio?.(node.wasmIndex, node.ratio);
-    } else if (parameter === "frequency") {
-      node.frequency = node.wave === "constant"
-        ? (Number.isFinite(Number(value)) ? Number(value) : 1)
-        : (Number.isFinite(Number(value)) ? Number(value) : 0);
-      node.baseFrequency = node.frequency;
-      this.wasm?.setNodeFrequency?.(node.wasmIndex, node.frequency);
-    } else if (parameter === "syncBeats") {
-      node.syncBeats = this.normalizeSyncBeats(value);
-      this.wasm?.setNodeSyncBeats?.(node.wasmIndex, node.syncBeats);
-    } else if (parameter === "quantise.enabled") {
-      node.quantise.enabled = Boolean(value);
-      this.wasm?.setNodeQuantiseEnabled?.(node.wasmIndex, node.quantise.enabled ? 1 : 0);
-    } else if (parameter === "quantise.root") {
-      node.quantise.root = value === QUANTISE_MIDI_ROOT || QUANTISE_ROOT_NOTES.includes(value) ? value : "C";
-      this.wasm?.setNodeQuantiseRoot?.(
-        node.wasmIndex,
-        node.quantise.root === QUANTISE_MIDI_ROOT ? -1 : QUANTISE_ROOT_NOTES.indexOf(node.quantise.root),
-      );
-    } else if (parameter === "quantise.scale") {
-      node.quantise.scale = QUANTISE_SCALE_IDS.has(value) ? value : "chromatic";
-      this.wasm?.setNodeQuantiseScale?.(node.wasmIndex, QUANTISE_SCALE_IDS.get(node.quantise.scale) ?? 0);
-    } else if (parameter === "quantise.glide") {
-      node.quantise.glide = this.clamp(Number(value) || 0, 0, 4);
-      this.wasm?.setNodeQuantiseGlide?.(node.wasmIndex, node.quantise.glide);
-    } else if (parameter === "speed") {
-      node.speed = Number.isFinite(Number(value)) ? Number(value) : 8;
-      this.wasm?.setNodeSpeed?.(node.wasmIndex, node.speed);
-    } else if (parameter === "audioInputGain") {
-      node.audioInputGain = Number.isFinite(Number(value)) ? Number(value) : 1;
-      this.wasm?.setNodeAudioInputGain?.(node.wasmIndex, node.audioInputGain);
-    } else if (parameter === "sample.mode") {
-      node.sample.mode = SAMPLE_MODE_IDS.has(value) ? value : "one-shot";
-      this.wasm?.setNodeSampleMode?.(node.wasmIndex, SAMPLE_MODE_IDS.get(node.sample.mode) ?? 0);
-    } else if (parameter === "sample.start") {
-      node.sample.start = this.clamp(Number(value) || 0, 0, 1);
-      this.wasm?.setNodeSampleStart?.(node.wasmIndex, node.sample.start);
-    } else if (parameter === "sample.end") {
-      node.sample.end = this.clamp(Number(value) || 0, 0, 1);
-      this.wasm?.setNodeSampleEnd?.(node.wasmIndex, node.sample.end);
-    } else if (parameter === "sample.stretch") {
-      node.sample.stretch = Math.max(0.001, Number(value) || 1);
-      this.wasm?.setNodeSampleStretch?.(node.wasmIndex, node.sample.stretch);
-    } else if (parameter === "sample.cycleLength") {
-      node.sample.cycleLength = Math.max(1, Math.round(Number(value) || 4096));
-      this.wasm?.setNodeSampleCycleLength?.(node.wasmIndex, node.sample.cycleLength);
-    } else if (parameter === "sample.overlapRatio") {
-      node.sample.overlapRatio = this.clamp(Number(value) || 0, 0, 1);
-      this.wasm?.setNodeSampleOverlapRatio?.(node.wasmIndex, node.sample.overlapRatio);
-    } else if (parameter === "sample.originalPitch") {
-      node.sample.originalPitch = Number.isFinite(Number(value)) ? Number(value) : 60;
-      this.wasm?.setNodeSampleOriginalPitch?.(node.wasmIndex, node.sample.originalPitch);
-    }
-  }
-
-  setLegacyLinkParam({ id, parameter, value } = {}) {
-    const link = this.linksById.get(id);
-    if (!link) return;
-    if (parameter === "amount") {
-      link.amount = Number.isFinite(Number(value)) ? Number(value) : 0;
-    } else if (parameter === "delay") {
-      link.delay = Math.max(0, Number.isFinite(Number(value)) ? Number(value) : 0);
-    } else if (parameter === "noise") {
-      link.noise = this.clamp(Number(value) || 0, 0, 1);
-    } else if (parameter === "pan") {
-      link.pan = this.clamp(Number(value) || 0, -1, 1);
-    } else if (parameter === "velocitySensitivity") {
-      link.velocitySensitivity = this.clamp(Number(value) || 0, -8, 8);
-      if (this.wasm?.setLinkVelocitySensitivity && link.wasmIndex >= 0) {
-        this.wasm.setLinkVelocitySensitivity(link.wasmIndex, link.velocitySensitivity);
-      }
-    } else if (parameter === "filter.cutoff") {
-      const isComb = link.filter.type === "comb" || link.filter.type === "comb-notch";
-      link.filter.cutoff = link.filter.type === "formant"
-        ? this.clamp(Number.isFinite(Number(value)) ? Number(value) : 0, 0, 1)
-        : Math.max(0, Number.isFinite(Number(value)) ? Number(value) : isComb ? 440 : 5000);
-      if (link.filter.type === "formant" && this.wasm?.setLinkFilterCutoff && link.wasmIndex >= 0) {
-        this.wasm.setLinkFilterCutoff(link.wasmIndex, link.filter.cutoff);
-      }
-    } else if (parameter === "filter.resonance") {
-      const isComb = link.filter.type === "comb" || link.filter.type === "comb-notch";
-      link.filter.resonance = this.clamp(
-        Number.isFinite(Number(value)) ? Number(value) : isComb ? 0.45 : 0.7,
-        isComb ? -0.999 : 0,
-        link.filter.type === "formant" ? Infinity : isComb ? 0.999 : Infinity,
-      );
-      if (link.filter.type === "formant" && this.wasm?.setLinkFilterResonance && link.wasmIndex >= 0) {
-        this.wasm.setLinkFilterResonance(link.wasmIndex, link.filter.resonance);
-      }
-    } else if (parameter === "distortion.gain") {
-      link.distortion = {
-        ...(link.distortion || { enabled: false, type: "soft-clip", gain: 1.5 }),
-        gain: Math.max(0, Number.isFinite(Number(value)) ? Number(value) : 1.5),
-      };
-    } else {
-      return;
-    }
-
-    link.controlSmoother = this.syncLinkControlSmoother(link);
-  }
-
-  linkControlTargets(link) {
-    return {
-      amount: link.amount,
-      delay: link.delay,
-      noise: link.noise,
-      pan: link.pan,
-      filterCutoff: link.filter?.cutoff ?? 5000,
-      filterResonance: link.filter?.resonance || 0.7,
-      distortionGain: link.distortion?.gain ?? 1.5,
-    };
-  }
-
-  linkControlIsSettled(smoother) {
-    const { current, target } = smoother;
-    return current.amount === target.amount
-      && current.delay === target.delay
-      && current.noise === target.noise
-      && current.pan === target.pan
-      && current.filterCutoff === target.filterCutoff
-      && current.filterResonance === target.filterResonance
-      && current.distortionGain === target.distortionGain;
-  }
-
-  syncActiveLinkControlSmoother(smoother) {
-    if (this.linkControlIsSettled(smoother)) {
-      this.activeLinkControlSmoothers.delete(smoother.id);
-    } else {
-      this.activeLinkControlSmoothers.add(smoother.id);
-    }
-  }
-
-  syncLinkControlSmoother(link, resetCurrent = false) {
-    const target = this.linkControlTargets(link);
-    const existing = this.linkControlSmoothers.get(link.id);
-    if (existing) {
-      existing.target = target;
-      if (resetCurrent) existing.current = { ...target };
-      if (resetCurrent || link.filter?.type === "formant") {
-        existing.current.filterCutoff = target.filterCutoff;
-        existing.current.filterResonance = target.filterResonance;
-      }
-      this.syncActiveLinkControlSmoother(existing);
-      return existing;
-    }
-
-    const smoother = {
-      id: link.id,
-      current: { ...target },
-      target,
-    };
-    this.linkControlSmoothers.set(link.id, smoother);
-    this.syncActiveLinkControlSmoother(smoother);
-    return smoother;
-  }
-
-  smoothControlValue(current, target, alpha) {
-    const next = current + (target - current) * alpha;
-    return Math.abs(target - next) <= LINK_CONTROL_SETTLE_EPSILON ? target : next;
-  }
-
-  applyLinkControlSmoother(link) {
-    const current = link.controlSmoother?.current || this.linkControlTargets(link);
-    if (this.wasm?.setLinkAmount && link.wasmIndex >= 0) {
-      this.wasm.setLinkAmount(link.wasmIndex, current.amount);
-    }
-    if (this.wasm?.setLinkDelay && link.wasmIndex >= 0) {
-      this.wasm.setLinkDelay(link.wasmIndex, current.delay);
-    }
-    if (this.wasm?.setLinkNoise && link.wasmIndex >= 0) {
-      this.wasm.setLinkNoise(link.wasmIndex, current.noise);
-    }
-    if (this.wasm?.setLinkPan && link.wasmIndex >= 0) {
-      this.wasm.setLinkPan(link.wasmIndex, current.pan);
-    }
-    if (this.wasm?.setLinkFilterCutoff && link.wasmIndex >= 0) {
-      this.wasm.setLinkFilterCutoff(link.wasmIndex, current.filterCutoff);
-    }
-    if (this.wasm?.setLinkFilterResonance && link.wasmIndex >= 0) {
-      this.wasm.setLinkFilterResonance(link.wasmIndex, current.filterResonance);
-    }
-    if (this.wasm?.setLinkDistortionGain && link.wasmIndex >= 0) {
-      this.wasm.setLinkDistortionGain(link.wasmIndex, current.distortionGain);
-    }
-  }
-
-  advanceLinkControlSmoothers(frames = this.lastProcessFrames || 128) {
-    if (!this.activeLinkControlSmoothers.size) return;
-    const alpha = 1 - Math.exp(-Math.max(1, frames) / (sampleRate * LINK_CONTROL_SMOOTH_SECONDS));
-
-    for (const id of [...this.activeLinkControlSmoothers]) {
-      const smoother = this.linkControlSmoothers.get(id);
-      const link = this.linksById.get(id);
-      if (!smoother || !link) {
-        this.activeLinkControlSmoothers.delete(id);
-        continue;
-      }
-
-      const { current, target } = smoother;
-      current.amount = this.smoothControlValue(current.amount, target.amount, alpha);
-      current.delay = this.smoothControlValue(current.delay, target.delay, alpha);
-      current.noise = this.smoothControlValue(current.noise, target.noise, alpha);
-      current.pan = this.smoothControlValue(current.pan, target.pan, alpha);
-      current.filterCutoff = this.smoothControlValue(current.filterCutoff, target.filterCutoff, alpha);
-      current.filterResonance = this.smoothControlValue(current.filterResonance, target.filterResonance, alpha);
-      current.distortionGain = this.smoothControlValue(current.distortionGain, target.distortionGain, alpha);
-      this.applyLinkControlSmoother(link);
-      this.syncActiveLinkControlSmoother(smoother);
-    }
   }
 
   normalizeEffects(effects = {}) {
@@ -1637,6 +1234,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.activeVoicesByNote.clear();
     this.pendingVoiceStarts = [];
     this.freeSlots = Array.from({ length: MAX_ACTIVE_VOICES }, (_, index) => index);
+    this.outputLifecycleGain = 0;
     this.chorusBuffers.forEach((buffer) => buffer.fill(0));
     this.chorusIndices = [0, 0];
     this.chorusPhases = [0, Math.PI * 0.5];
@@ -1663,20 +1261,6 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     if (node?.frequencyMode === "fixed") return 1;
     if (node?.frequencyMode === "sync") return 2;
     return 0;
-  }
-
-  renderLegacyVoice(voice, now, frames) {
-    this.wasm.renderVoiceGraph(
-      voice.slot,
-      frames,
-      sampleRate,
-      voice.frequency,
-      voice.velocity,
-      1,
-      now - voice.startedAt,
-      voice.releasedAt === null ? -1 : now - voice.releasedAt,
-      voice.stolenAt === null ? -1 : now - voice.stolenAt,
-    );
   }
 
   setLinkScopes(payload = {}) {
@@ -2088,6 +1672,14 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     if (!left) return;
     left.fill(0);
     if (right !== left) right.fill(0);
+    this.outputLifecycleGain = 0;
+  }
+
+  nextOutputLifecycleGain() {
+    if (this.outputLifecycleGain >= 1) return 1;
+    const step = 1 / (DSP_OUTPUT_START_FADE_SECONDS * sampleRate);
+    this.outputLifecycleGain = Math.min(1, this.outputLifecycleGain + step);
+    return this.outputLifecycleGain;
   }
 
   copyInput(inputs, frames) {
@@ -2143,8 +1735,9 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
 
     let peak = 0;
     for (let i = 0; i < frames; i += 1) {
-      const leftSample = this.applyMasterEffects(Math.tanh((this.leftBuffer[i] || 0) * MASTER_GAIN), 0);
-      const rightSample = this.applyMasterEffects(Math.tanh((this.rightBuffer[i] || 0) * MASTER_GAIN), 1);
+      const lifecycleGain = this.nextOutputLifecycleGain();
+      const leftSample = this.applyMasterEffects(Math.tanh((this.leftBuffer[i] || 0) * MASTER_GAIN * lifecycleGain), 0);
+      const rightSample = this.applyMasterEffects(Math.tanh((this.rightBuffer[i] || 0) * MASTER_GAIN * lifecycleGain), 1);
       left[i] = leftSample;
       right[i] = rightSample;
       peak = Math.max(peak, Math.abs(leftSample), Math.abs(rightSample));
@@ -2167,8 +1760,6 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
 
     const frames = Math.min(left.length, MAX_WASM_FRAMES);
     this.lastProcessFrames = frames;
-    const now = this.sampleCursor / sampleRate;
-
     if (this.muted) {
       this.fillSilence(outputs);
       return true;
@@ -2178,65 +1769,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       return this.renderDspProgramToOutput(inputs, outputs, frames);
     }
 
-    // Legacy WasmAudioGraph rendering fallback. The current app should only
-    // arrive here when an old "graph" message was sent intentionally.
-    const hasMainLinks = this.links.some((link) => link.wasmIndex >= 0);
-    if (!this.ready || (!hasMainLinks && this.monitorScopeStates.size === 0)) {
-      this.fillSilence(outputs);
-      this.sampleCursor += left.length;
-      return true;
-    }
-
-    if (!hasMainLinks) {
-      this.fillSilence(outputs);
-      this.renderMonitorScopes(frames);
-      this.sampleCursor += left.length;
-      this.flushLinkMeters();
-      return true;
-    }
-
-    this.pruneVoices(now);
-    this.advanceLinkControlSmoothers(frames);
-    this.wasm.clear(frames);
-    this.copyInput(inputs, frames);
-
-    if (this.hasActiveDroneLinks) {
-      this.renderLegacyVoice({
-        slot: DRONE_SLOT,
-        frequency: 440,
-        velocity: 1,
-        startedAt: 0,
-        releasedAt: null,
-        stolenAt: null,
-      }, now, frames);
-    }
-
-    for (const voice of this.voices.values()) {
-      this.renderLegacyVoice(voice, now, frames);
-    }
-
-    this.renderMonitorScopes(frames);
-
-    const hasAudibleOutput = this.links.some((link) => link.to === "audio" && !link.monitorOnly && link.wasmIndex >= 0);
-    let peak = 0;
-    for (let i = 0; i < frames; i += 1) {
-      const leftSample = hasAudibleOutput
-        ? this.applyMasterEffects(Math.tanh((this.leftBuffer[i] || 0) * MASTER_GAIN), 0)
-        : 0;
-      const rightSample = hasAudibleOutput
-        ? this.applyMasterEffects(Math.tanh((this.rightBuffer[i] || 0) * MASTER_GAIN), 1)
-        : 0;
-      left[i] = leftSample;
-      right[i] = rightSample;
-      peak = Math.max(peak, Math.abs(leftSample), Math.abs(rightSample));
-    }
-    for (let i = frames; i < left.length; i += 1) {
-      left[i] = 0;
-      right[i] = 0;
-    }
-    this.lastOutputPeak = Math.max(this.lastOutputPeak, peak);
+    this.fillSilence(outputs);
     this.sampleCursor += left.length;
-    this.flushLinkMeters();
     return true;
   }
 }

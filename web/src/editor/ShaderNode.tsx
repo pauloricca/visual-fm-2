@@ -2120,11 +2120,8 @@ function NumericScrubber({ value, min, max, integer = false, onChange }: Numeric
       <input
         ref={inputRef}
         className="numeric-scrubber numeric-scrubber-editing nodrag nopan"
-        type="number"
-        inputMode="decimal"
-        min={min}
-        max={max}
-        step={integer ? 1 : undefined}
+        type="text"
+        inputMode={integer ? 'numeric' : 'decimal'}
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         onBlur={commitDraft}

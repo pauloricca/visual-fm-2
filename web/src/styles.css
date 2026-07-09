@@ -468,6 +468,11 @@ select:hover {
 .shader-node {
   position: relative;
   width: max-content;
+  --node-pin-size: 8px;
+  --node-pin-half-size: calc(var(--node-pin-size) / 2);
+  --node-content-padding: 8px;
+  --node-body-pin-offset: calc(-1 * (var(--node-content-padding) + var(--node-pin-half-size)));
+  --node-title-pin-offset: calc(-1 * var(--node-pin-half-size));
   border: 1px solid #fff;
   background: var(--surface-bg);
   color: #fff;
@@ -749,11 +754,11 @@ select:hover {
   gap: 10px;
   justify-content: space-between;
   min-height: 44px;
-  padding: 8px;
+  padding: var(--node-content-padding);
 }
 
 .shader-node-body-no-outputs {
-  grid-template-columns: max-content;
+  grid-template-columns: minmax(0, 1fr);
   justify-content: start;
 }
 
@@ -987,6 +992,7 @@ select:hover {
 
 .shader-node-body-custom-wave {
   grid-template-columns: minmax(188px, 1fr);
+  gap: 0;
   width: 100%;
   min-width: 220px;
   padding: 0;
@@ -1132,7 +1138,7 @@ select:hover {
 .shader-node-custom-wave .shader-inputs {
   width: 100%;
   min-width: 0;
-  padding: 8px;
+  padding: var(--node-content-padding);
 }
 
 .shader-node-custom-wave .shader-port-input {
@@ -1219,6 +1225,11 @@ select:hover {
   min-width: max-content;
 }
 
+.shader-node-body-no-outputs .shader-ports {
+  width: 100%;
+  min-width: 0;
+}
+
 .shader-port {
   position: relative;
   display: flex;
@@ -1228,14 +1239,16 @@ select:hover {
 }
 
 .shader-port-input {
+  display: grid;
+  grid-template-columns: minmax(0, var(--input-label-width, auto)) minmax(68px, 1fr);
+  align-items: center;
   gap: 6px;
 }
 
 .shader-port-input span {
-  width: var(--input-label-width, auto);
-  flex: 0 0 auto;
-  overflow: visible;
-  text-overflow: clip;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -1286,6 +1299,8 @@ select:hover {
 
 .numeric-scrubber {
   width: 68px;
+  min-width: 0;
+  max-width: 68px;
   height: 22px;
   padding: 0 4px;
   border: 1px solid #fff;
@@ -1307,9 +1322,11 @@ select:hover {
 
 .numeric-scrubber-editing {
   display: block;
+  appearance: textfield;
   cursor: text;
   font: inherit;
   user-select: text;
+  -webkit-appearance: none;
   -moz-appearance: textfield;
 }
 
@@ -1495,76 +1512,49 @@ select:hover {
   color: #000;
 }
 
-.shader-node-slider .shader-inputs,
-.shader-node-button .shader-inputs,
-.shader-node-midi-note .shader-inputs {
+.shader-node-body-slider .shader-inputs,
+.shader-node-body-button .shader-inputs,
+.shader-node-body-scope .shader-inputs,
+.shader-node-body-meter .shader-inputs,
+.shader-node-body-custom-wave .shader-inputs {
   width: 100%;
   min-width: 0;
-  padding: 8px 8px 8px 14px;
+  padding: var(--node-content-padding);
   background: transparent;
 }
 
-.shader-node-scope .shader-inputs {
-  width: 100%;
-  min-width: 0;
-  padding: 8px;
-  background: transparent;
-}
-
-.shader-node-slider.shader-node-compact .shader-inputs:empty,
-.shader-node-scope.shader-node-compact .shader-inputs:empty,
-.shader-node-button.shader-node-compact .shader-inputs:empty,
-.shader-node-midi-note.shader-node-compact .shader-inputs:empty {
+.shader-node-compact .shader-node-body-slider .shader-inputs:empty,
+.shader-node-compact .shader-node-body-scope .shader-inputs:empty,
+.shader-node-compact .shader-node-body-button .shader-inputs:empty,
+.shader-node-compact .shader-node-body-meter .shader-inputs:empty,
+.shader-node-compact .shader-node-body-custom-wave .shader-inputs:empty {
   display: none;
   padding: 0;
 }
 
-.shader-node-slider .shader-port-input,
-.shader-node-scope .shader-port-input,
-.shader-node-button .shader-port-input,
-.shader-node-midi-note .shader-port-input {
-  display: grid;
-  grid-template-columns: var(--input-label-width, auto) minmax(0, 1fr);
-  gap: 6px;
+.shader-node-body-no-outputs .numeric-scrubber,
+.shader-node-body-no-outputs .slider-direction-select,
+.shader-node-body-no-outputs .button-mode-select,
+.shader-node-body-no-outputs .sample-mode-select,
+.shader-node-body-no-outputs .midi-voices-select {
   width: 100%;
   min-width: 0;
 }
 
-.shader-node-slider .shader-port-input,
-.shader-node-button .shader-port-input,
-.shader-node-midi-note .shader-port-input {
-  grid-template-columns: minmax(0, var(--input-label-width, auto)) minmax(0, 1fr);
-}
-
-.shader-node-slider .shader-port-input span,
-.shader-node-scope .shader-port-input span,
-.shader-node-button .shader-port-input span,
-.shader-node-midi-note .shader-port-input span {
-  width: var(--input-label-width, auto);
-}
-
-.shader-node-slider .shader-port-input span,
-.shader-node-button .shader-port-input span,
-.shader-node-midi-note .shader-port-input span {
-  width: auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.shader-node-slider .numeric-scrubber,
-.shader-node-slider .slider-direction-select,
-.shader-node-button .numeric-scrubber,
-.shader-node-button .button-mode-select,
-.shader-node-sampleplayer .sample-mode-select,
-.shader-node-midi-note .midi-voices-select {
-  width: 100%;
-  min-width: 0;
+.shader-node-body-no-outputs .numeric-scrubber {
+  width: 68px;
+  max-width: 68px;
 }
 
 .shader-node-scope .numeric-scrubber {
   width: 100%;
   min-width: 68px;
+  max-width: none;
+}
+
+.shader-node-body-custom-wave .numeric-scrubber {
+  width: 100%;
+  max-width: none;
 }
 
 .audio-node-slider-fill {
@@ -1715,8 +1705,8 @@ select:hover {
 }
 
 .shader-handle {
-  width: 8px;
-  height: 8px;
+  width: var(--node-pin-size);
+  height: var(--node-pin-size);
   border: 1px solid #fff;
   border-radius: 0;
   background: var(--control-bg);
@@ -1737,32 +1727,27 @@ select:hover {
 }
 
 .shader-handle-input {
-  left: -12px;
-}
-
-.shader-node-slider .shader-port-input .shader-handle-input,
-.shader-node-button .shader-port-input .shader-handle-input {
-  left: -18px;
+  left: var(--node-body-pin-offset);
 }
 
 .shader-handle-input-title {
-  left: -4px;
+  left: var(--node-title-pin-offset);
 }
 
 .shader-handle-scope {
-  left: -4px;
+  left: var(--node-title-pin-offset);
 }
 
 .shader-handle-meter {
-  left: -4px;
+  left: var(--node-title-pin-offset);
 }
 
 .shader-handle-output {
-  right: -13px;
+  right: var(--node-body-pin-offset);
 }
 
 .shader-handle-output-title {
-  right: -4px;
+  right: var(--node-title-pin-offset);
 }
 
 .shader-edge .shader-edge-path-foreground,

@@ -1,7 +1,6 @@
 import type { Edge, Node } from '@xyflow/react';
 import type { AudioInputState, MidiInputState } from '../audio/useAudioEngine';
 import { normalizeCustomWave } from '../graph/customWave';
-import { migratePatchForCompatibility } from '../graph/migrations';
 import type { LinkMode, NodeType, Patch, PatchLink, PatchNode, PortDefinition } from '../graph/types';
 
 export interface ScopeNodeSize {
@@ -484,15 +483,13 @@ function normalizePersistedState(state: PersistedEditorState): PersistedEditorSt
       .map(patchLinkFromPersistedEdge)
       .filter((link): link is PatchLink => link !== null),
   };
-  const migratedPatch = migratePatchForCompatibility(typedPatch);
-
   return {
     ...state,
     nodes: [
-      ...migratedPatch.nodes.map((node) => persistedNodeFromPatchNode(node, originalNodesById.get(node.id))),
+      ...typedPatch.nodes.map((node) => persistedNodeFromPatchNode(node, originalNodesById.get(node.id))),
       ...passthroughNodes,
     ],
-    edges: migratedPatch.links.map(persistedEdgeFromPatchLink),
+    edges: typedPatch.links.map(persistedEdgeFromPatchLink),
   };
 }
 

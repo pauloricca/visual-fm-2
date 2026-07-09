@@ -1,6 +1,5 @@
 import { expandGroups } from '../graph/subpatch';
 import { normalizeCustomWave } from '../graph/customWave';
-import { migratePatchForCompatibility } from '../graph/migrations';
 import { getNodeDefinition } from '../graph/nodeTypes';
 import type { CustomWaveSettings, LinkMode, NodeType, Patch, PatchLink, PatchNode } from '../graph/types';
 
@@ -186,7 +185,7 @@ const EXPRESSION_FUNCTIONS: Record<string, { id: number; minArgs: number; maxArg
 };
 
 export function compilePatchToDspProgram(patch: Patch): DspProgram {
-  const expandedPatch = expandGroups(migratePatchForCompatibility(patch));
+  const expandedPatch = expandGroups(patch);
   const context = createContext(expandedPatch);
   const audioOutNodes = expandedPatch.nodes.filter((node) => node.type === 'AudioOut');
   const monitorNodes = expandedPatch.nodes.filter((node) => node.type === 'Meter' || node.type === 'Scope');
@@ -623,15 +622,6 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     return compileSamplePlayer(node, context);
   }
 
-  if (node.type === 'Gain') {
-    return emitBinary(
-      DSP_OP.Mul,
-      resolveInput(node, 'signal', 0, context),
-      resolveInput(node, 'gain', 1, context),
-      context,
-    );
-  }
-
   if (node.type === 'Multiply') {
     return emitBinary(
       DSP_OP.Mul,
@@ -641,11 +631,11 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     );
   }
 
-  if (node.type === 'RingMod' || node.type === 'Mix') {
+  if (node.type === 'RingMod') {
     return emitBinary(
       DSP_OP.Mul,
       resolveInput(node, 'signal', 0, context),
-      resolveInput(node, 'amount', node.type === 'Mix' ? 0.5 : 1, context),
+      resolveInput(node, 'amount', 1, context),
       context,
     );
   }
@@ -702,18 +692,6 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       b: resolveInput(node, 'attack', 0.01, context),
       c: resolveInput(node, 'release', 0.12, context),
       state,
-    });
-    return output;
-  }
-
-  if (node.type === 'Distortion') {
-    const output = nextRegister(context);
-    context.ops.push({
-      opcode: DSP_OP.Distortion,
-      out: output,
-      a: resolveInput(node, 'signal', 0, context),
-      b: resolveInput(node, 'drive', 2.5, context),
-      c: resolveInput(node, 'type', 2, context),
     });
     return output;
   }
