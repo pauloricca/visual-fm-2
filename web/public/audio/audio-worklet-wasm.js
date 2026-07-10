@@ -21,6 +21,7 @@ const DENORMAL_EPSILON = 1e-20;
 const FORMANT_INTENSITY_MAX = 36;
 const MAX_CUSTOM_WAVE_POINTS = 64;
 const QUANTISE_MIDI_ROOT = "midi-note";
+const DEFAULT_GRAPH_UPDATE_CROSSFADE_SECONDS = 0.02;
 
 // Active playback uses DspProgram messages compiled by web/src/audio/dspProgram.ts.
 
@@ -146,6 +147,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.linksById = new Map();
     this.dspProgram = null;
     this.sampleDataByNodeId = new Map();
+    this.graphUpdateCrossfade = this.normalizeGraphUpdateCrossfade(options.processorOptions?.audioConfig?.graphUpdateCrossfade);
+    this.graphUpdateTransition = null;
     this.maxVoices = 5;
     this.tempo = DEFAULT_TEMPO;
     this.voices = new Map();
@@ -223,6 +226,16 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.loadWasm(options.processorOptions || {});
   }
 
+  normalizeGraphUpdateCrossfade(config = {}) {
+    const seconds = Number(config?.seconds);
+    return {
+      enabled: Boolean(config?.enabled),
+      seconds: Number.isFinite(seconds)
+        ? this.clamp(seconds, 0.001, MAX_WASM_FRAMES / sampleRate)
+        : DEFAULT_GRAPH_UPDATE_CROSSFADE_SECONDS,
+    };
+  }
+
   async loadWasm({ wasmBytes, wasmUrl } = {}) {
     try {
       let bytes = wasmBytes;
@@ -276,8 +289,11 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
 
   setDspProgram(program = {}) {
     const preservedState = this.captureDspState(this.dspProgram);
+    const hasTransition = this.prepareGraphUpdateCrossfade();
     this.dspProgram = this.normalizeDspProgram(program);
-    this.outputLifecycleGain = 0;
+    if (!hasTransition) {
+      this.outputLifecycleGain = 0;
+    }
     this.nodes = [];
     this.nodesById = new Map();
     this.links = [];
@@ -286,6 +302,43 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.syncDspProgram(preservedState);
     this.configureDspScopes();
     this.configureDspMeters();
+  }
+
+  prepareGraphUpdateCrossfade() {
+    if (
+      !this.graphUpdateCrossfade.enabled
+      || this.muted
+      || !this.ready
+      || !this.wasm
+      || !this.dspProgram
+      || this.dspProgram.errors.length > 0
+      || this.dspProgram.ops.length === 0
+    ) {
+      this.graphUpdateTransition = null;
+      return false;
+    }
+
+    const frames = Math.max(1, Math.min(MAX_WASM_FRAMES, Math.round(this.graphUpdateCrossfade.seconds * sampleRate)));
+    this.wasm.clear(frames);
+    if (this.inputBuffer) {
+      this.inputBuffer.fill(0, 0, frames);
+    }
+    this.renderCurrentDspProgramToWasm(frames);
+
+    const left = new Float32Array(frames);
+    const right = new Float32Array(frames);
+    for (let i = 0; i < frames; i += 1) {
+      left[i] = Math.tanh((this.leftBuffer[i] || 0) * MASTER_GAIN);
+      right[i] = Math.tanh((this.rightBuffer[i] || 0) * MASTER_GAIN);
+    }
+
+    this.graphUpdateTransition = {
+      left,
+      right,
+      index: 0,
+      frames,
+    };
+    return true;
   }
 
   setDspValues(payload = {}) {
@@ -1694,22 +1747,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     }
   }
 
-  renderDspProgramToOutput(inputs, outputs, frames) {
-    const output = outputs[0];
-    const left = output?.[0];
-    const right = output?.[1] || left;
-    if (!left) return true;
-
-    if (!this.ready || !this.dspProgram || this.dspProgram.errors.length > 0 || this.dspProgram.ops.length === 0) {
-      this.fillSilence(outputs);
-      this.sampleCursor += left.length;
-      return true;
-    }
-
-    this.pruneVoices(this.sampleCursor / sampleRate);
-    this.flushPendingVoiceStarts(this.sampleCursor / sampleRate);
-    this.wasm.clear(frames);
-    this.copyInput(inputs, frames);
+  renderCurrentDspProgramToWasm(frames) {
     if (this.dspProgram.usesMidiNote) {
       for (const voice of this.voices.values()) {
         const now = this.sampleCursor / sampleRate;
@@ -1729,15 +1767,64 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
           voice.stolenAt === null ? -1 : now - voice.stolenAt,
         );
       }
-    } else {
-      this.wasm.renderDspProgram?.(frames, sampleRate);
+      return;
     }
+
+    this.wasm.renderDspProgram?.(frames, sampleRate);
+  }
+
+  nextGraphUpdateCrossfadeSample(leftSample, rightSample) {
+    const transition = this.graphUpdateTransition;
+    if (!transition) {
+      return [leftSample, rightSample];
+    }
+
+    const index = transition.index;
+    if (index >= transition.frames) {
+      this.graphUpdateTransition = null;
+      return [leftSample, rightSample];
+    }
+
+    const mix = this.smoothStep(index / Math.max(1, transition.frames - 1));
+    const oldLeft = transition.left[index] || 0;
+    const oldRight = transition.right[index] || oldLeft;
+    transition.index += 1;
+    if (transition.index >= transition.frames) {
+      this.graphUpdateTransition = null;
+    }
+
+    return [
+      oldLeft + (leftSample - oldLeft) * mix,
+      oldRight + (rightSample - oldRight) * mix,
+    ];
+  }
+
+  renderDspProgramToOutput(inputs, outputs, frames) {
+    const output = outputs[0];
+    const left = output?.[0];
+    const right = output?.[1] || left;
+    if (!left) return true;
+
+    if (!this.ready || !this.dspProgram || this.dspProgram.errors.length > 0 || this.dspProgram.ops.length === 0) {
+      this.fillSilence(outputs);
+      this.sampleCursor += left.length;
+      return true;
+    }
+
+    this.pruneVoices(this.sampleCursor / sampleRate);
+    this.flushPendingVoiceStarts(this.sampleCursor / sampleRate);
+    this.wasm.clear(frames);
+    this.copyInput(inputs, frames);
+    this.renderCurrentDspProgramToWasm(frames);
 
     let peak = 0;
     for (let i = 0; i < frames; i += 1) {
       const lifecycleGain = this.nextOutputLifecycleGain();
-      const leftSample = this.applyMasterEffects(Math.tanh((this.leftBuffer[i] || 0) * MASTER_GAIN * lifecycleGain), 0);
-      const rightSample = this.applyMasterEffects(Math.tanh((this.rightBuffer[i] || 0) * MASTER_GAIN * lifecycleGain), 1);
+      const rawLeftSample = Math.tanh((this.leftBuffer[i] || 0) * MASTER_GAIN * lifecycleGain);
+      const rawRightSample = Math.tanh((this.rightBuffer[i] || 0) * MASTER_GAIN * lifecycleGain);
+      const [mixedLeftSample, mixedRightSample] = this.nextGraphUpdateCrossfadeSample(rawLeftSample, rawRightSample);
+      const leftSample = this.applyMasterEffects(mixedLeftSample, 0);
+      const rightSample = this.applyMasterEffects(mixedRightSample, 1);
       left[i] = leftSample;
       right[i] = rightSample;
       peak = Math.max(peak, Math.abs(leftSample), Math.abs(rightSample));

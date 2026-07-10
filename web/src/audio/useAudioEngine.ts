@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AUDIO_ENGINE_CONFIG } from './config';
 import { DSP_OP, type DspProgram } from './dspProgram';
 
 type AudioStatus = 'idle' | 'starting' | 'running' | 'error';
@@ -769,7 +770,7 @@ export function useAudioEngine(): AudioEngineState {
         numberOfInputs: 1,
         numberOfOutputs: 1,
         outputChannelCount: [2],
-        processorOptions: { wasmBytes },
+        processorOptions: { wasmBytes, audioConfig: AUDIO_ENGINE_CONFIG },
       });
 
       node.port.onmessage = (event) => {
