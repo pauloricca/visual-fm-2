@@ -1,5 +1,5 @@
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
-import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, type Connect, type Plugin } from 'vite';
@@ -8,6 +8,7 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [
     react(),
+    localDiagnosticsPlugin(),
     renderSyncPlugin(),
     localSampleStoragePlugin(),
     localRecordingStoragePlugin(),
@@ -22,6 +23,66 @@ export default defineConfig({
     headers: crossOriginIsolationHeaders(),
   },
 });
+
+function localDiagnosticsPlugin(): Plugin {
+  const diagnosticsDir = resolve(dirname(fileURLToPath(import.meta.url)), 'diagnostics');
+  const logPath = join(diagnosticsDir, 'browser-events.jsonl');
+
+  const middleware: Connect.NextHandleFunction = (request, response, next) => {
+    const url = new URL(request.url ?? '/', 'http://localhost');
+    const path = url.pathname;
+
+    if (path !== '/api/diagnostics') {
+      next();
+      return;
+    }
+
+    if (request.method === 'POST') {
+      readRequestBuffer(request, 256 * 1024, 'Diagnostic payload is too large.').then(async (body) => {
+        const payload = parseDiagnosticPayload(body);
+        await mkdir(diagnosticsDir, { recursive: true });
+        await appendFile(logPath, `${JSON.stringify(payload)}\n`, 'utf8');
+
+        if (payload.level === 'warn' || payload.level === 'error') {
+          const detail = payload.details ? ` ${JSON.stringify(payload.details)}` : '';
+          console[payload.level](`[browser:${payload.sessionId}] ${payload.event}${detail}`);
+        }
+
+        response.statusCode = 204;
+        response.end();
+      }).catch((error: unknown) => {
+        sendDiagnosticError(response, error);
+      });
+      return;
+    }
+
+    if (request.method === 'GET') {
+      readDiagnosticTail(logPath, url).then((entries) => {
+        response.statusCode = 200;
+        response.setHeader('Cache-Control', 'no-store');
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify({ logPath, entries }, null, 2));
+      }).catch((error: unknown) => {
+        sendDiagnosticError(response, error);
+      });
+      return;
+    }
+
+    response.statusCode = 405;
+    response.setHeader('Allow', 'GET, POST');
+    response.end();
+  };
+
+  return {
+    name: 'visual-visual-local-diagnostics',
+    configureServer(server) {
+      server.middlewares.use(middleware);
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(middleware);
+    },
+  };
+}
 
 function crossOriginIsolationHeaders() {
   return {
@@ -326,6 +387,18 @@ interface UploadedSampleFile {
   data: Buffer;
 }
 
+interface DiagnosticLogEntry {
+  sessionId: string;
+  timestamp: string;
+  serverReceivedAt: string;
+  performanceNowMs: number | null;
+  level: 'info' | 'warn' | 'error';
+  event: string;
+  url: string;
+  visibilityState: string;
+  details?: unknown;
+}
+
 const MAX_SAMPLE_UPLOAD_BYTES = 100 * 1024 * 1024;
 const MAX_RECORDING_UPLOAD_BYTES = 1024 * 1024 * 1024;
 const SAMPLE_AUDIO_EXTENSIONS = new Set([
@@ -360,6 +433,51 @@ async function saveUploadedRecording(recordingsDir: string, request: Connect.Inc
   await writeFile(join(recordingsDir, name), data);
 
   return { name };
+}
+
+function parseDiagnosticPayload(body: Buffer): DiagnosticLogEntry {
+  const payload = JSON.parse(body.toString('utf8')) as unknown;
+  if (!isRecord(payload)) {
+    throw new Error('Expected a diagnostic event object.');
+  }
+
+  const level = payload.level === 'warn' || payload.level === 'error' ? payload.level : 'info';
+  const sessionId = typeof payload.sessionId === 'string' && payload.sessionId ? payload.sessionId.slice(0, 120) : 'unknown-session';
+  const event = typeof payload.event === 'string' && payload.event ? payload.event.slice(0, 160) : 'unknown-event';
+  const timestamp = typeof payload.timestamp === 'string' && payload.timestamp ? payload.timestamp : new Date().toISOString();
+  const performanceNowMs = typeof payload.performanceNowMs === 'number' && Number.isFinite(payload.performanceNowMs)
+    ? payload.performanceNowMs
+    : null;
+  const url = typeof payload.url === 'string' ? payload.url.slice(0, 2048) : '';
+  const visibilityState = typeof payload.visibilityState === 'string' ? payload.visibilityState.slice(0, 40) : '';
+
+  return {
+    sessionId,
+    timestamp,
+    serverReceivedAt: new Date().toISOString(),
+    performanceNowMs,
+    level,
+    event,
+    url,
+    visibilityState,
+    ...(payload.details !== undefined ? { details: payload.details } : {}),
+  };
+}
+
+async function readDiagnosticTail(logPath: string, url: URL): Promise<unknown[]> {
+  if (!existsSync(logPath)) return [];
+
+  const requestedLines = Number(url.searchParams.get('lines') ?? 200);
+  const lineCount = Math.max(1, Math.min(1000, Number.isFinite(requestedLines) ? Math.trunc(requestedLines) : 200));
+  const text = await readFile(logPath, 'utf8');
+  const lines = text.trimEnd().split('\n').filter(Boolean).slice(-lineCount);
+  return lines.map((line) => {
+    try {
+      return JSON.parse(line) as unknown;
+    } catch {
+      return { parseError: true, raw: line };
+    }
+  });
 }
 
 async function saveUploadedSample(samplesDir: string, request: Connect.IncomingMessage) {
@@ -624,6 +742,12 @@ function sampleContentType(fileName: string): string {
 }
 
 function sendPatchStorageError(response: Connect.ServerResponse, error: unknown): void {
+  response.statusCode = 400;
+  response.setHeader('Content-Type', 'text/plain');
+  response.end(error instanceof Error ? error.message : String(error));
+}
+
+function sendDiagnosticError(response: Connect.ServerResponse, error: unknown): void {
   response.statusCode = 400;
   response.setHeader('Content-Type', 'text/plain');
   response.end(error instanceof Error ? error.message : String(error));

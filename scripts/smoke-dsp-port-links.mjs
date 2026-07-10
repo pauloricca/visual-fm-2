@@ -45,10 +45,13 @@ const auditedPorts = {
   Chorus: ['rate', 'depth', 'mix'],
   Reverb: ['size', 'decay', 'mix'],
   LowpassFilter: ['cutoff', 'resonance'],
-  SamplePlayer: ['start', 'end', 'stretch', 'cycleLength', 'overlapRatio', 'originalPitch'],
+  SamplePlayer: ['start', 'end', 'stretch', 'cycleLength', 'overlapRatio', 'originalFrequency'],
+  Buffer: ['signal', 'playhead', 'recordHead', 'length'],
+  Playhead: ['start', 'speed'],
   Slider: ['signal'],
   Button: ['signal'],
   Clamp: ['min', 'max'],
+  Pan: ['pan'],
   Meter: ['range'],
   Scope: ['range'],
 };
@@ -78,11 +81,14 @@ const patch = {
       stretch: 1,
       cycleLength: 4096,
       overlapRatio: 0.09,
-      originalPitch: 60,
+      originalFrequency: 261.6255653005986,
       level: 0.7,
     }),
+    node('playhead', 'Playhead', { start: 0, speed: 1 }),
+    node('buffer', 'Buffer', { playhead: 0, recordHead: 0.5, length: 1 }),
     node('slider', 'Slider', { value: 0.25, min: 10, max: 20, direction: 0 }),
     node('clamp', 'Clamp', { min: -0.5, max: 0.5 }),
+    node('pan', 'Pan', { pan: 0 }),
     node('button', 'Button', { mode: 1, pressed: 0, clicks: 0 }),
     node('meter', 'Meter', { range: 1 }),
     node('scope', 'Scope', { range: 1 }),
@@ -92,14 +98,22 @@ const patch = {
     link('source', 'signal', 'delay', 'signal'),
     link('delay', 'signal', 'chorus', 'signal'),
     link('chorus', 'signal', 'reverb', 'signal'),
-    link('reverb', 'signal', 'filter', 'signal'),
+    link('reverb', 'left', 'filter', 'signal'),
+    link('reverb', 'left', 'out', 'left'),
+    link('reverb', 'right', 'out', 'right'),
     link('filter', 'signal', 'meter', 'signal'),
     link('filter', 'signal', 'scope', 'signal'),
     link('source', 'signal', 'clamp', 'signal'),
+    link('source', 'signal', 'pan', 'signal'),
+    link('pan', 'left', 'out', 'left'),
+    link('pan', 'right', 'out', 'right'),
     link('clamp', 'signal', 'out', 'both'),
     link('meter', 'signal', 'out', 'left'),
     link('scope', 'signal', 'out', 'right'),
     link('sample', 'signal', 'out', 'both'),
+    link('playhead', 'playhead', 'buffer', 'playhead'),
+    link('source', 'signal', 'buffer', 'signal'),
+    link('buffer', 'signal', 'out', 'both'),
     link('slider', 'signal', 'out', 'both'),
     link('button', 'signal', 'out', 'both'),
     ...Object.entries(auditedPorts).flatMap(([type, ports]) => {
@@ -124,6 +138,17 @@ for (const [type, ports] of Object.entries(auditedPorts)) {
   }
 }
 
+assert(
+  ['left', 'right'].every((port) => getDefinition('Pan').outputs.some((output) => output.name === port)),
+  'Pan should expose left and right outputs.',
+);
+
+assert(
+  ['left', 'right'].every((port) => getDefinition('Reverb').outputs.some((output) => output.name === port))
+    && !getDefinition('Reverb').outputs.some((output) => output.name === 'signal'),
+  'Reverb should expose only left and right outputs.',
+);
+
 for (const ignoredPort of ['min', 'max']) {
   const staticBinding = dspProgram.valueBindings.find((binding) => (
     binding.kind === 'node-param'
@@ -143,6 +168,16 @@ assert(
   dspProgram.stateBindings.some((binding) => binding.id === 'button:button-gate-slew' && binding.count === 1)
     && dspProgram.ops.some((op) => op.opcode === 31),
   'Button signal gating should compile with a declick slew.',
+);
+assert(
+  dspProgram.stateBindings.some((binding) => binding.id === 'playhead:playhead' && binding.count === 1)
+    && dspProgram.ops.some((op) => op.opcode === 33),
+  'Playhead should compile with one relative-position state slot.',
+);
+assert(
+  dspProgram.stateBindings.some((binding) => binding.id === 'buffer:buffer' && binding.count === 1)
+    && dspProgram.ops.some((op) => op.opcode === 34),
+  'Buffer should compile with one buffer storage state slot.',
 );
 assert(
   ['pressed', 'mode', 'clicks'].every((port) => dspProgram.valueBindings.some((binding) => (

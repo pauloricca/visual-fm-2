@@ -157,6 +157,7 @@ function cloneNode(node: PatchNode): PatchNode {
     ...(node.inputs ? { inputs: node.inputs.map((port) => ({ ...port })) } : {}),
     ...(node.outputs ? { outputs: node.outputs.map((port) => ({ ...port })) } : {}),
     ...(node.subpatch ? { subpatch: clonePatch(node.subpatch) } : {}),
+    ...(node.compactPorts !== undefined ? { compactPorts: node.compactPorts } : {}),
   };
 }
 

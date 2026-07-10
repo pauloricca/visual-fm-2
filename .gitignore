@@ -26,6 +26,7 @@ coverage/
 
 # Logs
 *.log
+web/diagnostics/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

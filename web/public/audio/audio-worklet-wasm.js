@@ -159,7 +159,10 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.sampleCursor = 0;
     this.nextLinkMeterPostSample = 0;
     this.lastOutputPeak = 0;
+    this.lastGraphLeftSample = 0;
+    this.lastGraphRightSample = 0;
     this.lastProcessFrames = 128;
+    this.lastProcessorErrorAt = -Infinity;
     this.outputLifecycleGain = 0;
     this.ready = false;
     this.muted = false;
@@ -207,11 +210,13 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       } else if (type === "sampleData") {
         this.setSampleData(payload);
       } else if (type === "noteOn") {
-        if (!this.muted) this.noteOn(payload.note, payload.velocity);
+        if (!this.muted) this.noteOn(payload.channel, payload.note, payload.velocity);
       } else if (type === "noteOff") {
-        this.noteOff(payload.note);
+        this.noteOff(payload.channel, payload.note);
       } else if (type === "midiCc") {
         this.setMidiCc(payload);
+      } else if (type === "midiClockTempo") {
+        this.setMidiClockTempo(payload);
       } else if (type === "panic") {
         this.resetRuntimeState();
       } else if (type === "setMuted") {
@@ -319,18 +324,10 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     }
 
     const frames = Math.max(1, Math.min(MAX_WASM_FRAMES, Math.round(this.graphUpdateCrossfade.seconds * sampleRate)));
-    this.wasm.clear(frames);
-    if (this.inputBuffer) {
-      this.inputBuffer.fill(0, 0, frames);
-    }
-    this.renderCurrentDspProgramToWasm(frames);
-
     const left = new Float32Array(frames);
     const right = new Float32Array(frames);
-    for (let i = 0; i < frames; i += 1) {
-      left[i] = Math.tanh((this.leftBuffer[i] || 0) * MASTER_GAIN);
-      right[i] = Math.tanh((this.rightBuffer[i] || 0) * MASTER_GAIN);
-    }
+    left.fill(this.lastGraphLeftSample || 0);
+    right.fill(this.lastGraphRightSample || this.lastGraphLeftSample || 0);
 
     this.graphUpdateTransition = {
       left,
@@ -436,12 +433,26 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         binding.channel <= 16
       ))
       : [];
+    const tempoBindings = Array.isArray(program.tempoBindings)
+      ? program.tempoBindings.map((binding) => ({
+        nodeId: String(binding?.nodeId || ""),
+        sourceValueIndex: Math.trunc(Number(binding?.sourceValueIndex ?? -1)),
+        midiSourceValueIndex: Math.trunc(Number(binding?.midiSourceValueIndex ?? -1)),
+      })).filter((binding) => (
+        binding.nodeId &&
+        binding.sourceValueIndex >= 0 &&
+        binding.sourceValueIndex < values.length &&
+        binding.midiSourceValueIndex >= 0 &&
+        binding.midiSourceValueIndex < values.length
+      ))
+      : [];
 
     return {
       version: 1,
       ops,
       values,
       midiControlBindings,
+      tempoBindings,
       stateBindings,
       registerCount: Math.max(0, Math.trunc(Number(program.registerCount) || 0)),
       stateCount: Math.max(0, Math.trunc(Number(program.stateCount) || 0)),
@@ -450,6 +461,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       customWaveBindings,
       maxVoices: this.clamp(Math.round(Number(program.maxVoices) || 1), 1, MAX_ACTIVE_VOICES),
       usesMidiNote: Boolean(program.usesMidiNote),
+      usesMidiClock: Boolean(program.usesMidiClock),
       feedbackLinkIds: Array.isArray(program.feedbackLinkIds) ? program.feedbackLinkIds.map(String) : [],
       errors,
     };
@@ -527,7 +539,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         customNode.sample?.stretch ?? 1,
         customNode.sample?.cycleLength ?? 4096,
         customNode.sample?.overlapRatio ?? 0.09,
-        customNode.sample?.originalPitch ?? 60,
+        customNode.sample?.originalFrequency ?? 440,
       ) ?? -1;
       if (customNode.wasmIndex >= 0 && typeof this.wasm.addCustomWavePoint === "function") {
         for (const point of customNode.customWave.points) {
@@ -553,7 +565,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
           stretch: 1,
           cycleLength: 4096,
           overlapRatio: 0.09,
-          originalPitch: 60,
+          originalFrequency: 440,
         },
       });
       sampleNode.wasmIndex = this.wasm.addNode?.(
@@ -577,7 +589,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         sampleNode.sample?.stretch ?? 1,
         sampleNode.sample?.cycleLength ?? 4096,
         sampleNode.sample?.overlapRatio ?? 0.09,
-        sampleNode.sample?.originalPitch ?? 60,
+        sampleNode.sample?.originalFrequency ?? 440,
       ) ?? -1;
       this.nodes.push(sampleNode);
       this.nodesById.set(sampleNode.id, sampleNode);
@@ -608,7 +620,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     const channel = this.clamp(Math.round(Number(payload.channel ?? 1)), 1, 16);
     const cc = this.clamp(Math.round(Number(payload.cc)), 0, 127);
     const value = this.clamp(Number(payload.value), 0, 1);
-    this.wasm?.setDspMidiCc?.(cc, value);
+    this.wasm?.setDspMidiCc?.(channel, cc, value);
 
     for (const binding of this.dspProgram.midiControlBindings || []) {
       if (binding.channel !== channel || binding.cc !== cc) continue;
@@ -640,6 +652,14 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
 
       this.midiButtonControlValues.set(key, value);
     }
+  }
+
+  setMidiClockTempo(payload = {}) {
+    const sourceIndex = this.clamp(Math.round(Number(payload.sourceIndex ?? 0)), 0, 128);
+    const bpm = this.clamp(Number(payload.bpm), TEMPO_MIN, TEMPO_MAX);
+    this.tempo = bpm;
+    this.wasm?.setDspTempo?.(bpm);
+    this.wasm?.setDspTempoSource?.(sourceIndex, bpm);
   }
 
   configureDspScopes() {
@@ -719,7 +739,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     const stretch = Number(sample.stretch);
     const cycleLength = Number(sample.cycleLength);
     const overlapRatio = Number(sample.overlapRatio);
-    const originalPitch = Number(sample.originalPitch);
+    const originalFrequency = Number(sample.originalFrequency);
+    const legacyOriginalPitch = Number(sample.originalPitch);
     return {
       name: sample.name || "",
       sampleRate: Number.isFinite(Number(sample.sampleRate)) ? Math.max(1, Number(sample.sampleRate)) : sampleRate,
@@ -729,7 +750,9 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       stretch: Number.isFinite(stretch) ? Math.max(0.001, stretch) : 1,
       cycleLength: Number.isFinite(cycleLength) ? Math.max(1, Math.round(cycleLength)) : 4096,
       overlapRatio: Number.isFinite(overlapRatio) ? this.clamp(overlapRatio, 0, 1) : 0.09,
-      originalPitch: Number.isFinite(originalPitch) ? originalPitch : 60,
+      originalFrequency: Number.isFinite(originalFrequency)
+        ? Math.max(0.0001, originalFrequency)
+        : Number.isFinite(legacyOriginalPitch) ? this.midiNoteFrequency(legacyOriginalPitch) : 440,
     };
   }
 
@@ -1096,9 +1119,14 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     return fadeEnd;
   }
 
-  queueVoiceStart(note, velocity, readyAt) {
-    this.pendingVoiceStarts = this.pendingVoiceStarts.filter((pending) => pending.note !== note);
-    this.pendingVoiceStarts.push({ note, velocity, readyAt });
+  voiceNoteKey(channel, note) {
+    return `${channel}:${note}`;
+  }
+
+  queueVoiceStart(channel, note, velocity, readyAt) {
+    const key = this.voiceNoteKey(channel, note);
+    this.pendingVoiceStarts = this.pendingVoiceStarts.filter((pending) => pending.key !== key);
+    this.pendingVoiceStarts.push({ key, channel, note, velocity, readyAt });
   }
 
   flushPendingVoiceStarts(now) {
@@ -1138,14 +1166,15 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
 
     const stillPending = [];
     for (const pending of ready) {
-      if (this.startVoice(pending.note, pending.velocity, now)) continue;
+      if (this.startVoice(pending.channel, pending.note, pending.velocity, now)) continue;
       stillPending.push({ ...pending, readyAt: this.latestStolenFadeEnd(now) });
     }
     this.pendingVoiceStarts = [...remaining, ...stillPending];
     this.enforceVoiceLimit();
   }
 
-  startVoice(note, velocity = 1, startedAt = this.sampleCursor / sampleRate) {
+  startVoice(channel, note, velocity = 1, startedAt = this.sampleCursor / sampleRate) {
+    const numericChannel = this.clamp(Math.round(Number(channel ?? 1)), 1, 16);
     const numericNote = Number(note);
     if (!Number.isFinite(numericNote)) return false;
     const slot = this.allocateSlot();
@@ -1156,6 +1185,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     const voice = {
       id: `voice-${this.voiceCounter++}`,
       slot,
+      channel: numericChannel,
       note: numericNote,
       frequency: this.midiNoteFrequency(numericNote),
       velocity: this.clamp(Number(velocity) || 0, 0.05, 1),
@@ -1167,27 +1197,31 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       oneShotSampleEndAt: this.oneShotSampleEndAt(startedAt, this.midiNoteFrequency(numericNote)),
     };
     this.voices.set(voice.id, voice);
-    this.activeVoicesByNote.set(numericNote, voice.id);
+    this.activeVoicesByNote.set(this.voiceNoteKey(numericChannel, numericNote), voice.id);
     return true;
   }
 
-  noteOn(note, velocity = 1) {
+  noteOn(channel, note, velocity = 1) {
+    const numericChannel = this.clamp(Math.round(Number(channel ?? 1)), 1, 16);
     const numericNote = Number(note);
     if (!Number.isFinite(numericNote)) return;
+    const key = this.voiceNoteKey(numericChannel, numericNote);
     const now = this.sampleCursor / sampleRate;
-    const activeVoice = this.voices.get(this.activeVoicesByNote.get(numericNote));
+    const activeVoice = this.voices.get(this.activeVoicesByNote.get(key));
     if (activeVoice && activeVoice.releasedAt === null) {
       activeVoice.releasedAt = now;
-      this.activeVoicesByNote.delete(numericNote);
+      this.activeVoicesByNote.delete(key);
     }
-    this.queueVoiceStart(numericNote, velocity, now);
+    this.queueVoiceStart(numericChannel, numericNote, velocity, now);
     this.flushPendingVoiceStarts(now);
   }
 
-  noteOff(note) {
+  noteOff(channel, note) {
+    const numericChannel = this.clamp(Math.round(Number(channel ?? 1)), 1, 16);
     const numericNote = Number(note);
-    this.pendingVoiceStarts = this.pendingVoiceStarts.filter((pending) => pending.note !== numericNote);
-    const voice = this.voices.get(this.activeVoicesByNote.get(numericNote));
+    const key = this.voiceNoteKey(numericChannel, numericNote);
+    this.pendingVoiceStarts = this.pendingVoiceStarts.filter((pending) => pending.key !== key);
+    const voice = this.voices.get(this.activeVoicesByNote.get(key));
     if (!voice) return;
     if (voice.oneShotSampleEndAt !== null && this.sampleCursor / sampleRate < voice.oneShotSampleEndAt) {
       return;
@@ -1200,7 +1234,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     voice.releaseGain = this.voiceLifecycleGain(voice, now);
     voice.releaseSeconds = releaseSeconds;
     voice.releasedAt = now;
-    this.activeVoicesByNote.delete(voice.note);
+    this.activeVoicesByNote.delete(this.voiceNoteKey(voice.channel ?? 1, voice.note));
   }
 
   deleteVoice(voiceId, { keepSlot = false } = {}) {
@@ -1238,7 +1272,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     const rangeLength = this.sampleRangeLength(node);
     if (!rangeLength) return 0;
     const entry = this.sampleDataByNodeId.get(node.id);
-    const original = this.midiNoteFrequency(node.sample?.originalPitch ?? 60);
+    const original = Math.max(0.0001, Number(node.sample?.originalFrequency) || 440);
     const base = this.baseFrequency(node, noteFrequency);
     const playbackRate = Math.max(0.0001, base) / Math.max(0.0001, original);
     const sourceRate = Math.max(1, entry?.sampleRate || sampleRate);
@@ -1297,6 +1331,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.inputDcBlockers = [this.createDcBlocker(), this.createDcBlocker()];
     this.outputDcBlockers = [this.createDcBlocker(), this.createDcBlocker()];
     if (this.wasm) this.wasm.resetPhases();
+    this.wasm?.resetDspRuntimeState?.();
     this.wasm?.clearLinkMeters?.();
   }
 
@@ -1453,7 +1488,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         node.sample?.stretch ?? 1,
         node.sample?.cycleLength ?? 4096,
         node.sample?.overlapRatio ?? 0.09,
-        node.sample?.originalPitch ?? 60,
+        node.sample?.originalFrequency ?? 440,
       );
       nodeIndices.set(node.id, nodeIndex);
       if (nodeIndex >= 0 && node.wave === "custom" && typeof wasm.addCustomWavePoint === "function") {
@@ -1725,6 +1760,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     if (!left) return;
     left.fill(0);
     if (right !== left) right.fill(0);
+    this.lastGraphLeftSample = 0;
+    this.lastGraphRightSample = 0;
     this.outputLifecycleGain = 0;
   }
 
@@ -1758,6 +1795,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
           voice.slot,
           frames,
           sampleRate,
+          voice.channel ?? 1,
           voice.note,
           voice.frequency,
           voice.velocity,
@@ -1815,6 +1853,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.flushPendingVoiceStarts(this.sampleCursor / sampleRate);
     this.wasm.clear(frames);
     this.copyInput(inputs, frames);
+    this.wasm.beginDspRenderQuantum?.();
     this.renderCurrentDspProgramToWasm(frames);
 
     let peak = 0;
@@ -1825,6 +1864,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       const [mixedLeftSample, mixedRightSample] = this.nextGraphUpdateCrossfadeSample(rawLeftSample, rawRightSample);
       const leftSample = this.applyMasterEffects(mixedLeftSample, 0);
       const rightSample = this.applyMasterEffects(mixedRightSample, 1);
+      this.lastGraphLeftSample = mixedLeftSample;
+      this.lastGraphRightSample = mixedRightSample;
       left[i] = leftSample;
       right[i] = rightSample;
       peak = Math.max(peak, Math.abs(leftSample), Math.abs(rightSample));
@@ -1839,7 +1880,27 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     return true;
   }
 
-  process(inputs, outputs) {
+  reportProcessorError(error) {
+    const now = currentTime || 0;
+    if (now - this.lastProcessorErrorAt < 1) return;
+    this.lastProcessorErrorAt = now;
+    this.port.postMessage({
+      type: "processorError",
+      payload: {
+        name: error?.name || "Error",
+        message: error?.message || String(error),
+        stack: error?.stack || "",
+        sampleCursor: this.sampleCursor,
+        graphVersion: this.graphVersion,
+        ready: this.ready,
+        muted: this.muted,
+        nodes: this.nodes.length,
+        links: this.links.length,
+      },
+    });
+  }
+
+  processUnsafe(inputs, outputs) {
     const output = outputs[0];
     const left = output?.[0];
     const right = output?.[1] || left;
@@ -1859,6 +1920,16 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.fillSilence(outputs);
     this.sampleCursor += left.length;
     return true;
+  }
+
+  process(inputs, outputs) {
+    try {
+      return this.processUnsafe(inputs, outputs);
+    } catch (error) {
+      this.reportProcessorError(error);
+      this.fillSilence(outputs);
+      return true;
+    }
   }
 }
 

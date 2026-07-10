@@ -19,11 +19,12 @@ import {
 } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { compilePatchToDspProgram } from '../audio/dspProgram';
-import { useAudioEngine } from '../audio/useAudioEngine';
+import { useAudioEngine, type MidiControlChange, type MidiInputState } from '../audio/useAudioEngine';
 import { normalizeCustomWave } from '../graph/customWave';
 import { demoPatch } from '../graph/demoPatch';
 import { extractExpressionInputs } from '../graph/expression';
 import { defaultParamsFor, getDefinition, getNodeDefinition } from '../graph/nodeTypes';
+import { normalizePatchCompatibility } from '../graph/patchCompatibility';
 import { patchToJson } from '../graph/serialize';
 import type { CustomWaveSettings, LinkMode, NodeType, Patch, PatchLink, PatchNode, PortDefinition, SampleAsset } from '../graph/types';
 import { EdgeOverlayProvider } from './EdgeOverlayContext';
@@ -166,6 +167,12 @@ interface SubpatchImportModalState {
   error: string | null;
 }
 
+interface MidiControlVisualState {
+  sliderValue?: number;
+  buttonPressed?: number;
+  lastRawValue?: number;
+}
+
 interface CopiedGraph {
   nodes: ShaderFlowNode[];
   edges: ShaderFlowEdge[];
@@ -218,6 +225,11 @@ function NodeEditorInner() {
   const [localPatchLibrary, setLocalPatchLibrary] = useState<LocalPatchLibraryState | null>(null);
   const [sampleLibrary, setSampleLibrary] = useState<SampleLibraryState | null>(null);
   const [subpatchImportModal, setSubpatchImportModal] = useState<SubpatchImportModalState | null>(null);
+  const [midiSettingsOpen, setMidiSettingsOpen] = useState(false);
+  const [selectedMidiInputDeviceIds, setSelectedMidiInputDeviceIds] = useState<string[]>(() => (
+    normalizeSelectedMidiDeviceIds(initialState?.ui?.midiInput?.selectedDeviceIds)
+  ));
+  const [midiControlVisuals, setMidiControlVisuals] = useState<Record<string, MidiControlVisualState>>({});
   const copiedGraphRef = useRef<CopiedGraph | null>(null);
   const pasteCountRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -229,7 +241,8 @@ function NodeEditorInner() {
   const reconnectingEdgeRef = useRef(false);
   const reconnectDuplicateRef = useRef(false);
   const reconnectingEdgeSnapshotRef = useRef<ShaderFlowEdge | null>(null);
-  const audio = useAudioEngine();
+  const audio = useAudioEngine({ selectedMidiInputDeviceIds });
+  const selectedMidiInputDeviceKey = useMemo(() => selectedMidiInputDeviceIds.join('\n'), [selectedMidiInputDeviceIds]);
   const audioPlaybackActive = audio.status === 'running' || audio.status === 'starting';
   const audioRecordingActive = audio.recording.status === 'waiting' || audio.recording.status === 'recording';
   const recordingButtonLabel = audioRecordingActive
@@ -253,6 +266,29 @@ function NodeEditorInner() {
     }
     audio.startRecording();
   }, [audio.startRecording, audio.stopRecording, audioRecordingActive]);
+
+  const toggleMidiInputDevice = useCallback((deviceId: string, selected: boolean) => {
+    setSelectedMidiInputDeviceIds((current) => {
+      if (selected) {
+        return current.includes(deviceId) ? current : [...current, deviceId];
+      }
+      return current.filter((entry) => entry !== deviceId);
+    });
+    if (selected) {
+      void audio.refreshMidiInputDevices();
+    }
+  }, [audio.refreshMidiInputDevices]);
+
+  useEffect(() => {
+    if (selectedMidiInputDeviceIds.length === 0) return;
+    void audio.refreshMidiInputDevices();
+  }, [audio.refreshMidiInputDevices, selectedMidiInputDeviceIds.length, selectedMidiInputDeviceKey]);
+
+  useEffect(() => {
+    const controlChange = audio.midiInput.lastControlChange;
+    if (!controlChange) return;
+    setMidiControlVisuals((current) => midiControlVisualsForChange(current, nodesRef.current, edgesRef.current, controlChange));
+  }, [audio.midiInput.lastControlChange]);
 
   useEffect(() => {
     const handlePlaybackKeyDown = (event: KeyboardEvent) => {
@@ -785,6 +821,7 @@ function NodeEditorInner() {
     setNodes((current) => current.map((node) => node.id === nodeId
       ? {
           ...node,
+          selected: compact ? false : node.selected,
           data: {
             ...node.data,
             patchNode: {
@@ -1368,7 +1405,13 @@ function NodeEditorInner() {
       onSelectorInputAdd: addSelectorInput,
       selectedLinkPorts: selectedLinkPortsByNode.get(node.id),
       ...(node.data.patchNode.type === 'AudioInput' ? { audioInput: audio.audioInput } : {}),
-      ...(node.data.patchNode.type === 'MidiNote' ? { midiInput: audio.midiInput } : {}),
+      ...(node.data.patchNode.type === 'MidiNote'
+        || node.data.patchNode.type === 'MidiCc'
+        || node.data.patchNode.type === 'Slider'
+        || node.data.patchNode.type === 'Button'
+        || node.data.patchNode.type === 'Tempo'
+        ? { midiInput: audio.midiInput }
+        : {}),
       connectedPorts: connectedPortsByNode.get(node.id),
       previewPort: pendingBoundaryPort && pendingBoundaryPort.nodeId === node.id
         ? { side: pendingBoundaryPort.side, name: pendingBoundaryPort.port }
@@ -1440,7 +1483,13 @@ function NodeEditorInner() {
     nodes.some((node) => node.selected) &&
     nodes.filter((node) => node.selected).every((node) => node.data.patchNode.type !== null)
   ), [nodes]);
-  const patch = useMemo(() => ({ ...patchFromFlow(materializedGraph.nodes, materializedGraph.edges), name: rootPatchName }), [materializedGraph, rootPatchName]);
+  const patch = useMemo(() => ({
+    ...patchFromFlow(materializedGraph.nodes, materializedGraph.edges),
+    name: rootPatchName,
+    ...(selectedMidiInputDeviceIds.length > 0
+      ? { midiInput: { selectedDeviceIds: selectedMidiInputDeviceIds } }
+      : {}),
+  }), [materializedGraph, rootPatchName, selectedMidiInputDeviceIds]);
   const patchJson = useMemo(() => patchToJson(patch), [patch]);
   const trimmedRootPatchName = rootPatchName.trim();
   const selectedLocalPatch = localPatchLibrary?.patches.find((entry) => entry.name === localPatchLibrary.selectedPatchName) ?? null;
@@ -1460,20 +1509,28 @@ function NodeEditorInner() {
 
   const renderedNodes = useMemo(() => nodesWithCallbacks.map((node) => {
     const monitorLinkId = monitorLinkIdByNode.get(node.id);
+    const audioOutputLeft = audio.linkMeters[`${node.id}:left`]?.output ?? 0;
+    const audioOutputRight = audio.linkMeters[`${node.id}:right`]?.output ?? 0;
     const dspErrors = dspDiagnostics.nodeErrors.get(node.id) ?? [];
     const hasAudioMonitor = Boolean(monitorLinkId);
-    if (!hasAudioMonitor && dspErrors.length === 0) return node;
+    const hasAudioOutputMeter = node.data.patchNode.type === 'AudioOut';
+    const midiControlVisual = midiControlVisuals[node.id];
+    if (!hasAudioMonitor && !hasAudioOutputMeter && !midiControlVisual && dspErrors.length === 0) return node;
 
     return {
       ...node,
       data: {
         ...node.data,
         ...(dspErrors.length > 0 ? { dspErrors } : {}),
+        ...(hasAudioOutputMeter ? { audioOutputMeter: { left: audioOutputLeft, right: audioOutputRight } } : {}),
         ...(monitorLinkId && node.data.patchNode.type === 'Meter' ? { audioMeter: audio.linkMeters[monitorLinkId] } : {}),
         ...(monitorLinkId && node.data.patchNode.type === 'Scope' ? { audioScope: audio.linkScopes[monitorLinkId] } : {}),
+        ...(monitorLinkId && node.data.patchNode.type === 'Slider' ? { audioSliderValue: audio.linkMeters[monitorLinkId]?.output } : {}),
+        ...(midiControlVisual?.sliderValue !== undefined ? { midiSliderValue: midiControlVisual.sliderValue } : {}),
+        ...(midiControlVisual?.buttonPressed !== undefined ? { midiButtonPressed: midiControlVisual.buttonPressed } : {}),
       },
     };
-  }), [audio.linkMeters, audio.linkScopes, dspDiagnostics, monitorLinkIdByNode, nodesWithCallbacks]);
+  }), [audio.linkMeters, audio.linkScopes, dspDiagnostics, midiControlVisuals, monitorLinkIdByNode, nodesWithCallbacks]);
 
   const renderedEdges = useMemo(() => edgesWithCallbacks.map((edge) => {
     const dspErrors = dspDiagnostics.edgeErrors.get(edge.id) ?? [];
@@ -1634,9 +1691,15 @@ function NodeEditorInner() {
   }, [audio.setLinkScopes, monitorLinkIdByNode, nodesWithCallbacks]);
 
   useEffect(() => {
-    const state = flowToEditorState(materializedGraph.nodes, materializedGraph.edges, { patchName: rootPatchName, viewport });
+    const state = flowToEditorState(materializedGraph.nodes, materializedGraph.edges, {
+      patchName: rootPatchName,
+      viewport,
+      ...(selectedMidiInputDeviceIds.length > 0
+        ? { midiInput: { selectedDeviceIds: selectedMidiInputDeviceIds } }
+        : {}),
+    });
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }, [materializedGraph, rootPatchName, viewport]);
+  }, [materializedGraph, rootPatchName, selectedMidiInputDeviceIds, viewport]);
 
   const onNodesChange = useCallback((changes: NodeChange<ShaderFlowNode>[]) => {
     const duplicateState = duplicateDragRef.current;
@@ -2035,6 +2098,8 @@ function NodeEditorInner() {
     setNodes(toFlowNodes(loadedPatch, callbacks, null));
     setEdges(toFlowEdges(loadedPatch, updateEdgeWeight, updateEdgeMode, insertNodeOnEdgePlaceholder));
     setPatchName(loadedPatch.name ?? 'single-patch');
+    setSelectedMidiInputDeviceIds(normalizeSelectedMidiDeviceIds(loadedPatch.midiInput?.selectedDeviceIds));
+    setMidiControlVisuals({});
     setEditingTypeNodeId(null);
     setImportError(null);
   }, [commitHistory, updateEdgeMode, updateEdgeWeight]);
@@ -2291,6 +2356,8 @@ function NodeEditorInner() {
     setPendingBoundaryPort(null);
     setSelectedBoundaryPort(null);
     setPatchName('single-patch');
+    setSelectedMidiInputDeviceIds([]);
+    setMidiControlVisuals({});
     setNodes(toFlowNodes(demoPatch, callbacks, null));
     setEdges(toFlowEdges(demoPatch, updateEdgeWeight, updateEdgeMode, insertNodeOnEdge));
     setEditingTypeNodeId(null);
@@ -2582,6 +2649,17 @@ function NodeEditorInner() {
               {recordingButtonLabel}
             </button>
             <button
+              className="viewport-button"
+              type="button"
+              role="switch"
+              aria-checked={selectedMidiInputDeviceIds.length > 0}
+              aria-label="MIDI settings"
+              title={audio.midiInput.message}
+              onClick={() => setMidiSettingsOpen(true)}
+            >
+              MD
+            </button>
+            <button
               className={['viewport-button', saveFeedbackActive ? 'viewport-button-save-confirmed' : ''].filter(Boolean).join(' ')}
               type="button"
               onClick={() => void savePatchJson()}
@@ -2618,6 +2696,15 @@ function NodeEditorInner() {
                 <p className="dsp-error-more">+{audioGraph.errors.length - DSP_ERROR_PANEL_LIMIT} more</p>
               ) : null}
             </section>
+          ) : null}
+          {midiSettingsOpen ? (
+            <MidiSettingsModal
+              state={audio.midiInput}
+              selectedDeviceIds={selectedMidiInputDeviceIds}
+              onToggleDevice={toggleMidiInputDevice}
+              onRefresh={() => void audio.refreshMidiInputDevices()}
+              onClose={() => setMidiSettingsOpen(false)}
+            />
           ) : null}
           {sampleLibrary ? (
             <div
@@ -2957,6 +3044,111 @@ function formatRecordingTimestamp(totalSeconds: number): string {
   return `${padDatePart(minutes)}:${padDatePart(seconds)}`;
 }
 
+interface MidiSettingsModalProps {
+  state: MidiInputState;
+  selectedDeviceIds: string[];
+  onToggleDevice: (deviceId: string, selected: boolean) => void;
+  onRefresh: () => void;
+  onClose: () => void;
+}
+
+function MidiSettingsModal({
+  state,
+  selectedDeviceIds,
+  onToggleDevice,
+  onRefresh,
+  onClose,
+}: MidiSettingsModalProps) {
+  const selectedDeviceIdSet = new Set(selectedDeviceIds);
+  const knownDeviceIds = new Set(state.devices.map((device) => device.id));
+  const missingSelectedDeviceIds = selectedDeviceIds.filter((deviceId) => !knownDeviceIds.has(deviceId));
+  const unavailable = state.status === 'unsupported' || state.status === 'denied' || state.status === 'error';
+  const refreshLabel = state.status === 'inactive' || state.status === 'needs-permission'
+    ? 'Enable'
+    : 'Refresh';
+
+  return (
+    <div
+      className="import-modal-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section
+        className="import-modal midi-settings-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="midi-settings-modal-title"
+      >
+        <header className="import-modal-header">
+          <div>
+            <h2 id="midi-settings-modal-title">MIDI</h2>
+            <p>{midiInputModalStatusLabel(state.status)}</p>
+          </div>
+          <button className="import-modal-close" type="button" onClick={onClose} aria-label="Close MIDI settings" title="Close">X</button>
+        </header>
+
+        <p className={['import-modal-message', unavailable ? 'error' : ''].filter(Boolean).join(' ')}>
+          {state.message}
+        </p>
+
+        <div className="midi-settings-device-list">
+          {state.devices.map((device) => (
+            <label className="midi-settings-device" key={device.id}>
+              <input
+                type="checkbox"
+                checked={selectedDeviceIdSet.has(device.id)}
+                onChange={(event) => onToggleDevice(device.id, event.currentTarget.checked)}
+              />
+              <span>{device.label}</span>
+              <small>{device.state}</small>
+            </label>
+          ))}
+          {missingSelectedDeviceIds.map((deviceId) => (
+            <label className="midi-settings-device midi-settings-device-missing" key={deviceId}>
+              <input
+                type="checkbox"
+                checked
+                onChange={(event) => onToggleDevice(deviceId, event.currentTarget.checked)}
+              />
+              <span>{deviceId}</span>
+              <small>missing</small>
+            </label>
+          ))}
+        </div>
+
+        <footer className="import-modal-actions">
+          <button type="button" onClick={onClose}>Close</button>
+          {state.canRequestAccess ? (
+            <button type="button" onClick={onRefresh}>{refreshLabel}</button>
+          ) : null}
+        </footer>
+      </section>
+    </div>
+  );
+}
+
+function midiInputModalStatusLabel(status: MidiInputState['status']): string {
+  switch (status) {
+    case 'connected':
+      return 'connected';
+    case 'requesting':
+      return 'requesting';
+    case 'needs-permission':
+      return 'permission';
+    case 'denied':
+      return 'denied';
+    case 'unsupported':
+      return 'unavailable';
+    case 'error':
+      return 'check input';
+    case 'inactive':
+    default:
+      return 'idle';
+  }
+}
+
 function padDatePart(value: number): string {
   return String(value).padStart(2, '0');
 }
@@ -2977,11 +3169,21 @@ function parsePatchObject(value: unknown, label: string): Patch {
     throw new Error(`${label} must contain a links array.`);
   }
 
-  return {
+  return normalizePatchCompatibility({
     ...(typeof value.name === 'string' ? { name: value.name } : {}),
-    nodes: value.nodes.map((node, index) => parsePatchNode(node, index)),
+    ...parseMidiInputPreferences(value.midiInput),
+    nodes: value.nodes.flatMap((node, index) => {
+      const parsedNode = parsePatchNode(node, index);
+      return parsedNode ? [parsedNode] : [];
+    }),
     links: value.links.map((link, index) => parsePatchLink(link, index)),
-  };
+  });
+}
+
+function parseMidiInputPreferences(value: unknown): Pick<Patch, 'midiInput'> {
+  if (!isRecord(value)) return {};
+  const selectedDeviceIds = normalizeSelectedMidiDeviceIds(value.selectedDeviceIds);
+  return selectedDeviceIds.length > 0 ? { midiInput: { selectedDeviceIds } } : {};
 }
 
 function patchToDspKey(patch: Patch): string {
@@ -3109,7 +3311,7 @@ function stripPatchNodeForDsp(node: PatchNode): PatchNode {
   };
 }
 
-function parsePatchNode(value: unknown, index: number): PatchNode {
+function parsePatchNode(value: unknown, index: number): PatchNode | null {
   if (!isRecord(value)) {
     throw new Error(`Node ${index} must be an object.`);
   }
@@ -3117,7 +3319,7 @@ function parsePatchNode(value: unknown, index: number): PatchNode {
     throw new Error(`Node ${index} needs a string id.`);
   }
   if (!isNodeType(value.type)) {
-    throw new Error(`Node "${value.id}" has an unknown type.`);
+    return null;
   }
   if (!isNumberRecord(value.params)) {
     throw new Error(`Node "${value.id}" needs numeric params.`);
@@ -3134,6 +3336,9 @@ function parsePatchNode(value: unknown, index: number): PatchNode {
   if (value.sample !== undefined && !isSampleAsset(value.sample)) {
     throw new Error(`Node "${value.id}" sample must include a string name and url.`);
   }
+  if (value.compactPorts !== undefined && typeof value.compactPorts !== 'boolean') {
+    throw new Error(`Node "${value.id}" compactPorts must be a boolean.`);
+  }
 
   const position = value.position === undefined ? undefined : parsePosition(value.position, value.id);
   const parsedInputs = value.inputs === undefined ? undefined : parsePortDefinitions(value.inputs, `Node "${value.id}" inputs`);
@@ -3144,10 +3349,10 @@ function parsePatchNode(value: unknown, index: number): PatchNode {
     : value.expression;
   const inputs = value.type === 'Expression' && expression !== undefined
     ? (parsedInputs ?? expressionInputDefinitions(expression))
-    : parsedInputs;
+    : normalizeLegacyInputDefinitions(value.type, parsedInputs);
   const params = value.type === 'Expression' && inputs
     ? syncParamsToInputs(value.params, inputs)
-    : value.params;
+    : normalizeLegacyNodeParams(value.type, value.params);
   const customWave = value.type === 'CustomWave'
     ? normalizeCustomWave(parseCustomWaveLike(value.customWave, value.id), params)
     : undefined;
@@ -3165,7 +3370,33 @@ function parsePatchNode(value: unknown, index: number): PatchNode {
     ...(inputs ? { inputs } : {}),
     ...(outputs ? { outputs } : {}),
     ...(subpatch ? { subpatch } : {}),
+    ...(typeof value.compactPorts === 'boolean' ? { compactPorts: value.compactPorts } : {}),
   };
+}
+
+function normalizeLegacyNodeParams(type: NodeType, params: Record<string, number>): Record<string, number> {
+  if (type !== 'SamplePlayer' || params.originalFrequency !== undefined || params.originalPitch === undefined) {
+    return params;
+  }
+
+  const { originalPitch, ...nextParams } = params;
+  return {
+    ...nextParams,
+    originalFrequency: midiNoteFrequency(originalPitch),
+  };
+}
+
+function normalizeLegacyInputDefinitions(type: NodeType, inputs: PortDefinition[] | undefined): PortDefinition[] | undefined {
+  if (type !== 'SamplePlayer') return inputs;
+  return inputs?.map((input) => (
+    input.name === 'originalPitch'
+      ? { ...input, name: 'originalFrequency', defaultValue: input.defaultValue === 60 ? 440 : input.defaultValue }
+      : input
+  ));
+}
+
+function midiNoteFrequency(note: number): number {
+  return 440 * (2 ** ((note - 69) / 12));
 }
 
 function parseCustomWaveLike(value: unknown, nodeId: string): Partial<CustomWaveSettings> | undefined {
@@ -3317,6 +3548,87 @@ function loadInitialEditorState(): PersistedEditorState | null {
   }
 }
 
+function normalizeSelectedMidiDeviceIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0))];
+}
+
+function midiControlVisualsForChange(
+  current: Record<string, MidiControlVisualState>,
+  nodes: ShaderFlowNode[],
+  edges: ShaderFlowEdge[],
+  controlChange: MidiControlChange,
+): Record<string, MidiControlVisualState> {
+  let next = current;
+
+  for (const node of nodes) {
+    const patchNode = node.data.patchNode;
+    if (patchNode.type !== 'Slider' && patchNode.type !== 'Button') continue;
+
+    const channel = clampInteger(patchNode.params.midiChannel ?? 0, 0, 16);
+    const cc = clampInteger(patchNode.params.midiCc ?? 1, 0, 127);
+    if (channel === 0 || channel !== controlChange.channel || cc !== controlChange.cc) continue;
+
+    if (patchNode.type === 'Slider') {
+      if (nodeInputIsConnected(edges, patchNode.id, 'value')) continue;
+      next = setMidiControlVisual(next, patchNode.id, {
+        ...(next[patchNode.id] ?? {}),
+        sliderValue: clampNumber(controlChange.value, 0, 1),
+        lastRawValue: controlChange.value,
+      });
+      continue;
+    }
+
+    const previous = next[patchNode.id] ?? {};
+    const rawPressed = controlChange.value >= 0.5;
+    const rawWasPressed = (previous.lastRawValue ?? 0) >= 0.5;
+    const mode = clampInteger(patchNode.params.mode ?? 0, 0, 2);
+    const currentPressed = previous.buttonPressed ?? patchNode.params.pressed ?? 0;
+    let buttonPressed = currentPressed;
+
+    if (mode === 0) {
+      buttonPressed = rawPressed && !rawWasPressed ? (currentPressed >= 0.5 ? 0 : 1) : currentPressed;
+    } else {
+      buttonPressed = rawPressed ? 1 : 0;
+    }
+
+    next = setMidiControlVisual(next, patchNode.id, {
+      ...previous,
+      buttonPressed,
+      lastRawValue: controlChange.value,
+    });
+  }
+
+  return next;
+}
+
+function setMidiControlVisual(
+  current: Record<string, MidiControlVisualState>,
+  nodeId: string,
+  visual: MidiControlVisualState,
+): Record<string, MidiControlVisualState> {
+  const previous = current[nodeId];
+  if (
+    previous?.sliderValue === visual.sliderValue &&
+    previous?.buttonPressed === visual.buttonPressed &&
+    previous?.lastRawValue === visual.lastRawValue
+  ) {
+    return current;
+  }
+  return { ...current, [nodeId]: visual };
+}
+
+function nodeInputIsConnected(edges: ShaderFlowEdge[], nodeId: string, port: string): boolean {
+  return edges.some((edge) => {
+    const link = linkFromEdge(edge);
+    return link?.to.node === nodeId && link.to.port === port;
+  });
+}
+
+function clampInteger(value: number, min: number, max: number): number {
+  return Math.round(clampNumber(Number.isFinite(value) ? value : min, min, max));
+}
+
 function graphSnapshot(nodes: ShaderFlowNode[], edges: ShaderFlowEdge[]): GraphSnapshot {
   const state = flowToEditorState(nodes, edges);
   return {
@@ -3422,8 +3734,8 @@ function isCommandModifierPressed(event: { metaKey: boolean; ctrlKey: boolean; s
   return event.metaKey || event.ctrlKey || event.shiftKey;
 }
 
-function isReconnectDuplicateModifierPressed(event: { metaKey: boolean; ctrlKey: boolean }): boolean {
-  return event.metaKey || event.ctrlKey;
+function isReconnectDuplicateModifierPressed(event: { metaKey: boolean; ctrlKey: boolean; altKey: boolean }): boolean {
+  return event.metaKey || event.ctrlKey || event.altKey;
 }
 
 function isDuplicateModifierPressed(event: globalThis.MouseEvent | TouchEvent): boolean {
@@ -3705,6 +4017,7 @@ function patchNodeFromFlowNode(node: ShaderFlowNode): PatchNode {
     ...(patchNode.inputs ? { inputs: patchNode.inputs.map((port) => ({ ...port })) } : {}),
     ...(patchNode.outputs ? { outputs: patchNode.outputs.map((port) => ({ ...port })) } : {}),
     ...(patchNode.subpatch ? { subpatch: clonePatch(patchNode.subpatch) } : {}),
+    ...(patchNode.compactPorts !== undefined ? { compactPorts: patchNode.compactPorts } : {}),
   };
 }
 
@@ -3723,6 +4036,7 @@ function clonePatch(patch: ReturnType<typeof patchFromFlow>): ReturnType<typeof 
       ...(node.inputs ? { inputs: node.inputs.map((port) => ({ ...port })) } : {}),
       ...(node.outputs ? { outputs: node.outputs.map((port) => ({ ...port })) } : {}),
       ...(node.subpatch ? { subpatch: clonePatch(node.subpatch) } : {}),
+      ...(node.compactPorts !== undefined ? { compactPorts: node.compactPorts } : {}),
     })),
     links: patch.links.map((link) => ({
       from: { ...link.from },

@@ -1,6 +1,8 @@
 import type { Edge, Node } from '@xyflow/react';
 import type { AudioInputState, MidiInputState } from '../audio/useAudioEngine';
 import { normalizeCustomWave } from '../graph/customWave';
+import { getDefinition, getNodeDefinition } from '../graph/nodeTypes';
+import { normalizePatchCompatibility } from '../graph/patchCompatibility';
 import type { LinkMode, NodeType, Patch, PatchLink, PatchNode, PortDefinition } from '../graph/types';
 
 export interface ScopeNodeSize {
@@ -30,9 +32,16 @@ export interface ShaderNodeData extends Record<string, unknown> {
     output: number;
     envelope: number;
   };
+  audioOutputMeter?: {
+    left: number;
+    right: number;
+  };
   audioScope?: {
     samples: number[];
   };
+  audioSliderValue?: number;
+  midiSliderValue?: number;
+  midiButtonPressed?: number;
   audioInput?: AudioInputState;
   midiInput?: MidiInputState;
   dspErrors?: string[];
@@ -92,6 +101,7 @@ export interface PersistedEditorState {
       y: number;
       zoom: number;
     };
+    midiInput?: Patch['midiInput'];
   };
   nodes: Array<{
     id: string;
@@ -307,6 +317,7 @@ export function patchFromFlow(nodes: ShaderFlowNode[], edges: ShaderFlowEdge[]):
       ...(patchNode.inputs ? { inputs: patchNode.inputs } : {}),
       ...(patchNode.outputs ? { outputs: patchNode.outputs } : {}),
       ...(patchNode.subpatch ? { subpatch: patchNode.subpatch } : {}),
+      ...(patchNode.compactPorts !== undefined ? { compactPorts: patchNode.compactPorts } : {}),
     });
   }
 
@@ -462,35 +473,156 @@ function parseHandle(handle: string | null | undefined): { kind: 'in' | 'out'; p
 function normalizePersistedState(state: PersistedEditorState): PersistedEditorState {
   const originalNodesById = new Map(state.nodes.map((node) => [node.id, node]));
   const passthroughNodes = state.nodes.filter((node) => node.type === null);
+  const typedNodes = state.nodes
+    .filter(isKnownPersistedTypedNode)
+    .map((node) => ({
+      id: node.id,
+      type: node.type,
+      ...(node.subpatchName ? { subpatchName: node.subpatchName } : {}),
+      ...(node.subpatchCloneId ? { subpatchCloneId: node.subpatchCloneId } : {}),
+      ...(node.expression !== undefined ? { expression: node.expression } : {}),
+      ...(node.sample ? { sample: node.sample } : {}),
+      ...(node.customWave ? { customWave: normalizeCustomWave(node.customWave, normalizePersistedNodeParams(node)) } : {}),
+      params: normalizePersistedNodeParams(node),
+      position: node.position,
+      ...(node.inputs ? { inputs: normalizePersistedInputDefinitions(node) } : {}),
+      ...(node.outputs ? { outputs: normalizePersistedOutputDefinitions(node) } : {}),
+      ...(node.subpatch ? { subpatch: normalizePatchCompatibility(node.subpatch) } : {}),
+      ...(node.compactPorts !== undefined ? { compactPorts: node.compactPorts } : {}),
+    }));
   const typedPatch: Patch = {
-    nodes: state.nodes
-      .filter((node): node is PersistedEditorState['nodes'][number] & { type: NodeType } => node.type !== null)
-      .map((node) => ({
-        id: node.id,
-        type: node.type,
-        ...(node.subpatchName ? { subpatchName: node.subpatchName } : {}),
-        ...(node.subpatchCloneId ? { subpatchCloneId: node.subpatchCloneId } : {}),
-        ...(node.expression !== undefined ? { expression: node.expression } : {}),
-        ...(node.sample ? { sample: node.sample } : {}),
-        ...(node.customWave ? { customWave: normalizeCustomWave(node.customWave, node.params) } : {}),
-        params: node.params,
-        position: node.position,
-        ...(node.inputs ? { inputs: node.inputs } : {}),
-        ...(node.outputs ? { outputs: node.outputs } : {}),
-        ...(node.subpatch ? { subpatch: node.subpatch } : {}),
-      })),
+    nodes: typedNodes,
     links: state.edges
       .map(patchLinkFromPersistedEdge)
-      .filter((link): link is PatchLink => link !== null),
+      .map((link) => normalizePersistedPatchLink(link, originalNodesById))
+      .filter((link): link is PatchLink => link !== null && persistedLinkPortsExist(link, originalNodesById)),
   };
   return {
     ...state,
+    ui: normalizePersistedUi(state.ui),
     nodes: [
       ...typedPatch.nodes.map((node) => persistedNodeFromPatchNode(node, originalNodesById.get(node.id))),
       ...passthroughNodes,
     ],
     edges: typedPatch.links.map(persistedEdgeFromPatchLink),
   };
+}
+
+function normalizePersistedUi(ui: PersistedEditorState['ui']): PersistedEditorState['ui'] {
+  if (!ui) return ui;
+  const selectedDeviceIds = normalizeSelectedMidiDeviceIds(ui.midiInput?.selectedDeviceIds);
+  const { midiInput: _midiInput, ...nextUi } = ui;
+  return {
+    ...nextUi,
+    ...(selectedDeviceIds.length > 0 ? { midiInput: { selectedDeviceIds } } : {}),
+  };
+}
+
+function normalizeSelectedMidiDeviceIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0))];
+}
+
+function isKnownPersistedTypedNode(
+  node: PersistedEditorState['nodes'][number],
+): node is PersistedEditorState['nodes'][number] & { type: NodeType } {
+  return isKnownNodeType(node.type);
+}
+
+function isKnownNodeType(value: unknown): value is NodeType {
+  if (typeof value !== 'string') return false;
+  const definition = getDefinition(value as NodeType) as ReturnType<typeof getDefinition> | undefined;
+  return definition?.type === value;
+}
+
+function persistedLinkPortsExist(
+  link: PatchLink,
+  nodesById: Map<string, PersistedEditorState['nodes'][number]>,
+): boolean {
+  return (
+    persistedPortExists(nodesById.get(link.from.node), 'outputs', link.from.port) &&
+    persistedPortExists(nodesById.get(link.to.node), 'inputs', link.to.port)
+  );
+}
+
+function persistedPortExists(
+  node: PersistedEditorState['nodes'][number] | undefined,
+  side: 'inputs' | 'outputs',
+  port: string,
+): boolean {
+  if (!node) return false;
+  if (node.type === null) return true;
+  if (!isKnownNodeType(node.type)) return false;
+
+  return getNodeDefinition({
+    id: node.id,
+    type: node.type,
+    params: normalizePersistedNodeParams(node),
+    ...(node.inputs ? { inputs: normalizePersistedInputDefinitions(node) } : {}),
+    ...(node.outputs ? { outputs: normalizePersistedOutputDefinitions(node) } : {}),
+  })[side].some((entry) => entry.name === port);
+}
+
+function normalizePersistedNodeParams(node: PersistedEditorState['nodes'][number]): Record<string, number> {
+  if (node.type !== 'SamplePlayer' || node.params.originalFrequency !== undefined || node.params.originalPitch === undefined) {
+    return node.params;
+  }
+
+  const { originalPitch, ...params } = node.params;
+  return {
+    ...params,
+    originalFrequency: midiNoteFrequency(originalPitch),
+  };
+}
+
+function normalizePersistedInputDefinitions(
+  node: PersistedEditorState['nodes'][number],
+): PortDefinition[] | undefined {
+  if (node.type !== 'SamplePlayer') return node.inputs;
+  return node.inputs?.map((input) => (
+    input.name === 'originalPitch'
+      ? { ...input, name: 'originalFrequency', defaultValue: input.defaultValue === 60 ? 440 : input.defaultValue }
+      : input
+  ));
+}
+
+function normalizePersistedOutputDefinitions(
+  node: PersistedEditorState['nodes'][number],
+): PortDefinition[] | undefined {
+  if (node.type !== 'Reverb') return node.outputs;
+  const outputs = node.outputs?.filter((output) => output.name !== 'signal');
+  return outputs && outputs.length > 0 ? outputs : undefined;
+}
+
+function normalizePersistedPatchLink(
+  link: PatchLink | null,
+  nodesById: Map<string, PersistedEditorState['nodes'][number]>,
+): PatchLink | null {
+  if (!link) return null;
+  const sourceNode = nodesById.get(link.from.node);
+  if (sourceNode?.type === 'Reverb' && link.from.port === 'signal') {
+    return {
+      ...link,
+      from: {
+        ...link.from,
+        port: 'left',
+      },
+    };
+  }
+
+  const targetNode = nodesById.get(link.to.node);
+  if (targetNode?.type !== 'SamplePlayer' || link.to.port !== 'originalPitch') return link;
+  return {
+    ...link,
+    to: {
+      ...link.to,
+      port: 'originalFrequency',
+    },
+  };
+}
+
+function midiNoteFrequency(note: number): number {
+  return 440 * (2 ** ((note - 69) / 12));
 }
 
 function patchLinkFromPersistedEdge(edge: PersistedEditorState['edges'][number]): PatchLink | null {
@@ -522,7 +654,7 @@ function persistedNodeFromPatchNode(
     inputs: node.inputs,
     outputs: node.outputs,
     subpatch: node.subpatch,
-    compactPorts: original?.compactPorts,
+    compactPorts: node.compactPorts ?? original?.compactPorts,
     scopeSize: original?.scopeSize,
   };
 }

@@ -18,6 +18,8 @@ const MAX_DSP_SCOPES: usize = 32;
 const MAX_DSP_METERS: usize = 128;
 const MAX_DSP_EFFECT_SLOTS: usize = 64;
 const MAX_DSP_DELAY_SAMPLES: usize = 65_536;
+const MAX_DSP_BUFFER_SLOTS: usize = 16;
+const MAX_DSP_BUFFER_SAMPLES: usize = 960_000;
 const MAX_DSP_SAMPLE_NODES: usize = 128;
 const LINK_SCOPE_POINTS: usize = 512;
 const LINK_SCOPE_SECONDS_MAX: f64 = 30.0;
@@ -107,6 +109,13 @@ const DSP_OP_MIDI_CC: i32 = 28;
 const DSP_OP_ACCUMULATOR: i32 = 29;
 const DSP_OP_BUTTON: i32 = 30;
 const DSP_OP_SLEW: i32 = 31;
+const DSP_OP_TEMPO: i32 = 32;
+const DSP_OP_PLAYHEAD: i32 = 33;
+const DSP_OP_BUFFER: i32 = 34;
+const MAX_DSP_TEMPO_SOURCES: usize = 129;
+const TEMPO_OUTPUT_COUNT: i32 = 10;
+const DSP_TEMPO_INTERNAL_SOURCE: usize = 0;
+const DSP_RENDER_FRAME_UNSET: u32 = u32::MAX;
 
 #[derive(Copy, Clone)]
 struct Node {
@@ -130,7 +139,7 @@ struct Node {
     sample_stretch: f64,
     sample_cycle_length: f64,
     sample_overlap_ratio: f64,
-    sample_original_pitch: f64,
+    sample_original_frequency: f64,
 }
 
 #[derive(Copy, Clone)]
@@ -198,7 +207,7 @@ const EMPTY_NODE: Node = Node {
     sample_stretch: 1.0,
     sample_cycle_length: 4096.0,
     sample_overlap_ratio: 0.09,
-    sample_original_pitch: 60.0,
+    sample_original_frequency: 440.0,
 };
 
 const EMPTY_LINK: Link = Link {
@@ -404,11 +413,26 @@ static mut DSP_STATE: [f64; MAX_DSP_STATE] = [0.0; MAX_DSP_STATE];
 static mut DSP_VOICE_STATES: [[f64; MAX_DSP_STATE]; MAX_VOICE_SLOTS] =
     [[0.0; MAX_DSP_STATE]; MAX_VOICE_SLOTS];
 static mut DSP_CURRENT_NOTE: f64 = 0.0;
+static mut DSP_CURRENT_CHANNEL: f64 = 1.0;
 static mut DSP_CURRENT_FREQUENCY: f64 = 0.0;
 static mut DSP_CURRENT_VELOCITY: f64 = 0.0;
 static mut DSP_CURRENT_GATE: f64 = 0.0;
 static mut DSP_CURRENT_TRIGGER: f64 = 0.0;
-static mut DSP_MIDI_CC_VALUES: [f64; 128] = [0.0; 128];
+static mut DSP_MIDI_CC_VALUES: [[f64; 128]; 17] = [[0.0; 128]; 17];
+static mut DSP_TEMPO_BPM: f64 = 120.0;
+static mut DSP_TEMPO_BPM_BY_SOURCE: [f64; MAX_DSP_TEMPO_SOURCES] = [120.0; MAX_DSP_TEMPO_SOURCES];
+static mut DSP_TEMPO_BEATS_BY_SOURCE: [f64; MAX_DSP_TEMPO_SOURCES] = [0.0; MAX_DSP_TEMPO_SOURCES];
+static mut DSP_TEMPO_PREVIOUS_BEATS_BY_SOURCE: [f64; MAX_DSP_TEMPO_SOURCES] =
+    [0.0; MAX_DSP_TEMPO_SOURCES];
+static mut DSP_TEMPO_STARTED_BY_SOURCE: [bool; MAX_DSP_TEMPO_SOURCES] =
+    [false; MAX_DSP_TEMPO_SOURCES];
+static mut DSP_TEMPO_STARTED_ON_FRAME_BY_SOURCE: [bool; MAX_DSP_TEMPO_SOURCES] =
+    [false; MAX_DSP_TEMPO_SOURCES];
+static mut DSP_TEMPO_LAST_QUANTUM_BY_SOURCE: [u32; MAX_DSP_TEMPO_SOURCES] =
+    [0; MAX_DSP_TEMPO_SOURCES];
+static mut DSP_TEMPO_LAST_FRAME_BY_SOURCE: [u32; MAX_DSP_TEMPO_SOURCES] =
+    [DSP_RENDER_FRAME_UNSET; MAX_DSP_TEMPO_SOURCES];
+static mut DSP_RENDER_QUANTUM_ID: u32 = 1;
 static mut DSP_SCOPE_REGS: [i32; MAX_DSP_SCOPES] = [-1; MAX_DSP_SCOPES];
 static mut DSP_SCOPE_SAMPLES: [[f32; LINK_SCOPE_POINTS]; MAX_DSP_SCOPES] =
     [[0.0; LINK_SCOPE_POINTS]; MAX_DSP_SCOPES];
@@ -423,6 +447,10 @@ static mut DSP_METER_COUNTS: [u32; MAX_DSP_METERS] = [0; MAX_DSP_METERS];
 static mut DSP_EFFECT_BUFFERS: [[f32; MAX_DSP_DELAY_SAMPLES]; MAX_DSP_EFFECT_SLOTS] =
     [[0.0; MAX_DSP_DELAY_SAMPLES]; MAX_DSP_EFFECT_SLOTS];
 static mut DSP_EFFECT_INDICES: [usize; MAX_DSP_EFFECT_SLOTS] = [0; MAX_DSP_EFFECT_SLOTS];
+static mut DSP_BUFFER_BUFFERS: [[f32; MAX_DSP_BUFFER_SAMPLES]; MAX_DSP_BUFFER_SLOTS] =
+    [[0.0; MAX_DSP_BUFFER_SAMPLES]; MAX_DSP_BUFFER_SLOTS];
+static mut DSP_BUFFER_STATE_SLOTS: [i32; MAX_DSP_STATE] = [-1; MAX_DSP_STATE];
+static mut DSP_BUFFER_SLOT_STATES: [i32; MAX_DSP_BUFFER_SLOTS] = [-1; MAX_DSP_BUFFER_SLOTS];
 static mut DSP_SAMPLE_NODE_INDICES: [i32; MAX_DSP_SAMPLE_NODES] = [-1; MAX_DSP_SAMPLE_NODES];
 static mut SAMPLE_PLAYING: [[bool; MAX_NODES]; MAX_VOICE_SLOTS] =
     [[false; MAX_NODES]; MAX_VOICE_SLOTS];
@@ -628,6 +656,20 @@ pub extern "C" fn clear(frames: u32) {
 }
 
 #[no_mangle]
+pub extern "C" fn beginDspRenderQuantum() {
+    unsafe {
+        DSP_RENDER_QUANTUM_ID = DSP_RENDER_QUANTUM_ID.wrapping_add(1);
+        if DSP_RENDER_QUANTUM_ID == 0 {
+            DSP_RENDER_QUANTUM_ID = 1;
+            for index in 0..MAX_DSP_TEMPO_SOURCES {
+                DSP_TEMPO_LAST_QUANTUM_BY_SOURCE[index] = 0;
+                DSP_TEMPO_LAST_FRAME_BY_SOURCE[index] = DSP_RENDER_FRAME_UNSET;
+            }
+        }
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn clearGraph() {
     unsafe {
         NODE_COUNT = 0;
@@ -649,6 +691,20 @@ pub extern "C" fn clearGraph() {
             SAMPLE_STRETCH_MODS[index] = 0.0;
             FREQUENCY_MODS[index] = 0.0;
             FREQUENCY_MOD_ACTIVE[index] = false;
+        }
+    }
+}
+
+fn clear_dsp_buffers() {
+    unsafe {
+        for state in 0..MAX_DSP_STATE {
+            DSP_BUFFER_STATE_SLOTS[state] = -1;
+        }
+        for slot in 0..MAX_DSP_BUFFER_SLOTS {
+            DSP_BUFFER_SLOT_STATES[slot] = -1;
+            for index in 0..MAX_DSP_BUFFER_SAMPLES {
+                DSP_BUFFER_BUFFERS[slot][index] = 0.0;
+            }
         }
     }
 }
@@ -678,6 +734,7 @@ pub extern "C" fn clearDspProgram() {
                 DSP_EFFECT_BUFFERS[slot][index] = 0.0;
             }
         }
+        clear_dsp_buffers();
         for index in 0..MAX_DSP_SAMPLE_NODES {
             DSP_SAMPLE_NODE_INDICES[index] = -1;
         }
@@ -698,15 +755,85 @@ pub extern "C" fn resetDspVoiceState(slot: u32) {
 }
 
 #[no_mangle]
-pub extern "C" fn setDspMidiCc(cc: u32, value: f64) {
+pub extern "C" fn resetDspRuntimeState() {
     unsafe {
+        for index in 0..MAX_DSP_REGS {
+            DSP_REGS[index] = 0.0;
+        }
+        for index in 0..MAX_DSP_STATE {
+            DSP_STATE[index] = 0.0;
+        }
+        for slot in 0..MAX_VOICE_SLOTS {
+            for index in 0..MAX_DSP_STATE {
+                DSP_VOICE_STATES[slot][index] = 0.0;
+            }
+        }
+        for slot in 0..MAX_DSP_EFFECT_SLOTS {
+            DSP_EFFECT_INDICES[slot] = 0;
+            for index in 0..MAX_DSP_DELAY_SAMPLES {
+                DSP_EFFECT_BUFFERS[slot][index] = 0.0;
+            }
+        }
+        clear_dsp_buffers();
+        reset_dsp_tempo_clocks();
+    }
+}
+
+fn reset_dsp_tempo_clocks() {
+    unsafe {
+        for index in 0..MAX_DSP_TEMPO_SOURCES {
+            DSP_TEMPO_BEATS_BY_SOURCE[index] = 0.0;
+            DSP_TEMPO_PREVIOUS_BEATS_BY_SOURCE[index] = 0.0;
+            DSP_TEMPO_STARTED_BY_SOURCE[index] = false;
+            DSP_TEMPO_STARTED_ON_FRAME_BY_SOURCE[index] = false;
+            DSP_TEMPO_LAST_QUANTUM_BY_SOURCE[index] = 0;
+            DSP_TEMPO_LAST_FRAME_BY_SOURCE[index] = DSP_RENDER_FRAME_UNSET;
+        }
+        DSP_RENDER_QUANTUM_ID = 1;
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn setDspMidiCc(channel: u32, cc: u32, value: f64) {
+    unsafe {
+        let channel = (channel as usize).min(16);
         let cc = cc as usize;
         if cc < 128 {
-            DSP_MIDI_CC_VALUES[cc] = if value.is_finite() {
+            let value = if value.is_finite() {
                 value.clamp(0.0, 1.0)
             } else {
                 0.0
             };
+            DSP_MIDI_CC_VALUES[0][cc] = value;
+            DSP_MIDI_CC_VALUES[channel][cc] = value;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn setDspTempo(bpm: f64) {
+    unsafe {
+        DSP_TEMPO_BPM = if bpm.is_finite() {
+            bpm.clamp(1.0, 999.0)
+        } else {
+            120.0
+        };
+        DSP_TEMPO_BPM_BY_SOURCE[0] = DSP_TEMPO_BPM;
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn setDspTempoSource(source_index: u32, bpm: f64) {
+    unsafe {
+        let source_index = (source_index as usize).min(MAX_DSP_TEMPO_SOURCES - 1);
+        let bpm = if bpm.is_finite() {
+            bpm.clamp(1.0, 999.0)
+        } else {
+            120.0
+        };
+        DSP_TEMPO_BPM_BY_SOURCE[source_index] = bpm;
+        if source_index == 0 {
+            DSP_TEMPO_BPM = bpm;
         }
     }
 }
@@ -1014,7 +1141,7 @@ pub extern "C" fn addNode(
     sample_stretch: f64,
     sample_cycle_length: f64,
     sample_overlap_ratio: f64,
-    sample_original_pitch: f64,
+    sample_original_frequency: f64,
 ) -> i32 {
     unsafe {
         if NODE_COUNT >= MAX_NODES {
@@ -1047,7 +1174,7 @@ pub extern "C" fn addNode(
             sample_stretch: sample_stretch.max(0.001),
             sample_cycle_length: sample_cycle_length.round().max(1.0),
             sample_overlap_ratio: sample_overlap_ratio.clamp(0.0, 1.0),
-            sample_original_pitch: sample_original_pitch.clamp(0.0, 127.0),
+            sample_original_frequency: sample_original_frequency.max(0.0001),
         };
         CUSTOM_WAVE_COUNTS[index] = 0;
         SAMPLE_SLOT_FOR_NODE[index] = -1;
@@ -1231,10 +1358,10 @@ pub extern "C" fn setNodeSampleOverlapRatio(index: u32, overlap_ratio: f64) {
 }
 
 #[no_mangle]
-pub extern "C" fn setNodeSampleOriginalPitch(index: u32, pitch: f64) {
+pub extern "C" fn setNodeSampleOriginalFrequency(index: u32, frequency: f64) {
     unsafe {
         if (index as usize) < NODE_COUNT {
-            NODES[index as usize].sample_original_pitch = pitch.clamp(0.0, 127.0);
+            NODES[index as usize].sample_original_frequency = frequency.max(0.0001);
         }
     }
 }
@@ -1449,6 +1576,8 @@ pub extern "C" fn setLinkPan(index: u32, pan: f64) {
 
 #[no_mangle]
 pub extern "C" fn resetPhases() {
+    reset_dsp_tempo_clocks();
+
     let phases = core::ptr::addr_of_mut!(PHASES).cast::<f64>();
     let quantised_frequencies = core::ptr::addr_of_mut!(QUANTISED_FREQUENCIES).cast::<f64>();
     let quantised_targets = core::ptr::addr_of_mut!(QUANTISED_TARGETS).cast::<f64>();
@@ -1875,10 +2004,6 @@ fn sample_range(
     }
 }
 
-fn original_pitch_frequency(midi_note: f64) -> f64 {
-    440.0 * 2.0_f64.powf((midi_note - 69.0) / 12.0)
-}
-
 fn sample_playback_step(
     node_index: usize,
     node: Node,
@@ -1896,7 +2021,7 @@ fn sample_playback_step(
             base_frequency(node, note_frequency)
         }
         .max(0.0001);
-        let original = original_pitch_frequency(node.sample_original_pitch).max(0.0001);
+        let original = node.sample_original_frequency.max(0.0001);
         let source_rate = SAMPLE_RATES[slot].max(1.0);
         (target_frequency / original) * (source_rate / sample_rate.max(1.0))
     }
@@ -1910,9 +2035,15 @@ fn sample_playback_duration(
     sample_rate: f64,
 ) -> Option<f64> {
     let (_, _, _, _, _, length) = sample_range(node_index, node, 0.0, 0.0)?;
-    let step = sample_playback_step(node_index, node, note_frequency, target_frequency, sample_rate)
-        .abs()
-        .max(0.0001);
+    let step = sample_playback_step(
+        node_index,
+        node,
+        note_frequency,
+        target_frequency,
+        sample_rate,
+    )
+    .abs()
+    .max(0.0001);
     Some((length / step / sample_rate.max(1.0)) * node.sample_stretch.max(0.001))
 }
 
@@ -1966,6 +2097,14 @@ fn sample_player_past_end(position: f64, play_direction: f64, boundary: f64) -> 
         position > boundary
     } else {
         position < boundary
+    }
+}
+
+fn sample_player_before_start(position: f64, play_direction: f64, start_frame: f64) -> bool {
+    if play_direction >= 0.0 {
+        position < start_frame
+    } else {
+        position > start_frame
     }
 }
 
@@ -2032,6 +2171,13 @@ fn sample_value(
             SAMPLE_PLAYING[voice_slot][node_index] = false;
             return 0.0;
         };
+        if sample_player_before_start(
+            SAMPLE_POSITIONS[voice_slot][node_index],
+            SAMPLE_DIRECTIONS[voice_slot][node_index],
+            start_frame,
+        ) {
+            start_sample_player(node_index, voice_slot, node, start_mod, end_mod);
+        }
         finish_sample_boundary(
             node_index,
             voice_slot,
@@ -2840,8 +2986,7 @@ fn map_sample(sample: f64, link: Link) -> f64 {
         source_range
     };
     link.map_target_min
-        + ((sample - link.map_src_min) / denominator)
-            * (link.map_target_max - link.map_target_min)
+        + ((sample - link.map_src_min) / denominator) * (link.map_target_max - link.map_target_min)
 }
 
 struct LinkSignal {
@@ -2974,17 +3119,33 @@ fn effective_link_params(
                 TARGET_NOISE => noise_mod.push(mod_link.parameter_mode, modulation.value),
                 TARGET_PAN => pan_mod.push(mod_link.parameter_mode, modulation.value),
                 TARGET_FILTER_CUTOFF => cutoff_mod.push(mod_link.parameter_mode, modulation.value),
-                TARGET_FILTER_RESONANCE => resonance_mod.push(mod_link.parameter_mode, modulation.value),
+                TARGET_FILTER_RESONANCE => {
+                    resonance_mod.push(mod_link.parameter_mode, modulation.value)
+                }
                 TARGET_DISTORTION_GAIN => {
                     distortion_gain_mod.push(mod_link.parameter_mode, modulation.value)
                 }
-                TARGET_ENVELOPE_DELAY => env_delay_mod.push(mod_link.parameter_mode, modulation.value),
-                TARGET_ENVELOPE_ATTACK => env_attack_mod.push(mod_link.parameter_mode, modulation.value),
-                TARGET_ENVELOPE_DECAY => env_decay_mod.push(mod_link.parameter_mode, modulation.value),
-                TARGET_ENVELOPE_SUSTAIN => env_sustain_mod.push(mod_link.parameter_mode, modulation.value),
-                TARGET_ENVELOPE_RELEASE => env_release_mod.push(mod_link.parameter_mode, modulation.value),
-                TARGET_MAP_SRC_MIN => map_src_min_mod.push(mod_link.parameter_mode, modulation.value),
-                TARGET_MAP_SRC_MAX => map_src_max_mod.push(mod_link.parameter_mode, modulation.value),
+                TARGET_ENVELOPE_DELAY => {
+                    env_delay_mod.push(mod_link.parameter_mode, modulation.value)
+                }
+                TARGET_ENVELOPE_ATTACK => {
+                    env_attack_mod.push(mod_link.parameter_mode, modulation.value)
+                }
+                TARGET_ENVELOPE_DECAY => {
+                    env_decay_mod.push(mod_link.parameter_mode, modulation.value)
+                }
+                TARGET_ENVELOPE_SUSTAIN => {
+                    env_sustain_mod.push(mod_link.parameter_mode, modulation.value)
+                }
+                TARGET_ENVELOPE_RELEASE => {
+                    env_release_mod.push(mod_link.parameter_mode, modulation.value)
+                }
+                TARGET_MAP_SRC_MIN => {
+                    map_src_min_mod.push(mod_link.parameter_mode, modulation.value)
+                }
+                TARGET_MAP_SRC_MAX => {
+                    map_src_max_mod.push(mod_link.parameter_mode, modulation.value)
+                }
                 TARGET_MAP_TARGET_MIN => {
                     map_target_min_mod.push(mod_link.parameter_mode, modulation.value)
                 }
@@ -3023,7 +3184,9 @@ fn effective_link_params(
                 12.0
             },
         );
-        effective.distortion_gain = distortion_gain_mod.apply(base.distortion_gain).clamp(0.1, 40.0);
+        effective.distortion_gain = distortion_gain_mod
+            .apply(base.distortion_gain)
+            .clamp(0.1, 40.0);
         effective.env_delay = env_delay_mod.apply(base.env_delay).clamp(0.0, 4.0);
         effective.env_attack = env_attack_mod.apply(base.env_attack).clamp(0.001, 4.0);
         effective.env_decay = env_decay_mod.apply(base.env_decay).clamp(0.001, 4.0);
@@ -3182,7 +3345,9 @@ fn render_node(
                 }
                 TARGET_SAMPLE_START => sample_start_mod.push(link.parameter_mode, modulation.value),
                 TARGET_SAMPLE_END => sample_end_mod.push(link.parameter_mode, modulation.value),
-                TARGET_SAMPLE_STRETCH => sample_stretch_mod.push(link.parameter_mode, modulation.value),
+                TARGET_SAMPLE_STRETCH => {
+                    sample_stretch_mod.push(link.parameter_mode, modulation.value)
+                }
                 TARGET_SAMPLE_TRIGGER => {
                     let start_mod = sample_start_mod.apply(node.sample_start) - node.sample_start;
                     let end_mod = sample_end_mod.apply(node.sample_end) - node.sample_end;
@@ -3243,7 +3408,14 @@ fn render_node(
                     sample_stretch_offset,
                 )
             } else {
-                oscillator(node_index, node, phase + phase_value, voice_slot, frame, wave)
+                oscillator(
+                    node_index,
+                    node,
+                    phase + phase_value,
+                    voice_slot,
+                    frame,
+                    wave,
+                )
             }
         } else {
             0.0
@@ -3615,11 +3787,7 @@ fn render_dsp_formant_filter(op: DspOp, sample_rate: f64) -> f64 {
     for band_index in 0..MAX_FORMANT_BANDS {
         let (frequency, q, gain) = formant_band(morph, intensity, band_index, sample_rate);
         let coefficients = filter_coefficients(3, frequency, q, sample_rate);
-        wet += render_dsp_biquad_state(
-            state_index + band_index * 4,
-            sample,
-            coefficients,
-        ) * gain;
+        wet += render_dsp_biquad_state(state_index + band_index * 4, sample, coefficients) * gain;
     }
 
     let dry_mix = 0.42 - strength * 0.18 - overdrive * 0.16;
@@ -3642,8 +3810,7 @@ fn render_dsp_comb_filter(op: DspOp, sample_rate: f64) -> f64 {
         let index = DSP_EFFECT_INDICES[slot];
         let delayed = sanitize_sample(read_dsp_effect_delay(slot, index, delay_samples), 4.0);
 
-        DSP_EFFECT_BUFFERS[slot][index] =
-            sanitize_sample(sample + delayed * feedback, 4.0) as f32;
+        DSP_EFFECT_BUFFERS[slot][index] = sanitize_sample(sample + delayed * feedback, 4.0) as f32;
         DSP_EFFECT_INDICES[slot] = (index + 1) % MAX_DSP_DELAY_SAMPLES;
 
         if op.a == 6 {
@@ -3730,6 +3897,30 @@ fn dsp_effect_slot(state: i32) -> Option<usize> {
     Some((state as usize) % MAX_DSP_EFFECT_SLOTS)
 }
 
+fn dsp_buffer_slot(state: i32) -> Option<usize> {
+    unsafe {
+        if state < 0 || state as usize >= MAX_DSP_STATE {
+            return None;
+        }
+
+        let state_index = state as usize;
+        let existing = DSP_BUFFER_STATE_SLOTS[state_index];
+        if existing >= 0 && (existing as usize) < MAX_DSP_BUFFER_SLOTS {
+            return Some(existing as usize);
+        }
+
+        for slot in 0..MAX_DSP_BUFFER_SLOTS {
+            if DSP_BUFFER_SLOT_STATES[slot] < 0 {
+                DSP_BUFFER_SLOT_STATES[slot] = state;
+                DSP_BUFFER_STATE_SLOTS[state_index] = slot as i32;
+                return Some(slot);
+            }
+        }
+
+        None
+    }
+}
+
 fn read_dsp_effect_delay(slot: usize, write_index: usize, delay_samples: f64) -> f64 {
     unsafe {
         let length = MAX_DSP_DELAY_SAMPLES;
@@ -3744,6 +3935,55 @@ fn read_dsp_effect_delay(slot: usize, write_index: usize, delay_samples: f64) ->
         DSP_EFFECT_BUFFERS[slot][index_a] as f64 * (1.0 - fraction)
             + DSP_EFFECT_BUFFERS[slot][index_b] as f64 * fraction
     }
+}
+
+fn read_dsp_buffer(slot: usize, length: usize, head: f64) -> f64 {
+    unsafe {
+        let length = length.clamp(2, MAX_DSP_BUFFER_SAMPLES);
+        let position = normalize_phase(head) * length as f64;
+        let index_a = position.floor() as usize % length;
+        let index_b = (index_a + 1) % length;
+        let fraction = position - position.floor();
+        DSP_BUFFER_BUFFERS[slot][index_a] as f64 * (1.0 - fraction)
+            + DSP_BUFFER_BUFFERS[slot][index_b] as f64 * fraction
+    }
+}
+
+fn write_dsp_buffer(slot: usize, length: usize, head: f64, sample: f64) {
+    unsafe {
+        let length = length.clamp(2, MAX_DSP_BUFFER_SAMPLES);
+        let position = normalize_phase(head) * length as f64;
+        let index = position.floor() as usize % length;
+        DSP_BUFFER_BUFFERS[slot][index] = sanitize_sample(sample, 8.0) as f32;
+    }
+}
+
+fn render_dsp_playhead(op: DspOp, sample_rate: f64) -> f64 {
+    unsafe {
+        if op.state < 0 || (op.state as usize) >= MAX_DSP_STATE {
+            return normalize_phase(dsp_reg(op.a));
+        }
+
+        let state_index = op.state as usize;
+        let relative_position = normalize_phase(DSP_STATE[state_index]);
+        let output = normalize_phase(dsp_reg(op.a) + relative_position);
+        let step = dsp_reg(op.b) / sample_rate.max(1.0);
+        DSP_STATE[state_index] = normalize_phase(relative_position + step);
+        output
+    }
+}
+
+fn render_dsp_buffer(op: DspOp, sample_rate: f64) -> f64 {
+    let Some(slot) = dsp_buffer_slot(op.state) else {
+        return 0.0;
+    };
+
+    let length_samples = (dsp_reg(op.d).max(0.001) * sample_rate.max(1.0))
+        .round()
+        .clamp(2.0, MAX_DSP_BUFFER_SAMPLES as f64) as usize;
+    let output = read_dsp_buffer(slot, length_samples, dsp_reg(op.b));
+    write_dsp_buffer(slot, length_samples, dsp_reg(op.c), dsp_reg(op.a));
+    sanitize_sample(output, 8.0)
 }
 
 fn render_dsp_delay(op: DspOp, sample_rate: f64) -> f64 {
@@ -3805,12 +4045,11 @@ fn render_dsp_reverb(op: DspOp, sample_rate: f64) -> f64 {
         let mix = dsp_reg(op.d).clamp(0.0, 1.0);
         let index = DSP_EFFECT_INDICES[slot];
         let scale = 0.45 + size * 0.9;
-        let wet = (
-            read_dsp_effect_delay(slot, index, 0.029 * scale * sample_rate.max(1.0))
-                + read_dsp_effect_delay(slot, index, 0.037 * scale * sample_rate.max(1.0))
-                + read_dsp_effect_delay(slot, index, 0.041 * scale * sample_rate.max(1.0))
-                + read_dsp_effect_delay(slot, index, 0.053 * scale * sample_rate.max(1.0))
-        ) * 0.25;
+        let wet = (read_dsp_effect_delay(slot, index, 0.029 * scale * sample_rate.max(1.0))
+            + read_dsp_effect_delay(slot, index, 0.037 * scale * sample_rate.max(1.0))
+            + read_dsp_effect_delay(slot, index, 0.041 * scale * sample_rate.max(1.0))
+            + read_dsp_effect_delay(slot, index, 0.053 * scale * sample_rate.max(1.0)))
+            * 0.25;
         DSP_EFFECT_BUFFERS[slot][index] = sanitize_sample(sample + wet * decay, 8.0) as f32;
         DSP_EFFECT_INDICES[slot] = (index + 1) % MAX_DSP_DELAY_SAMPLES;
         sanitize_sample(sample * (1.0 - mix) + wet * mix, 8.0)
@@ -3827,28 +4066,36 @@ fn envelope_coefficient(seconds: f64, sample_rate: f64) -> f64 {
 
 fn render_dsp_envelope(op: DspOp, sample_rate: f64) -> f64 {
     unsafe {
-        if op.state < 0 || (op.state as usize + 4) >= MAX_DSP_STATE {
+        if op.state < 0 || (op.state as usize + 5) >= MAX_DSP_STATE {
             return 0.0;
         }
 
         let state_index = op.state as usize;
-        let trigger = dsp_reg(op.a) > ENVELOPE_TRIGGER_THRESHOLD;
+        let trigger = dsp_reg(op.a) >= ENVELOPE_TRIGGER_THRESHOLD;
+        let gate = dsp_reg(op.b) >= ENVELOPE_TRIGGER_THRESHOLD;
         let was_triggered = DSP_STATE[state_index + 1] > 0.5;
-        let delay = dsp_reg(op.b).max(0.0);
-        let attack = dsp_reg(op.c).max(0.0);
-        let decay = dsp_reg(op.d).max(0.0);
-        let sustain = dsp_reg(op.e).clamp(0.0, 1.0);
-        let release = dsp_reg(op.value.round() as i32).max(0.0);
+        let was_gated = DSP_STATE[state_index + 5] > 0.5;
+        let delay = dsp_reg(op.c).max(0.0);
+        let attack = dsp_reg(op.d).max(0.0);
+        let decay = dsp_reg(op.e).max(0.0);
+        let packed = op.value.round() as i32;
+        let sustain_register = packed.rem_euclid(MAX_DSP_REGS as i32);
+        let release_register = packed.div_euclid(MAX_DSP_REGS as i32);
+        let sustain = dsp_reg(sustain_register).clamp(0.0, 1.0);
+        let release = dsp_reg(release_register).max(0.0);
         let dt = 1.0 / sample_rate.max(1.0);
         let mut env = DSP_STATE[state_index].clamp(0.0, 1.0);
         let mut stage = DSP_STATE[state_index + 2].round() as i32;
         let mut stage_time = DSP_STATE[state_index + 3].max(0.0);
         let mut release_start = DSP_STATE[state_index + 4].clamp(0.0, 1.0);
+        let trigger_edge = trigger && !was_triggered;
+        let gate_opened = gate && !was_gated;
+        let gate_closed = !gate && was_gated;
 
-        if trigger && !was_triggered {
+        if trigger_edge || gate_opened {
             stage = if delay > 0.0 { 5 } else { 1 };
             stage_time = 0.0;
-        } else if !trigger && was_triggered {
+        } else if gate_closed {
             stage = 4;
             stage_time = 0.0;
             release_start = env;
@@ -3884,12 +4131,23 @@ fn render_dsp_envelope(op: DspOp, sample_rate: f64) -> f64 {
                 };
                 if stage_time >= decay {
                     env = sustain;
-                    stage = 3;
                     stage_time = 0.0;
+                    if gate {
+                        stage = 3;
+                    } else {
+                        stage = 4;
+                        release_start = env;
+                    }
                 }
             }
             3 => {
-                env = if trigger { sustain } else { env };
+                if gate {
+                    env = sustain;
+                } else {
+                    stage = 4;
+                    stage_time = 0.0;
+                    release_start = env;
+                }
             }
             4 => {
                 stage_time += dt;
@@ -3905,7 +4163,7 @@ fn render_dsp_envelope(op: DspOp, sample_rate: f64) -> f64 {
                 }
             }
             _ => {
-                env = if trigger { env } else { 0.0 };
+                env = if gate { env } else { 0.0 };
             }
         }
 
@@ -3914,6 +4172,7 @@ fn render_dsp_envelope(op: DspOp, sample_rate: f64) -> f64 {
         DSP_STATE[state_index + 2] = stage as f64;
         DSP_STATE[state_index + 3] = stage_time;
         DSP_STATE[state_index + 4] = release_start;
+        DSP_STATE[state_index + 5] = if gate { 1.0 } else { 0.0 };
         DSP_STATE[state_index]
     }
 }
@@ -3991,13 +4250,18 @@ fn render_dsp_sample_param(op: DspOp) {
             3 => NODES[node_index].sample_stretch = value.max(0.001),
             4 => NODES[node_index].sample_cycle_length = value.round().max(1.0),
             5 => NODES[node_index].sample_overlap_ratio = value.clamp(0.0, 1.0),
-            6 => NODES[node_index].sample_original_pitch = value.clamp(0.0, 127.0),
+            6 => NODES[node_index].sample_original_frequency = value.max(0.0001),
             _ => {}
         }
     }
 }
 
-fn advance_dsp_sample_player(node_index: usize, node: Node, target_frequency: f64, sample_rate: f64) {
+fn advance_dsp_sample_player(
+    node_index: usize,
+    node: Node,
+    target_frequency: f64,
+    sample_rate: f64,
+) {
     unsafe {
         let voice_slot = DRONE_VOICE_SLOT;
         if !SAMPLE_PLAYING[voice_slot][node_index] {
@@ -4018,12 +4282,13 @@ fn advance_dsp_sample_player(node_index: usize, node: Node, target_frequency: f6
             (sample_step / stretch) * SAMPLE_DIRECTIONS[voice_slot][node_index];
         if (stretch - 1.0).abs() < 0.001 {
             SAMPLE_STRETCH_PHASES[voice_slot][node_index] = 0.0;
-            SAMPLE_STRETCH_ANCHORS[voice_slot][node_index] = SAMPLE_POSITIONS[voice_slot][node_index];
+            SAMPLE_STRETCH_ANCHORS[voice_slot][node_index] =
+                SAMPLE_POSITIONS[voice_slot][node_index];
             return;
         }
 
-        let (_, _, _, _, _, length) = sample_range(node_index, node, 0.0, 0.0)
-            .unwrap_or((0.0, 0.0, 0.0, 0.0, 1.0, 512.0));
+        let (_, _, _, _, _, length) =
+            sample_range(node_index, node, 0.0, 0.0).unwrap_or((0.0, 0.0, 0.0, 0.0, 1.0, 512.0));
         let grain_frames = node.sample_cycle_length.round().clamp(1.0, length.max(1.0));
         let overlap_frames = if node.sample_overlap_ratio <= 0.0 {
             0.0
@@ -4111,6 +4376,10 @@ fn render_dsp_function(op: DspOp) -> f64 {
 
 fn render_dsp_midi_note(op: DspOp) -> f64 {
     unsafe {
+        let channel = dsp_reg(op.b).round().clamp(0.0, 16.0);
+        if channel > 0.0 && (channel - DSP_CURRENT_CHANNEL).abs() > 0.5 {
+            return 0.0;
+        }
         match op.a {
             1 => DSP_CURRENT_FREQUENCY,
             2 => DSP_CURRENT_VELOCITY,
@@ -4123,7 +4392,127 @@ fn render_dsp_midi_note(op: DspOp) -> f64 {
 
 fn render_dsp_midi_cc(op: DspOp) -> f64 {
     let cc = dsp_reg(op.a).round().clamp(0.0, 127.0) as usize;
-    unsafe { DSP_MIDI_CC_VALUES[cc] }
+    let channel = dsp_reg(op.b).round().clamp(0.0, 16.0) as usize;
+    unsafe { DSP_MIDI_CC_VALUES[channel][cc] }
+}
+
+fn tempo_division_beats(kind: i32) -> f64 {
+    match kind.rem_euclid(TEMPO_OUTPUT_COUNT) {
+        0 => 16.0,
+        1 => 8.0,
+        2 => 4.0,
+        3 => 4.0,
+        4 => 2.0,
+        5 => 1.0,
+        6 => 1.0,
+        7 => 0.5,
+        8 => 0.25,
+        9 => 0.125,
+        _ => 1.0,
+    }
+}
+
+fn tempo_click_phase_offset(kind: i32) -> f64 {
+    if kind.rem_euclid(TEMPO_OUTPUT_COUNT) == 6 {
+        0.5
+    } else {
+        0.0
+    }
+}
+
+fn advance_dsp_tempo_clock(source_index: usize, bpm: f64, sample_rate: f64, frame: usize) {
+    unsafe {
+        let source_index = source_index.min(MAX_DSP_TEMPO_SOURCES - 1);
+        let frame = (frame as u32).min(MAX_WASM_FRAMES as u32);
+        if DSP_TEMPO_LAST_QUANTUM_BY_SOURCE[source_index] == DSP_RENDER_QUANTUM_ID
+            && DSP_TEMPO_LAST_FRAME_BY_SOURCE[source_index] == frame
+        {
+            return;
+        }
+
+        DSP_TEMPO_LAST_QUANTUM_BY_SOURCE[source_index] = DSP_RENDER_QUANTUM_ID;
+        DSP_TEMPO_LAST_FRAME_BY_SOURCE[source_index] = frame;
+        DSP_TEMPO_STARTED_ON_FRAME_BY_SOURCE[source_index] = false;
+
+        let bpm = bpm.clamp(1.0, 999.0);
+        let step = (bpm / 60.0) / sample_rate.max(1.0);
+        if !DSP_TEMPO_STARTED_BY_SOURCE[source_index] {
+            DSP_TEMPO_STARTED_BY_SOURCE[source_index] = true;
+            DSP_TEMPO_STARTED_ON_FRAME_BY_SOURCE[source_index] = true;
+        }
+
+        let previous = DSP_TEMPO_BEATS_BY_SOURCE[source_index].max(0.0);
+        DSP_TEMPO_PREVIOUS_BEATS_BY_SOURCE[source_index] = previous;
+        DSP_TEMPO_BEATS_BY_SOURCE[source_index] =
+            sanitize_control_value(previous + step.max(0.0)).max(0.0);
+    }
+}
+
+fn tempo_boundary_crossed(
+    previous_beats: f64,
+    current_beats: f64,
+    division_beats: f64,
+    offset_beats: f64,
+) -> bool {
+    if division_beats <= 0.0 || current_beats <= previous_beats {
+        return false;
+    }
+
+    let previous_boundary = ((previous_beats - offset_beats) / division_beats).floor();
+    let current_boundary = ((current_beats - offset_beats) / division_beats).floor();
+    current_boundary > previous_boundary
+}
+
+fn render_dsp_tempo(op: DspOp, frame: usize, sample_rate: f64) -> f64 {
+    unsafe {
+        if sample_rate <= 0.0 {
+            return 0.0;
+        }
+
+        let source = dsp_reg(op.b).round() as i32;
+        let midi_source = dsp_reg(op.d)
+            .round()
+            .clamp(0.0, (MAX_DSP_TEMPO_SOURCES - 1) as f64) as usize;
+        let internal_bpm = dsp_reg(op.a).clamp(1.0, 999.0);
+        let source_index = if source == 1 {
+            midi_source
+        } else {
+            DSP_TEMPO_INTERNAL_SOURCE
+        };
+        let bpm = if source == 1 {
+            if midi_source == 0 {
+                DSP_TEMPO_BPM
+            } else {
+                DSP_TEMPO_BPM_BY_SOURCE[midi_source]
+            }
+        } else {
+            internal_bpm
+        }
+        .clamp(1.0, 999.0);
+        advance_dsp_tempo_clock(source_index, bpm, sample_rate, frame);
+
+        let frequency = (bpm / 60.0) / tempo_division_beats(op.c);
+        if op.c >= TEMPO_OUTPUT_COUNT {
+            return sanitize_control_value(frequency);
+        }
+
+        let offset = tempo_click_phase_offset(op.c);
+        let click = if DSP_TEMPO_STARTED_ON_FRAME_BY_SOURCE[source_index] && offset <= 0.0 {
+            true
+        } else {
+            tempo_boundary_crossed(
+                DSP_TEMPO_PREVIOUS_BEATS_BY_SOURCE[source_index],
+                DSP_TEMPO_BEATS_BY_SOURCE[source_index],
+                tempo_division_beats(op.c),
+                offset,
+            )
+        };
+        if click {
+            1.0
+        } else {
+            0.0
+        }
+    }
 }
 
 fn render_dsp_accumulator(op: DspOp) -> f64 {
@@ -4199,14 +4588,21 @@ fn render_dsp_button(op: DspOp) -> f64 {
     }
 }
 
-fn render_dsp_phase_oscillator_output(op: DspOp, render_phase: f64, state_index: Option<usize>) -> f64 {
+fn render_dsp_phase_oscillator_output(
+    op: DspOp,
+    render_phase: f64,
+    state_index: Option<usize>,
+) -> f64 {
     unsafe {
         match op.a {
             6 => random_bipolar(DRONE_VOICE_SLOT),
             7 => {
                 if let Some(index) = state_index {
                     if index + 2 < MAX_DSP_STATE {
-                        if DSP_STATE[index + 1] == 0.0 && DSP_STATE[index + 2] == 0.0 && render_phase == 0.0 {
+                        if DSP_STATE[index + 1] == 0.0
+                            && DSP_STATE[index + 2] == 0.0
+                            && render_phase == 0.0
+                        {
                             DSP_STATE[index + 1] = random_bipolar(DRONE_VOICE_SLOT);
                             DSP_STATE[index + 2] = random_bipolar(DRONE_VOICE_SLOT);
                         }
@@ -4319,8 +4715,11 @@ fn render_dsp_op(
                                 } else {
                                     phase
                                 };
-                                DSP_STATE[reset_fade_index] =
-                                    render_dsp_phase_oscillator_output(op, previous_render_phase, state_index);
+                                DSP_STATE[reset_fade_index] = render_dsp_phase_oscillator_output(
+                                    op,
+                                    previous_render_phase,
+                                    state_index,
+                                );
                                 DSP_STATE[reset_fade_index + 1] = 0.0;
                                 phase_reset_fade_started = true;
                             }
@@ -4369,7 +4768,9 @@ fn render_dsp_op(
                     let reset_fade_index = if op.a == 9 { index + 4 } else { index + 2 };
                     if reset_fade_index + 1 < MAX_DSP_STATE {
                         let fade_age = DSP_STATE[reset_fade_index + 1].max(0.0);
-                        if phase_reset_fade_started || (fade_age > 0.0 && fade_age < PHASE_RESET_FADE_SECONDS) {
+                        if phase_reset_fade_started
+                            || (fade_age > 0.0 && fade_age < PHASE_RESET_FADE_SECONDS)
+                        {
                             let mix = smooth_step(fade_age / PHASE_RESET_FADE_SECONDS);
                             let previous_output = DSP_STATE[reset_fade_index];
                             output = previous_output + (output - previous_output) * mix;
@@ -4402,7 +4803,8 @@ fn render_dsp_op(
 
                         match node.custom_mode {
                             CUSTOM_MODE_PING_PONG => {
-                                custom_next = phase + (frequency / sample_rate.max(1.0)) * direction;
+                                custom_next =
+                                    phase + (frequency / sample_rate.max(1.0)) * direction;
                                 if custom_next >= 1.0 {
                                     custom_next = 1.0 - (custom_next - 1.0);
                                     direction = -1.0;
@@ -4424,11 +4826,13 @@ fn render_dsp_op(
                             }
                             CUSTOM_MODE_SUSTAIN_LOOP => {
                                 if custom_next >= start {
-                                    custom_next = start + (((custom_next - start) % length) + length) % length;
+                                    custom_next = start
+                                        + (((custom_next - start) % length) + length) % length;
                                 }
                             }
                             CUSTOM_MODE_SUSTAIN_PING_PONG => {
-                                custom_next = phase + (frequency / sample_rate.max(1.0)) * direction;
+                                custom_next =
+                                    phase + (frequency / sample_rate.max(1.0)) * direction;
                                 if custom_next >= end {
                                     custom_next = end - (custom_next - end);
                                     direction = -1.0;
@@ -4475,8 +4879,12 @@ fn render_dsp_op(
             let src_max = dsp_reg(op.c);
             let target_min = dsp_reg(op.d);
             let target_max = dsp_reg(op.e);
-            let denominator = (src_max - src_min).abs().max(0.000001).copysign(src_max - src_min);
-            let mapped = target_min + ((source - src_min) / denominator) * (target_max - target_min);
+            let denominator = (src_max - src_min)
+                .abs()
+                .max(0.000001)
+                .copysign(src_max - src_min);
+            let mapped =
+                target_min + ((source - src_min) / denominator) * (target_max - target_min);
             set_dsp_reg(op.out, mapped);
         }
         DSP_OP_FEEDBACK_READ => unsafe {
@@ -4517,9 +4925,12 @@ fn render_dsp_op(
         DSP_OP_FUNCTION => set_dsp_reg(op.out, render_dsp_function(op)),
         DSP_OP_MIDI_NOTE => set_dsp_reg(op.out, render_dsp_midi_note(op)),
         DSP_OP_MIDI_CC => set_dsp_reg(op.out, render_dsp_midi_cc(op)),
+        DSP_OP_TEMPO => set_dsp_reg(op.out, render_dsp_tempo(op, frame, sample_rate)),
         DSP_OP_ACCUMULATOR => set_dsp_reg(op.out, render_dsp_accumulator(op)),
         DSP_OP_BUTTON => set_dsp_reg(op.out, render_dsp_button(op)),
         DSP_OP_SLEW => set_dsp_reg(op.out, render_dsp_slew(op, sample_rate)),
+        DSP_OP_PLAYHEAD => set_dsp_reg(op.out, render_dsp_playhead(op, sample_rate)),
+        DSP_OP_BUFFER => set_dsp_reg(op.out, render_dsp_buffer(op, sample_rate)),
         _ => {}
     }
 }
@@ -4532,8 +4943,7 @@ fn capture_dsp_scopes() {
                 continue;
             }
 
-            DSP_SCOPE_DECIMATE_COUNTERS[slot] =
-                DSP_SCOPE_DECIMATE_COUNTERS[slot].saturating_add(1);
+            DSP_SCOPE_DECIMATE_COUNTERS[slot] = DSP_SCOPE_DECIMATE_COUNTERS[slot].saturating_add(1);
             if DSP_SCOPE_DECIMATE_COUNTERS[slot] < DSP_SCOPE_DECIMATE[slot] {
                 continue;
             }
@@ -4543,8 +4953,7 @@ fn capture_dsp_scopes() {
             let write_index = (DSP_SCOPE_WRITE_INDICES[slot] as usize).min(active_points - 1);
             DSP_SCOPE_SAMPLES[slot][write_index] =
                 sanitize_control_value(DSP_REGS[register as usize]) as f32;
-            DSP_SCOPE_WRITE_INDICES[slot] =
-                ((write_index + 1) % active_points) as u32;
+            DSP_SCOPE_WRITE_INDICES[slot] = ((write_index + 1) % active_points) as u32;
             if (DSP_SCOPE_COUNTS[slot] as usize) < active_points {
                 DSP_SCOPE_COUNTS[slot] = DSP_SCOPE_COUNTS[slot].saturating_add(1);
             }
@@ -4578,7 +4987,13 @@ pub extern "C" fn renderDspProgram(frames: u32, sample_rate: f64) {
             let mut right_sample = 0.0;
             advance_dsp_values(sample_rate);
             for op_index in 0..DSP_OP_COUNT {
-                render_dsp_op(DSP_OPS[op_index], frame, sample_rate, &mut left_sample, &mut right_sample);
+                render_dsp_op(
+                    DSP_OPS[op_index],
+                    frame,
+                    sample_rate,
+                    &mut left_sample,
+                    &mut right_sample,
+                );
             }
             capture_dsp_meters();
             capture_dsp_scopes();
@@ -4593,6 +5008,7 @@ pub extern "C" fn renderDspProgramVoice(
     slot: u32,
     frames: u32,
     sample_rate: f64,
+    channel: f64,
     note: f64,
     note_frequency: f64,
     velocity: f64,
@@ -4636,11 +5052,19 @@ pub extern "C" fn renderDspProgramVoice(
             };
             let amp = base_amp * smooth_step(age / VOICE_START_FADE_SECONDS) * steal_gain;
 
+            DSP_CURRENT_CHANNEL = channel.round().clamp(1.0, 16.0);
             DSP_CURRENT_NOTE = note.clamp(0.0, 127.0);
             DSP_CURRENT_FREQUENCY = note_frequency.max(0.0);
             DSP_CURRENT_VELOCITY = velocity.clamp(0.0, 1.0);
-            DSP_CURRENT_GATE = if sample_release_age < 0.0 && sample_stolen_age < 0.0 { 1.0 } else { 0.0 };
-            DSP_CURRENT_TRIGGER = if sample_release_age < 0.0 && sample_stolen_age < 0.0 && age <= 1.0 / sample_rate {
+            DSP_CURRENT_GATE = if sample_release_age < 0.0 && sample_stolen_age < 0.0 {
+                1.0
+            } else {
+                0.0
+            };
+            DSP_CURRENT_TRIGGER = if sample_release_age < 0.0
+                && sample_stolen_age < 0.0
+                && age <= 1.0 / sample_rate
+            {
                 1.0
             } else {
                 0.0
@@ -4648,7 +5072,13 @@ pub extern "C" fn renderDspProgramVoice(
 
             advance_dsp_values(sample_rate);
             for op_index in 0..DSP_OP_COUNT {
-                render_dsp_op(DSP_OPS[op_index], frame, sample_rate, &mut left_sample, &mut right_sample);
+                render_dsp_op(
+                    DSP_OPS[op_index],
+                    frame,
+                    sample_rate,
+                    &mut left_sample,
+                    &mut right_sample,
+                );
             }
             capture_dsp_meters();
             capture_dsp_scopes();

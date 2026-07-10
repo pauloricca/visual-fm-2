@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AUDIO_ENGINE_CONFIG } from './config';
 import { DSP_OP, type DspProgram } from './dspProgram';
+import { logDiagnosticEvent, serializeError } from '../diagnostics';
 
 type AudioStatus = 'idle' | 'starting' | 'running' | 'error';
 type RecordingStatus = 'idle' | 'waiting' | 'recording' | 'saving' | 'saved' | 'error';
 export type AudioInputStatus = 'inactive' | 'needs-permission' | 'requesting' | 'connected' | 'denied' | 'unsupported' | 'error';
 export type MidiInputStatus = 'inactive' | 'needs-permission' | 'requesting' | 'connected' | 'denied' | 'unsupported' | 'error';
+
+const MIDI_CLOCK_TICKS_PER_BEAT = 24;
+const MIDI_CLOCK_TEMPO_MIN = 1;
+const MIDI_CLOCK_TEMPO_MAX = 999;
+const MIDI_CLOCK_EMA_WEIGHT = 0.18;
 
 export interface AudioInputDevice {
   deviceId: string;
@@ -26,11 +32,21 @@ export interface MidiInputDevice {
   state: string;
 }
 
+export interface MidiControlChange {
+  id: number;
+  sourceIndex: number;
+  channel: number;
+  cc: number;
+  value: number;
+  receivedAt: number;
+}
+
 export interface MidiInputState {
   status: MidiInputStatus;
   message: string;
   devices: MidiInputDevice[];
   canRequestAccess: boolean;
+  lastControlChange?: MidiControlChange;
 }
 
 export interface LinkMeterReading {
@@ -71,6 +87,10 @@ interface AudioEngineState {
   refreshMidiInputDevices: () => Promise<void>;
 }
 
+interface UseAudioEngineOptions {
+  selectedMidiInputDeviceIds?: string[];
+}
+
 interface MidiInputLike {
   id?: string;
   name?: string;
@@ -94,7 +114,20 @@ interface RecordingCapture {
   sampleRate: number;
 }
 
-const AUDIO_ENGINE_ASSET_VERSION = '2026-07-09-start-declick';
+interface SampleDataCacheEntry {
+  key: string;
+  data: Float32Array;
+  sampleRate: number;
+  name: string;
+  storageKey: string;
+}
+
+interface SampleDataRequest {
+  key: string;
+  promise: Promise<SampleDataCacheEntry | null>;
+}
+
+const AUDIO_ENGINE_ASSET_VERSION = '2026-07-10-midi-channel-inputs';
 const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const METER_UPDATE_INTERVAL_MS = 80;
@@ -106,6 +139,10 @@ const SCOPE_SECONDS = 0.08;
 const SCOPE_MODE = 'zero-crossing';
 const AUDIO_OUTPUT_FADE_SECONDS = 0.02;
 const AUDIO_OUTPUT_STOP_DELAY_MS = Math.ceil(AUDIO_OUTPUT_FADE_SECONDS * 1000) + 24;
+const AUDIO_SILENCE_PEAK_THRESHOLD = 0.00001;
+const AUDIO_UNEXPECTED_SILENCE_MS = 5000;
+const AUDIO_SILENCE_REPORT_INTERVAL_MS = 15000;
+const AUDIO_HEALTH_REPORT_INTERVAL_MS = 5000;
 
 function closeAudioContext(
   contextRef: { current: AudioContext | null },
@@ -123,6 +160,12 @@ function closeAudioContext(
   nodeRef.current?.port.postMessage({ type: 'panic' });
   inputSourceRef.current?.disconnect();
   inputStreamRef.current?.getTracks().forEach((track) => track.stop());
+  if (nodeRef.current) {
+    nodeRef.current.port.onmessage = null;
+  }
+  if (contextRef.current) {
+    contextRef.current.onstatechange = null;
+  }
   nodeRef.current?.disconnect();
   analyserRef.current?.disconnect();
   outputGainRef.current?.disconnect();
@@ -179,7 +222,11 @@ function holdAudioParamAtCurrentValue(param: AudioParam, time: number): void {
   param.setValueAtTime(param.value, time);
 }
 
-export function useAudioEngine(): AudioEngineState {
+export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngineState {
+  const selectedMidiInputDeviceIds = options.selectedMidiInputDeviceIds ?? [];
+  const selectedMidiInputDeviceKey = selectedMidiInputDeviceIds.join('\n');
+  const selectedMidiInputDeviceIdSet = useMemo(() => new Set(selectedMidiInputDeviceIds), [selectedMidiInputDeviceKey]);
+  const midiInputEnabled = selectedMidiInputDeviceIds.length > 0;
   const [status, setStatus] = useState<AudioStatus>('idle');
   const [message, setMessage] = useState('audio stopped');
   const [peak, setPeak] = useState(0);
@@ -194,8 +241,9 @@ export function useAudioEngine(): AudioEngineState {
   const [audioInputDevices, setAudioInputDevices] = useState<AudioInputDevice[]>([]);
   const [selectedAudioInputDeviceId, setSelectedAudioInputDeviceId] = useState('');
   const [midiInputStatus, setMidiInputStatus] = useState<MidiInputStatus>('inactive');
-  const [midiInputMessage, setMidiInputMessage] = useState('Add a MIDI Note or MIDI CC node, then start audio.');
+  const [midiInputMessage, setMidiInputMessage] = useState('Add a MIDI Note, MIDI CC, or MIDI Tempo source, then start audio.');
   const [midiInputDevices, setMidiInputDevices] = useState<MidiInputDevice[]>([]);
+  const [lastMidiControlChange, setLastMidiControlChange] = useState<MidiControlChange | undefined>(undefined);
   const contextRef = useRef<AudioContext | null>(null);
   const nodeRef = useRef<AudioWorkletNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -207,12 +255,23 @@ export function useAudioEngine(): AudioEngineState {
   const currentInputDeviceIdRef = useRef('');
   const midiAccessRef = useRef<MidiAccessLike | null>(null);
   const midiRequestRef = useRef<Promise<MidiAccessLike> | null>(null);
+  const midiClockTickMsBySourceRef = useRef<Record<number, number>>({});
+  const midiClockTempoBySourceRef = useRef<Record<number, number>>({});
+  const midiControlChangeIdRef = useRef(0);
   const meterFrameRef = useRef<number | null>(null);
+  const lastAudibleAtRef = useRef(0);
+  const lastSilenceReportAtRef = useRef(0);
+  const lastAudioHealthReportAtRef = useRef(0);
   const graphRef = useRef<DspProgram | null>(null);
+  const audioEngineRequestRef = useRef<Promise<void> | null>(null);
+  const audioActivationRequestedRef = useRef(false);
+  const backendReadyRef = useRef(false);
   const lastSentProgramStructureRef = useRef<string | null>(null);
   const lastSentValuesRef = useRef<number[] | null>(null);
   const activeScopeLinkIdsRef = useRef<string[]>([]);
   const sampleDataKeysRef = useRef<Record<string, string>>({});
+  const sampleDataCacheRef = useRef<Record<string, SampleDataCacheEntry>>({});
+  const sampleDataRequestRef = useRef<Record<string, SampleDataRequest>>({});
   const recordingRequestedRef = useRef(false);
   const recordingCaptureRef = useRef<RecordingCapture | null>(null);
   const recordingSaveIdRef = useRef(0);
@@ -224,6 +283,9 @@ export function useAudioEngine(): AudioEngineState {
       window.cancelAnimationFrame(meterFrameRef.current);
       meterFrameRef.current = null;
     }
+    lastAudibleAtRef.current = 0;
+    lastSilenceReportAtRef.current = 0;
+    lastAudioHealthReportAtRef.current = 0;
     setPeak(0);
   }, []);
 
@@ -239,6 +301,43 @@ export function useAudioEngine(): AudioEngineState {
       let nextPeak = 0;
       for (const sample of samples) {
         nextPeak = Math.max(nextPeak, Math.abs(sample));
+      }
+      if (
+        contextRef.current?.state === 'running' &&
+        audioActivationRequestedRef.current &&
+        backendReadyRef.current
+      ) {
+        if (timestamp - lastAudioHealthReportAtRef.current >= AUDIO_HEALTH_REPORT_INTERVAL_MS) {
+          lastAudioHealthReportAtRef.current = timestamp;
+          logDiagnosticEvent('audio-health', {
+            details: {
+              contextState: contextRef.current.state,
+              contextTime: contextRef.current.currentTime,
+              sampleRate: contextRef.current.sampleRate,
+              peak: nextPeak,
+              graph: dspProgramDiagnosticSnapshot(graphRef.current),
+            },
+          });
+        }
+        if (nextPeak > AUDIO_SILENCE_PEAK_THRESHOLD) {
+          lastAudibleAtRef.current = timestamp;
+        } else if (
+          lastAudibleAtRef.current > 0 &&
+          timestamp - lastAudibleAtRef.current >= AUDIO_UNEXPECTED_SILENCE_MS &&
+          timestamp - lastSilenceReportAtRef.current >= AUDIO_SILENCE_REPORT_INTERVAL_MS
+        ) {
+          lastSilenceReportAtRef.current = timestamp;
+          logDiagnosticEvent('audio-output-silent-after-signal', {
+            level: 'warn',
+            details: {
+              contextState: contextRef.current.state,
+              mutedByUi: !audioActivationRequestedRef.current,
+              lastAudibleAgoMs: Math.round(timestamp - lastAudibleAtRef.current),
+              peak: nextPeak,
+              graph: dspProgramDiagnosticSnapshot(graphRef.current),
+            },
+          });
+        }
       }
       if (timestamp - lastMeterUpdateAt >= METER_UPDATE_INTERVAL_MS) {
         lastMeterUpdateAt = timestamp;
@@ -285,6 +384,12 @@ export function useAudioEngine(): AudioEngineState {
       channelCount: RECORDING_CHANNEL_COUNT,
       sampleRate: context.sampleRate,
     };
+    logDiagnosticEvent('audio-recording-started', {
+      details: {
+        sampleRate: context.sampleRate,
+        channelCount: RECORDING_CHANNEL_COUNT,
+      },
+    });
     stopRecordingTimer();
     recordingStartedAtRef.current = performance.now();
     setRecordingElapsedSeconds(0);
@@ -315,6 +420,14 @@ export function useAudioEngine(): AudioEngineState {
     const saveId = recordingSaveIdRef.current + 1;
     recordingSaveIdRef.current = saveId;
     const wavBlob = encodeWav(capture.chunks, capture.sampleRate, capture.channelCount);
+    logDiagnosticEvent('audio-recording-stopped', {
+      details: {
+        chunks: capture.chunks.length,
+        sampleRate: capture.sampleRate,
+        channelCount: capture.channelCount,
+        bytes: wavBlob.size,
+      },
+    });
     setRecordingStatus('saving');
     setRecordingMessage('saving recording');
 
@@ -388,16 +501,8 @@ export function useAudioEngine(): AudioEngineState {
 
   const updateMidiInputDevices = useCallback((midiAccess: MidiAccessLike): MidiInputDevice[] => {
     const inputs = [...midiAccess.inputs.values()];
-    const devices = inputs.map((input, index) => {
-      const name = input.name?.trim();
-      const manufacturer = input.manufacturer?.trim();
-      return {
-        id: input.id || `${manufacturer || 'midi'}-${name || index}`,
-        label: [manufacturer, name].filter(Boolean).join(' ') || `MIDI input ${index + 1}`,
-        state: input.state || 'connected',
-      };
-    });
-    setMidiInputDevices(devices);
+    const devices = inputs.map(midiInputDeviceFromInput);
+    setMidiInputDevices((current) => midiInputDevicesEqual(current, devices) ? current : devices);
     return devices;
   }, []);
 
@@ -418,39 +523,86 @@ export function useAudioEngine(): AudioEngineState {
 
   const attachMidiInputs = useCallback((midiAccess: MidiAccessLike, node: AudioWorkletNode | null) => {
     const devices = updateMidiInputDevices(midiAccess);
+    const selectedConnectedCount = devices.filter((device) => selectedMidiInputDeviceIdSet.has(device.id)).length;
     setMidiInputStatus(devices.length > 0 ? 'connected' : 'unsupported');
-    setMidiInputMessage(devices.length > 0
-      ? `${devices.length} MIDI input${devices.length === 1 ? '' : 's'} connected.`
-      : 'MIDI permission is granted, but no input devices were found.');
+    setMidiInputMessage(midiInputStatusMessage(devices.length, selectedMidiInputDeviceIds.length, selectedConnectedCount));
 
-    const handleMidiMessage = (event: { data: ArrayLike<number> }) => {
-      if (!node) return;
+    const handleMidiClock = (sourceIndex: number, event: { timeStamp?: number }) => {
+      const graph = graphRef.current;
+      if (!node || !programUsesMidiClock(graph)) return;
+
+      const activeSources = activeMidiClockSourceIndexes(graph);
+      if (activeSources.size > 0 && !activeSources.has(0) && !activeSources.has(sourceIndex)) return;
+
+      const now = Number.isFinite(event.timeStamp) ? Number(event.timeStamp) : performance.now();
+      const previous = midiClockTickMsBySourceRef.current[sourceIndex];
+      midiClockTickMsBySourceRef.current[sourceIndex] = now;
+      if (!Number.isFinite(previous) || previous <= 0 || now <= previous) return;
+
+      const intervalMs = now - previous;
+      const measuredBpm = 60_000 / (intervalMs * MIDI_CLOCK_TICKS_PER_BEAT);
+      if (!Number.isFinite(measuredBpm)) return;
+
+      const previousTempo = midiClockTempoBySourceRef.current[sourceIndex] || measuredBpm;
+      const bpm = clampNumber(
+        previousTempo + (measuredBpm - previousTempo) * MIDI_CLOCK_EMA_WEIGHT,
+        MIDI_CLOCK_TEMPO_MIN,
+        MIDI_CLOCK_TEMPO_MAX,
+      );
+      midiClockTempoBySourceRef.current[sourceIndex] = bpm;
+      node.port.postMessage({ type: 'midiClockTempo', payload: { sourceIndex, bpm } });
+    };
+
+    const handleMidiMessage = (sourceIndex: number, event: { data: ArrayLike<number>; timeStamp?: number }) => {
       const status = Number(event.data[0] ?? 0);
+      if (status === 0xf8) {
+        handleMidiClock(sourceIndex, event);
+        return;
+      }
+      if (status === 0xfa || status === 0xfb || status === 0xfc) {
+        delete midiClockTickMsBySourceRef.current[sourceIndex];
+        delete midiClockTempoBySourceRef.current[sourceIndex];
+        return;
+      }
       const data1 = Number(event.data[1] ?? 0);
       const data2 = Number(event.data[2] ?? 0);
       const command = status & 0xf0;
       const channel = (status & 0x0f) + 1;
       if (command === 0x90 && data2 > 0) {
-        node.port.postMessage({ type: 'noteOn', payload: { note: data1, velocity: data2 / 127 } });
+        node?.port.postMessage({ type: 'noteOn', payload: { channel, note: data1, velocity: data2 / 127 } });
         return;
       }
       if (command === 0x80 || (command === 0x90 && data2 === 0)) {
-        node.port.postMessage({ type: 'noteOff', payload: { note: data1 } });
+        node?.port.postMessage({ type: 'noteOff', payload: { channel, note: data1 } });
         return;
       }
       if (command === 0xb0) {
-        node.port.postMessage({ type: 'midiCc', payload: { channel, cc: data1, value: data2 / 127 } });
+        const value = data2 / 127;
+        setLastMidiControlChange({
+          id: midiControlChangeIdRef.current + 1,
+          sourceIndex,
+          channel,
+          cc: data1,
+          value,
+          receivedAt: Number.isFinite(event.timeStamp) ? Number(event.timeStamp) : performance.now(),
+        });
+        midiControlChangeIdRef.current += 1;
+        node?.port.postMessage({ type: 'midiCc', payload: { channel, cc: data1, value } });
       }
     };
 
-    for (const input of midiAccess.inputs.values()) {
-      input.onmidimessage = node ? handleMidiMessage : null;
+    for (const [index, input] of [...midiAccess.inputs.values()].entries()) {
+      const sourceIndex = index + 1;
+      const device = midiInputDeviceFromInput(input, index);
+      input.onmidimessage = selectedMidiInputDeviceIdSet.has(device.id)
+        ? (event) => handleMidiMessage(sourceIndex, event)
+        : null;
     }
     midiAccess.onstatechange = () => attachMidiInputs(
       midiAccess,
       graphRef.current && programUsesMidi(graphRef.current) ? nodeRef.current : null,
     );
-  }, [updateMidiInputDevices]);
+  }, [selectedMidiInputDeviceIdSet, selectedMidiInputDeviceIds.length, selectedMidiInputDeviceKey, updateMidiInputDevices]);
 
   const refreshMidiInputDevices = useCallback(async () => {
     const navigatorWithMidi = navigator as Navigator & {
@@ -538,6 +690,16 @@ export function useAudioEngine(): AudioEngineState {
       inputStreamRef.current = stream;
       inputSourceRef.current = source;
       const track = stream.getAudioTracks()[0] ?? null;
+      track?.addEventListener('ended', () => {
+        logDiagnosticEvent('audio-input-track-ended', {
+          level: 'warn',
+          details: {
+            label: track.label,
+            readyState: track.readyState,
+            settings: track.getSettings(),
+          },
+        });
+      });
       const connectedDeviceId = track?.getSettings().deviceId ?? selectedAudioInputDeviceId;
       currentInputDeviceIdRef.current = selectedAudioInputDeviceId;
       setAudioInputStatus('connected');
@@ -545,6 +707,12 @@ export function useAudioEngine(): AudioEngineState {
       void refreshAudioInputDevices();
       setMessage(`WASM audio ${context.state} (${AUDIO_ENGINE_ASSET_VERSION})`);
     }).catch((error) => {
+      logDiagnosticEvent('audio-input-error', {
+        level: 'warn',
+        details: {
+          error: serializeError(error),
+        },
+      });
       if (inputRequestIdRef.current !== requestId) return;
       const errorName = error instanceof DOMException ? error.name : '';
       if (errorName === 'NotAllowedError' || errorName === 'SecurityError') {
@@ -579,7 +747,17 @@ export function useAudioEngine(): AudioEngineState {
       if (sampleDataKeysRef.current[binding.nodeId] === sampleKey) continue;
 
       sampleDataKeysRef.current[binding.nodeId] = sampleKey;
-      void loadAndPostSampleData(context, node, binding.nodeId, sampleUrl, sampleName, sampleKey, sampleDataKeysRef)
+      void loadAndPostSampleData(
+        context,
+        node,
+        binding.nodeId,
+        sampleUrl,
+        sampleName,
+        sampleKey,
+        sampleDataKeysRef,
+        sampleDataCacheRef,
+        sampleDataRequestRef,
+      )
         .catch(() => {
           if (sampleDataKeysRef.current[binding.nodeId] === sampleKey) {
             delete sampleDataKeysRef.current[binding.nodeId];
@@ -594,8 +772,38 @@ export function useAudioEngine(): AudioEngineState {
     }
   }, []);
 
+  const preloadGraphSamples = useCallback((graph: DspProgram) => {
+    const nextKeys: Record<string, string> = {};
+
+    for (const binding of graph.sampleBindings) {
+      const sampleUrl = binding.sample.url.trim();
+      if (!sampleUrl) continue;
+
+      const sampleName = binding.sample.name;
+      const sampleKey = `${sampleUrl}\n${sampleName}`;
+      nextKeys[binding.nodeId] = sampleKey;
+      void loadCachedSampleData(
+        binding.nodeId,
+        sampleUrl,
+        sampleName,
+        sampleKey,
+        sampleDataCacheRef,
+        sampleDataRequestRef,
+      ).catch(() => undefined);
+    }
+
+    for (const nodeId of Object.keys(sampleDataCacheRef.current)) {
+      if (nextKeys[nodeId] === sampleDataCacheRef.current[nodeId]?.key) continue;
+      delete sampleDataCacheRef.current[nodeId];
+    }
+    for (const nodeId of Object.keys(sampleDataRequestRef.current)) {
+      if (nextKeys[nodeId] === sampleDataRequestRef.current[nodeId]?.key) continue;
+      delete sampleDataRequestRef.current[nodeId];
+    }
+  }, []);
+
   const syncMidiInput = useCallback((graph: DspProgram, node: AudioWorkletNode) => {
-    if (!programUsesMidi(graph)) {
+    if (!programUsesMidi(graph) && !midiInputEnabled) {
       disconnectMidiInput();
       return;
     }
@@ -635,10 +843,244 @@ export function useAudioEngine(): AudioEngineState {
       setMessage(`MIDI input unavailable: ${error instanceof Error ? error.message : 'permission denied'}`);
       midiRequestRef.current = null;
     });
-  }, [attachMidiInputs, disconnectMidiInput]);
+  }, [attachMidiInputs, disconnectMidiInput, midiInputEnabled]);
+
+  const activateAudioEngine = useCallback(async () => {
+    const context = contextRef.current;
+    const node = nodeRef.current;
+    const outputGain = outputGainRef.current;
+    const analyser = analyserRef.current;
+    if (!context || !node || !outputGain) return;
+
+    audioActivationRequestedRef.current = true;
+    logDiagnosticEvent('audio-activation-requested', {
+      details: {
+        contextState: context.state,
+        graph: dspProgramDiagnosticSnapshot(graphRef.current),
+      },
+    });
+    await resumeAudioContext(context);
+    node.port.postMessage({ type: 'setMuted', payload: { muted: false } });
+    fadeAudioOutputIn(context, outputGain);
+
+    if (graphRef.current) {
+      syncGraphSamples(graphRef.current, context, node);
+      syncAudioInput(graphRef.current, context, node);
+      syncMidiInput(graphRef.current, node);
+    }
+
+    setStatus(context.state === 'running' ? 'running' : 'idle');
+    setMessage(`audio context ${context.state}`);
+    if (context.state === 'running') {
+      logDiagnosticEvent('audio-context-running', {
+        details: {
+          sampleRate: context.sampleRate,
+          baseLatency: context.baseLatency,
+          outputLatency: audioContextOutputLatency(context),
+          graph: dspProgramDiagnosticSnapshot(graphRef.current),
+        },
+      });
+      startMeter();
+      if (recordingRequestedRef.current && analyser) {
+        beginRecordingCapture(context, analyser);
+      }
+    }
+  }, [beginRecordingCapture, startMeter, syncAudioInput, syncGraphSamples, syncMidiInput]);
+
+  const ensureAudioEngine = useCallback(async (activate: boolean) => {
+    if (stopTimeoutRef.current !== null) {
+      window.clearTimeout(stopTimeoutRef.current);
+      stopTimeoutRef.current = null;
+    }
+
+    if (activate) {
+      audioActivationRequestedRef.current = true;
+      setStatus('starting');
+      setMessage(backendReadyRef.current ? 'starting audio' : 'preparing audio');
+    }
+
+    if (nodeRef.current && contextRef.current) {
+      if (activate) {
+        await activateAudioEngine();
+      }
+      return;
+    }
+
+    if (!audioEngineRequestRef.current) {
+      audioEngineRequestRef.current = (async () => {
+        try {
+          if (!activate) {
+            setMessage('preparing audio');
+          }
+
+          backendReadyRef.current = false;
+          const context = new AudioContext();
+          logDiagnosticEvent('audio-context-created', {
+            details: {
+              sampleRate: context.sampleRate,
+              baseLatency: context.baseLatency,
+              outputLatency: audioContextOutputLatency(context),
+              state: context.state,
+            },
+          });
+          const wasmBytes = await fetch(WASM_URL, { cache: 'no-store' }).then((response) => {
+            if (!response.ok) {
+              throw new Error(`Could not load WASM kernel (${response.status}).`);
+            }
+            return response.arrayBuffer();
+          });
+          await context.audioWorklet.addModule(WORKLET_URL);
+          const analyser = context.createAnalyser();
+          analyser.fftSize = 1024;
+          const outputGain = context.createGain();
+          outputGain.gain.value = 0;
+          const node = new AudioWorkletNode(context, 'visual-fm-wasm-engine', {
+            numberOfInputs: 1,
+            numberOfOutputs: 1,
+            outputChannelCount: [2],
+            processorOptions: { wasmBytes, audioConfig: AUDIO_ENGINE_CONFIG },
+          });
+          node.addEventListener('processorerror', () => {
+            logDiagnosticEvent('audio-worklet-processor-error', {
+              level: 'error',
+              details: {
+                contextState: context.state,
+                graph: dspProgramDiagnosticSnapshot(graphRef.current),
+              },
+            });
+          });
+
+          node.port.onmessage = (event) => {
+            const { type, payload } = event.data || {};
+            if (type === 'backendStatus') {
+              backendReadyRef.current = Boolean(payload?.ready);
+              logDiagnosticEvent('audio-backend-status', {
+                level: payload?.ready ? 'info' : 'error',
+                details: {
+                  payload,
+                  contextState: context.state,
+                  graph: dspProgramDiagnosticSnapshot(graphRef.current),
+                },
+              });
+              if (payload?.ready) {
+                if (audioActivationRequestedRef.current && context.state === 'running') {
+                  fadeAudioOutputIn(context, outputGain);
+                  setStatus('running');
+                  setMessage(`WASM audio ${context.state} (${AUDIO_ENGINE_ASSET_VERSION})`);
+                } else {
+                  setStatus((current) => current === 'starting' ? current : 'idle');
+                  setMessage('audio ready');
+                }
+              } else {
+                setStatus('error');
+                setMessage(payload?.error || 'WASM audio failed');
+              }
+              return;
+            }
+            if (type === 'processorError') {
+              logDiagnosticEvent('audio-worklet-runtime-error', {
+                level: 'error',
+                details: {
+                  payload,
+                  contextState: context.state,
+                  graph: dspProgramDiagnosticSnapshot(graphRef.current),
+                },
+              });
+              return;
+            }
+            if (type === 'linkMeters') {
+              setLinkMeters(linkMetersFromPayload(payload));
+              return;
+            }
+            if (type === 'linkScope') {
+              const id = typeof payload?.id === 'string' ? payload.id : null;
+              if (!id) return;
+              setLinkScopeReadings((current) => ({
+                ...current,
+                [id]: {
+                  mode: typeof payload?.mode === 'string' ? payload.mode : 'continuous',
+                  samples: Array.isArray(payload?.samples) ? payload.samples.map(Number).filter(Number.isFinite) : [],
+                },
+              }));
+            }
+          };
+          context.onstatechange = () => {
+            const contextState = context.state as string;
+            logDiagnosticEvent('audio-context-state-change', {
+              level: contextState === 'interrupted' || contextState === 'closed' ? 'warn' : 'info',
+              details: {
+                state: contextState,
+                sampleRate: context.sampleRate,
+                baseLatency: context.baseLatency,
+                outputLatency: audioContextOutputLatency(context),
+              },
+            });
+            setMessage((current) => current.replace(/(audio|context) (running|suspended|interrupted|closed)/, `$1 ${context.state}`));
+            if (recordingRequestedRef.current && context.state === 'running') {
+              beginRecordingCapture(context, analyser);
+            }
+          };
+
+          node.connect(analyser);
+          analyser.connect(outputGain);
+          outputGain.connect(context.destination);
+          node.port.postMessage({ type: 'setMuted', payload: { muted: true } });
+          contextRef.current = context;
+          nodeRef.current = node;
+          analyserRef.current = analyser;
+          outputGainRef.current = outputGain;
+
+          if (graphRef.current) {
+            sampleDataKeysRef.current = {};
+            lastSentProgramStructureRef.current = dspProgramStructureKey(graphRef.current);
+            lastSentValuesRef.current = [...graphRef.current.values];
+            node.port.postMessage({ type: 'dspProgram', payload: graphRef.current });
+            syncGraphSamples(graphRef.current, context, node);
+          }
+          if (activeScopeLinkIdsRef.current.length > 0) {
+            node.port.postMessage({
+              type: 'setLinkScopes',
+              payload: scopePayload(activeScopeLinkIdsRef.current),
+            });
+          }
+        } catch (error) {
+          logDiagnosticEvent('audio-engine-start-error', {
+            level: 'error',
+            details: {
+              error: serializeError(error),
+              graph: dspProgramDiagnosticSnapshot(graphRef.current),
+            },
+          });
+          if (activate) {
+            setStatus('error');
+            setMessage(error instanceof Error ? error.message : 'audio failed');
+          } else {
+            setMessage('audio stopped');
+          }
+          closeAudioContext(contextRef, nodeRef, analyserRef, outputGainRef, inputSourceRef, inputStreamRef, stopTimeoutRef);
+          backendReadyRef.current = false;
+          throw error;
+        } finally {
+          audioEngineRequestRef.current = null;
+        }
+      })();
+    }
+
+    try {
+      await audioEngineRequestRef.current;
+    } catch {
+      if (!activate) return;
+      throw new Error('audio failed');
+    }
+
+    if (activate) {
+      await activateAudioEngine();
+    }
+  }, [activateAudioEngine, beginRecordingCapture, syncGraphSamples]);
 
   const syncGraph = useCallback((graph: DspProgram) => {
     graphRef.current = graph;
+    preloadGraphSamples(graph);
     if (!nodeRef.current || !contextRef.current) {
       if (programUsesAudioInput(graph)) {
         const mediaDevices = navigator.mediaDevices;
@@ -653,7 +1095,7 @@ export function useAudioEngine(): AudioEngineState {
       } else {
         disconnectAudioInput();
       }
-      if (programUsesMidi(graph)) {
+      if (programUsesMidi(graph) || midiInputEnabled) {
         const navigatorWithMidi = navigator as Navigator & {
           requestMIDIAccess?: (options?: { sysex?: boolean }) => Promise<unknown>;
         };
@@ -663,27 +1105,31 @@ export function useAudioEngine(): AudioEngineState {
           setMidiInputMessage('MIDI input is unavailable in this browser.');
         } else if (midiAccessRef.current) {
           const devices = updateMidiInputDevices(midiAccessRef.current);
+          const selectedConnectedCount = devices.filter((device) => selectedMidiInputDeviceIdSet.has(device.id)).length;
           setMidiInputStatus(devices.length > 0 ? 'connected' : 'unsupported');
-          setMidiInputMessage(devices.length > 0
-            ? `${devices.length} MIDI input${devices.length === 1 ? '' : 's'} connected.`
-            : 'MIDI permission is granted, but no input devices were found.');
+          setMidiInputMessage(midiInputStatusMessage(devices.length, selectedMidiInputDeviceIds.length, selectedConnectedCount));
         } else {
           setMidiInputStatus('needs-permission');
-          setMidiInputMessage('Start audio or refresh MIDI to request browser MIDI access.');
+          setMidiInputMessage(midiInputEnabled
+            ? 'Open MIDI settings to request browser MIDI access.'
+            : 'Start audio or refresh MIDI to request browser MIDI access.');
         }
       } else {
         disconnectMidiInput();
       }
       return;
     }
+    const shouldSyncExternalInputs = audioActivationRequestedRef.current;
     const structureKey = dspProgramStructureKey(graph);
     if (
       lastSentProgramStructureRef.current === structureKey
       && arraysEqual(lastSentValuesRef.current, graph.values)
     ) {
       syncGraphSamples(graph, contextRef.current, nodeRef.current);
-      syncAudioInput(graph, contextRef.current, nodeRef.current);
-      syncMidiInput(graph, nodeRef.current);
+      if (shouldSyncExternalInputs) {
+        syncAudioInput(graph, contextRef.current, nodeRef.current);
+        syncMidiInput(graph, nodeRef.current);
+      }
       return;
     }
 
@@ -691,8 +1137,10 @@ export function useAudioEngine(): AudioEngineState {
       lastSentValuesRef.current = [...graph.values];
       nodeRef.current.port.postMessage({ type: 'dspValues', payload: { values: graph.values } });
       syncGraphSamples(graph, contextRef.current, nodeRef.current);
-      syncAudioInput(graph, contextRef.current, nodeRef.current);
-      syncMidiInput(graph, nodeRef.current);
+      if (shouldSyncExternalInputs) {
+        syncAudioInput(graph, contextRef.current, nodeRef.current);
+        syncMidiInput(graph, nodeRef.current);
+      }
       return;
     }
 
@@ -700,15 +1148,17 @@ export function useAudioEngine(): AudioEngineState {
     lastSentValuesRef.current = [...graph.values];
     nodeRef.current.port.postMessage({ type: 'dspProgram', payload: graph });
     syncGraphSamples(graph, contextRef.current, nodeRef.current);
-    syncAudioInput(graph, contextRef.current, nodeRef.current);
-    syncMidiInput(graph, nodeRef.current);
+    if (shouldSyncExternalInputs) {
+      syncAudioInput(graph, contextRef.current, nodeRef.current);
+      syncMidiInput(graph, nodeRef.current);
+    }
     nodeRef.current.port.postMessage({
       type: 'setLinkScopes',
       payload: activeScopeLinkIdsRef.current.length > 0
         ? scopePayload(activeScopeLinkIdsRef.current)
         : {},
     });
-  }, [disconnectAudioInput, disconnectMidiInput, refreshAudioInputDevices, syncAudioInput, syncGraphSamples, syncMidiInput, updateMidiInputDevices]);
+  }, [disconnectAudioInput, disconnectMidiInput, ensureAudioEngine, midiInputEnabled, preloadGraphSamples, refreshAudioInputDevices, selectedMidiInputDeviceIdSet, selectedMidiInputDeviceIds.length, selectedMidiInputDeviceKey, syncAudioInput, syncGraphSamples, syncMidiInput, updateMidiInputDevices]);
 
   const setLinkScopes = useCallback((linkIds: string[]) => {
     const nextLinkIds = uniqueScopeLinkIds(linkIds);
@@ -724,132 +1174,34 @@ export function useAudioEngine(): AudioEngineState {
   }, []);
 
   const start = useCallback(async () => {
-    if (stopTimeoutRef.current !== null) {
-      window.clearTimeout(stopTimeoutRef.current);
-      stopTimeoutRef.current = null;
-    }
-    if (nodeRef.current && contextRef.current) {
-      await resumeAudioContext(contextRef.current);
-      nodeRef.current.port.postMessage({ type: 'setMuted', payload: { muted: false } });
-      if (outputGainRef.current) {
-        fadeAudioOutputIn(contextRef.current, outputGainRef.current);
-      }
-      if (graphRef.current) {
-        syncGraphSamples(graphRef.current, contextRef.current, nodeRef.current);
-        syncAudioInput(graphRef.current, contextRef.current, nodeRef.current);
-        syncMidiInput(graphRef.current, nodeRef.current);
-      }
-      setStatus(contextRef.current.state === 'running' ? 'running' : 'idle');
-      setMessage(`audio context ${contextRef.current.state}`);
-      if (contextRef.current.state === 'running') {
-        startMeter();
-        if (recordingRequestedRef.current && analyserRef.current) {
-          beginRecordingCapture(contextRef.current, analyserRef.current);
-        }
-      }
-      return;
-    }
-
     try {
-      setStatus('starting');
-      setMessage('starting audio');
-      const context = new AudioContext();
-      setMessage(`audio context ${context.state}`);
-      const wasmBytes = await fetch(WASM_URL, { cache: 'no-store' }).then((response) => {
-        if (!response.ok) {
-          throw new Error(`Could not load WASM kernel (${response.status}).`);
-        }
-        return response.arrayBuffer();
+      logDiagnosticEvent('audio-start-clicked', {
+        details: {
+          graph: dspProgramDiagnosticSnapshot(graphRef.current),
+        },
       });
-      await context.audioWorklet.addModule(WORKLET_URL);
-      const analyser = context.createAnalyser();
-      analyser.fftSize = 1024;
-      const outputGain = context.createGain();
-      outputGain.gain.value = 0;
-      const node = new AudioWorkletNode(context, 'visual-fm-wasm-engine', {
-        numberOfInputs: 1,
-        numberOfOutputs: 1,
-        outputChannelCount: [2],
-        processorOptions: { wasmBytes, audioConfig: AUDIO_ENGINE_CONFIG },
-      });
-
-      node.port.onmessage = (event) => {
-        const { type, payload } = event.data || {};
-        if (type === 'backendStatus') {
-          if (payload?.ready) {
-            fadeAudioOutputIn(context, outputGain);
-            setStatus('running');
-            setMessage(`WASM audio ${context.state} (${AUDIO_ENGINE_ASSET_VERSION})`);
-          } else {
-            setStatus('error');
-            setMessage(payload?.error || 'WASM audio failed');
-          }
-          return;
-        }
-        if (type === 'linkMeters') {
-          setLinkMeters(linkMetersFromPayload(payload));
-          return;
-        }
-        if (type === 'linkScope') {
-          const id = typeof payload?.id === 'string' ? payload.id : null;
-          if (!id) return;
-          setLinkScopeReadings((current) => ({
-            ...current,
-            [id]: {
-              mode: typeof payload?.mode === 'string' ? payload.mode : 'continuous',
-              samples: Array.isArray(payload?.samples) ? payload.samples.map(Number).filter(Number.isFinite) : [],
-            },
-          }));
-        }
-      };
-      context.onstatechange = () => {
-        setMessage((current) => current.replace(/(audio|context) (running|suspended|interrupted|closed)/, `$1 ${context.state}`));
-        if (recordingRequestedRef.current && context.state === 'running') {
-          beginRecordingCapture(context, analyser);
-        }
-      };
-
-      node.connect(analyser);
-      analyser.connect(outputGain);
-      outputGain.connect(context.destination);
-      contextRef.current = context;
-      nodeRef.current = node;
-      analyserRef.current = analyser;
-      outputGainRef.current = outputGain;
-
-      if (graphRef.current) {
-        lastSentProgramStructureRef.current = dspProgramStructureKey(graphRef.current);
-        lastSentValuesRef.current = [...graphRef.current.values];
-        node.port.postMessage({ type: 'dspProgram', payload: graphRef.current });
-        syncGraphSamples(graphRef.current, context, node);
-        syncAudioInput(graphRef.current, context, node);
-        syncMidiInput(graphRef.current, node);
-      }
-      if (activeScopeLinkIdsRef.current.length > 0) {
-        node.port.postMessage({
-          type: 'setLinkScopes',
-          payload: scopePayload(activeScopeLinkIdsRef.current),
-        });
-      }
-      if (context.state !== 'running') {
-        await resumeAudioContext(context);
-      }
-      if (context.state === 'running') {
-        startMeter();
-        if (recordingRequestedRef.current) {
-          beginRecordingCapture(context, analyser);
-        }
-      } else {
-        setStatus('idle');
-        setMessage(`audio context ${context.state}`);
-      }
+      await ensureAudioEngine(true);
     } catch (error) {
+      logDiagnosticEvent('audio-start-error', {
+        level: 'error',
+        details: {
+          error: serializeError(error),
+          graph: dspProgramDiagnosticSnapshot(graphRef.current),
+        },
+      });
       setStatus('error');
       setMessage(error instanceof Error ? error.message : 'audio failed');
     }
-  }, [beginRecordingCapture, startMeter, syncAudioInput, syncGraphSamples, syncMidiInput]);
+  }, [ensureAudioEngine]);
 
   const stop = useCallback(() => {
+    logDiagnosticEvent('audio-stop-clicked', {
+      details: {
+        contextState: contextRef.current?.state ?? 'none',
+        graph: dspProgramDiagnosticSnapshot(graphRef.current),
+      },
+    });
+    audioActivationRequestedRef.current = false;
     finishRecordingCapture();
     const context = contextRef.current;
     const outputGain = outputGainRef.current;
@@ -859,12 +1211,23 @@ export function useAudioEngine(): AudioEngineState {
         window.clearTimeout(stopTimeoutRef.current);
       }
       stopTimeoutRef.current = window.setTimeout(() => {
-        parkAudioContext(nodeRef, outputGainRef, inputSourceRef, inputStreamRef, stopTimeoutRef);
+        closeAudioContext(contextRef, nodeRef, analyserRef, outputGainRef, inputSourceRef, inputStreamRef, stopTimeoutRef);
+        backendReadyRef.current = false;
+        lastSentProgramStructureRef.current = null;
+        lastSentValuesRef.current = null;
+        setLinkMeters({});
+        setLinkScopeReadings({});
       }, AUDIO_OUTPUT_STOP_DELAY_MS);
     } else {
       closeAudioContext(contextRef, nodeRef, analyserRef, outputGainRef, inputSourceRef, inputStreamRef, stopTimeoutRef);
+      setLinkMeters({});
+      setLinkScopeReadings({});
     }
-    disconnectMidiInput();
+    if (midiInputEnabled && midiAccessRef.current) {
+      attachMidiInputs(midiAccessRef.current, null);
+    } else {
+      disconnectMidiInput();
+    }
     inputRequestIdRef.current += 1;
     currentInputDeviceIdRef.current = '';
     stopMeter();
@@ -876,14 +1239,25 @@ export function useAudioEngine(): AudioEngineState {
     setAudioInputMessage(programUsesAudioInput(graphRef.current)
       ? 'Start audio to request microphone access.'
       : 'Audio input is not used by this patch.');
-    setMidiInputStatus(programUsesMidi(graphRef.current) ? 'needs-permission' : 'inactive');
-    setMidiInputMessage(programUsesMidi(graphRef.current)
-      ? 'Start audio or refresh MIDI to request browser MIDI access.'
+    setMidiInputStatus(programUsesMidi(graphRef.current) || midiInputEnabled ? 'needs-permission' : 'inactive');
+    setMidiInputMessage(programUsesMidi(graphRef.current) || midiInputEnabled
+      ? 'Open MIDI settings to request browser MIDI access.'
       : 'MIDI input is not used by this patch.');
-    setMidiInputDevices((current) => current.length === 0 ? current : []);
-  }, [disconnectMidiInput, finishRecordingCapture, stopMeter]);
+    if (!midiInputEnabled) {
+      setMidiInputDevices((current) => current.length === 0 ? current : []);
+    }
+  }, [attachMidiInputs, disconnectMidiInput, finishRecordingCapture, midiInputEnabled, stopMeter]);
+
+  useEffect(() => {
+    if (!midiAccessRef.current) return;
+    attachMidiInputs(
+      midiAccessRef.current,
+      graphRef.current && programUsesMidi(graphRef.current) ? nodeRef.current : null,
+    );
+  }, [attachMidiInputs]);
 
   useEffect(() => () => {
+    audioActivationRequestedRef.current = false;
     finishRecordingCapture();
     stopMeter();
     closeAudioContext(contextRef, nodeRef, analyserRef, outputGainRef, inputSourceRef, inputStreamRef, stopTimeoutRef);
@@ -916,7 +1290,8 @@ export function useAudioEngine(): AudioEngineState {
     canRequestAccess: Boolean((navigator as Navigator & {
       requestMIDIAccess?: (options?: { sysex?: boolean }) => Promise<unknown>;
     }).requestMIDIAccess),
-  }), [midiInputDevices, midiInputMessage, midiInputStatus]);
+    lastControlChange: lastMidiControlChange,
+  }), [lastMidiControlChange, midiInputDevices, midiInputMessage, midiInputStatus]);
   const recording: RecordingState = useMemo(() => ({
     status: recordingStatus,
     message: recordingMessage,
@@ -1027,6 +1402,7 @@ function dspProgramStructureKey(program: DspProgram): string {
     ops: program.ops,
     valueBindings: program.valueBindings,
     midiControlBindings: program.midiControlBindings,
+    tempoBindings: program.tempoBindings,
     stateBindings: program.stateBindings,
     registerCount: program.registerCount,
     stateCount: program.stateCount,
@@ -1036,6 +1412,7 @@ function dspProgramStructureKey(program: DspProgram): string {
     customWaveBindings: program.customWaveBindings,
     maxVoices: program.maxVoices,
     usesMidiNote: program.usesMidiNote,
+    usesMidiClock: program.usesMidiClock,
     errors: program.errors,
   });
 }
@@ -1068,11 +1445,65 @@ function audioInputDeviceLabel(devices: AudioInputDevice[], deviceId: string): s
   return devices.find((device) => device.deviceId === deviceId)?.label ?? '';
 }
 
+function midiInputDeviceFromInput(input: MidiInputLike, index: number): MidiInputDevice {
+  const name = input.name?.trim();
+  const manufacturer = input.manufacturer?.trim();
+  return {
+    id: input.id || `${manufacturer || 'midi'}-${name || index}`,
+    label: [manufacturer, name].filter(Boolean).join(' ') || `MIDI input ${index + 1}`,
+    state: input.state || 'connected',
+  };
+}
+
+function midiInputDevicesEqual(left: MidiInputDevice[], right: MidiInputDevice[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((device, index) => (
+    device.id === right[index]?.id &&
+    device.label === right[index]?.label &&
+    device.state === right[index]?.state
+  ));
+}
+
+function midiInputStatusMessage(deviceCount: number, selectedCount: number, selectedConnectedCount: number): string {
+  if (deviceCount === 0) {
+    return 'MIDI permission is granted, but no input devices were found.';
+  }
+  if (selectedCount === 0) {
+    return `${deviceCount} MIDI input${deviceCount === 1 ? '' : 's'} available. Select inputs in MIDI settings.`;
+  }
+  if (selectedConnectedCount === 0) {
+    return 'Selected MIDI input is not currently available.';
+  }
+  return `${selectedConnectedCount} of ${deviceCount} MIDI input${deviceCount === 1 ? '' : 's'} selected.`;
+}
+
 function programUsesMidi(program: DspProgram | null): boolean {
   return Boolean(
     program?.ops.some((op) => op.opcode === DSP_OP.MidiNote || op.opcode === DSP_OP.MidiCc) ||
-    (program?.midiControlBindings.length ?? 0) > 0
+    (program?.midiControlBindings.length ?? 0) > 0 ||
+    programUsesMidiClock(program)
   );
+}
+
+function programUsesMidiClock(program: DspProgram | null): boolean {
+  return Boolean(program?.usesMidiClock);
+}
+
+function activeMidiClockSourceIndexes(program: DspProgram | null): Set<number> {
+  const indexes = new Set<number>();
+  if (!program?.usesMidiClock) return indexes;
+
+  for (const binding of program.tempoBindings) {
+    const source = Math.round(program.values[binding.sourceValueIndex] ?? 0);
+    if (source !== 1) continue;
+    indexes.add(Math.max(0, Math.round(program.values[binding.midiSourceValueIndex] ?? 0)));
+  }
+  return indexes;
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, value));
 }
 
 async function resumeAudioContext(context: AudioContext): Promise<void> {
@@ -1117,24 +1548,101 @@ async function loadAndPostSampleData(
   name: string,
   key: string,
   keysRef: { current: Record<string, string> },
+  cacheRef: { current: Record<string, SampleDataCacheEntry> },
+  requestRef: { current: Record<string, SampleDataRequest> },
 ): Promise<void> {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Could not load sample "${name || url}" (${response.status}).`);
+  const entry = await loadCachedSampleData(nodeId, url, name, key, cacheRef, requestRef, context);
+  if (!entry || keysRef.current[nodeId] !== key) return;
+  postSampleData(node, nodeId, entry);
+}
+
+async function loadCachedSampleData(
+  nodeId: string,
+  url: string,
+  name: string,
+  key: string,
+  cacheRef: { current: Record<string, SampleDataCacheEntry> },
+  requestRef: { current: Record<string, SampleDataRequest> },
+  context?: BaseAudioContext,
+): Promise<SampleDataCacheEntry | null> {
+  const cached = cacheRef.current[nodeId];
+  if (cached?.key === key) return cached;
+
+  const currentRequest = requestRef.current[nodeId];
+  if (currentRequest?.key === key) return currentRequest.promise;
+
+  delete cacheRef.current[nodeId];
+  const requestState: SampleDataRequest = {
+    key,
+    promise: Promise.resolve(null),
+  };
+  const request = (async () => {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`Could not load sample "${name || url}" (${response.status}).`);
+      }
+
+      const buffer = await decodeSampleAudioData(await response.arrayBuffer(), context);
+      const entry: SampleDataCacheEntry = {
+        key,
+        data: audioBufferToMonoData(buffer),
+        sampleRate: buffer.sampleRate,
+        name,
+        storageKey: url,
+      };
+      if (requestRef.current[nodeId] === requestState) {
+        cacheRef.current[nodeId] = entry;
+        delete requestRef.current[nodeId];
+      }
+      return entry;
+    } catch (error) {
+      logDiagnosticEvent('audio-sample-load-error', {
+        level: 'warn',
+        details: {
+          nodeId,
+          url,
+          name,
+          error: serializeError(error),
+        },
+      });
+      if (requestRef.current[nodeId] === requestState) {
+        delete requestRef.current[nodeId];
+      }
+      throw error;
+    }
+  })();
+  requestState.promise = request;
+  requestRef.current[nodeId] = requestState;
+  return request;
+}
+
+async function decodeSampleAudioData(arrayBuffer: ArrayBuffer, context?: BaseAudioContext): Promise<AudioBuffer> {
+  if (context) {
+    return context.decodeAudioData(arrayBuffer);
   }
 
-  const buffer = await context.decodeAudioData(await response.arrayBuffer());
-  if (keysRef.current[nodeId] !== key) return;
+  const windowWithOfflineAudio = window as Window & {
+    webkitOfflineAudioContext?: typeof OfflineAudioContext;
+  };
+  const OfflineAudioContextConstructor = window.OfflineAudioContext || windowWithOfflineAudio.webkitOfflineAudioContext;
+  if (!OfflineAudioContextConstructor) {
+    throw new Error('This browser cannot preload samples while audio is stopped.');
+  }
+  const decodeContext = new OfflineAudioContextConstructor(1, 1, 44100);
+  return decodeContext.decodeAudioData(arrayBuffer);
+}
 
-  const data = audioBufferToMonoData(buffer);
+function postSampleData(node: AudioWorkletNode, nodeId: string, entry: SampleDataCacheEntry): void {
+  const data = new Float32Array(entry.data);
   node.port.postMessage({
     type: 'sampleData',
     payload: {
       nodeId,
       data,
-      sampleRate: buffer.sampleRate,
-      name,
-      storageKey: url,
+      sampleRate: entry.sampleRate,
+      name: entry.name,
+      storageKey: entry.storageKey,
     },
   }, [data.buffer]);
 }
@@ -1151,4 +1659,28 @@ function audioBufferToMonoData(buffer: AudioBuffer): Float32Array {
   }
 
   return output;
+}
+
+function audioContextOutputLatency(context: AudioContext): number | null {
+  const contextWithOutputLatency = context as AudioContext & { outputLatency?: number };
+  return typeof contextWithOutputLatency.outputLatency === 'number' ? contextWithOutputLatency.outputLatency : null;
+}
+
+function dspProgramDiagnosticSnapshot(program: DspProgram | null) {
+  if (!program) return null;
+  return {
+    ops: program.ops.length,
+    values: program.values.length,
+    stateBindings: program.stateBindings.length,
+    registerCount: program.registerCount,
+    stateCount: program.stateCount,
+    sampleBindings: program.sampleBindings.length,
+    customWaveBindings: program.customWaveBindings.length,
+    midiControlBindings: program.midiControlBindings.length,
+    tempoBindings: program.tempoBindings.length,
+    maxVoices: program.maxVoices,
+    usesMidiNote: program.usesMidiNote,
+    usesMidiClock: program.usesMidiClock,
+    errors: program.errors.slice(0, 8),
+  };
 }

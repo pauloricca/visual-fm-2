@@ -52,9 +52,10 @@ Most node types are available from the node picker. `Ins` and `Outs` appear whil
 - `Map`: remaps a signal from one numeric range to another.
 - `Clamp`: limits a signal to a minimum and maximum.
 - `Multiply`: multiplies a signal by a factor.
+- `Pan`: splits a signal into equal-power `left` and `right` outputs from a `pan` value, where `-1` is left, `0` is center, and `1` is right.
 - `Delay`: applies delay with time, feedback, and wet/dry mix controls.
 - `Chorus`: applies a modulated delay chorus effect.
-- `Reverb`: applies a reverb effect with size, decay, and mix controls.
+- `Reverb`: applies a reverb effect with size, decay, mix controls, and `left`/`right` outputs.
 - `Envelope`: creates an ADSR-style envelope from a trigger input.
 - `Follower`: follows the amplitude contour of a signal with attack/release smoothing.
 - `Ring Mod`: multiplies a signal by a modulation amount for ring-mod-style tones.

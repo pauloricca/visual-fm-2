@@ -497,6 +497,10 @@ select:hover {
   background: var(--surface-bg);
 }
 
+.shader-node-audio-out {
+  min-width: 172px;
+}
+
 .shader-node-audio-input {
   width: 244px;
   background: var(--surface-bg);
@@ -820,8 +824,7 @@ select:hover {
   outline: 0;
 }
 
-.shader-node-body-audio-input,
-.shader-node-body-midi-note {
+.shader-node-body-audio-input {
   grid-template-columns: minmax(0, 1fr);
   width: 100%;
 }
@@ -905,7 +908,8 @@ select:hover {
 .audio-input-node-device-select,
 .midi-input-node-device-count,
 .midi-input-node-refresh-button,
-.midi-voices-select {
+.midi-voices-select,
+.tempo-source-select {
   height: 22px;
   min-width: 0;
   border: 1px solid #fff;
@@ -982,7 +986,12 @@ select:hover {
 }
 
 .midi-voices-select {
-  width: 64px;
+  width: 68px;
+  padding: 0 4px;
+}
+
+.tempo-source-select {
+  width: 68px;
   padding: 0 4px;
 }
 
@@ -1163,6 +1172,10 @@ select:hover {
   min-height: 26px;
 }
 
+.shader-node-body-audio-out {
+  row-gap: 6px;
+}
+
 .shader-node-body-scope {
   position: relative;
   display: grid;
@@ -1240,15 +1253,15 @@ select:hover {
 
 .shader-port-input {
   display: grid;
-  grid-template-columns: minmax(0, var(--input-label-width, auto)) minmax(68px, 1fr);
+  grid-template-columns: minmax(max-content, var(--input-label-width, max-content)) 68px;
   align-items: center;
   gap: 6px;
 }
 
 .shader-port-input span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  min-width: max-content;
+  overflow: visible;
+  text-overflow: clip;
   white-space: nowrap;
 }
 
@@ -1419,11 +1432,61 @@ select:hover {
 
 .audio-node-meter-peak {
   position: absolute;
-  top: 6px;
-  bottom: 6px;
+  inset: 18px auto 18px;
   left: 70%;
   width: 2px;
+  transform: translateX(-50%);
   background: #fff;
+  box-shadow: 0 0 7px rgba(255, 255, 255, 0.62);
+  transition: left 150ms ease-out;
+}
+
+.audio-out-node-meter {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 3px;
+  width: 100%;
+  min-width: 136px;
+  padding-top: 2px;
+}
+
+.audio-out-node-meter-row {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+  height: 8px;
+}
+
+.audio-out-node-meter-label {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.audio-out-node-meter-track {
+  position: relative;
+  height: 5px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  background:
+    repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent 11px,
+      rgba(255, 255, 255, 0.18) 11px,
+      rgba(255, 255, 255, 0.18) 12px
+    ),
+    rgba(0, 0, 0, 0.42);
+}
+
+.audio-out-node-meter-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: #7cff00;
+  box-shadow: 0 0 6px rgba(124, 255, 0, 0.36);
 }
 
 .audio-node-scope-display {
@@ -1536,13 +1599,10 @@ select:hover {
 .shader-node-body-no-outputs .slider-direction-select,
 .shader-node-body-no-outputs .button-mode-select,
 .shader-node-body-no-outputs .sample-mode-select,
+.shader-node-body-no-outputs .tempo-source-select,
 .shader-node-body-no-outputs .midi-voices-select {
-  width: 100%;
-  min-width: 0;
-}
-
-.shader-node-body-no-outputs .numeric-scrubber {
   width: 68px;
+  min-width: 0;
   max-width: 68px;
 }
 
@@ -1589,7 +1649,7 @@ select:hover {
 .slider-direction-select,
 .button-mode-select,
 .sample-mode-select {
-  width: 92px;
+  width: 68px;
   min-width: 0;
   height: 22px;
   padding: 0 4px;
@@ -2073,6 +2133,10 @@ select:hover {
   width: min(520px, 100%);
 }
 
+.midi-settings-modal {
+  width: min(520px, 100%);
+}
+
 .confirm-modal {
   width: min(420px, 100%);
 }
@@ -2111,6 +2175,65 @@ select:hover {
 
 .import-modal-message {
   padding: 12px;
+}
+
+.import-modal-message.error {
+  color: #ffb0b0;
+}
+
+.midi-settings-device-list {
+  display: grid;
+  min-height: 120px;
+  max-height: min(360px, calc(100vh - 240px));
+  overflow: auto;
+  border-top: 1px solid #333;
+  border-bottom: 1px solid #fff;
+}
+
+.midi-settings-device {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 36px;
+  padding: 7px 12px;
+  border-bottom: 1px solid #333;
+  cursor: pointer;
+}
+
+.midi-settings-device:last-child {
+  border-bottom: 0;
+}
+
+.midi-settings-device:hover,
+.midi-settings-device:focus-within {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.midi-settings-device input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: #7cff00;
+}
+
+.midi-settings-device span {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.midi-settings-device small {
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.midi-settings-device-missing span,
+.midi-settings-device-missing small {
+  color: #ffb0b0;
 }
 
 .import-subpatch-list {

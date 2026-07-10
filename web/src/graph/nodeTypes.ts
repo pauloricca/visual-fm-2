@@ -77,17 +77,35 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     type: 'SamplePlayer',
     inputs: [
       { name: 'frequency', defaultValue: 220 },
+      { name: 'originalFrequency', defaultValue: 440, min: 0.0001 },
       { name: 'trigger', defaultValue: 0 },
       { name: 'start', defaultValue: 0, min: 0, max: 1 },
       { name: 'end', defaultValue: 1, min: 0, max: 1 },
       { name: 'stretch', defaultValue: 1, min: 0.001 },
       { name: 'cycleLength', defaultValue: 4096, min: 1 },
       { name: 'overlapRatio', defaultValue: 0.09, min: 0, max: 1 },
-      { name: 'originalPitch', defaultValue: 60 },
       { name: 'mode', defaultValue: 0, min: 0, max: 2, integer: true, connectable: false, valueEditor: false },
       { name: 'level', defaultValue: 0.7 },
     ],
     outputs: [{ name: 'signal' }],
+  },
+  Buffer: {
+    type: 'Buffer',
+    inputs: [
+      { name: 'signal', valueEditor: false },
+      { name: 'playhead', defaultValue: 0 },
+      { name: 'recordHead', defaultValue: 0 },
+      { name: 'length', defaultValue: 1, min: 0.01, max: 10 },
+    ],
+    outputs: [{ name: 'signal' }],
+  },
+  Playhead: {
+    type: 'Playhead',
+    inputs: [
+      { name: 'start', defaultValue: 0 },
+      { name: 'speed', defaultValue: 1 },
+    ],
+    outputs: [{ name: 'playhead' }],
   },
   Constant: {
     type: 'Constant',
@@ -117,9 +135,40 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     ],
     outputs: [{ name: 'signal' }],
   },
+  Tempo: {
+    type: 'Tempo',
+    inputs: [
+      { name: 'bpm', defaultValue: 120, min: 1 },
+      { name: 'source', defaultValue: 0, min: 0, max: 1, integer: true, connectable: false, valueEditor: false },
+      { name: 'midiSource', defaultValue: 0, min: 0, integer: true, connectable: false, valueEditor: false },
+    ],
+    outputs: [
+      { name: '4 bar' },
+      { name: '2 bar' },
+      { name: 'bar' },
+      { name: 'whole' },
+      { name: 'half' },
+      { name: 'quarter / beat' },
+      { name: 'upbeat' },
+      { name: 'eighth' },
+      { name: 'sixteenth' },
+      { name: 'thirty-second' },
+      { name: '4 bar freq' },
+      { name: '2 bar freq' },
+      { name: 'bar freq' },
+      { name: 'whole freq' },
+      { name: 'half freq' },
+      { name: 'quarter / beat freq' },
+      { name: 'upbeat freq' },
+      { name: 'eighth freq' },
+      { name: 'sixteenth freq' },
+      { name: 'thirty-second freq' },
+    ],
+  },
   MidiNote: {
     type: 'MidiNote',
     inputs: [
+      { name: 'channel', defaultValue: 0, min: 0, max: 16, integer: true },
       { name: 'voices', defaultValue: 8, min: 1, max: 16, integer: true, connectable: false, valueEditor: false },
     ],
     outputs: [
@@ -133,6 +182,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   MidiCc: {
     type: 'MidiCc',
     inputs: [
+      { name: 'channel', defaultValue: 0, min: 0, max: 16, integer: true },
       { name: 'cc', defaultValue: 1, min: 0, max: 127, integer: true },
     ],
     outputs: [{ name: 'signal' }],
@@ -169,6 +219,17 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   Multiply: processor('Multiply', [
     { name: 'factor', defaultValue: 1 },
   ]),
+  Pan: {
+    type: 'Pan',
+    inputs: [
+      { name: 'signal', valueEditor: false },
+      { name: 'pan', defaultValue: 0, min: -1, max: 1 },
+    ],
+    outputs: [
+      { name: 'left' },
+      { name: 'right' },
+    ],
+  },
   Delay: processor('Delay', [
     { name: 'time', defaultValue: 0.28, min: 0.02, max: 1.5 },
     { name: 'feedback', defaultValue: 0.35, min: 0, max: 0.92 },
@@ -179,13 +240,22 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     { name: 'depth', defaultValue: 0.012, min: 0.001, max: 0.04 },
     { name: 'mix', defaultValue: 0.25, min: 0, max: 1 },
   ]),
-  Reverb: processor('Reverb', [
-    { name: 'size', defaultValue: 0.55, min: 0.1, max: 1 },
-    { name: 'decay', defaultValue: 0.45, min: 0, max: 0.94 },
-    { name: 'mix', defaultValue: 0.25, min: 0, max: 1 },
-  ]),
+  Reverb: {
+    type: 'Reverb',
+    inputs: [
+      { name: 'signal', valueEditor: false },
+      { name: 'size', defaultValue: 0.55, min: 0.1, max: 1 },
+      { name: 'decay', defaultValue: 0.45, min: 0, max: 0.94 },
+      { name: 'mix', defaultValue: 0.25, min: 0, max: 1 },
+    ],
+    outputs: [
+      { name: 'left' },
+      { name: 'right' },
+    ],
+  },
   Envelope: processor('Envelope', [
     { name: 'trigger', valueEditor: false },
+    { name: 'gate', valueEditor: false },
     { name: 'delay', defaultValue: 0, min: 0 },
     { name: 'attack', defaultValue: 0.01, min: 0 },
     { name: 'decay', defaultValue: 0.16, min: 0 },
@@ -249,9 +319,12 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   AudioInput: 'Audio Input',
   CustomWave: 'Custom Wave',
   SamplePlayer: 'Sample',
+  Buffer: 'Buffer',
+  Playhead: 'Playhead',
   Constant: 'Constant',
   Slider: 'Slider',
   Button: 'Button',
+  Tempo: 'Tempo',
   MidiNote: 'MIDI Note',
   MidiCc: 'MIDI CC',
   Selector: 'Selector',
@@ -260,6 +333,7 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   Map: 'Map',
   Clamp: 'Clamp',
   Multiply: 'Multiply',
+  Pan: 'Pan',
   Delay: 'Delay',
   Chorus: 'Chorus',
   Reverb: 'Reverb',

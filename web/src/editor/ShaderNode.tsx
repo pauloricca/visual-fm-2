@@ -69,6 +69,8 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const showScopeDisplay = node.type === 'Scope';
   const showSliderDisplay = node.type === 'Slider';
   const showButtonDisplay = node.type === 'Button';
+  const showTempoDisplay = node.type === 'Tempo';
+  const showAudioOutputDisplay = node.type === 'AudioOut';
   const showAudioInputDisplay = node.type === 'AudioInput';
   const showMidiNoteDisplay = node.type === 'MidiNote';
   const showCustomWaveEditor = node.type === 'CustomWave';
@@ -79,7 +81,9 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const amplitudeRangeLabel = formatAmplitude(amplitudeRange);
   const rawMeterLevel = data.audioMeter?.output ?? 0;
   const meterLevel = Math.max(0, Math.min(1, rawMeterLevel / amplitudeRange));
-  const meterPeak = Math.max(0, Math.min(1, (data.audioMeter?.input ?? rawMeterLevel) / amplitudeRange));
+  const meterPeak = useRecentMaxLevel(meterLevel, showMeterDisplay);
+  const outputMeterLeft = Math.max(0, Math.min(1, data.audioOutputMeter?.left ?? 0));
+  const outputMeterRight = Math.max(0, Math.min(1, data.audioOutputMeter?.right ?? 0));
   const scopePath = showScopeDisplay ? samplesToScopePath(data.audioScope?.samples ?? [], amplitudeRange) : '';
   const scopeSize = showSliderDisplay || showButtonDisplay
     ? clampControlNodeSize(node.scopeSize ?? DEFAULT_SCOPE_NODE_SIZE)
@@ -116,12 +120,12 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const headerInputPort = showHeaderInput ? 'signal' : null;
   const showHeaderOutput = outputCount === 1 && !previewAddsOutput;
   const headerOutputPort = showHeaderOutput && definition ? definition.outputs[0]?.name ?? null : null;
-  const showHeaderInputPort = Boolean(headerInputPort && (showAllPorts || connectedInputPorts.has(headerInputPort)));
-  const showHeaderOutputPort = Boolean(headerOutputPort && (showAllPorts || connectedOutputPorts.has(headerOutputPort)));
+  const showHeaderInputPort = Boolean(headerInputPort);
+  const showHeaderOutputPort = Boolean(headerOutputPort);
   const selectedLinkInputs = data.selectedLinkPorts?.inputs ?? [];
   const selectedLinkOutputs = data.selectedLinkPorts?.outputs ?? [];
   const inputLabelWidth = definition
-    ? `${Math.max(0, ...definition.inputs.filter((input) => input.name !== headerInputPort).map((input) => input.name.length))}ch`
+    ? `${Math.max(0, ...definition.inputs.filter((input) => input.name !== headerInputPort).map((input) => displayPortName(input.name).length))}ch`
     : '0ch';
   const outputLabelWidth = definition
     ? `${Math.max(0, ...definition.outputs.map((output) => output.name.length))}ch`
@@ -137,6 +141,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     showScopeDisplay ? 'shader-node-scope' : '',
     showSliderDisplay ? 'shader-node-slider' : '',
     showButtonDisplay ? 'shader-node-button' : '',
+    showAudioOutputDisplay ? 'shader-node-audio-out' : '',
     showSampleUpload ? 'shader-node-sampleplayer' : '',
     showAudioInputDisplay ? 'shader-node-audio-input' : '',
     showMidiNoteDisplay ? 'shader-node-midi-note' : '',
@@ -623,9 +628,11 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             || showSampleUpload
             || showAudioInputDisplay
             || showMidiNoteDisplay
+            || showTempoDisplay
             || showCustomWaveEditor
             || showSliderDisplay
             || showButtonDisplay
+            || showAudioOutputDisplay
             || visibleInputPorts.length > 0
             || (visibleOutputPorts.length > 0 && !showHeaderOutputPort)
             || showMeterDisplay
@@ -641,6 +648,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           showScopeDisplay ? 'shader-node-body-scope' : '',
           showSliderDisplay ? 'shader-node-body-slider' : '',
           showButtonDisplay ? 'shader-node-body-button' : '',
+          showAudioOutputDisplay ? 'shader-node-body-audio-out' : '',
           showAudioInputDisplay ? 'shader-node-body-audio-input' : '',
           showMidiNoteDisplay ? 'shader-node-body-midi-note' : '',
           showCustomWaveEditor ? 'shader-node-body-custom-wave' : '',
@@ -696,12 +704,6 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               onRefresh={() => data.onAudioInputRefresh?.()}
             />
           ) : null}
-          {showMidiNoteDisplay ? (
-            <MidiInputDisplay
-              state={data.midiInput}
-              onRefresh={() => data.onMidiInputRefresh?.()}
-            />
-          ) : null}
           {showCustomWaveEditor && customWave ? (
             <CustomWaveEditor
               customWave={customWave}
@@ -728,6 +730,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           {showSliderDisplay ? (
             <SliderDisplay
               value={node.params.value ?? 0.5}
+              displayValue={data.midiSliderValue ?? data.audioSliderValue}
               direction={Math.round(node.params.direction ?? 0) === 1 ? 'vertical' : 'horizontal'}
               onChange={(value) => data.onParamChange(node.id, 'value', value)}
             />
@@ -735,10 +738,16 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           {showButtonDisplay ? (
             <ButtonDisplay
               mode={buttonModeFromValue(node.params.mode ?? 0)}
-              pressed={node.params.pressed ?? 0}
+              pressed={data.midiButtonPressed ?? node.params.pressed ?? 0}
               onPressedChange={(value) => data.onParamChange(node.id, 'pressed', value)}
               onClickPulse={() => data.onParamChange(node.id, 'clicks', (node.params.clicks ?? 0) + 1)}
             />
+          ) : null}
+          {showAudioOutputDisplay ? (
+            <div className="audio-out-node-meter" aria-label="Audio output level">
+              <AudioOutputMeterRow label="L" level={outputMeterLeft} />
+              <AudioOutputMeterRow label="R" level={outputMeterRight} />
+            </div>
           ) : null}
           <div className="shader-ports shader-inputs" style={inputStyle}>
             {visibleInputPorts.map((input) => (
@@ -847,6 +856,66 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                     <option value="2">ping-pong</option>
                   </select>
                 </>
+              ) : showTempoDisplay && input.name === 'source' && !input.preview ? (
+                <>
+                  <PortNameLabel
+                    name={input.name}
+                    editable={false}
+                    draggable={false}
+                    preview={false}
+                    selected={data.selectedPort?.side === 'input' && data.selectedPort.name === input.name}
+                    activeDragTarget={false}
+                    activeDragSource={false}
+                    onChange={() => undefined}
+                  />
+                  <select
+                    className="tempo-source-select nodrag nopan"
+                    aria-label="Tempo source"
+                    value={String(clamp(Math.round(node.params.source ?? input.defaultValue ?? 0), 0, 1))}
+                    onChange={(event) => {
+                      data.onParamChange(node.id, input.name, Number(event.currentTarget.value));
+                      event.currentTarget.blur();
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    <option value="0">internal</option>
+                    <option value="1">midi</option>
+                  </select>
+                </>
+              ) : showTempoDisplay && input.name === 'midiSource' && !input.preview ? (
+                <>
+                  <PortNameLabel
+                    name={input.name}
+                    editable={false}
+                    draggable={false}
+                    preview={false}
+                    selected={data.selectedPort?.side === 'input' && data.selectedPort.name === input.name}
+                    activeDragTarget={false}
+                    activeDragSource={false}
+                    onChange={() => undefined}
+                  />
+                  <select
+                    className="tempo-source-select nodrag nopan"
+                    aria-label="MIDI clock source"
+                    value={String(clamp(Math.round(node.params.midiSource ?? input.defaultValue ?? 0), 0, Math.max(0, data.midiInput?.devices.length ?? 0)))}
+                    onChange={(event) => {
+                      data.onParamChange(node.id, input.name, Number(event.currentTarget.value));
+                      event.currentTarget.blur();
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    <option value="0">any midi</option>
+                    {(data.midiInput?.devices ?? []).map((device, index) => (
+                      <option key={device.id || `${device.label}-${index}`} value={index + 1}>
+                        {device.label || `MIDI ${index + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                </>
               ) : showMidiNoteDisplay && input.name === 'voices' && !input.preview ? (
                 <>
                   <PortNameLabel
@@ -921,13 +990,25 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   onChange={(nextName) => data.onPortNameChange(node.id, 'input', input.name, nextName)}
                 />
               )}
-              {!input.preview && input.valueEditor !== false && input.defaultValue !== undefined && !(showSliderDisplay && input.name === 'direction') && !(showButtonDisplay && input.name === 'mode') && !(showSampleUpload && input.name === 'mode') && !(showMidiNoteDisplay && input.name === 'voices') ? (
+              {!input.preview && input.valueEditor !== false && input.defaultValue !== undefined && !(showSliderDisplay && input.name === 'direction') && !(showButtonDisplay && input.name === 'mode') && !(showSampleUpload && input.name === 'mode') && !(showMidiNoteDisplay && input.name === 'voices') && !(showTempoDisplay && (input.name === 'source' || input.name === 'midiSource')) ? (
                 <NumericScrubber
                   value={node.params[input.name] ?? input.defaultValue ?? 0}
                   min={input.min}
                   max={input.max}
                   integer={input.integer}
                   onChange={(value) => data.onParamChange(node.id, input.name, value)}
+                  midiLearnEvent={canLearnMidiCc(node.type, input.name) ? data.midiInput?.lastControlChange : undefined}
+                  onEditStart={canLearnMidiCc(node.type, input.name) ? () => {
+                    void data.onMidiInputRefresh?.();
+                  } : undefined}
+                  onMidiLearn={canLearnMidiCc(node.type, input.name) ? (event) => {
+                    data.onParamChange(node.id, input.name, event.cc);
+                    if (node.type === 'Slider' || node.type === 'Button') {
+                      data.onParamChange(node.id, 'midiChannel', event.channel);
+                    } else if (node.type === 'MidiCc') {
+                      data.onParamChange(node.id, 'channel', event.channel);
+                    }
+                  } : undefined}
                 />
               ) : null}
             </div>
@@ -1096,6 +1177,69 @@ interface AudioInputDisplayProps {
   onRefresh: () => void;
 }
 
+const METER_RECENT_MAX_HOLD_MS = 800;
+
+function useRecentMaxLevel(level: number, enabled: boolean): number {
+  const latestLevelRef = useRef(level);
+  const timeoutRef = useRef<number | null>(null);
+  const [recentMaxLevel, setRecentMaxLevel] = useState(level);
+
+  useEffect(() => {
+    latestLevelRef.current = level;
+  }, [level]);
+
+  useEffect(() => {
+    if (!enabled) {
+      if (timeoutRef.current !== null) {
+        window.clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+      setRecentMaxLevel(level);
+      return;
+    }
+
+    setRecentMaxLevel((currentMax) => {
+      if (level >= currentMax) {
+        if (timeoutRef.current !== null) {
+          window.clearTimeout(timeoutRef.current);
+          timeoutRef.current = null;
+        }
+        return level;
+      }
+
+      if (timeoutRef.current === null) {
+        timeoutRef.current = window.setTimeout(() => {
+          timeoutRef.current = null;
+          setRecentMaxLevel(latestLevelRef.current);
+        }, METER_RECENT_MAX_HOLD_MS);
+      }
+
+      return currentMax;
+    });
+  }, [enabled, level]);
+
+  useEffect(() => () => {
+    if (timeoutRef.current !== null) {
+      window.clearTimeout(timeoutRef.current);
+    }
+  }, []);
+
+  return recentMaxLevel;
+}
+
+function AudioOutputMeterRow({ label, level }: { label: string; level: number }) {
+  const normalized = Math.max(0, Math.min(1, level));
+
+  return (
+    <div className="audio-out-node-meter-row" aria-hidden="true">
+      <span className="audio-out-node-meter-label">{label}</span>
+      <span className="audio-out-node-meter-track">
+        <span className="audio-out-node-meter-fill" style={{ width: `${normalized * 100}%` }} />
+      </span>
+    </div>
+  );
+}
+
 function AudioInputDisplay({ state, muted, onMutedChange, onDeviceChange, onRefresh }: AudioInputDisplayProps) {
   const status = state?.status ?? 'inactive';
   const message = state?.message ?? 'Start audio to request microphone access.';
@@ -1186,72 +1330,6 @@ function AudioInputDisplay({ state, muted, onMutedChange, onDeviceChange, onRefr
   );
 }
 
-interface MidiInputDisplayProps {
-  state: ShaderNodeData['midiInput'];
-  onRefresh: () => void;
-}
-
-function MidiInputDisplay({ state, onRefresh }: MidiInputDisplayProps) {
-  const status = state?.status ?? 'inactive';
-  const message = state?.message ?? 'Start audio or refresh MIDI to request browser MIDI access.';
-  const devices = state?.devices ?? [];
-  const canRequestAccess = state?.canRequestAccess ?? false;
-  const unavailable = status === 'unsupported' || status === 'denied' || status === 'error';
-  const deviceSummary = devices.length === 0
-    ? 'No MIDI inputs'
-    : devices.map((device) => device.label).join('\n');
-
-  return (
-    <div className="midi-input-node-panel nodrag nopan">
-      <div className="midi-input-node-status-row">
-        <span
-          className={[
-            'midi-input-node-status-dot',
-            `midi-input-node-status-dot-${status}`,
-          ].join(' ')}
-          aria-hidden="true"
-        />
-        <span className="midi-input-node-status-text" title={message}>
-          {midiInputStatusLabel(status)}
-        </span>
-        <span className="midi-input-node-device-count" title={deviceSummary}>
-          {devices.length} in
-        </span>
-        {canRequestAccess ? (
-          <button
-            className="midi-input-node-refresh-button"
-            type="button"
-            aria-label="Refresh MIDI input devices"
-            title="Refresh MIDI devices"
-            onPointerDown={(event) => event.stopPropagation()}
-            onDoubleClick={(event) => event.stopPropagation()}
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              onRefresh();
-            }}
-          >
-            refresh
-          </button>
-        ) : null}
-      </div>
-      <div className={[
-        'midi-input-node-message',
-        unavailable ? 'midi-input-node-message-warning' : '',
-      ].filter(Boolean).join(' ')}>
-        {message}
-      </div>
-      {devices.length > 0 ? (
-        <div className="midi-input-node-device-list" title={deviceSummary}>
-          {devices.map((device) => (
-            <span key={device.id}>{device.label}</span>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 function audioInputStatusLabel(status: NonNullable<ShaderNodeData['audioInput']>['status']): string {
   switch (status) {
     case 'connected':
@@ -1272,34 +1350,15 @@ function audioInputStatusLabel(status: NonNullable<ShaderNodeData['audioInput']>
   }
 }
 
-function midiInputStatusLabel(status: NonNullable<ShaderNodeData['midiInput']>['status']): string {
-  switch (status) {
-    case 'connected':
-      return 'MIDI connected';
-    case 'requesting':
-      return 'requesting MIDI';
-    case 'needs-permission':
-      return 'MIDI permission';
-    case 'denied':
-      return 'MIDI denied';
-    case 'unsupported':
-      return 'MIDI unavailable';
-    case 'error':
-      return 'check MIDI';
-    case 'inactive':
-    default:
-      return 'MIDI idle';
-  }
-}
-
 interface SliderDisplayProps {
   value: number;
+  displayValue?: number;
   direction: 'horizontal' | 'vertical';
   onChange: (value: number) => void;
 }
 
-function SliderDisplay({ value, direction, onChange }: SliderDisplayProps) {
-  const normalized = clamp(value, 0, 1);
+function SliderDisplay({ value, displayValue, direction, onChange }: SliderDisplayProps) {
+  const normalized = clamp(displayValue ?? value, 0, 1);
   const fillStyle = direction === 'vertical'
     ? { height: `${normalized * 100}%` }
     : { width: `${normalized * 100}%` };
@@ -1345,6 +1404,7 @@ function SliderDisplay({ value, direction, onChange }: SliderDisplayProps) {
 }
 
 type ButtonMode = 'toggle' | 'click' | 'temporary';
+const BUTTON_CLICK_FLASH_MS = 120;
 
 interface ButtonDisplayProps {
   mode: ButtonMode;
@@ -1355,8 +1415,39 @@ interface ButtonDisplayProps {
 
 function ButtonDisplay({ mode, pressed, onPressedChange, onClickPulse }: ButtonDisplayProps) {
   const [pointerActive, setPointerActive] = useState(false);
+  const [clickFlashActive, setClickFlashActive] = useState(false);
+  const clickFlashTimeoutRef = useRef<number | null>(null);
+  const previousPressedRef = useRef(false);
   const isPressed = pressed >= 0.5;
-  const isLit = mode === 'click' ? pointerActive : isPressed;
+  const isLit = mode === 'click'
+    ? clickFlashActive
+    : mode === 'temporary'
+      ? pointerActive || isPressed
+      : isPressed;
+
+  function flashClick() {
+    if (clickFlashTimeoutRef.current !== null) {
+      window.clearTimeout(clickFlashTimeoutRef.current);
+    }
+    setClickFlashActive(true);
+    clickFlashTimeoutRef.current = window.setTimeout(() => {
+      clickFlashTimeoutRef.current = null;
+      setClickFlashActive(false);
+    }, BUTTON_CLICK_FLASH_MS);
+  }
+
+  useEffect(() => {
+    if (mode === 'click' && isPressed && !previousPressedRef.current) {
+      flashClick();
+    }
+    previousPressedRef.current = isPressed;
+  }, [isPressed, mode]);
+
+  useEffect(() => () => {
+    if (clickFlashTimeoutRef.current !== null) {
+      window.clearTimeout(clickFlashTimeoutRef.current);
+    }
+  }, []);
 
   function releaseTemporary() {
     setPointerActive(false);
@@ -1378,10 +1469,11 @@ function ButtonDisplay({ mode, pressed, onPressedChange, onClickPulse }: ButtonD
         event.preventDefault();
         event.stopPropagation();
         event.currentTarget.setPointerCapture(event.pointerId);
-        setPointerActive(true);
         if (mode === 'temporary') {
+          setPointerActive(true);
           onPressedChange(1);
         } else if (mode === 'click') {
+          flashClick();
           onClickPulse();
         }
       }}
@@ -1784,8 +1876,22 @@ function PortNameLabel({
         setEditing(true);
       }}
     >
-      {name}
+      {displayPortName(name)}
     </span>
+  );
+}
+
+function displayPortName(name: string): string {
+  if (name === 'originalFrequency') return 'original frequency';
+  if (name === 'midiChannel') return 'midi channel';
+  if (name === 'midiCc') return 'midi cc';
+  return name;
+}
+
+function canLearnMidiCc(nodeType: NodeType | null, inputName: string): boolean {
+  return (
+    (nodeType === 'MidiCc' && inputName === 'cc') ||
+    ((nodeType === 'Slider' || nodeType === 'Button') && inputName === 'midiCc')
   );
 }
 
@@ -1997,18 +2103,33 @@ function NodeTypePicker({
   );
 }
 
+type MidiCcLearnEvent = NonNullable<NonNullable<ShaderNodeData['midiInput']>['lastControlChange']>;
+
 interface NumericScrubberProps {
   value: number;
   min?: number;
   max?: number;
   integer?: boolean;
   onChange: (value: number) => void;
+  midiLearnEvent?: MidiCcLearnEvent;
+  onEditStart?: () => void;
+  onMidiLearn?: (event: MidiCcLearnEvent) => void;
 }
 
-function NumericScrubber({ value, min, max, integer = false, onChange }: NumericScrubberProps) {
+function NumericScrubber({
+  value,
+  min,
+  max,
+  integer = false,
+  onChange,
+  midiLearnEvent,
+  onEditStart,
+  onMidiLearn,
+}: NumericScrubberProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(formatDisplayValue(value));
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const lastMidiLearnIdRef = useRef<number | null>(null);
   const dragRef = useRef<{
     pointerId: number;
     anchorY: number;
@@ -2033,6 +2154,22 @@ function NumericScrubber({ value, min, max, integer = false, onChange }: Numeric
       });
     }
   }, [editing, value]);
+
+  useEffect(() => {
+    if (!editing || !midiLearnEvent || !onMidiLearn) return;
+    if (lastMidiLearnIdRef.current === midiLearnEvent.id) return;
+
+    lastMidiLearnIdRef.current = midiLearnEvent.id;
+    const nextValue = constrainValue(midiLearnEvent.cc, min, max, integer);
+    setDraft(formatDisplayValue(nextValue));
+    onMidiLearn(midiLearnEvent);
+  }, [editing, integer, max, midiLearnEvent, min, onMidiLearn]);
+
+  function beginEditing() {
+    lastMidiLearnIdRef.current = midiLearnEvent?.id ?? null;
+    onEditStart?.();
+    setEditing(true);
+  }
 
   function startDrag(event: PointerEvent<HTMLDivElement>) {
     event.stopPropagation();
@@ -2086,7 +2223,7 @@ function NumericScrubber({ value, min, max, integer = false, onChange }: Numeric
     if (drag.dragging) {
       event.currentTarget.blur();
     } else {
-      setEditing(true);
+      beginEditing();
     }
   }
 
@@ -2151,7 +2288,7 @@ function NumericScrubber({ value, min, max, integer = false, onChange }: Numeric
       onKeyDown={(event) => {
         if (event.key === 'Enter') {
           event.stopPropagation();
-          setEditing(true);
+          beginEditing();
         }
       }}
     >

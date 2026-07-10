@@ -4,6 +4,7 @@ import { normalizeCustomWave } from './customWave';
 export function normalizePatch(patch: Patch): Patch {
   return {
     ...(patch.name ? { name: patch.name } : {}),
+    ...(patch.midiInput ? { midiInput: { selectedDeviceIds: [...patch.midiInput.selectedDeviceIds].sort() } } : {}),
     nodes: [...patch.nodes]
       .map((node) => ({
         id: node.id,
@@ -18,6 +19,7 @@ export function normalizePatch(patch: Patch): Patch {
         ...(node.inputs ? { inputs: node.inputs.map((input) => ({ ...input })) } : {}),
         ...(node.outputs ? { outputs: node.outputs.map((output) => ({ ...output })) } : {}),
         ...(node.subpatch ? { subpatch: normalizePatch(node.subpatch) } : {}),
+        ...(node.compactPorts !== undefined ? { compactPorts: node.compactPorts } : {}),
       }))
       .sort((a, b) => a.id.localeCompare(b.id)),
     links: [...patch.links].sort(compareLinks),

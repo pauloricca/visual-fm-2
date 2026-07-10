@@ -36,6 +36,9 @@ export const DSP_OP = {
   Accumulator: 29,
   Button: 30,
   Slew: 31,
+  Tempo: 32,
+  Playhead: 33,
+  Buffer: 34,
 } as const;
 
 export interface DspProgram {
@@ -44,6 +47,7 @@ export interface DspProgram {
   values: number[];
   valueBindings: DspValueBinding[];
   midiControlBindings: DspMidiControlBinding[];
+  tempoBindings: DspTempoBinding[];
   stateBindings: DspStateBinding[];
   registerCount: number;
   stateCount: number;
@@ -53,6 +57,7 @@ export interface DspProgram {
   customWaveBindings: DspCustomWaveBinding[];
   maxVoices: number;
   usesMidiNote: boolean;
+  usesMidiClock: boolean;
   errors: string[];
 }
 
@@ -95,6 +100,12 @@ export interface DspMidiControlBinding {
   clicksValueIndex?: number;
 }
 
+export interface DspTempoBinding {
+  nodeId: string;
+  sourceValueIndex: number;
+  midiSourceValueIndex: number;
+}
+
 export interface DspSampleBinding {
   nodeId: string;
   sample: {
@@ -119,12 +130,14 @@ interface CompileContext {
   nodeById: Map<string, PatchNode>;
   incomingByInput: Map<string, PatchLink[]>;
   outputCache: Map<string, number>;
+  sliderUnitValueByNodeId: Map<string, number>;
   visitingOutputs: Set<string>;
   feedbackByOutput: Map<string, FeedbackBinding>;
   ops: DspOp[];
   values: number[];
   valueBindings: DspValueBinding[];
   midiControlBindings: DspMidiControlBinding[];
+  tempoBindings: DspTempoBinding[];
   stateBindings: DspStateBinding[];
   constantValueIndexes: Map<number, number>;
   errors: string[];
@@ -133,6 +146,7 @@ interface CompileContext {
   sampleBindings: DspSampleBinding[];
   customWaveBindings: DspCustomWaveBinding[];
   usesMidiNote: boolean;
+  usesMidiClock: boolean;
   maxVoices: number;
   registerCount: number;
   stateCount: number;
@@ -189,6 +203,7 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
   const context = createContext(expandedPatch);
   const audioOutNodes = expandedPatch.nodes.filter((node) => node.type === 'AudioOut');
   const monitorNodes = expandedPatch.nodes.filter((node) => node.type === 'Meter' || node.type === 'Scope');
+  const sliderMonitorNodes = expandedPatch.nodes.filter((node) => node.type === 'Slider');
 
   validatePatchLinks(context);
 
@@ -204,6 +219,10 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
     resolveOutput(node, 'signal', context);
   }
 
+  for (const node of sliderMonitorNodes) {
+    registerSliderMonitor(node, context);
+  }
+
   if (context.errors.length > 0) {
     return {
       version: 1,
@@ -211,6 +230,7 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
       values: context.values,
       valueBindings: context.valueBindings,
       midiControlBindings: context.midiControlBindings,
+      tempoBindings: context.tempoBindings,
       stateBindings: context.stateBindings,
       registerCount: context.registerCount,
       stateCount: context.stateCount,
@@ -220,6 +240,7 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
       customWaveBindings: context.customWaveBindings,
       maxVoices: context.maxVoices,
       usesMidiNote: context.usesMidiNote,
+      usesMidiClock: context.usesMidiClock,
       errors: [...new Set(context.errors)],
     };
   }
@@ -230,6 +251,7 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
     values: context.values,
     valueBindings: context.valueBindings,
     midiControlBindings: context.midiControlBindings,
+    tempoBindings: context.tempoBindings,
     stateBindings: context.stateBindings,
     registerCount: context.registerCount,
     stateCount: context.stateCount,
@@ -239,6 +261,7 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
     customWaveBindings: context.customWaveBindings,
     maxVoices: context.maxVoices,
     usesMidiNote: context.usesMidiNote,
+    usesMidiClock: context.usesMidiClock,
     errors: [],
   };
 }
@@ -255,12 +278,14 @@ function createContext(patch: Patch): CompileContext {
     nodeById: new Map(patch.nodes.map((node) => [node.id, node])),
     incomingByInput,
     outputCache: new Map(),
+    sliderUnitValueByNodeId: new Map(),
     visitingOutputs: new Set(),
     feedbackByOutput: new Map(),
     ops: [],
     values: [],
     valueBindings: [],
     midiControlBindings: [],
+    tempoBindings: [],
     stateBindings: [],
     constantValueIndexes: new Map(),
     errors: [],
@@ -269,6 +294,7 @@ function createContext(patch: Patch): CompileContext {
     sampleBindings: [],
     customWaveBindings: [],
     usesMidiNote: false,
+    usesMidiClock: false,
     maxVoices: 1,
     registerCount: 0,
     stateCount: 0,
@@ -277,6 +303,8 @@ function createContext(patch: Patch): CompileContext {
 
 function compileAudioOut(node: PatchNode, context: CompileContext): void {
   const level = resolveInput(node, 'level', 0.75, context);
+  const leftRegisters: number[] = [];
+  const rightRegisters: number[] = [];
   let outputLinkCount = 0;
 
   for (const port of ['both', 'left', 'right'] as const) {
@@ -288,15 +316,21 @@ function compileAudioOut(node: PatchNode, context: CompileContext): void {
     const scaled = emitBinary(DSP_OP.Mul, input, level, context);
     if (port === 'both' || port === 'left') {
       context.ops.push({ opcode: DSP_OP.Output, a: scaled, b: 0 });
+      leftRegisters.push(scaled);
     }
     if (port === 'both' || port === 'right') {
       context.ops.push({ opcode: DSP_OP.Output, a: scaled, b: 1 });
+      rightRegisters.push(scaled);
     }
   }
 
   if (outputLinkCount === 0) {
     context.errors.push(`Audio Out node "${node.id}" has no connected audio signal.`);
+    return;
   }
+
+  context.monitorIds[`${node.id}:left`] = sumRegisters(leftRegisters, context);
+  context.monitorIds[`${node.id}:right`] = sumRegisters(rightRegisters, context);
 }
 
 function validatePatchLinks(context: CompileContext): void {
@@ -448,6 +482,7 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
 
   if (node.type === 'Slider') {
     const unitValue = resolveSliderUnitValue(node, context);
+    context.monitorIds[node.id] = unitValue;
     if (hasInput(node, 'signal', context)) {
       return emitBinary(DSP_OP.Mul, resolveInput(node, 'signal', 0, context), unitValue, context);
     }
@@ -515,8 +550,13 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       opcode: DSP_OP.MidiNote,
       out: output,
       a: midiNoteOutputKind(port),
+      b: resolveInput(node, 'channel', 0, context),
     });
     return output;
+  }
+
+  if (node.type === 'Tempo') {
+    return compileTempo(node, port, context);
   }
 
   if (node.type === 'MidiCc') {
@@ -525,6 +565,7 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       opcode: DSP_OP.MidiCc,
       out: output,
       a: resolveInput(node, 'cc', 1, context),
+      b: resolveInput(node, 'channel', 0, context),
     });
     return output;
   }
@@ -622,6 +663,48 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     return compileSamplePlayer(node, context);
   }
 
+  if (node.type === 'Playhead') {
+    const output = nextRegister(context);
+    const state = nextState(context, 1);
+    context.stateBindings.push({
+      id: `${node.id}:playhead`,
+      state,
+      count: 1,
+      kind: 'effect',
+      nodeId: node.id,
+    });
+    context.ops.push({
+      opcode: DSP_OP.Playhead,
+      out: output,
+      a: resolveInput(node, 'start', 0, context),
+      b: resolveInput(node, 'speed', 1, context),
+      state,
+    });
+    return output;
+  }
+
+  if (node.type === 'Buffer') {
+    const output = nextRegister(context);
+    const state = nextState(context, 1);
+    context.stateBindings.push({
+      id: `${node.id}:buffer`,
+      state,
+      count: 1,
+      kind: 'effect',
+      nodeId: node.id,
+    });
+    context.ops.push({
+      opcode: DSP_OP.Buffer,
+      out: output,
+      a: resolveInput(node, 'signal', 0, context),
+      b: resolveInput(node, 'playhead', 0, context),
+      c: resolveInput(node, 'recordHead', 0, context),
+      d: resolveInput(node, 'length', 1, context),
+      state,
+    });
+    return output;
+  }
+
   if (node.type === 'Multiply') {
     return emitBinary(
       DSP_OP.Mul,
@@ -651,13 +734,19 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     return output;
   }
 
+  if (node.type === 'Pan') {
+    return compilePan(node, port, context);
+  }
+
   if (node.type === 'Envelope') {
     const envelope = nextRegister(context);
-    const state = nextState(context, 5);
+    const state = nextState(context, 6);
+    const sustain = resolveInput(node, 'sustain', 0.72, context);
+    const release = resolveInput(node, 'release', 0.24, context);
     context.stateBindings.push({
       id: `${node.id}:envelope`,
       state,
-      count: 5,
+      count: 6,
       kind: 'effect',
       nodeId: node.id,
     });
@@ -665,12 +754,12 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       opcode: DSP_OP.Envelope,
       out: envelope,
       a: resolveInput(node, 'trigger', 0, context),
-      b: resolveInput(node, 'delay', 0, context),
-      c: resolveInput(node, 'attack', 0.01, context),
-      d: resolveInput(node, 'decay', 0.16, context),
-      e: resolveInput(node, 'sustain', 0.72, context),
+      b: resolveInput(node, 'gate', 0, context),
+      c: resolveInput(node, 'delay', 0, context),
+      d: resolveInput(node, 'attack', 0.01, context),
+      e: resolveInput(node, 'decay', 0.16, context),
       state,
-      value: resolveInput(node, 'release', 0.24, context),
+      value: packRegisterPair(sustain, release),
     });
     return emitBinary(DSP_OP.Mul, resolveInput(node, 'signal', 0, context), envelope, context);
   }
@@ -726,11 +815,7 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
   }
 
   if (node.type === 'Reverb') {
-    return compileEffect(node, DSP_OP.Reverb, [
-      ['size', 0.55],
-      ['decay', 0.45],
-      ['mix', 0.25],
-    ], context);
+    return compileReverb(node, port, context);
   }
 
   if (node.type === 'Abs') {
@@ -870,13 +955,24 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
 }
 
 function resolveSliderUnitValue(node: PatchNode, context: CompileContext): number {
+  const cached = context.sliderUnitValueByNodeId.get(node.id);
+  if (cached !== undefined) return cached;
+
+  let register: number;
   if (hasInput(node, 'value', context)) {
-    return resolveInput(node, 'value', 0.5, context);
+    register = resolveInput(node, 'value', 0.5, context);
+  } else {
+    const valueIndex = valueIndexForNodeParam(node, 'value', 0.5, context);
+    addMidiControlBinding(node, 'slider', valueIndex, context);
+    register = emitValue(valueIndex, context);
   }
 
-  const valueIndex = valueIndexForNodeParam(node, 'value', 0.5, context);
-  addMidiControlBinding(node, 'slider', valueIndex, context);
-  return emitValue(valueIndex, context);
+  context.sliderUnitValueByNodeId.set(node.id, register);
+  return register;
+}
+
+function registerSliderMonitor(node: PatchNode, context: CompileContext): void {
+  context.monitorIds[node.id] = resolveSliderUnitValue(node, context);
 }
 
 function addMidiControlBinding(
@@ -900,6 +996,49 @@ function addMidiControlBinding(
   });
 }
 
+function compileTempo(node: PatchNode, port: string, context: CompileContext): number {
+  const outputKind = tempoOutputKind(port);
+  if (outputKind < 0) {
+    context.errors.push(`Tempo node "${node.id}" does not have supported output "${port}".`);
+    return constantRegister(0, context);
+  }
+
+  const output = nextRegister(context);
+  const sourceValueIndex = valueIndexForNodeParam(node, 'source', 0, context);
+  const midiSourceValueIndex = valueIndexForNodeParam(node, 'midiSource', 0, context);
+
+  if (!context.tempoBindings.some((binding) => binding.nodeId === node.id)) {
+    context.tempoBindings.push({
+      nodeId: node.id,
+      sourceValueIndex,
+      midiSourceValueIndex,
+    });
+  }
+  if (Math.round(node.params.source ?? 0) === 1) {
+    context.usesMidiClock = true;
+  }
+
+  context.ops.push({
+    opcode: DSP_OP.Tempo,
+    out: output,
+    a: resolveInput(node, 'bpm', 120, context),
+    b: emitValue(sourceValueIndex, context),
+    c: outputKind,
+    d: emitValue(midiSourceValueIndex, context),
+    state: -1,
+  });
+  return output;
+}
+
+const TEMPO_OUTPUT_LABELS = ['4 bar', '2 bar', 'bar', 'whole', 'half', 'quarter / beat', 'upbeat', 'eighth', 'sixteenth', 'thirty-second'] as const;
+
+function tempoOutputKind(port: string): number {
+  const clickIndex = TEMPO_OUTPUT_LABELS.indexOf(port as typeof TEMPO_OUTPUT_LABELS[number]);
+  if (clickIndex >= 0) return clickIndex;
+  const freqIndex = TEMPO_OUTPUT_LABELS.indexOf(port.replace(/ freq$/, '') as typeof TEMPO_OUTPUT_LABELS[number]);
+  return freqIndex >= 0 && port.endsWith(' freq') ? freqIndex + TEMPO_OUTPUT_LABELS.length : -1;
+}
+
 function compileSamplePlayer(node: PatchNode, context: CompileContext): number {
   const sampleIndex = context.sampleBindings.length;
   context.sampleBindings.push({
@@ -919,21 +1058,22 @@ function compileSamplePlayer(node: PatchNode, context: CompileContext): number {
     nodeId: node.id,
   });
 
-  const sampleParams: Array<[kind: number, port: string, fallback: number]> = [
+  const originalFrequency = resolveSampleOriginalFrequency(node, context);
+  const sampleParams: Array<[kind: number, port: string | null, fallback: number, register?: number]> = [
     [0, 'mode', 0],
     [1, 'start', 0],
     [2, 'end', 1],
     [3, 'stretch', 1],
     [4, 'cycleLength', 4096],
     [5, 'overlapRatio', 0.09],
-    [6, 'originalPitch', 60],
+    [6, null, 440, originalFrequency],
   ];
-  for (const [kind, port, fallback] of sampleParams) {
+  for (const [kind, port, fallback, register] of sampleParams) {
     context.ops.push({
       opcode: DSP_OP.SampleParam,
       a: sampleIndex,
       b: kind,
-      c: resolveInput(node, port, fallback, context),
+      c: register ?? resolveInput(node, port ?? '', fallback, context),
     });
   }
 
@@ -947,6 +1087,23 @@ function compileSamplePlayer(node: PatchNode, context: CompileContext): number {
     state,
   });
   return emitBinary(DSP_OP.Mul, output, resolveInput(node, 'level', 0.7, context), context);
+}
+
+function resolveSampleOriginalFrequency(node: PatchNode, context: CompileContext): number {
+  if (node.params.originalFrequency !== undefined || node.inputs?.some((input) => input.name === 'originalFrequency')) {
+    return resolveInput(node, 'originalFrequency', 440, context);
+  }
+
+  const originalPitch = node.params.originalPitch;
+  if (originalPitch !== undefined) {
+    return constantRegister(midiNoteFrequency(originalPitch), context);
+  }
+
+  return constantRegister(440, context);
+}
+
+function midiNoteFrequency(note: number): number {
+  return 440 * (2 ** ((note - 69) / 12));
 }
 
 function compileSelector(node: PatchNode, context: CompileContext): number {
@@ -982,6 +1139,33 @@ function compileSelector(node: PatchNode, context: CompileContext): number {
     });
   });
   return output;
+}
+
+function compilePan(node: PatchNode, port: string, context: CompileContext): number {
+  if (port !== 'left' && port !== 'right') {
+    context.errors.push(`Pan node "${node.id}" does not have supported output "${port}".`);
+    return constantRegister(0, context);
+  }
+
+  const signal = resolveInput(node, 'signal', 0, context);
+  const pan = emitFunction(
+    EXPRESSION_FUNCTIONS.clamp.id,
+    [
+      resolveInput(node, 'pan', 0, context),
+      constantRegister(-1, context),
+      constantRegister(1, context),
+    ],
+    context,
+  );
+  const panned = port === 'left'
+    ? emitBinary(DSP_OP.Sub, constantRegister(1, context), pan, context)
+    : emitBinary(DSP_OP.Add, constantRegister(1, context), pan, context);
+  const gain = emitFunction(
+    EXPRESSION_FUNCTIONS.sqrt.id,
+    [emitBinary(DSP_OP.Mul, panned, constantRegister(0.5, context), context)],
+    context,
+  );
+  return emitBinary(DSP_OP.Mul, signal, gain, context);
 }
 
 function midiNoteOutputKind(port: string): number {
@@ -1025,6 +1209,25 @@ function compileEffect(
     d: resolveInput(node, params[2]?.[0] ?? 'unused', params[2]?.[1] ?? 0, context),
     state,
   });
+  return output;
+}
+
+function compileReverb(node: PatchNode, port: string, context: CompileContext): number {
+  if (port !== 'left' && port !== 'right') {
+    context.errors.push(`Reverb node "${node.id}" does not have supported output "${port}".`);
+    return constantRegister(0, context);
+  }
+
+  const sharedOutputKey = inputKey(node.id, 'reverb');
+  const cached = context.outputCache.get(sharedOutputKey);
+  if (cached !== undefined) return cached;
+
+  const output = compileEffect(node, DSP_OP.Reverb, [
+    ['size', 0.55],
+    ['decay', 0.45],
+    ['mix', 0.25],
+  ], context);
+  context.outputCache.set(sharedOutputKey, output);
   return output;
 }
 
@@ -1245,10 +1448,36 @@ function averageRegisters(registers: number[], context: CompileContext): number 
   return emitBinary(DSP_OP.Mul, sum, constantRegister(1 / registers.length, context), context);
 }
 
+function sumRegisters(registers: number[], context: CompileContext): number {
+  if (registers.length === 0) return constantRegister(0, context);
+  if (registers.length === 1) return registers[0];
+  let sum = registers[0];
+  for (const register of registers.slice(1)) {
+    sum = emitBinary(DSP_OP.Add, sum, register, context);
+  }
+  return sum;
+}
+
 function emitBinary(opcode: number, a: number, b: number, context: CompileContext): number {
   const out = nextRegister(context);
   context.ops.push({ opcode, out, a, b });
   return out;
+}
+
+function emitFunction(functionId: number, args: number[], context: CompileContext): number {
+  const paddedArgs = [...args];
+  while (paddedArgs.length < 3) paddedArgs.push(constantRegister(0, context));
+  const output = nextRegister(context);
+  context.ops.push({
+    opcode: DSP_OP.Function,
+    out: output,
+    a: functionId,
+    b: paddedArgs[0],
+    c: paddedArgs[1],
+    d: paddedArgs[2],
+    value: args.length,
+  });
+  return output;
 }
 
 function valueRegisterForNodeParam(
@@ -1325,6 +1554,10 @@ function emitValue(valueIndex: number, context: CompileContext): number {
   const out = nextRegister(context);
   context.ops.push({ opcode: DSP_OP.Value, out, a: valueIndex });
   return out;
+}
+
+function packRegisterPair(left: number, right: number): number {
+  return left + right * 2048;
 }
 
 function nextRegister(context: CompileContext): number {

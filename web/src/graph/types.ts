@@ -15,9 +15,12 @@ export type NodeType =
   | 'AudioInput'
   | 'CustomWave'
   | 'SamplePlayer'
+  | 'Buffer'
+  | 'Playhead'
   | 'Constant'
   | 'Slider'
   | 'Button'
+  | 'Tempo'
   | 'MidiNote'
   | 'MidiCc'
   | 'Selector'
@@ -26,6 +29,7 @@ export type NodeType =
   | 'Map'
   | 'Clamp'
   | 'Multiply'
+  | 'Pan'
   | 'Delay'
   | 'Chorus'
   | 'Reverb'
@@ -65,6 +69,7 @@ export interface PatchNode {
   inputs?: PortDefinition[];
   outputs?: PortDefinition[];
   subpatch?: Patch;
+  compactPorts?: boolean;
 }
 
 export interface SampleAsset {
@@ -104,6 +109,11 @@ export interface Patch {
   nodes: PatchNode[];
   links: PatchLink[];
   name?: string;
+  midiInput?: MidiInputPreferences;
+}
+
+export interface MidiInputPreferences {
+  selectedDeviceIds: string[];
 }
 
 export interface PortDefinition {

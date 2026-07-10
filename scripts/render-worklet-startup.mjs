@@ -150,7 +150,7 @@ async function runMidiNoteSmoke() {
 
   processor.port.onmessage({ data: { type: 'noteOff', payload: { note: 69 } } });
   const releasedVoice = [...processor.voices.values()].find((voice) => voice.note === 69 && voice.releasedAt !== null);
-  if (!releasedVoice || processor.activeVoicesByNote.has(69)) {
+  if (!releasedVoice || processor.activeVoicesByNote.has('1:69')) {
     throw new Error('MidiNote noteOff did not release the active A4 voice.');
   }
   renderAudioWindows(graph, 0.5);
@@ -170,7 +170,7 @@ async function runMidiNoteSmoke() {
   if (liveVoices.length > 2) {
     throw new Error(`MidiNote voices limit allowed too many live voices: ${liveVoices.length}`);
   }
-  if (stolenVoices.length === 0 && processor.activeVoicesByNote.has(60)) {
+  if (stolenVoices.length === 0 && processor.activeVoicesByNote.has('1:60')) {
     throw new Error('MidiNote voice stealing did not retire the oldest note under a 2 voice limit.');
   }
 
@@ -324,7 +324,7 @@ async function compileVisiblePatch() {
       ]
       : samplePlayer
       ? [
-        { id: 'sample', type: 'SamplePlayer', sample: { name: 'synthetic.wav', url: 'synthetic://sample' }, params: { frequency: 440, trigger: 1, start: 0, end: 1, stretch: 1, cycleLength: 1024, overlapRatio: 0.09, originalPitch: 69, mode: sampleModeParams.get(activeSampleMode) ?? 0, level: 0.85 } },
+        { id: 'sample', type: 'SamplePlayer', sample: { name: 'synthetic.wav', url: 'synthetic://sample' }, params: { frequency: 440, trigger: 1, start: 0, end: 1, stretch: 1, cycleLength: 1024, overlapRatio: 0.09, originalFrequency: 440, mode: sampleModeParams.get(activeSampleMode) ?? 0, level: 0.85 } },
         { id: 'meter', type: 'Meter', params: { range: 1 } },
         ...(scope ? [{ id: 'scope', type: 'Scope', params: { range: 1 } }] : []),
         { id: 'out', type: 'AudioOut', params: { level: 0.7 } },
@@ -504,7 +504,7 @@ async function compileVisiblePatch() {
           { from: { node: 'fold', port: 'signal' }, to: { node: 'delay', port: 'signal' }, weight: 1, mode: 'set' },
           { from: { node: 'delay', port: 'signal' }, to: { node: 'chorus', port: 'signal' }, weight: 1, mode: 'set' },
           { from: { node: 'chorus', port: 'signal' }, to: { node: 'reverb', port: 'signal' }, weight: 1, mode: 'set' },
-          { from: { node: 'reverb', port: 'signal' }, to: { node: 'meter', port: 'signal' }, weight: 0.9, mode: 'set' },
+          { from: { node: 'reverb', port: 'left' }, to: { node: 'meter', port: 'signal' }, weight: 0.9, mode: 'set' },
           ...(scope
             ? [
               { from: { node: 'meter', port: 'signal' }, to: { node: 'scope', port: 'signal' }, weight: 1, mode: 'set' },

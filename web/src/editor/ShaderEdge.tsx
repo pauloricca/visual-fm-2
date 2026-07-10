@@ -134,6 +134,11 @@ function getFeedbackPath(
   const sourceY = props.sourceY;
   const targetX = props.targetX;
   const targetY = props.targetY;
+
+  if (props.source === props.target) {
+    return getSameNodeFeedbackPath(props, minimumOffset);
+  }
+
   const horizontalDistance = Math.abs(sourceX - targetX);
   const verticalDistance = Math.abs(sourceY - targetY);
   const offset = Math.max(minimumOffset, horizontalDistance * 0.8 + verticalDistance * 0.2);
@@ -148,6 +153,33 @@ function getFeedbackPath(
     path,
     (sourceX + targetX) / 2,
     (sourceY + targetY) / 2,
+  ];
+}
+
+function getSameNodeFeedbackPath(
+  props: EdgeProps<ShaderFlowEdge>,
+  minimumOffset: number,
+): [string, number, number] {
+  const sourceX = props.sourceX;
+  const sourceY = props.sourceY;
+  const targetX = props.targetX;
+  const targetY = props.targetY;
+  const horizontalDistance = Math.abs(sourceX - targetX);
+  const verticalDistance = Math.abs(sourceY - targetY);
+  const offset = Math.max(minimumOffset * 0.36, horizontalDistance * 0.34 + verticalDistance * 0.12);
+  const bow = Math.min(32, Math.max(16, verticalDistance * 0.2 + 16));
+  const controlY = Math.min(sourceY, targetY) - bow;
+  const path = [
+    `M ${sourceX},${sourceY}`,
+    `C ${sourceX + offset},${controlY}`,
+    `${targetX - offset},${controlY}`,
+    `${targetX},${targetY}`,
+  ].join(' ');
+
+  return [
+    path,
+    (sourceX + targetX) / 2,
+    (controlY + sourceY + targetY) / 3,
   ];
 }
 
