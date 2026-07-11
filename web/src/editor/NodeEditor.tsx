@@ -57,6 +57,9 @@ const STORAGE_KEY = 'visual-fm-2.editor-state.v1';
 const HISTORY_LIMIT = 100;
 const DRAFT_NODE_PREVIEW_ID = '__draft_node_preview__';
 const DUPLICATE_NODE_PREVIEW_PREFIX = '__duplicate_node_preview__:';
+const COMPACT_NODE_Z_INDEX = 0;
+const EXPANDED_NODE_Z_INDEX = 1;
+const SELECTED_NODE_Z_INDEX = 2;
 const SELECTED_EDGE_Z_INDEX = 10000;
 const DEFAULT_FIT_VIEW_PADDING = 0.2;
 const PASTE_OFFSET = { x: 36, y: 36 };
@@ -1377,54 +1380,59 @@ function NodeEditorInner() {
 
   const selectedNodeCount = nodes.filter((node) => node.selected).length;
 
-  const nodesWithCallbacks = useMemo(() => nodes.map((node) => ({
-    ...node,
-    data: {
-      ...node.data,
-      onParamChange: updateNodeParam,
-      onCustomWaveChange: updateNodeCustomWave,
-      onAudioInputDeviceChange: audio.setAudioInputDeviceId,
-      onAudioInputRefresh: audio.refreshAudioInputDevices,
-      onMidiInputRefresh: audio.refreshMidiInputDevices,
-      onTypeChange: updateNodeType,
-      onExpressionCommit: updateExpression,
-      onTypeEditStart: setEditingTypeNodeId,
-      onTypeEditEnd: () => setEditingTypeNodeId(null),
-      onIdChange: updateNodeId,
-      onSubpatchNameChange: updateGroupSubpatchName,
-      onSampleSelect: openSampleLibrary,
-      onSampleDrop: uploadDroppedSampleFiles,
-      onPortDoubleClick: insertNodeOnPort,
-      onPortSelect: (nodeId: string, side: 'input' | 'output', port: string) => {
-        setSelectedBoundaryPort({ nodeId, side, port });
+  const nodesWithCallbacks = useMemo(() => nodes.map((node) => {
+    const compactPorts = node.data.patchNode.compactPorts === true;
+
+    return {
+      ...node,
+      zIndex: nodeZIndex(node.selected === true, compactPorts),
+      data: {
+        ...node.data,
+        onParamChange: updateNodeParam,
+        onCustomWaveChange: updateNodeCustomWave,
+        onAudioInputDeviceChange: audio.setAudioInputDeviceId,
+        onAudioInputRefresh: audio.refreshAudioInputDevices,
+        onMidiInputRefresh: audio.refreshMidiInputDevices,
+        onTypeChange: updateNodeType,
+        onExpressionCommit: updateExpression,
+        onTypeEditStart: setEditingTypeNodeId,
+        onTypeEditEnd: () => setEditingTypeNodeId(null),
+        onIdChange: updateNodeId,
+        onSubpatchNameChange: updateGroupSubpatchName,
+        onSampleSelect: openSampleLibrary,
+        onSampleDrop: uploadDroppedSampleFiles,
+        onPortDoubleClick: insertNodeOnPort,
+        onPortSelect: (nodeId: string, side: 'input' | 'output', port: string) => {
+          setSelectedBoundaryPort({ nodeId, side, port });
+        },
+        onPortNameChange: updateBoundaryPortName,
+        onPortMove: updateBoundaryPortOrder,
+        onCompactToggle: updateNodeCompactPorts,
+        onScopeResize: updateNodeScopeSize,
+        onSelectorInputAdd: addSelectorInput,
+        selectedLinkPorts: selectedLinkPortsByNode.get(node.id),
+        ...(node.data.patchNode.type === 'AudioInput' ? { audioInput: audio.audioInput } : {}),
+        ...(node.data.patchNode.type === 'MidiNote'
+          || node.data.patchNode.type === 'MidiCc'
+          || node.data.patchNode.type === 'Slider'
+          || node.data.patchNode.type === 'Button'
+          || node.data.patchNode.type === 'Tempo'
+          ? { midiInput: audio.midiInput }
+          : {}),
+        connectedPorts: connectedPortsByNode.get(node.id),
+        previewPort: pendingBoundaryPort && pendingBoundaryPort.nodeId === node.id
+          ? { side: pendingBoundaryPort.side, name: pendingBoundaryPort.port }
+          : null,
+        selectedPort: selectedBoundaryPort && selectedBoundaryPort.nodeId === node.id
+          ? { side: selectedBoundaryPort.side, name: selectedBoundaryPort.port }
+          : null,
+        isOnlySelected: node.selected === true && selectedNodeCount === 1,
+        isConnecting: draftNodeConnection !== null,
+        isTypePickerOpen: editingTypeNodeId === node.id,
+        isEditingSubpatch: editingStack.length > 0,
       },
-      onPortNameChange: updateBoundaryPortName,
-      onPortMove: updateBoundaryPortOrder,
-      onCompactToggle: updateNodeCompactPorts,
-      onScopeResize: updateNodeScopeSize,
-      onSelectorInputAdd: addSelectorInput,
-      selectedLinkPorts: selectedLinkPortsByNode.get(node.id),
-      ...(node.data.patchNode.type === 'AudioInput' ? { audioInput: audio.audioInput } : {}),
-      ...(node.data.patchNode.type === 'MidiNote'
-        || node.data.patchNode.type === 'MidiCc'
-        || node.data.patchNode.type === 'Slider'
-        || node.data.patchNode.type === 'Button'
-        || node.data.patchNode.type === 'Tempo'
-        ? { midiInput: audio.midiInput }
-        : {}),
-      connectedPorts: connectedPortsByNode.get(node.id),
-      previewPort: pendingBoundaryPort && pendingBoundaryPort.nodeId === node.id
-        ? { side: pendingBoundaryPort.side, name: pendingBoundaryPort.port }
-        : null,
-      selectedPort: selectedBoundaryPort && selectedBoundaryPort.nodeId === node.id
-        ? { side: selectedBoundaryPort.side, name: selectedBoundaryPort.port }
-        : null,
-      isOnlySelected: node.selected === true && selectedNodeCount === 1,
-      isConnecting: draftNodeConnection !== null,
-      isTypePickerOpen: editingTypeNodeId === node.id,
-      isEditingSubpatch: editingStack.length > 0,
-    },
-  })), [
+    };
+  }), [
     connectedPortsByNode,
     draftNodeConnection,
     editingStack.length,
@@ -1496,8 +1504,9 @@ function NodeEditorInner() {
   const selectedSample = sampleLibrary?.samples.find((sample) => sample.url === sampleLibrary.selectedUrl) ?? null;
   const selectedSubpatchCandidate = subpatchImportModal?.candidates.find((candidate) => candidate.key === subpatchImportModal.selectedKey) ?? null;
   const dspPatch = useMemo(() => stripPatchForDsp(patch), [patch]);
-  const dspPatchKey = useMemo(() => patchToDspKey(dspPatch), [dspPatch]);
-  const audioGraph = useMemo(() => compilePatchToDspProgram(dspPatch), [dspPatchKey, dspPatch]);
+  const liveDspPatch = useMemo(() => patchWithMidiControlVisuals(dspPatch, midiControlVisuals), [dspPatch, midiControlVisuals]);
+  const dspPatchKey = useMemo(() => patchToDspKey(liveDspPatch), [liveDspPatch]);
+  const audioGraph = useMemo(() => compilePatchToDspProgram(liveDspPatch), [dspPatchKey, liveDspPatch]);
   const dspDiagnostics = useMemo(() => classifyDspErrors(audioGraph.errors, dspPatch), [audioGraph.errors, dspPatch]);
   const monitorLinkIdByNode = useMemo(() => {
     const linkIdsByNode = new Map<string, string>();
@@ -3553,6 +3562,44 @@ function normalizeSelectedMidiDeviceIds(value: unknown): string[] {
   return [...new Set(value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0))];
 }
 
+function patchWithMidiControlVisuals(patch: Patch, visuals: Record<string, MidiControlVisualState>): Patch {
+  if (Object.keys(visuals).length === 0) return patch;
+
+  let changed = false;
+  const nodes = patch.nodes.map((node) => {
+    const visual = visuals[node.id];
+    if (!visual) return node;
+
+    if (node.type === 'Slider' && visual.sliderValue !== undefined) {
+      changed = true;
+      return {
+        ...node,
+        params: {
+          ...node.params,
+          value: clampNumber(visual.sliderValue, 0, 1),
+        },
+      };
+    }
+
+    if (node.type === 'Button' && visual.buttonPressed !== undefined) {
+      const mode = clampInteger(node.params.mode ?? 0, 0, 2);
+      if (mode === 1) return node;
+      changed = true;
+      return {
+        ...node,
+        params: {
+          ...node.params,
+          pressed: visual.buttonPressed >= 0.5 ? 1 : 0,
+        },
+      };
+    }
+
+    return node;
+  });
+
+  return changed ? { ...patch, nodes } : patch;
+}
+
 function midiControlVisualsForChange(
   current: Record<string, MidiControlVisualState>,
   nodes: ShaderFlowNode[],
@@ -4759,6 +4806,11 @@ function isPlaybackShortcutControlEventTarget(target: EventTarget | null): boole
 
 function selectionById<T extends { id: string; selected?: boolean }>(items: T[]): Record<string, boolean> {
   return Object.fromEntries(items.map((item) => [item.id, item.selected === true]));
+}
+
+function nodeZIndex(selected: boolean, compactPorts: boolean): number {
+  if (selected) return SELECTED_NODE_Z_INDEX;
+  return compactPorts ? COMPACT_NODE_Z_INDEX : EXPANDED_NODE_Z_INDEX;
 }
 
 function restoreNodeSelectionAfterDeselectedDrag(

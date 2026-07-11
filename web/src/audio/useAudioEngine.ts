@@ -255,6 +255,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   const currentInputDeviceIdRef = useRef('');
   const midiAccessRef = useRef<MidiAccessLike | null>(null);
   const midiRequestRef = useRef<Promise<MidiAccessLike> | null>(null);
+  const midiAccessRequestedRef = useRef(false);
   const midiClockTickMsBySourceRef = useRef<Record<number, number>>({});
   const midiClockTempoBySourceRef = useRef<Record<number, number>>({});
   const midiControlChangeIdRef = useRef(0);
@@ -615,6 +616,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
       return;
     }
 
+    midiAccessRequestedRef.current = true;
     if (midiAccessRef.current) {
       attachMidiInputs(
         midiAccessRef.current,
@@ -803,7 +805,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   }, []);
 
   const syncMidiInput = useCallback((graph: DspProgram, node: AudioWorkletNode) => {
-    if (!programUsesMidi(graph) && !midiInputEnabled) {
+    if (!programUsesMidi(graph) && !midiInputEnabled && !midiAccessRequestedRef.current) {
       disconnectMidiInput();
       return;
     }
@@ -1095,7 +1097,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
       } else {
         disconnectAudioInput();
       }
-      if (programUsesMidi(graph) || midiInputEnabled) {
+      if (programUsesMidi(graph) || midiInputEnabled || midiAccessRequestedRef.current) {
         const navigatorWithMidi = navigator as Navigator & {
           requestMIDIAccess?: (options?: { sysex?: boolean }) => Promise<unknown>;
         };
@@ -1110,7 +1112,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
           setMidiInputMessage(midiInputStatusMessage(devices.length, selectedMidiInputDeviceIds.length, selectedConnectedCount));
         } else {
           setMidiInputStatus('needs-permission');
-          setMidiInputMessage(midiInputEnabled
+          setMidiInputMessage(midiInputEnabled || midiAccessRequestedRef.current
             ? 'Open MIDI settings to request browser MIDI access.'
             : 'Start audio or refresh MIDI to request browser MIDI access.');
         }
@@ -1223,7 +1225,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
       setLinkMeters({});
       setLinkScopeReadings({});
     }
-    if (midiInputEnabled && midiAccessRef.current) {
+    if ((midiInputEnabled || midiAccessRequestedRef.current) && midiAccessRef.current) {
       attachMidiInputs(midiAccessRef.current, null);
     } else {
       disconnectMidiInput();
@@ -1239,11 +1241,11 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     setAudioInputMessage(programUsesAudioInput(graphRef.current)
       ? 'Start audio to request microphone access.'
       : 'Audio input is not used by this patch.');
-    setMidiInputStatus(programUsesMidi(graphRef.current) || midiInputEnabled ? 'needs-permission' : 'inactive');
-    setMidiInputMessage(programUsesMidi(graphRef.current) || midiInputEnabled
+    setMidiInputStatus(programUsesMidi(graphRef.current) || midiInputEnabled || midiAccessRequestedRef.current ? 'needs-permission' : 'inactive');
+    setMidiInputMessage(programUsesMidi(graphRef.current) || midiInputEnabled || midiAccessRequestedRef.current
       ? 'Open MIDI settings to request browser MIDI access.'
       : 'MIDI input is not used by this patch.');
-    if (!midiInputEnabled) {
+    if (!midiInputEnabled && !midiAccessRequestedRef.current) {
       setMidiInputDevices((current) => current.length === 0 ? current : []);
     }
   }, [attachMidiInputs, disconnectMidiInput, finishRecordingCapture, midiInputEnabled, stopMeter]);
