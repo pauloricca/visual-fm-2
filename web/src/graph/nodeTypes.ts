@@ -1,5 +1,12 @@
 import type { NodeDefinition, NodeType, PatchNode } from './types';
 
+export const SEQUENCER_MIN_STEPS = 1;
+export const SEQUENCER_MAX_STEPS = 32;
+export const SEQUENCER_DEFAULT_STEPS = 16;
+export const SEQUENCER_MIN_ROWS = 1;
+export const SEQUENCER_MAX_ROWS = 16;
+export const SEQUENCER_DEFAULT_ROWS = 4;
+
 export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   Expression: {
     type: 'Expression',
@@ -134,6 +141,16 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
       { name: 'midiCc', defaultValue: 1, min: 0, max: 127, integer: true, connectable: false },
     ],
     outputs: [{ name: 'signal' }],
+  },
+  Sequencer: {
+    type: 'Sequencer',
+    inputs: [
+      { name: 'steps', defaultValue: SEQUENCER_DEFAULT_STEPS, min: SEQUENCER_MIN_STEPS, max: SEQUENCER_MAX_STEPS, integer: true },
+      { name: 'rows', defaultValue: SEQUENCER_DEFAULT_ROWS, min: SEQUENCER_MIN_ROWS, max: SEQUENCER_MAX_ROWS, integer: true },
+      { name: 'signal', defaultValue: 0, valueEditor: false },
+      { name: 'reset', defaultValue: 0, valueEditor: false },
+    ],
+    outputs: sequencerOutputDefinitions(SEQUENCER_DEFAULT_ROWS),
   },
   Tempo: {
     type: 'Tempo',
@@ -324,6 +341,7 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   Constant: 'Constant',
   Slider: 'Slider',
   Button: 'Button',
+  Sequencer: 'Sequencer',
   Tempo: 'Tempo',
   MidiNote: 'MIDI Note',
   MidiCc: 'MIDI CC',
@@ -393,11 +411,55 @@ export function getNodeDefinition(node: PatchNode): NodeDefinition {
     };
   }
 
+  if (node.type === 'Sequencer') {
+    return {
+      ...getDefinition(node.type),
+      inputs: node.inputs ?? getDefinition(node.type).inputs,
+      outputs: sequencerOutputDefinitions(sequencerShape(node.params).rows),
+    };
+  }
+
   return {
     ...getDefinition(node.type),
     inputs: node.inputs ?? getDefinition(node.type).inputs,
     outputs: node.outputs ?? getDefinition(node.type).outputs,
   };
+}
+
+export function sequencerShape(params: Record<string, number>): { steps: number; rows: number } {
+  return {
+    steps: clampInteger(params.steps, SEQUENCER_MIN_STEPS, SEQUENCER_MAX_STEPS, SEQUENCER_DEFAULT_STEPS),
+    rows: clampInteger(params.rows, SEQUENCER_MIN_ROWS, SEQUENCER_MAX_ROWS, SEQUENCER_DEFAULT_ROWS),
+  };
+}
+
+export function sequencerOutputName(rowIndex: number): string {
+  return String(rowIndex + 1);
+}
+
+export function sequencerOutputIndex(port: string): number | null {
+  if (!/^(0|[1-9][0-9]*)$/.test(port)) return null;
+  const value = Number(port);
+  if (!Number.isInteger(value) || value < 1 || value > SEQUENCER_MAX_ROWS) return null;
+  return value - 1;
+}
+
+export function sequencerCellParamName(rowIndex: number, stepIndex: number): string {
+  return `cell:${rowIndex}:${stepIndex}`;
+}
+
+export function sequencerPatternValue(params: Record<string, number>, rowIndex: number, steps: number): number {
+  let pattern = 0;
+  for (let stepIndex = 0; stepIndex < steps; stepIndex += 1) {
+    if ((params[sequencerCellParamName(rowIndex, stepIndex)] ?? 0) >= 0.5) {
+      pattern += 2 ** stepIndex;
+    }
+  }
+  return pattern;
+}
+
+function sequencerOutputDefinitions(rows: number): NodeDefinition['outputs'] {
+  return Array.from({ length: rows }, (_, rowIndex) => ({ name: sequencerOutputName(rowIndex) }));
 }
 
 export function getNodeTypeLabel(type: NodeType): string {
@@ -448,4 +510,10 @@ function distortion(type: NodeType): NodeDefinition {
   return processor(type, [
     { name: 'drive', defaultValue: 2.5, min: 0 },
   ]);
+}
+
+function clampInteger(value: unknown, min: number, max: number, fallback: number): number {
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(numberValue)));
 }

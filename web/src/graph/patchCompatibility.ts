@@ -44,6 +44,16 @@ function normalizeCompatibleLink(
   }
 
   const targetNode = nodeById.get(link.to.node);
+  if (targetNode?.type === 'Sequencer' && link.to.port === 'tick') {
+    return {
+      ...link,
+      to: {
+        ...link.to,
+        port: 'signal',
+      },
+    };
+  }
+
   if (targetNode?.type !== 'SamplePlayer' || link.to.port !== 'originalPitch') return link;
   return {
     ...link,

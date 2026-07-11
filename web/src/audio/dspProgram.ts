@@ -1,6 +1,13 @@
 import { expandGroups } from '../graph/subpatch';
 import { normalizeCustomWave } from '../graph/customWave';
-import { getNodeDefinition } from '../graph/nodeTypes';
+import {
+  SEQUENCER_DEFAULT_ROWS,
+  SEQUENCER_DEFAULT_STEPS,
+  getNodeDefinition,
+  sequencerOutputIndex,
+  sequencerPatternValue,
+  sequencerShape,
+} from '../graph/nodeTypes';
 import type { CustomWaveSettings, LinkMode, NodeType, Patch, PatchLink, PatchNode } from '../graph/types';
 
 export const DSP_OP = {
@@ -39,6 +46,7 @@ export const DSP_OP = {
   Tempo: 32,
   Playhead: 33,
   Buffer: 34,
+  Sequencer: 35,
 } as const;
 
 export interface DspProgram {
@@ -86,7 +94,7 @@ export interface DspStateBinding {
   id: string;
   state: number;
   count: number;
-  kind: 'oscillator' | 'filter' | 'feedback' | 'selector' | 'effect';
+  kind: 'oscillator' | 'filter' | 'feedback' | 'selector' | 'effect' | 'sequencer';
   nodeId: string;
 }
 
@@ -133,6 +141,8 @@ interface CompileContext {
   sliderUnitValueByNodeId: Map<string, number>;
   visitingOutputs: Set<string>;
   feedbackByOutput: Map<string, FeedbackBinding>;
+  sequencerStateByNodeId: Map<string, number>;
+  sequencerStepRegisterByNodeId: Map<string, number>;
   ops: DspOp[];
   values: number[];
   valueBindings: DspValueBinding[];
@@ -204,10 +214,11 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
   const audioOutNodes = expandedPatch.nodes.filter((node) => node.type === 'AudioOut');
   const monitorNodes = expandedPatch.nodes.filter((node) => node.type === 'Meter' || node.type === 'Scope');
   const sliderMonitorNodes = expandedPatch.nodes.filter((node) => node.type === 'Slider');
+  const sequencerMonitorNodes = expandedPatch.nodes.filter((node) => node.type === 'Sequencer');
 
   validatePatchLinks(context);
 
-  if (audioOutNodes.length === 0 && monitorNodes.length === 0) {
+  if (audioOutNodes.length === 0 && monitorNodes.length === 0 && sequencerMonitorNodes.length === 0) {
     context.errors.push('Patch needs an Audio Out node.');
   }
 
@@ -221,6 +232,10 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
 
   for (const node of sliderMonitorNodes) {
     registerSliderMonitor(node, context);
+  }
+
+  for (const node of sequencerMonitorNodes) {
+    registerSequencerMonitor(node, context);
   }
 
   if (context.errors.length > 0) {
@@ -267,20 +282,27 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
 }
 
 function createContext(patch: Patch): CompileContext {
+  const nodeById = new Map(patch.nodes.map((node) => [node.id, node]));
   const incomingByInput = new Map<string, PatchLink[]>();
   for (const link of patch.links) {
-    const key = inputKey(link.to.node, link.to.port);
+    const target = nodeById.get(link.to.node);
+    const targetPort = target?.type === 'Sequencer' && link.to.port === 'tick'
+      ? 'signal'
+      : link.to.port;
+    const key = inputKey(link.to.node, targetPort);
     incomingByInput.set(key, [...(incomingByInput.get(key) ?? []), link]);
   }
 
   return {
     patch,
-    nodeById: new Map(patch.nodes.map((node) => [node.id, node])),
+    nodeById,
     incomingByInput,
     outputCache: new Map(),
     sliderUnitValueByNodeId: new Map(),
     visitingOutputs: new Set(),
     feedbackByOutput: new Map(),
+    sequencerStateByNodeId: new Map(),
+    sequencerStepRegisterByNodeId: new Map(),
     ops: [],
     values: [],
     valueBindings: [],
@@ -346,10 +368,14 @@ function validatePatchLinks(context: CompileContext): void {
 
     if (!target) {
       context.errors.push(`Link target node "${link.to.node}" does not exist.`);
-    } else if (!portExists(getNodeDefinition(target), 'inputs', link.to.port)) {
+    } else if (!portExists(getNodeDefinition(target), 'inputs', link.to.port) && !isLegacySequencerTickInput(target, link.to.port)) {
       context.errors.push(`Link "${formatLink(link)}" uses invalid input port "${link.to.port}" on node "${link.to.node}".`);
     }
   }
+}
+
+function isLegacySequencerTickInput(node: PatchNode, port: string): boolean {
+  return node.type === 'Sequencer' && port === 'tick';
 }
 
 function portExists(definition: ReturnType<typeof getNodeDefinition>, side: 'inputs' | 'outputs', port: string): boolean {
@@ -877,6 +903,10 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     return output;
   }
 
+  if (node.type === 'Sequencer') {
+    return compileSequencer(node, port, context);
+  }
+
   if (node.type === 'FormantFilter') {
     const output = nextRegister(context);
     const state = nextState(context, 12);
@@ -1139,6 +1169,69 @@ function compileSelector(node: PatchNode, context: CompileContext): number {
     });
   });
   return output;
+}
+
+function compileSequencer(node: PatchNode, port: string, context: CompileContext): number {
+  const rowIndex = sequencerOutputIndex(port);
+  if (rowIndex === null) {
+    context.errors.push(`Sequencer node "${node.id}" does not have supported output "${port}".`);
+    return constantRegister(0, context);
+  }
+
+  const output = nextRegister(context);
+  const shape = sequencerShape(node.params);
+  const state = ensureSequencerStepRegister(node, context).state;
+  context.ops.push({
+    opcode: DSP_OP.Sequencer,
+    out: output,
+    a: resolveInput(node, 'signal', 0, context),
+    b: resolveInput(node, 'steps', SEQUENCER_DEFAULT_STEPS, context),
+    c: constantRegister(rowIndex, context),
+    d: resolveInput(node, 'rows', SEQUENCER_DEFAULT_ROWS, context),
+    e: resolveInput(node, 'reset', 0, context),
+    state,
+    value: sequencerPatternValue(node.params, rowIndex, shape.steps),
+  });
+  return output;
+}
+
+function registerSequencerMonitor(node: PatchNode, context: CompileContext): void {
+  ensureSequencerStepRegister(node, context);
+}
+
+function ensureSequencerStepRegister(node: PatchNode, context: CompileContext): { state: number; register: number } {
+  let state = context.sequencerStateByNodeId.get(node.id);
+  if (state === undefined) {
+    state = nextState(context, 6);
+    context.sequencerStateByNodeId.set(node.id, state);
+    context.stateBindings.push({
+      id: `${node.id}:sequencer`,
+      state,
+      count: 6,
+      kind: 'sequencer',
+      nodeId: node.id,
+    });
+  }
+
+  let register = context.sequencerStepRegisterByNodeId.get(node.id);
+  if (register === undefined) {
+    register = nextRegister(context);
+    context.sequencerStepRegisterByNodeId.set(node.id, register);
+    context.monitorIds[node.id] = register;
+    context.ops.push({
+      opcode: DSP_OP.Sequencer,
+      out: register,
+      a: resolveInput(node, 'signal', 0, context),
+      b: resolveInput(node, 'steps', SEQUENCER_DEFAULT_STEPS, context),
+      c: constantRegister(-1, context),
+      d: resolveInput(node, 'rows', SEQUENCER_DEFAULT_ROWS, context),
+      e: resolveInput(node, 'reset', 0, context),
+      state,
+      value: 0,
+    });
+  }
+
+  return { state, register };
 }
 
 function compilePan(node: PatchNode, port: string, context: CompileContext): number {

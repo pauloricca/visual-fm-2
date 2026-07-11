@@ -18,7 +18,14 @@ import {
   customWaveUsesSustainStart,
   normalizeCustomWave,
 } from '../graph/customWave';
-import { getNodeDefinition, getNodeTypeLabel, NODE_TYPE_LIST } from '../graph/nodeTypes';
+import {
+  getNodeDefinition,
+  getNodeTypeLabel,
+  NODE_TYPE_LIST,
+  sequencerCellParamName,
+  sequencerOutputName,
+  sequencerShape,
+} from '../graph/nodeTypes';
 import type { CustomWaveMode, CustomWavePoint, CustomWaveSettings, NodeDefinition, NodeType, PatchNode } from '../graph/types';
 import {
   clampControlNodeSize,
@@ -69,6 +76,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const showScopeDisplay = node.type === 'Scope';
   const showSliderDisplay = node.type === 'Slider';
   const showButtonDisplay = node.type === 'Button';
+  const showSequencerDisplay = node.type === 'Sequencer';
   const showTempoDisplay = node.type === 'Tempo';
   const showAudioOutputDisplay = node.type === 'AudioOut';
   const showAudioInputDisplay = node.type === 'AudioInput';
@@ -77,6 +85,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const showResizableDisplay = showScopeDisplay || showSliderDisplay || showButtonDisplay || showCustomWaveEditor;
   const showSampleUpload = node.type === 'SamplePlayer';
   const customWave = showCustomWaveEditor ? normalizeCustomWave(node.customWave, node.params) : null;
+  const sequencer = showSequencerDisplay ? sequencerShape(node.params) : null;
   const amplitudeRange = displayAmplitudeRange(node.params.range);
   const amplitudeRangeLabel = formatAmplitude(amplitudeRange);
   const rawMeterLevel = data.audioMeter?.output ?? 0;
@@ -118,7 +127,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     && previewInputPort !== 'signal',
   );
   const headerInputPort = showHeaderInput ? 'signal' : null;
-  const showHeaderOutput = outputCount === 1 && !previewAddsOutput;
+  const showHeaderOutput = node.type !== 'Ins' && outputCount === 1 && !previewAddsOutput;
   const headerOutputPort = showHeaderOutput && definition ? definition.outputs[0]?.name ?? null : null;
   const showHeaderInputPort = Boolean(headerInputPort);
   const showHeaderOutputPort = Boolean(headerOutputPort);
@@ -141,6 +150,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     showScopeDisplay ? 'shader-node-scope' : '',
     showSliderDisplay ? 'shader-node-slider' : '',
     showButtonDisplay ? 'shader-node-button' : '',
+    showSequencerDisplay ? 'shader-node-sequencer' : '',
     showAudioOutputDisplay ? 'shader-node-audio-out' : '',
     showSampleUpload ? 'shader-node-sampleplayer' : '',
     showAudioInputDisplay ? 'shader-node-audio-input' : '',
@@ -176,6 +186,8 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     customWave?.points,
     customWave?.sustainEnd,
     customWave?.sustainStart,
+    sequencer?.rows,
+    sequencer?.steps,
     updateNodeInternals,
   ]);
 
@@ -629,6 +641,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             || showAudioInputDisplay
             || showMidiNoteDisplay
             || showTempoDisplay
+            || showSequencerDisplay
             || showCustomWaveEditor
             || showSliderDisplay
             || showButtonDisplay
@@ -648,11 +661,12 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           showScopeDisplay ? 'shader-node-body-scope' : '',
           showSliderDisplay ? 'shader-node-body-slider' : '',
           showButtonDisplay ? 'shader-node-body-button' : '',
+          showSequencerDisplay ? 'shader-node-body-sequencer' : '',
           showAudioOutputDisplay ? 'shader-node-body-audio-out' : '',
           showAudioInputDisplay ? 'shader-node-body-audio-input' : '',
           showMidiNoteDisplay ? 'shader-node-body-midi-note' : '',
           showCustomWaveEditor ? 'shader-node-body-custom-wave' : '',
-          visibleOutputPorts.length === 0 || showHeaderOutputPort ? 'shader-node-body-no-outputs' : '',
+          !showSequencerDisplay && (visibleOutputPorts.length === 0 || showHeaderOutputPort) ? 'shader-node-body-no-outputs' : '',
         ].filter(Boolean).join(' ')}>
           {isExpression ? (
             <input
@@ -741,6 +755,23 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               pressed={data.midiButtonPressed ?? node.params.pressed ?? 0}
               onPressedChange={(value) => data.onParamChange(node.id, 'pressed', value)}
               onClickPulse={() => data.onParamChange(node.id, 'clicks', (node.params.clicks ?? 0) + 1)}
+            />
+          ) : null}
+          {showSequencerDisplay && sequencer ? (
+            <SequencerGrid
+              params={node.params}
+              rows={sequencer.rows}
+              steps={sequencer.steps}
+              currentStep={data.audioSequencerStep}
+              selectedLinkOutputs={selectedLinkOutputs}
+              setOutputRowRef={(port, element) => {
+                outputPortRowsRef.current[port] = element;
+              }}
+              onCellToggle={(rowIndex, stepIndex) => {
+                const port = sequencerCellParamName(rowIndex, stepIndex);
+                const nextValue = (node.params[port] ?? 0) >= 0.5 ? 0 : 1;
+                data.onParamChange(node.id, port, nextValue);
+              }}
             />
           ) : null}
           {showAudioOutputDisplay ? (
@@ -990,7 +1021,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   onChange={(nextName) => data.onPortNameChange(node.id, 'input', input.name, nextName)}
                 />
               )}
-              {!input.preview && input.valueEditor !== false && input.defaultValue !== undefined && !(showSliderDisplay && input.name === 'direction') && !(showButtonDisplay && input.name === 'mode') && !(showSampleUpload && input.name === 'mode') && !(showMidiNoteDisplay && input.name === 'voices') && !(showTempoDisplay && (input.name === 'source' || input.name === 'midiSource')) ? (
+              {!input.preview && node.type !== 'Outs' && input.valueEditor !== false && input.defaultValue !== undefined && !(showSliderDisplay && input.name === 'direction') && !(showButtonDisplay && input.name === 'mode') && !(showSampleUpload && input.name === 'mode') && !(showMidiNoteDisplay && input.name === 'voices') && !(showTempoDisplay && (input.name === 'source' || input.name === 'midiSource')) ? (
                 <NumericScrubber
                   value={node.params[input.name] ?? input.defaultValue ?? 0}
                   min={input.min}
@@ -1031,7 +1062,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               </button>
             ) : null}
           </div>
-          {visibleOutputPorts.length > 0 && !showHeaderOutputPort ? (
+          {visibleOutputPorts.length > 0 && !showHeaderOutputPort && !showSequencerDisplay ? (
             <div className="shader-ports shader-outputs">
               {visibleOutputPorts.map((output) => (
               <div
@@ -1064,6 +1095,15 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   }}
                   onChange={(nextName) => data.onPortNameChange(node.id, 'output', output.name, nextName)}
                 />
+                {!output.preview && node.type === 'Ins' && output.valueEditor !== false ? (
+                  <NumericScrubber
+                    value={node.params[output.name] ?? output.defaultValue ?? 0}
+                    min={output.min}
+                    max={output.max}
+                    integer={output.integer}
+                    onChange={(value) => data.onParamChange(node.id, output.name, value)}
+                  />
+                ) : null}
                 <Handle
                   id={`out:${output.name}`}
                   type="source"
@@ -1499,6 +1539,85 @@ function ButtonDisplay({ mode, pressed, onPressedChange, onClickPulse }: ButtonD
       }}
       onDoubleClick={(event) => event.stopPropagation()}
     />
+  );
+}
+
+interface SequencerGridProps {
+  params: Record<string, number>;
+  rows: number;
+  steps: number;
+  currentStep?: number;
+  selectedLinkOutputs: string[];
+  setOutputRowRef: (port: string, element: HTMLDivElement | null) => void;
+  onCellToggle: (rowIndex: number, stepIndex: number) => void;
+}
+
+function SequencerGrid({
+  params,
+  rows,
+  steps,
+  currentStep,
+  selectedLinkOutputs,
+  setOutputRowRef,
+  onCellToggle,
+}: SequencerGridProps) {
+  const activeStep = Number.isFinite(currentStep) ? Math.round(currentStep ?? -1) : -1;
+  return (
+    <div
+      className="sequencer-node-panel nodrag nopan"
+      style={{ '--sequencer-steps': steps } as CSSProperties}
+      aria-label="Sequencer pattern"
+    >
+      {Array.from({ length: rows }, (_, rowIndex) => {
+        const outputName = sequencerOutputName(rowIndex);
+        return (
+          <div
+            className="sequencer-row"
+            key={outputName}
+            ref={(element) => setOutputRowRef(outputName, element)}
+          >
+            <div className="sequencer-cells" role="row">
+              {Array.from({ length: steps }, (_, stepIndex) => {
+                const active = (params[sequencerCellParamName(rowIndex, stepIndex)] ?? 0) >= 0.5;
+                return (
+                  <button
+                    className={[
+                      'sequencer-cell',
+                      activeStep === stepIndex ? 'sequencer-cell-current' : '',
+                      active ? 'sequencer-cell-active' : '',
+                    ].filter(Boolean).join(' ')}
+                    key={stepIndex}
+                    type="button"
+                    role="gridcell"
+                    aria-label={`Row ${rowIndex + 1}, step ${stepIndex + 1}`}
+                    aria-pressed={active}
+                    title={`Row ${rowIndex + 1}, step ${stepIndex + 1}`}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onCellToggle(rowIndex, stepIndex);
+                    }}
+                  />
+                );
+              })}
+            </div>
+            <div className="sequencer-output-port">
+              <Handle
+                id={`out:${outputName}`}
+                type="source"
+                position={Position.Right}
+                className={[
+                  'shader-handle shader-handle-output shader-handle-output-sequencer',
+                  selectedLinkOutputs.includes(outputName) ? 'shader-handle-selected-link' : '',
+                ].filter(Boolean).join(' ')}
+              />
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

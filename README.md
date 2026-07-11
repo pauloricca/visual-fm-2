@@ -41,9 +41,13 @@ Most node types are available from the node picker. `Ins` and `Outs` appear whil
 - `Audio Input`: brings a microphone or input device into the patch with gain/level controls.
 - `Custom Wave`: generates an editable breakpoint waveform with loop, one-shot, ping-pong, and sustain modes.
 - `Sample`: plays an uploaded sample with trigger, region, pitch, stretch, and granular-style controls.
+- `Buffer`: records and plays a rolling audio buffer from signal, playhead, record-head, and length controls.
+- `Playhead`: outputs a playback position signal from start and speed controls.
 - `Constant`: outputs a fixed numeric value.
 - `Slider`: provides a playable UI control, optionally driven by MIDI CC, that outputs a mapped signal.
 - `Button`: provides a playable UI button, optionally driven by MIDI CC, for gate/toggle/trigger-style control.
+- `Sequencer`: displays a clickable step grid with configurable steps and rows; `signal` advances the sequence, `reset` restarts it, and each row has its own trigger output.
+- `Tempo`: outputs clock triggers and matching frequency values from 4-bar divisions down to thirty-seconds.
 - `MIDI Note`: converts MIDI note input into note, frequency, velocity, gate, and trigger outputs.
 - `MIDI CC`: outputs the current value of a selected MIDI CC.
 - `Selector`: selects one of several input values and can glide between selections.

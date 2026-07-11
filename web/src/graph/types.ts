@@ -20,6 +20,7 @@ export type NodeType =
   | 'Constant'
   | 'Slider'
   | 'Button'
+  | 'Sequencer'
   | 'Tempo'
   | 'MidiNote'
   | 'MidiCc'

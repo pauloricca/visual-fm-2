@@ -112,10 +112,15 @@ const DSP_OP_SLEW: i32 = 31;
 const DSP_OP_TEMPO: i32 = 32;
 const DSP_OP_PLAYHEAD: i32 = 33;
 const DSP_OP_BUFFER: i32 = 34;
+const DSP_OP_SEQUENCER: i32 = 35;
 const MAX_DSP_TEMPO_SOURCES: usize = 129;
 const TEMPO_OUTPUT_COUNT: i32 = 10;
 const DSP_TEMPO_INTERNAL_SOURCE: usize = 0;
 const DSP_RENDER_FRAME_UNSET: u32 = u32::MAX;
+const SEQUENCER_MIN_STEPS: i32 = 1;
+const SEQUENCER_MAX_STEPS: i32 = 32;
+const SEQUENCER_MIN_ROWS: i32 = 1;
+const SEQUENCER_MAX_ROWS: i32 = 16;
 
 #[derive(Copy, Clone)]
 struct Node {
@@ -4548,6 +4553,77 @@ fn render_dsp_accumulator(op: DspOp) -> f64 {
     }
 }
 
+fn render_dsp_sequencer(op: DspOp, frame: usize) -> f64 {
+    unsafe {
+        if op.state < 0 || (op.state as usize + 5) >= MAX_DSP_STATE {
+            return 0.0;
+        }
+
+        let steps = (dsp_reg(op.b).round() as i32).clamp(SEQUENCER_MIN_STEPS, SEQUENCER_MAX_STEPS);
+        let rows = (dsp_reg(op.d).round() as i32).clamp(SEQUENCER_MIN_ROWS, SEQUENCER_MAX_ROWS);
+        let row = dsp_reg(op.c).round() as i32;
+
+        let state_index = op.state as usize;
+        let frame_token =
+            DSP_RENDER_QUANTUM_ID as f64 * (MAX_WASM_FRAMES as f64 + 1.0) + frame as f64;
+        if (DSP_STATE[state_index + 3] - frame_token).abs() >= 0.5 {
+            let trigger = dsp_reg(op.a) >= ENVELOPE_TRIGGER_THRESHOLD;
+            let previous_trigger = DSP_STATE[state_index + 1] >= ENVELOPE_TRIGGER_THRESHOLD;
+            let pulse = trigger && !previous_trigger;
+            let reset = dsp_reg(op.e) >= ENVELOPE_TRIGGER_THRESHOLD;
+            let previous_reset = DSP_STATE[state_index + 5] >= ENVELOPE_TRIGGER_THRESHOLD;
+            let reset_pulse = reset && !previous_reset;
+            let mut pulse_count = DSP_STATE[state_index + 4].round() as i32;
+            if !DSP_STATE[state_index + 4].is_finite() || pulse_count < 0 {
+                pulse_count = 0;
+            }
+            if reset_pulse {
+                pulse_count = 0;
+            }
+            if pulse {
+                pulse_count += 1;
+            }
+            let initialized = pulse_count > 0;
+            let step = if initialized {
+                (pulse_count - 1).rem_euclid(steps.max(1))
+            } else {
+                0
+            };
+
+            DSP_STATE[state_index] = step as f64;
+            DSP_STATE[state_index + 1] = if trigger { 1.0 } else { 0.0 };
+            DSP_STATE[state_index + 2] = if pulse { 1.0 } else { 0.0 };
+            DSP_STATE[state_index + 3] = frame_token;
+            DSP_STATE[state_index + 4] = pulse_count as f64;
+            DSP_STATE[state_index + 5] = if reset { 1.0 } else { 0.0 };
+        }
+
+        let step = DSP_STATE[state_index].round() as i32;
+        if row < 0 && DSP_STATE[state_index + 4] >= 1.0 {
+            return step.max(0) as f64;
+        }
+
+        if row >= rows {
+            return 0.0;
+        }
+
+        if DSP_STATE[state_index + 2] < 0.5 {
+            return 0.0;
+        }
+
+        if step < 0 || step >= steps || step >= 32 {
+            return 0.0;
+        }
+
+        let pattern = op.value.round().clamp(0.0, u32::MAX as f64) as u32;
+        if (pattern & (1_u32 << step)) != 0 {
+            1.0
+        } else {
+            0.0
+        }
+    }
+}
+
 fn render_dsp_button(op: DspOp) -> f64 {
     unsafe {
         if op.state < 0 || (op.state as usize + 2) >= MAX_DSP_STATE {
@@ -4927,6 +5003,7 @@ fn render_dsp_op(
         DSP_OP_MIDI_CC => set_dsp_reg(op.out, render_dsp_midi_cc(op)),
         DSP_OP_TEMPO => set_dsp_reg(op.out, render_dsp_tempo(op, frame, sample_rate)),
         DSP_OP_ACCUMULATOR => set_dsp_reg(op.out, render_dsp_accumulator(op)),
+        DSP_OP_SEQUENCER => set_dsp_reg(op.out, render_dsp_sequencer(op, frame)),
         DSP_OP_BUTTON => set_dsp_reg(op.out, render_dsp_button(op)),
         DSP_OP_SLEW => set_dsp_reg(op.out, render_dsp_slew(op, sample_rate)),
         DSP_OP_PLAYHEAD => set_dsp_reg(op.out, render_dsp_playhead(op, sample_rate)),

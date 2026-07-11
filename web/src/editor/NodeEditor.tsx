@@ -23,7 +23,7 @@ import { useAudioEngine, type MidiControlChange, type MidiInputState } from '../
 import { normalizeCustomWave } from '../graph/customWave';
 import { demoPatch } from '../graph/demoPatch';
 import { extractExpressionInputs } from '../graph/expression';
-import { defaultParamsFor, getDefinition, getNodeDefinition } from '../graph/nodeTypes';
+import { defaultParamsFor, getDefinition, getNodeDefinition, sequencerShape } from '../graph/nodeTypes';
 import { normalizePatchCompatibility } from '../graph/patchCompatibility';
 import { patchToJson } from '../graph/serialize';
 import type { CustomWaveSettings, LinkMode, NodeType, Patch, PatchLink, PatchNode, PortDefinition, SampleAsset } from '../graph/types';
@@ -378,6 +378,13 @@ function NodeEditorInner() {
 
   const updateNodeParam = useCallback((nodeId: string, port: string, value: number) => {
     commitHistory(`param:${nodeId}:${port}`);
+    const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
+    const nextPatchNode = relatedNode?.data.patchNode.type === 'Sequencer'
+      ? {
+          ...relatedNode.data.patchNode,
+          params: { ...relatedNode.data.patchNode.params, [port]: value },
+        }
+      : null;
     setNodes((current) => current.map((node) => node.id === nodeId
       ? {
           ...node,
@@ -386,11 +393,22 @@ function NodeEditorInner() {
             patchNode: {
               ...node.data.patchNode,
               params: { ...node.data.patchNode.params, [port]: value },
+              outputs: node.data.patchNode.type === 'Ins'
+                ? setPortDefaultValue(node.data.patchNode.outputs, port, value)
+                : node.data.patchNode.outputs,
             },
           },
         }
       : node,
     ));
+    if (nextPatchNode) {
+      const nextDefinition = getNodeDefinition(nextPatchNode as PatchNode);
+      setEdges((current) => dedupeEdges(current.flatMap((edge) => {
+        const link = linkFromEdge(edge);
+        if (!link || link.from.node !== nodeId) return [edge];
+        return nextDefinition.outputs.some((output) => output.name === link.from.port) ? [edge] : [];
+      })));
+    }
   }, [commitHistory]);
 
   const updateNodeCustomWave = useCallback((nodeId: string, customWave: CustomWaveSettings, historyKey?: string) => {
@@ -780,9 +798,7 @@ function NodeEditorInner() {
             outputs: side === 'output'
               ? renamePortDefinitions(node.data.patchNode.outputs, port, nextPort)
               : node.data.patchNode.outputs,
-            params: side === 'input'
-              ? renameParamKey(node.data.patchNode.params, port, nextPort)
-              : node.data.patchNode.params,
+            params: nextBoundaryPortParams(node.data.patchNode as PatchNode, side, port, nextPort),
           },
         },
       };
@@ -1050,7 +1066,7 @@ function NodeEditorInner() {
       const nextOutputs = selected.side === 'output'
         ? (node.data.patchNode.outputs ?? []).filter((port) => port.name !== selected.port)
         : node.data.patchNode.outputs;
-      const nextParams = selected.side === 'input'
+      const nextParams = boundaryPortHasDefaultValue(node.data.patchNode as PatchNode, selected.side) || selected.side === 'input'
         ? Object.fromEntries(Object.entries(node.data.patchNode.params).filter(([key]) => key !== selected.port))
         : node.data.patchNode.params;
 
@@ -1122,6 +1138,7 @@ function NodeEditorInner() {
                 ...node.data,
                 patchNode: {
                   ...node.data.patchNode,
+                  params: Object.fromEntries(Object.entries(node.data.patchNode.params).filter(([key]) => key !== selected.port)),
                   outputs: (node.data.patchNode.outputs ?? []).filter((port) => port.name !== selected.port),
                 },
               },
@@ -1243,10 +1260,9 @@ function NodeEditorInner() {
     setNodes((current) => current.map((node) => {
       if (node.id !== pending.nodeId) return node;
 
-      const nextPort: PortDefinition = {
-        name: pending.port,
-        defaultValue: pending.side === 'input' ? 0 : undefined,
-      };
+      const nextPort: PortDefinition = boundaryPortHasDefaultValue(relatedNode.data.patchNode as PatchNode, pending.side)
+        ? { name: pending.port, defaultValue: 0 }
+        : { name: pending.port };
       const ports = pending.side === 'input'
         ? node.data.patchNode.inputs ?? []
         : node.data.patchNode.outputs ?? [];
@@ -1264,7 +1280,7 @@ function NodeEditorInner() {
             outputs: pending.side === 'output'
               ? [...ports, nextPort]
               : node.data.patchNode.outputs,
-            params: pending.side === 'input'
+            params: boundaryPortHasDefaultValue(node.data.patchNode as PatchNode, pending.side)
               ? { ...node.data.patchNode.params, [pending.port]: 0 }
               : node.data.patchNode.params,
           },
@@ -1535,6 +1551,7 @@ function NodeEditorInner() {
         ...(monitorLinkId && node.data.patchNode.type === 'Meter' ? { audioMeter: audio.linkMeters[monitorLinkId] } : {}),
         ...(monitorLinkId && node.data.patchNode.type === 'Scope' ? { audioScope: audio.linkScopes[monitorLinkId] } : {}),
         ...(monitorLinkId && node.data.patchNode.type === 'Slider' ? { audioSliderValue: audio.linkMeters[monitorLinkId]?.output } : {}),
+        ...(monitorLinkId && node.data.patchNode.type === 'Sequencer' ? { audioSequencerStep: audio.linkMeters[monitorLinkId]?.output } : {}),
         ...(midiControlVisual?.sliderValue !== undefined ? { midiSliderValue: midiControlVisual.sliderValue } : {}),
         ...(midiControlVisual?.buttonPressed !== undefined ? { midiButtonPressed: midiControlVisual.buttonPressed } : {}),
       },
@@ -3859,9 +3876,10 @@ function applySubpatchToParent(
     if (!linkedGroupIds.has(node.id)) return { ...node, selected: false };
 
     const previousParams = node.data.patchNode.params;
+    const previousInputs = new Map((node.data.patchNode.inputs ?? []).map((port) => [port.name, port]));
     const params = Object.fromEntries(inputDefinitions.map((port) => [
       port.name,
-      previousParams[port.name] ?? port.defaultValue ?? 0,
+      nextGroupInputParam(previousParams, previousInputs.get(port.name), port),
     ]));
 
     return {
@@ -3901,15 +3919,21 @@ function emptySubpatchForGroup(groupNode: PatchNode, position: { x: number; y: n
       {
         id: 'ins_1',
         type: 'Ins',
-        params: {},
-        outputs: groupNode.inputs?.map((port) => ({ ...port })) ?? [],
+        params: Object.fromEntries((groupNode.inputs ?? []).map((port) => [
+          port.name,
+          groupNode.params[port.name] ?? port.defaultValue ?? 0,
+        ])),
+        outputs: groupNode.inputs?.map((port) => ({
+          ...port,
+          defaultValue: groupNode.params[port.name] ?? port.defaultValue ?? 0,
+        })) ?? [],
         position: { x: position.x - 220, y: position.y },
       },
       {
         id: 'outs_1',
         type: 'Outs',
-        params: Object.fromEntries((groupNode.outputs ?? []).map((port) => [port.name, 0])),
-        inputs: groupNode.outputs?.map((port) => ({ ...port, defaultValue: port.defaultValue ?? 0 })) ?? [],
+        params: {},
+        inputs: groupNode.outputs?.map((port) => ({ ...port, defaultValue: undefined })) ?? [],
         position: { x: position.x + 220, y: position.y },
       },
     ],
@@ -3931,11 +3955,28 @@ function boundaryPortDefinitions(
     for (const port of node[side] ?? []) {
       if (usedNames.has(port.name)) continue;
       usedNames.add(port.name);
-      definitions.push({ ...port });
+      definitions.push({
+        ...port,
+        ...(boundaryType === 'Ins' && side === 'outputs'
+          ? { defaultValue: node.params[port.name] ?? port.defaultValue ?? 0 }
+          : {}),
+      });
     }
   }
 
   return definitions;
+}
+
+function nextGroupInputParam(
+  previousParams: Record<string, number>,
+  previousInput: PortDefinition | undefined,
+  nextInput: PortDefinition,
+): number {
+  const nextDefault = nextInput.defaultValue ?? 0;
+  const previousValue = previousParams[nextInput.name];
+  if (previousValue === undefined) return nextDefault;
+  if (previousValue === (previousInput?.defaultValue ?? 0)) return nextDefault;
+  return previousValue;
 }
 
 function groupSelectedGraph(
@@ -3972,7 +4013,7 @@ function groupSelectedGraph(
       {
         id: 'ins_1',
         type: 'Ins' as const,
-        params: {},
+        params: Object.fromEntries(inputDefinitions.map((port) => [port.name, port.defaultValue ?? 0])),
         outputs: inputDefinitions,
         position: { x: bounds.x - 220, y: bounds.y },
       },
@@ -3980,8 +4021,8 @@ function groupSelectedGraph(
       {
         id: 'outs_1',
         type: 'Outs' as const,
-        params: Object.fromEntries(outputDefinitions.map((port) => [port.name, 0])),
-        inputs: outputDefinitions.map((port) => ({ ...port, defaultValue: 0 })),
+        params: {},
+        inputs: outputDefinitions,
         position: { x: bounds.x + bounds.width + 220, y: bounds.y },
       },
     ],
@@ -4220,6 +4261,14 @@ function viewportNodeSize(node: ShaderFlowNode): { width: number; height: number
     return { width: size.width, height: size.height + NODE_HEADER_HEIGHT };
   }
 
+  if (patchNode.type === 'Sequencer') {
+    const shape = sequencerShape(patchNode.params);
+    return {
+      width: Math.max(168, shape.steps * 26 + 18),
+      height: NODE_HEADER_HEIGHT + shape.rows * 26 + 92,
+    };
+  }
+
   if (patchNode.type === 'Expression') {
     return { width: 240, height: DEFAULT_NODE_BOUNDS_SIZE.height };
   }
@@ -4279,6 +4328,14 @@ function renamePortDefinitions(
   return ports?.map((port) => port.name === previousPort ? { ...port, name: nextPort } : port);
 }
 
+function setPortDefaultValue(
+  ports: PortDefinition[] | undefined,
+  portName: string,
+  value: number,
+): PortDefinition[] | undefined {
+  return ports?.map((port) => port.name === portName ? { ...port, defaultValue: value } : port);
+}
+
 function movePortDefinitions(
   ports: PortDefinition[] | undefined,
   portName: string,
@@ -4301,6 +4358,35 @@ function renameParamKey(params: Record<string, number>, previousKey: string, nex
   const nextParams = { ...params, [nextKey]: params[previousKey] };
   delete nextParams[previousKey];
   return nextParams;
+}
+
+function removeParamKey(params: Record<string, number>, key: string): Record<string, number> {
+  if (params[key] === undefined) return params;
+
+  const nextParams = { ...params };
+  delete nextParams[key];
+  return nextParams;
+}
+
+function boundaryPortHasDefaultValue(node: PatchNode, side: 'input' | 'output'): boolean {
+  return node.type === 'Ins' && side === 'output';
+}
+
+function nextBoundaryPortParams(
+  node: PatchNode,
+  side: 'input' | 'output',
+  previousPort: string,
+  nextPort: string,
+): Record<string, number> {
+  if (boundaryPortHasDefaultValue(node, side)) {
+    return renameParamKey(node.params, previousPort, nextPort);
+  }
+
+  if (node.type === 'Outs' && side === 'input') {
+    return removeParamKey(node.params, previousPort);
+  }
+
+  return node.params;
 }
 
 function renameEdgePort(

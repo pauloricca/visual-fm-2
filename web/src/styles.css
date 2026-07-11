@@ -497,6 +497,11 @@ select:hover {
   background: var(--surface-bg);
 }
 
+.shader-node-sequencer {
+  min-width: 168px;
+  background: var(--surface-bg);
+}
+
 .shader-node-audio-out {
   min-width: 172px;
 }
@@ -566,7 +571,7 @@ select:hover {
 }
 
 .shader-node-group .shader-node-title {
-  background: #c7e8ff;
+  background: #c7ffcf;
   color: #000;
 }
 
@@ -1199,6 +1204,17 @@ select:hover {
   background: transparent;
 }
 
+.shader-node-body-sequencer {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  width: 100%;
+  min-height: 0;
+  padding: 0;
+  background: transparent;
+}
+
 .scope-preview {
   display: block;
   width: 100%;
@@ -1308,6 +1324,84 @@ select:hover {
   background: #fff;
   color: #000;
   outline: 0;
+}
+
+.sequencer-node-panel {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 0;
+  width: max-content;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.sequencer-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: max-content 0;
+  height: 26px;
+  min-width: 0;
+}
+
+.sequencer-cells {
+  display: grid;
+  grid-template-columns: repeat(var(--sequencer-steps), 26px);
+  gap: 0;
+}
+
+.sequencer-cell {
+  width: 26px;
+  height: 26px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-right: 1px solid rgba(255, 255, 255, 0.44);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.44);
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+}
+
+.sequencer-row:first-child .sequencer-cell {
+  border-top: 1px solid rgba(255, 255, 255, 0.44);
+}
+
+.sequencer-cell:first-child {
+  border-left: 1px solid rgba(255, 255, 255, 0.44);
+}
+
+.sequencer-cell:hover,
+.sequencer-cell:focus-visible {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+  outline: 0;
+}
+
+.sequencer-cell-current {
+  background: rgba(255, 255, 255, 0.12);
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.28);
+}
+
+.sequencer-cell-active,
+.sequencer-cell-active:hover,
+.sequencer-cell-active:focus-visible {
+  background: #7cff00;
+  color: #000;
+}
+
+.sequencer-cell-active.sequencer-cell-current,
+.sequencer-cell-active.sequencer-cell-current:hover,
+.sequencer-cell-active.sequencer-cell-current:focus-visible {
+  background: #b7ff73;
+  box-shadow: inset 0 0 0 2px #fff;
+}
+
+.sequencer-output-port {
+  position: relative;
+  width: 0;
+  height: 26px;
+  min-width: 0;
 }
 
 .numeric-scrubber {
@@ -1577,6 +1671,7 @@ select:hover {
 
 .shader-node-body-slider .shader-inputs,
 .shader-node-body-button .shader-inputs,
+.shader-node-body-sequencer .shader-inputs,
 .shader-node-body-scope .shader-inputs,
 .shader-node-body-meter .shader-inputs,
 .shader-node-body-custom-wave .shader-inputs {
@@ -1589,6 +1684,7 @@ select:hover {
 .shader-node-compact .shader-node-body-slider .shader-inputs:empty,
 .shader-node-compact .shader-node-body-scope .shader-inputs:empty,
 .shader-node-compact .shader-node-body-button .shader-inputs:empty,
+.shader-node-compact .shader-node-body-sequencer .shader-inputs:empty,
 .shader-node-compact .shader-node-body-meter .shader-inputs:empty,
 .shader-node-compact .shader-node-body-custom-wave .shader-inputs:empty {
   display: none;
@@ -1804,6 +1900,10 @@ select:hover {
 
 .shader-handle-output {
   right: var(--node-body-pin-offset);
+}
+
+.shader-handle-output-sequencer {
+  right: calc(-1 * var(--node-pin-half-size));
 }
 
 .shader-handle-output-title {

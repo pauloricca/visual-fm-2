@@ -40,6 +40,7 @@ export interface ShaderNodeData extends Record<string, unknown> {
     samples: number[];
   };
   audioSliderValue?: number;
+  audioSequencerStep?: number;
   midiSliderValue?: number;
   midiButtonPressed?: number;
   audioInput?: AudioInputState;
@@ -611,6 +612,16 @@ function normalizePersistedPatchLink(
   }
 
   const targetNode = nodesById.get(link.to.node);
+  if (targetNode?.type === 'Sequencer' && link.to.port === 'tick') {
+    return {
+      ...link,
+      to: {
+        ...link.to,
+        port: 'signal',
+      },
+    };
+  }
+
   if (targetNode?.type !== 'SamplePlayer' || link.to.port !== 'originalPitch') return link;
   return {
     ...link,

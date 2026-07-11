@@ -32,7 +32,7 @@ function expandGroupNodes(patch: Patch, prefix: string): Patch {
     const prefixedGroupId = `${prefix}${node.id}`;
 
     nodes.push(...groupPatch.nodes.filter((candidate) => !boundaryNodeIds.has(candidate.id)));
-    nodes.push(...defaultNodesForUnconnectedGroupInputs(node, prefixedGroupId, inputLinks, innerLinksByInput));
+    nodes.push(...defaultNodesForUnconnectedGroupInputs(node, prefixedGroupId, inputLinks, innerLinksByInput, insNodes));
     links.push(...groupPatch.links.filter((link) => (
       !boundaryNodeIds.has(link.from.node) &&
       !boundaryNodeIds.has(link.to.node)
@@ -43,7 +43,7 @@ function expandGroupNodes(patch: Patch, prefix: string): Patch {
       if (externalLinks.length === 0) {
         const defaultNodeId = defaultNodeIdForGroupInput(prefixedGroupId, port);
         links.push(...innerLinks.map((innerLink) => ({
-          from: { node: defaultNodeId, port: 'value' },
+          from: { node: defaultNodeId, port: 'signal' },
           to: innerLink.to,
         })));
         continue;
@@ -97,13 +97,21 @@ function defaultNodesForUnconnectedGroupInputs(
   prefixedGroupId: string,
   inputLinks: PatchLink[],
   innerLinksByInput: Map<string, PatchLink[]>,
+  insNodes: PatchNode[],
 ): PatchNode[] {
+  const defaultValueByPort = new Map<string, number>();
+  for (const node of insNodes) {
+    for (const port of node.outputs ?? []) {
+      defaultValueByPort.set(port.name, node.params[port.name] ?? port.defaultValue ?? 0);
+    }
+  }
+
   return [...innerLinksByInput]
     .filter(([port]) => !inputLinks.some((link) => link.to.port === port))
     .map(([port]) => ({
       id: defaultNodeIdForGroupInput(prefixedGroupId, port),
       type: 'Constant',
-      params: { value: groupNode.params[port] ?? 0 },
+      params: { value: groupNode.params[port] ?? defaultValueByPort.get(port) ?? 0 },
       position: groupNode.position,
     }));
 }
