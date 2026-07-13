@@ -55,7 +55,7 @@ export function ShaderEdge(props: EdgeProps<ShaderFlowEdge>) {
     ? { stroke: '#0b0b0b', strokeWidth: 8 }
     : undefined;
   const selectedForegroundStyle = selected
-    ? { stroke: '#7cff00', strokeWidth: 3 }
+    ? { stroke: 'var(--slider-green)', strokeWidth: 3 }
     : undefined;
 
   useEffect(() => {

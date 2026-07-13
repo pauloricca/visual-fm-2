@@ -30,6 +30,7 @@ export type NodeType =
   | 'Map'
   | 'Clamp'
   | 'Multiply'
+  | 'Pow'
   | 'Pan'
   | 'Delay'
   | 'Chorus'
@@ -124,6 +125,7 @@ export interface PortDefinition {
   valueEditor?: boolean;
   min?: number;
   max?: number;
+  step?: number;
   integer?: boolean;
 }
 

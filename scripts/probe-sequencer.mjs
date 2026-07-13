@@ -66,6 +66,32 @@ const resetValue = dspProgram.valueBindings.find((binding) => binding.id === 're
 assert(Number.isInteger(gateValue), 'Gate value binding was not emitted.');
 assert(Number.isInteger(resetValue), 'Reset value binding was not emitted.');
 
+const widePatch = {
+  nodes: [
+    node('gate', 'Constant', { value: 0 }),
+    node('seq', 'Sequencer', {
+      steps: 128,
+      rows: 1,
+      'cell:0:0': 1,
+      'cell:0:2': 1,
+      'cell:0:64': 1,
+      'cell:0:127': 1,
+    }),
+    node('scope', 'Scope', { range: 1 }),
+  ],
+  links: [
+    link('gate', 'signal', 'seq', 'signal'),
+    link('seq', '1', 'scope', 'signal'),
+  ],
+};
+const wideDspProgram = compilePatchToDspProgram(widePatch);
+assert(wideDspProgram.errors.length === 0, `Wide DSP compile failed: ${wideDspProgram.errors.join('; ')}`);
+const widePatternOp = wideDspProgram.ops.find((op) => op.opcode === 35 && op.value4);
+assert(widePatternOp?.value === 5, `Wide sequencer lane 1 was not packed correctly: ${widePatternOp?.value}`);
+assert(widePatternOp?.value2 === 0, `Wide sequencer lane 2 should be empty: ${widePatternOp?.value2}`);
+assert(widePatternOp?.value3 === 1, `Wide sequencer lane 3 was not packed correctly: ${widePatternOp?.value3}`);
+assert(widePatternOp?.value4 === 2147483648, `Wide sequencer lane 4 was not packed correctly: ${widePatternOp?.value4}`);
+
 const wasmBytes = fs.readFileSync(path.join(repoRoot, 'web/public/audio/visual-fm-kernel.wasm'));
 const { instance } = await WebAssembly.instantiate(wasmBytes, {});
 const wasm = instance.exports;
@@ -86,6 +112,9 @@ for (const op of dspProgram.ops) {
     op.e ?? -1,
     op.state ?? -1,
     op.value ?? 0,
+    op.value2 ?? 0,
+    op.value3 ?? 0,
+    op.value4 ?? 0,
   );
 }
 

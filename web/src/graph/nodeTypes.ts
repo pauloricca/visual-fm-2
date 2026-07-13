@@ -1,7 +1,7 @@
 import type { NodeDefinition, NodeType, PatchNode } from './types';
 
 export const SEQUENCER_MIN_STEPS = 1;
-export const SEQUENCER_MAX_STEPS = 32;
+export const SEQUENCER_MAX_STEPS = 128;
 export const SEQUENCER_DEFAULT_STEPS = 16;
 export const SEQUENCER_MIN_ROWS = 1;
 export const SEQUENCER_MAX_ROWS = 16;
@@ -156,6 +156,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     type: 'Tempo',
     inputs: [
       { name: 'bpm', defaultValue: 120, min: 1 },
+      { name: 'swing', defaultValue: 0, min: -1, max: 1, step: 0.001 },
       { name: 'source', defaultValue: 0, min: 0, max: 1, integer: true, connectable: false, valueEditor: false },
       { name: 'midiSource', defaultValue: 0, min: 0, integer: true, connectable: false, valueEditor: false },
     ],
@@ -217,6 +218,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     type: 'Accumulator',
     inputs: [
       { name: 'trigger', defaultValue: 0 },
+      { name: 'reset', defaultValue: 0, valueEditor: false },
       { name: 'min', defaultValue: 0 },
       { name: 'max', defaultValue: 1 },
     ],
@@ -235,6 +237,9 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   ]),
   Multiply: processor('Multiply', [
     { name: 'factor', defaultValue: 1 },
+  ]),
+  Pow: processor('Pow', [
+    { name: 'exponent', defaultValue: 1 },
   ]),
   Pan: {
     type: 'Pan',
@@ -351,6 +356,7 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   Map: 'Map',
   Clamp: 'Clamp',
   Multiply: 'Multiply',
+  Pow: 'pow',
   Pan: 'Pan',
   Delay: 'Delay',
   Chorus: 'Chorus',
@@ -448,11 +454,14 @@ export function sequencerCellParamName(rowIndex: number, stepIndex: number): str
   return `cell:${rowIndex}:${stepIndex}`;
 }
 
-export function sequencerPatternValue(params: Record<string, number>, rowIndex: number, steps: number): number {
-  let pattern = 0;
+export function sequencerPatternValue(params: Record<string, number>, rowIndex: number, steps: number): [number, number, number, number] {
+  const pattern: [number, number, number, number] = [0, 0, 0, 0];
   for (let stepIndex = 0; stepIndex < steps; stepIndex += 1) {
     if ((params[sequencerCellParamName(rowIndex, stepIndex)] ?? 0) >= 0.5) {
-      pattern += 2 ** stepIndex;
+      const laneIndex = Math.floor(stepIndex / 32);
+      if (laneIndex < pattern.length) {
+        pattern[laneIndex] += 2 ** (stepIndex % 32);
+      }
     }
   }
   return pattern;

@@ -170,6 +170,27 @@ interface SubpatchImportModalState {
   error: string | null;
 }
 
+interface LocalSubpatchImportSource {
+  key: string;
+  patchName: string;
+  versionId: string;
+  savedAt: string;
+  candidate: ImportedSubpatchCandidate;
+}
+
+interface LocalSubpatchImportEntry {
+  name: string;
+  sources: LocalSubpatchImportSource[];
+}
+
+interface LocalSubpatchImportState {
+  subpatches: LocalSubpatchImportEntry[];
+  selectedSubpatchName: string | null;
+  selectedSourceKey: string | null;
+  loading: boolean;
+  error: string | null;
+}
+
 interface MidiControlVisualState {
   sliderValue?: number;
   buttonPressed?: number;
@@ -228,6 +249,7 @@ function NodeEditorInner() {
   const [localPatchLibrary, setLocalPatchLibrary] = useState<LocalPatchLibraryState | null>(null);
   const [sampleLibrary, setSampleLibrary] = useState<SampleLibraryState | null>(null);
   const [subpatchImportModal, setSubpatchImportModal] = useState<SubpatchImportModalState | null>(null);
+  const [localSubpatchImport, setLocalSubpatchImport] = useState<LocalSubpatchImportState | null>(null);
   const [midiSettingsOpen, setMidiSettingsOpen] = useState(false);
   const [selectedMidiInputDeviceIds, setSelectedMidiInputDeviceIds] = useState<string[]>(() => (
     normalizeSelectedMidiDeviceIds(initialState?.ui?.midiInput?.selectedDeviceIds)
@@ -941,6 +963,62 @@ function NodeEditorInner() {
     }));
   }, [commitHistory]);
 
+  const clearSelectorInput = useCallback((nodeId: string, port: string) => {
+    const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
+    if (!relatedNode || relatedNode.data.patchNode.type !== 'Selector') return;
+    if (!isSelectorValuePortName(port)) return;
+
+    const definition = getNodeDefinition(relatedNode.data.patchNode as PatchNode);
+    const valueInputs = selectorValueInputs(definition.inputs);
+    if (!valueInputs.some((input) => input.name === port)) return;
+
+    if (valueInputs.length <= 1) {
+      updateNodeParam(nodeId, port, 0);
+      return;
+    }
+
+    const removedIndex = Number(port);
+    const orderedPorts = valueInputs
+      .map((input) => input.name)
+      .sort((left, right) => Number(left) - Number(right));
+    const portMap = selectorPortMapAfterRemoval(orderedPorts, removedIndex);
+
+    commitHistory(`selector-input-clear:${nodeId}:${port}`);
+    setNodes((current) => current.map((node) => {
+      if (node.id !== nodeId) return node;
+
+      const currentDefinition = getNodeDefinition(node.data.patchNode as PatchNode);
+      const currentValuePorts = selectorValueInputs(currentDefinition.inputs)
+        .map((input) => input.name)
+        .sort((left, right) => Number(left) - Number(right));
+      const currentPortMap = selectorPortMapAfterRemoval(currentValuePorts, removedIndex);
+      const nextInputs = currentDefinition.inputs.flatMap((input) => {
+        const nextName = currentPortMap.get(input.name);
+        if (nextName === undefined) return isSelectorValuePortName(input.name) ? [] : [input];
+        return [{ ...input, name: nextName }];
+      });
+      const nextParams = remapSelectorParamsAfterRemoval(
+        node.data.patchNode.params,
+        currentValuePorts,
+        currentPortMap,
+        removedIndex,
+      );
+
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          patchNode: {
+            ...node.data.patchNode,
+            inputs: nextInputs,
+            params: nextParams,
+          },
+        },
+      };
+    }));
+    setEdges((current) => dedupeEdges(current.flatMap((edge) => remapSelectorEdgeAfterRemoval(edge, nodeId, portMap, removedIndex))));
+  }, [commitHistory, updateNodeParam]);
+
   const addDraftNode = useCallback((position: { x: number; y: number }) => {
     const id = makeNodeId('node', new Set(nodesRef.current.map((node) => node.id)));
     commitHistory();
@@ -1426,6 +1504,7 @@ function NodeEditorInner() {
         onCompactToggle: updateNodeCompactPorts,
         onScopeResize: updateNodeScopeSize,
         onSelectorInputAdd: addSelectorInput,
+        onSelectorInputClear: clearSelectorInput,
         selectedLinkPorts: selectedLinkPortsByNode.get(node.id),
         ...(node.data.patchNode.type === 'AudioInput' ? { audioInput: audio.audioInput } : {}),
         ...(node.data.patchNode.type === 'MidiNote'
@@ -1465,6 +1544,7 @@ function NodeEditorInner() {
     updateExpression,
     updateGroupSubpatchName,
     addSelectorInput,
+    clearSelectorInput,
     audio.audioInput,
     audio.midiInput,
     audio.refreshAudioInputDevices,
@@ -1519,6 +1599,7 @@ function NodeEditorInner() {
   const selectedLocalPatch = localPatchLibrary?.patches.find((entry) => entry.name === localPatchLibrary.selectedPatchName) ?? null;
   const selectedSample = sampleLibrary?.samples.find((sample) => sample.url === sampleLibrary.selectedUrl) ?? null;
   const selectedSubpatchCandidate = subpatchImportModal?.candidates.find((candidate) => candidate.key === subpatchImportModal.selectedKey) ?? null;
+  const selectedLocalSubpatch = localSubpatchImport?.subpatches.find((entry) => entry.name === localSubpatchImport.selectedSubpatchName) ?? null;
   const dspPatch = useMemo(() => stripPatchForDsp(patch), [patch]);
   const liveDspPatch = useMemo(() => patchWithMidiControlVisuals(dspPatch, midiControlVisuals), [dspPatch, midiControlVisuals]);
   const dspPatchKey = useMemo(() => patchToDspKey(liveDspPatch), [liveDspPatch]);
@@ -1540,7 +1621,13 @@ function NodeEditorInner() {
     const hasAudioMonitor = Boolean(monitorLinkId);
     const hasAudioOutputMeter = node.data.patchNode.type === 'AudioOut';
     const midiControlVisual = midiControlVisuals[node.id];
-    if (!hasAudioMonitor && !hasAudioOutputMeter && !midiControlVisual && dspErrors.length === 0) return node;
+    const audioSelectorIndex = node.data.patchNode.type === 'Selector'
+      ? audio.linkMeters[`${node.id}:selector`]?.output
+      : undefined;
+    const audioAccumulatorValue = node.data.patchNode.type === 'Accumulator'
+      ? audio.linkMeters[`${node.id}:accumulator`]?.output
+      : undefined;
+    if (!hasAudioMonitor && !hasAudioOutputMeter && audioSelectorIndex === undefined && audioAccumulatorValue === undefined && !midiControlVisual && dspErrors.length === 0) return node;
 
     return {
       ...node,
@@ -1551,6 +1638,8 @@ function NodeEditorInner() {
         ...(monitorLinkId && node.data.patchNode.type === 'Meter' ? { audioMeter: audio.linkMeters[monitorLinkId] } : {}),
         ...(monitorLinkId && node.data.patchNode.type === 'Scope' ? { audioScope: audio.linkScopes[monitorLinkId] } : {}),
         ...(monitorLinkId && node.data.patchNode.type === 'Slider' ? { audioSliderValue: audio.linkMeters[monitorLinkId]?.output } : {}),
+        ...(audioSelectorIndex !== undefined ? { audioSelectorIndex } : {}),
+        ...(audioAccumulatorValue !== undefined ? { audioAccumulatorValue } : {}),
         ...(monitorLinkId && node.data.patchNode.type === 'Sequencer' ? { audioSequencerStep: audio.linkMeters[monitorLinkId]?.output } : {}),
         ...(midiControlVisual?.sliderValue !== undefined ? { midiSliderValue: midiControlVisual.sliderValue } : {}),
         ...(midiControlVisual?.buttonPressed !== undefined ? { midiButtonPressed: midiControlVisual.buttonPressed } : {}),
@@ -2197,6 +2286,60 @@ function NodeEditorInner() {
     }
   }, [loadPatchJson, localPatchLibrary]);
 
+  const openLocalSubpatchImport = useCallback(async () => {
+    setSubpatchImportModal(null);
+    setLocalSubpatchImport({
+      subpatches: [],
+      selectedSubpatchName: null,
+      selectedSourceKey: null,
+      loading: true,
+      error: null,
+    });
+
+    try {
+      const patches = await fetchLocalPatchLibrary();
+      const subpatches = await buildLocalSubpatchImportEntries(patches);
+      const selectedSubpatch = subpatches[0] ?? null;
+      setLocalSubpatchImport({
+        subpatches,
+        selectedSubpatchName: selectedSubpatch?.name ?? null,
+        selectedSourceKey: selectedSubpatch?.sources[0]?.key ?? null,
+        loading: false,
+        error: subpatches.length === 0 ? 'No saved subpatches found in patches/.' : null,
+      });
+      setImportError(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setLocalSubpatchImport({
+        subpatches: [],
+        selectedSubpatchName: null,
+        selectedSourceKey: null,
+        loading: false,
+        error: message,
+      });
+      setImportError(message);
+    }
+  }, []);
+
+  const closeLocalSubpatchImport = useCallback(() => {
+    setLocalSubpatchImport(null);
+  }, []);
+
+  const selectLocalSubpatch = useCallback((entry: LocalSubpatchImportEntry) => {
+    setLocalSubpatchImport((current) => current ? {
+      ...current,
+      selectedSubpatchName: entry.name,
+      selectedSourceKey: entry.sources[0]?.key ?? null,
+    } : current);
+  }, []);
+
+  const selectLocalSubpatchSource = useCallback((source: LocalSubpatchImportSource) => {
+    setLocalSubpatchImport((current) => current ? {
+      ...current,
+      selectedSourceKey: source.key,
+    } : current);
+  }, []);
+
   const savePatchJson = useCallback(async () => {
     if (localPatchStorageEnabled) {
       if (trimmedRootPatchName.length === 0) {
@@ -2285,42 +2428,28 @@ function NodeEditorInner() {
       },
     ]);
     setSubpatchImportModal(null);
+    setLocalSubpatchImport(null);
     setImportError(null);
   }, [commitHistory, reactFlow]);
 
-  const requestSubpatchImport = useCallback(async () => {
+  const importSelectedLocalSubpatch = useCallback(() => {
+    const selectedSourceKey = localSubpatchImport?.selectedSourceKey;
+    const source = localSubpatchImport?.subpatches
+      .flatMap((entry) => entry.sources)
+      .find((entry) => entry.key === selectedSourceKey);
+    if (!source) return;
+
+    importSubpatchCandidate(source.candidate);
+  }, [importSubpatchCandidate, localSubpatchImport]);
+
+  const requestSubpatchImport = useCallback(() => {
     if (!localPatchStorageEnabled) {
       importFileInputRef.current?.click();
       return;
     }
 
-    setSubpatchImportModal({
-      fileName: 'patches/',
-      candidates: [],
-      selectedKey: null,
-      error: null,
-    });
-    try {
-      const patches = await fetchLocalPatchLibrary();
-      const candidates = await buildLocalSubpatchImportCandidates(patches);
-      setSubpatchImportModal({
-        fileName: 'patches/',
-        candidates,
-        selectedKey: candidates[0]?.key ?? null,
-        error: candidates.length === 0 ? 'No saved subpatches found in patches/.' : null,
-      });
-      setImportError(null);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setSubpatchImportModal({
-        fileName: 'patches/',
-        candidates: [],
-        selectedKey: null,
-        error: message,
-      });
-      setImportError(message);
-    }
-  }, [localPatchStorageEnabled]);
+    void openLocalSubpatchImport();
+  }, [localPatchStorageEnabled, openLocalSubpatchImport]);
 
   const loadSubpatchImportFile = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
@@ -2330,6 +2459,7 @@ function NodeEditorInner() {
     try {
       const importedPatch = parsePatchJson(await file.text());
       const candidates = collectSubpatchImportCandidates(importedPatch);
+      setLocalSubpatchImport(null);
       setSubpatchImportModal({
         fileName: file.name,
         candidates,
@@ -2339,6 +2469,7 @@ function NodeEditorInner() {
       setImportError(null);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      setLocalSubpatchImport(null);
       setSubpatchImportModal({
         fileName: file.name,
         candidates: [],
@@ -2858,6 +2989,80 @@ function NodeEditorInner() {
                 <footer className="import-modal-actions">
                   <button type="button" onClick={closeLocalPatchLibrary}>Cancel</button>
                   <button type="button" onClick={() => void loadSelectedLocalPatch()} disabled={!localPatchLibrary.selectedPatchName || !localPatchLibrary.selectedVersionId}>Load</button>
+                </footer>
+              </section>
+            </div>
+          ) : null}
+          {localSubpatchImport ? (
+            <div
+              className="import-modal-backdrop"
+              role="presentation"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget) closeLocalSubpatchImport();
+              }}
+            >
+              <section className="import-modal local-patch-modal" role="dialog" aria-modal="true" aria-labelledby="local-subpatch-import-title">
+                <header className="import-modal-header">
+                  <div>
+                    <h2 id="local-subpatch-import-title">Import subpatch</h2>
+                    <p>patches/</p>
+                  </div>
+                  <button className="import-modal-close" type="button" onClick={closeLocalSubpatchImport} aria-label="Close subpatch import" title="Close">X</button>
+                </header>
+                {localSubpatchImport.loading || localSubpatchImport.error ? (
+                  <p className={['import-modal-message', localSubpatchImport.error ? 'error' : ''].filter(Boolean).join(' ')}>
+                    {localSubpatchImport.error ?? 'Reading saved subpatches...'}
+                  </p>
+                ) : (
+                  <div className="local-patch-browser">
+                    <section className="local-patch-column" aria-label="Subpatches">
+                      <h3>SUBPATCH</h3>
+                      <div className="local-patch-list" role="listbox" aria-label="Subpatches">
+                        {localSubpatchImport.subpatches.map((entry) => (
+                          <button
+                            className={[
+                              'local-patch-option',
+                              entry.name === localSubpatchImport.selectedSubpatchName ? 'local-patch-option-selected' : '',
+                            ].filter(Boolean).join(' ')}
+                            key={entry.name}
+                            type="button"
+                            role="option"
+                            aria-selected={entry.name === localSubpatchImport.selectedSubpatchName}
+                            onClick={() => selectLocalSubpatch(entry)}
+                          >
+                            <span>{entry.name}</span>
+                            <span>{entry.sources.length}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </section>
+                    <section className="local-patch-column" aria-label="Subpatch versions">
+                      <h3>SAVED AT</h3>
+                      <div className="local-patch-list" role="listbox" aria-label="Subpatch versions">
+                        {selectedLocalSubpatch?.sources.map((source) => (
+                          <button
+                            className={[
+                              'local-patch-option',
+                              source.key === localSubpatchImport.selectedSourceKey ? 'local-patch-option-selected' : '',
+                            ].filter(Boolean).join(' ')}
+                            key={source.key}
+                            type="button"
+                            role="option"
+                            aria-selected={source.key === localSubpatchImport.selectedSourceKey}
+                            onClick={() => selectLocalSubpatchSource(source)}
+                            onDoubleClick={importSelectedLocalSubpatch}
+                          >
+                            <span>{formatSavedPatchTimestamp(source.savedAt)}</span>
+                            <span>{source.patchName}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </section>
+                  </div>
+                )}
+                <footer className="import-modal-actions">
+                  <button type="button" onClick={closeLocalSubpatchImport}>Cancel</button>
+                  <button type="button" onClick={importSelectedLocalSubpatch} disabled={!localSubpatchImport.selectedSourceKey || localSubpatchImport.subpatches.length === 0}>Import</button>
                 </footer>
               </section>
             </div>
@@ -3530,20 +3735,49 @@ function collectSubpatchImportCandidates(patch: Patch): ImportedSubpatchCandidat
   return candidates;
 }
 
-async function buildLocalSubpatchImportCandidates(patches: LocalPatchEntry[]): Promise<ImportedSubpatchCandidate[]> {
-  const candidates: ImportedSubpatchCandidate[] = [];
+async function buildLocalSubpatchImportEntries(patches: LocalPatchEntry[]): Promise<LocalSubpatchImportEntry[]> {
+  const sourcesBySubpatchName = new Map<string, LocalSubpatchImportSource[]>();
   const versionTasks = patches.flatMap((patchEntry) => patchEntry.versions.map(async (version) => {
     const patch = parsePatchJson(await fetchLocalPatchVersion(patchEntry.name, version.id));
     collectSubpatchImportCandidates(patch).forEach((candidate) => {
-      candidates.push({
-        ...candidate,
-        key: `${patchEntry.name}/${version.id}/${candidate.key}`,
-        path: `${patchEntry.name} / ${formatSavedPatchTimestamp(version.savedAt)} / ${candidate.path}`,
-      });
+      const key = `${patchEntry.name}/${version.id}/${candidate.key}`;
+      const source: LocalSubpatchImportSource = {
+        key,
+        patchName: patchEntry.name,
+        versionId: version.id,
+        savedAt: version.savedAt,
+        candidate: {
+          ...candidate,
+          key,
+          path: `${patchEntry.name} / ${formatSavedPatchTimestamp(version.savedAt)} / ${candidate.path}`,
+        },
+      };
+      const sources = sourcesBySubpatchName.get(candidate.name);
+      if (sources) {
+        sources.push(source);
+      } else {
+        sourcesBySubpatchName.set(candidate.name, [source]);
+      }
     });
   }));
   await Promise.all(versionTasks);
-  return candidates.sort((a, b) => a.name.localeCompare(b.name) || a.path.localeCompare(b.path));
+
+  return Array.from(sourcesBySubpatchName.entries())
+    .map(([name, sources]) => ({
+      name,
+      sources: sources.sort(compareLocalSubpatchSources),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function compareLocalSubpatchSources(a: LocalSubpatchImportSource, b: LocalSubpatchImportSource): number {
+  const savedAtDelta = Date.parse(b.savedAt) - Date.parse(a.savedAt);
+  if (Number.isFinite(savedAtDelta) && savedAtDelta !== 0) return savedAtDelta;
+
+  const patchNameDelta = a.patchName.localeCompare(b.patchName);
+  if (patchNameDelta !== 0) return patchNameDelta;
+
+  return b.versionId.localeCompare(a.versionId);
 }
 
 function flowPositionForNewImport(
@@ -4447,8 +4681,68 @@ function uniquePortName(baseName: string, usedNames: Set<string>): string {
   return candidate;
 }
 
+function isSelectorValuePortName(name: string): boolean {
+  return /^(0|[1-9][0-9]*)$/.test(name);
+}
+
 function selectorValueInputs(inputs: PortDefinition[]): PortDefinition[] {
-  return inputs.filter((input) => /^(0|[1-9][0-9]*)$/.test(input.name));
+  return inputs.filter((input) => isSelectorValuePortName(input.name));
+}
+
+function selectorPortMapAfterRemoval(orderedPorts: string[], removedIndex: number): Map<string, string> {
+  const portMap = new Map<string, string>();
+  orderedPorts
+    .filter((port) => Number(port) !== removedIndex)
+    .forEach((port, nextIndex) => {
+      portMap.set(port, String(nextIndex));
+    });
+  return portMap;
+}
+
+function remapSelectorParamsAfterRemoval(
+  params: Record<string, number>,
+  valuePorts: string[],
+  portMap: Map<string, string>,
+  removedIndex: number,
+): Record<string, number> {
+  const nextParams = { ...params };
+  for (const port of valuePorts) {
+    delete nextParams[port];
+  }
+  for (const [previousPort, nextPort] of portMap.entries()) {
+    nextParams[nextPort] = params[previousPort] ?? 0;
+  }
+
+  const nextInputCount = portMap.size;
+  const rawSelect = Number(params.select ?? 0);
+  const currentSelect = Number.isFinite(rawSelect) ? rawSelect : 0;
+  const shiftedSelect = currentSelect > removedIndex ? currentSelect - 1 : currentSelect;
+  nextParams.select = Math.min(Math.max(shiftedSelect, 0), Math.max(0, nextInputCount - 1));
+  return nextParams;
+}
+
+function remapSelectorEdgeAfterRemoval(
+  edge: ShaderFlowEdge,
+  nodeId: string,
+  portMap: Map<string, string>,
+  removedIndex: number,
+): ShaderFlowEdge[] {
+  const link = linkFromEdge(edge);
+  if (!link || link.to.node !== nodeId || !isSelectorValuePortName(link.to.port)) return [edge];
+  if (Number(link.to.port) === removedIndex) return [];
+
+  const nextPort = portMap.get(link.to.port);
+  if (nextPort === undefined || nextPort === link.to.port) return [edge];
+
+  return [{
+    ...edgeFromLink(
+      { from: link.from, to: { node: nodeId, port: nextPort }, weight: link.weight, mode: link.mode },
+      updateEdgeWeightPlaceholder,
+      updateEdgeModePlaceholder,
+      insertNodeOnEdgePlaceholder,
+    ),
+    selected: edge.selected,
+  }];
 }
 
 function selectorIndexFromKeyboardEvent(event: KeyboardEvent): number | null {

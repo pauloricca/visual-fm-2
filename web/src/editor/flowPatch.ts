@@ -40,6 +40,8 @@ export interface ShaderNodeData extends Record<string, unknown> {
     samples: number[];
   };
   audioSliderValue?: number;
+  audioAccumulatorValue?: number;
+  audioSelectorIndex?: number;
   audioSequencerStep?: number;
   midiSliderValue?: number;
   midiButtonPressed?: number;
@@ -66,6 +68,7 @@ export interface ShaderNodeData extends Record<string, unknown> {
   onCompactToggle: (nodeId: string, compact: boolean) => void;
   onScopeResize: (nodeId: string, size: ScopeNodeSize, anchor: 'left' | 'right') => void;
   onSelectorInputAdd?: (nodeId: string) => void;
+  onSelectorInputClear?: (nodeId: string, port: string) => void;
   onPortSelect?: (nodeId: string, side: 'input' | 'output', port: string) => void;
   selectedPort?: { side: 'input' | 'output'; name: string } | null;
   selectedLinkPorts?: { inputs: string[]; outputs: string[] };
@@ -145,6 +148,7 @@ type NodeCallbacks = Pick<
   | 'onCompactToggle'
   | 'onScopeResize'
   | 'onSelectorInputAdd'
+  | 'onSelectorInputClear'
 >;
 
 export function toFlowNodes(

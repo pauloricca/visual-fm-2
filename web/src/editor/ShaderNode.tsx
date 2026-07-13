@@ -76,6 +76,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const showScopeDisplay = node.type === 'Scope';
   const showSliderDisplay = node.type === 'Slider';
   const showButtonDisplay = node.type === 'Button';
+  const showAccumulatorDisplay = node.type === 'Accumulator';
   const showSequencerDisplay = node.type === 'Sequencer';
   const showTempoDisplay = node.type === 'Tempo';
   const showAudioOutputDisplay = node.type === 'AudioOut';
@@ -127,12 +128,15 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     && previewInputPort !== 'signal',
   );
   const headerInputPort = showHeaderInput ? 'signal' : null;
-  const showHeaderOutput = node.type !== 'Ins' && outputCount === 1 && !previewAddsOutput;
+  const showHeaderOutput = node.type !== 'Ins' && node.type !== 'Sequencer' && outputCount === 1 && !previewAddsOutput;
   const headerOutputPort = showHeaderOutput && definition ? definition.outputs[0]?.name ?? null : null;
   const showHeaderInputPort = Boolean(headerInputPort);
   const showHeaderOutputPort = Boolean(headerOutputPort);
   const selectedLinkInputs = data.selectedLinkPorts?.inputs ?? [];
   const selectedLinkOutputs = data.selectedLinkPorts?.outputs ?? [];
+  const selectorSelectedIndex = isSelector
+    ? Math.floor(Number.isFinite(data.audioSelectorIndex) ? data.audioSelectorIndex ?? 0 : node.params.select ?? 0)
+    : 0;
   const inputLabelWidth = definition
     ? `${Math.max(0, ...definition.inputs.filter((input) => input.name !== headerInputPort).map((input) => displayPortName(input.name).length))}ch`
     : '0ch';
@@ -150,6 +154,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     showScopeDisplay ? 'shader-node-scope' : '',
     showSliderDisplay ? 'shader-node-slider' : '',
     showButtonDisplay ? 'shader-node-button' : '',
+    showAccumulatorDisplay ? 'shader-node-accumulator' : '',
     showSequencerDisplay ? 'shader-node-sequencer' : '',
     showAudioOutputDisplay ? 'shader-node-audio-out' : '',
     showSampleUpload ? 'shader-node-sampleplayer' : '',
@@ -645,6 +650,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             || showCustomWaveEditor
             || showSliderDisplay
             || showButtonDisplay
+            || showAccumulatorDisplay
             || showAudioOutputDisplay
             || visibleInputPorts.length > 0
             || (visibleOutputPorts.length > 0 && !showHeaderOutputPort)
@@ -661,6 +667,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           showScopeDisplay ? 'shader-node-body-scope' : '',
           showSliderDisplay ? 'shader-node-body-slider' : '',
           showButtonDisplay ? 'shader-node-body-button' : '',
+          showAccumulatorDisplay ? 'shader-node-body-accumulator' : '',
           showSequencerDisplay ? 'shader-node-body-sequencer' : '',
           showAudioOutputDisplay ? 'shader-node-body-audio-out' : '',
           showAudioInputDisplay ? 'shader-node-body-audio-input' : '',
@@ -757,6 +764,11 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               onClickPulse={() => data.onParamChange(node.id, 'clicks', (node.params.clicks ?? 0) + 1)}
             />
           ) : null}
+          {showAccumulatorDisplay ? (
+            <div className="accumulator-value-label" aria-label="Accumulator current value">
+              {formatAccumulatorValue(data.audioAccumulatorValue ?? node.params.min ?? 0)}
+            </div>
+          ) : null}
           {showSequencerDisplay && sequencer ? (
             <SequencerGrid
               params={node.params}
@@ -818,7 +830,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                 <button
                   className={[
                     'selector-index-button nodrag nopan',
-                    Math.floor(node.params.select ?? 0) === Number(input.name) ? 'selector-index-button-active' : '',
+                    selectorSelectedIndex === Number(input.name) ? 'selector-index-button-active' : '',
                   ].filter(Boolean).join(' ')}
                   type="button"
                   title={`Select input ${input.name}`}
@@ -1027,7 +1039,9 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   min={input.min}
                   max={input.max}
                   integer={input.integer}
+                  step={input.step}
                   onChange={(value) => data.onParamChange(node.id, input.name, value)}
+                  onClear={isSelector && isSelectorValuePort(input.name) ? () => data.onSelectorInputClear?.(node.id, input.name) : undefined}
                   midiLearnEvent={canLearnMidiCc(node.type, input.name) ? data.midiInput?.lastControlChange : undefined}
                   onEditStart={canLearnMidiCc(node.type, input.name) ? () => {
                     void data.onMidiInputRefresh?.();
@@ -1562,6 +1576,77 @@ function SequencerGrid({
   onCellToggle,
 }: SequencerGridProps) {
   const activeStep = Number.isFinite(currentStep) ? Math.round(currentStep ?? -1) : -1;
+  const dragRef = useRef<{
+    pointerId: number;
+    rowIndex: number;
+    visited: Set<string>;
+  } | null>(null);
+
+  function toggleDragCell(rowIndex: number, stepIndex: number) {
+    const drag = dragRef.current;
+    if (!drag || drag.rowIndex !== rowIndex) return;
+
+    const key = `${rowIndex}:${stepIndex}`;
+    if (drag.visited.has(key)) return;
+
+    drag.visited.add(key);
+    onCellToggle(rowIndex, stepIndex);
+  }
+
+  function cellAtPoint(clientX: number, clientY: number): { rowIndex: number; stepIndex: number } | null {
+    const target = document.elementFromPoint(clientX, clientY);
+    if (!(target instanceof Element)) return null;
+
+    const cell = target.closest<HTMLButtonElement>('[data-sequencer-cell="true"]');
+    if (!cell) return null;
+
+    const rowIndex = Number(cell.dataset.rowIndex);
+    const stepIndex = Number(cell.dataset.stepIndex);
+    if (!Number.isInteger(rowIndex) || !Number.isInteger(stepIndex)) return null;
+
+    return { rowIndex, stepIndex };
+  }
+
+  function beginDrag(event: PointerEvent<HTMLButtonElement>, rowIndex: number, stepIndex: number) {
+    if (event.button !== 0) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    dragRef.current = {
+      pointerId: event.pointerId,
+      rowIndex,
+      visited: new Set(),
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    toggleDragCell(rowIndex, stepIndex);
+  }
+
+  function updateDrag(event: PointerEvent<HTMLButtonElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const cell = cellAtPoint(event.clientX, event.clientY);
+    if (!cell) return;
+
+    toggleDragCell(cell.rowIndex, cell.stepIndex);
+  }
+
+  function endDrag(event: PointerEvent<HTMLButtonElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    dragRef.current = null;
+  }
+
   return (
     <div
       className="sequencer-node-panel nodrag nopan"
@@ -1589,15 +1674,23 @@ function SequencerGrid({
                     key={stepIndex}
                     type="button"
                     role="gridcell"
+                    data-sequencer-cell="true"
+                    data-row-index={rowIndex}
+                    data-step-index={stepIndex}
                     aria-label={`Row ${rowIndex + 1}, step ${stepIndex + 1}`}
                     aria-pressed={active}
                     title={`Row ${rowIndex + 1}, step ${stepIndex + 1}`}
-                    onPointerDown={(event) => event.stopPropagation()}
+                    onPointerDown={(event) => beginDrag(event, rowIndex, stepIndex)}
+                    onPointerMove={updateDrag}
+                    onPointerUp={endDrag}
+                    onPointerCancel={endDrag}
+                    onLostPointerCapture={() => {
+                      dragRef.current = null;
+                    }}
                     onDoubleClick={(event) => event.stopPropagation()}
                     onClick={(event) => {
                       event.preventDefault();
                       event.stopPropagation();
-                      onCellToggle(rowIndex, stepIndex);
                     }}
                   />
                 );
@@ -1856,6 +1949,12 @@ function formatAmplitude(value: number): string {
   if (value >= 100) return `${Math.round(value)}`;
   if (value >= 10) return trimTrailingZeros(value.toFixed(1));
   if (value >= 1) return trimTrailingZeros(value.toFixed(2));
+  return trimTrailingZeros(value.toFixed(3));
+}
+
+function formatAccumulatorValue(value: number): string {
+  if (!Number.isFinite(value)) return '0';
+  if (Number.isInteger(value)) return `${value}`;
   return trimTrailingZeros(value.toFixed(3));
 }
 
@@ -2228,8 +2327,10 @@ interface NumericScrubberProps {
   value: number;
   min?: number;
   max?: number;
+  step?: number;
   integer?: boolean;
   onChange: (value: number) => void;
+  onClear?: () => void;
   midiLearnEvent?: MidiCcLearnEvent;
   onEditStart?: () => void;
   onMidiLearn?: (event: MidiCcLearnEvent) => void;
@@ -2239,8 +2340,10 @@ function NumericScrubber({
   value,
   min,
   max,
+  step: baseStep,
   integer = false,
   onChange,
+  onClear,
   midiLearnEvent,
   onEditStart,
   onMidiLearn,
@@ -2297,7 +2400,7 @@ function NumericScrubber({
       anchorY: event.clientY,
       anchorValue: value,
       currentValue: value,
-      step: scrubberStep(event),
+      step: scrubberStep(event, baseStep),
       dragging: false,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -2314,7 +2417,7 @@ function NumericScrubber({
     event.preventDefault();
     event.stopPropagation();
 
-    const step = scrubberStep(event);
+    const step = scrubberStep(event, baseStep);
     if (step !== drag.step) {
       drag.anchorY = event.clientY;
       drag.anchorValue = drag.currentValue;
@@ -2347,7 +2450,14 @@ function NumericScrubber({
   }
 
   function commitDraft() {
-    const nextValue = Number(draft.trim());
+    const trimmedDraft = draft.trim();
+    if (trimmedDraft.length === 0 && onClear) {
+      onClear();
+      setEditing(false);
+      return;
+    }
+
+    const nextValue = Number(trimmedDraft);
     if (Number.isFinite(nextValue)) {
       onChange(constrainValue(nextValue, min, max, integer));
     } else {
@@ -2420,11 +2530,11 @@ function roundValue(value: number): number {
   return Math.round(value * 10000) / 10000;
 }
 
-function scrubberStep(event: { metaKey: boolean; shiftKey: boolean }): number {
-  if (event.metaKey && event.shiftKey) return 2;
-  if (event.metaKey) return 0.2;
-  if (event.shiftKey) return 0.001;
-  return 0.01;
+function scrubberStep(event: { metaKey: boolean; shiftKey: boolean }, baseStep = 0.01): number {
+  if (event.metaKey && event.shiftKey) return baseStep * 200;
+  if (event.metaKey) return baseStep * 20;
+  if (event.shiftKey) return baseStep * 0.1;
+  return baseStep;
 }
 
 function constrainValue(value: number, min?: number, max?: number, integer = false): number {

@@ -107,11 +107,12 @@ interface MidiAccessLike {
 }
 
 interface RecordingCapture {
-  processor: ScriptProcessorNode;
-  sink: GainNode;
+  id: number;
   chunks: Float32Array[][];
   channelCount: number;
   sampleRate: number;
+  frames: number;
+  stopping: boolean;
 }
 
 interface SampleDataCacheEntry {
@@ -131,7 +132,7 @@ const AUDIO_ENGINE_ASSET_VERSION = '2026-07-10-midi-channel-inputs';
 const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const METER_UPDATE_INTERVAL_MS = 80;
-const RECORDING_BUFFER_SIZE = 4096;
+const RECORDING_CHUNK_FRAMES = 16384;
 const RECORDING_CHANNEL_COUNT = 2;
 const SCOPE_CAPTURE_POINTS = 512;
 const SCOPE_DISPLAY_POINTS = 160;
@@ -275,6 +276,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   const sampleDataRequestRef = useRef<Record<string, SampleDataRequest>>({});
   const recordingRequestedRef = useRef(false);
   const recordingCaptureRef = useRef<RecordingCapture | null>(null);
+  const recordingSessionIdRef = useRef(0);
   const recordingSaveIdRef = useRef(0);
   const recordingStartedAtRef = useRef(0);
   const recordingTimerRef = useRef<number | null>(null);
@@ -357,36 +359,76 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     recordingStartedAtRef.current = 0;
   }, []);
 
-  const beginRecordingCapture = useCallback((context: AudioContext, source: AudioNode) => {
+  const appendRecordingChunk = useCallback((payload: unknown) => {
+    if (!isRecord(payload)) return;
+    const id = Number(payload.id);
+    const capture = recordingCaptureRef.current;
+    if (!capture || capture.id !== id) return;
+
+    const chunk = recordingChunkFromPayload(payload, capture.channelCount);
+    if (!chunk) return;
+
+    capture.chunks.push(chunk);
+    capture.frames += chunk[0]?.length ?? 0;
+  }, []);
+
+  const completeRecordingCapture = useCallback((id: number) => {
+    const capture = recordingCaptureRef.current;
+    if (!capture || capture.id !== id) return;
+
+    recordingCaptureRef.current = null;
+    const saveId = recordingSaveIdRef.current + 1;
+    recordingSaveIdRef.current = saveId;
+    const wavBlob = encodeWav(capture.chunks, capture.sampleRate, capture.channelCount);
+    logDiagnosticEvent('audio-recording-stopped', {
+      details: {
+        chunks: capture.chunks.length,
+        frames: capture.frames,
+        sampleRate: capture.sampleRate,
+        channelCount: capture.channelCount,
+        bytes: wavBlob.size,
+      },
+    });
+    setRecordingElapsedSeconds(Math.floor(capture.frames / Math.max(1, capture.sampleRate)));
+    setRecordingStatus('saving');
+    setRecordingMessage('saving recording');
+
+    void uploadRecording(wavBlob).then((result) => {
+      if (recordingSaveIdRef.current !== saveId) return;
+      setRecordingStatus('saved');
+      setRecordingMessage(`saved ${result.name}`);
+      setRecordingFileName(result.name);
+    }).catch((error) => {
+      if (recordingSaveIdRef.current !== saveId) return;
+      setRecordingStatus('error');
+      setRecordingMessage(error instanceof Error ? error.message : 'recording save failed');
+    });
+  }, []);
+
+  const beginRecordingCapture = useCallback((context: AudioContext, node: AudioWorkletNode) => {
     if (recordingCaptureRef.current || context.state !== 'running') return;
 
-    const processor = context.createScriptProcessor(RECORDING_BUFFER_SIZE, RECORDING_CHANNEL_COUNT, RECORDING_CHANNEL_COUNT);
-    const sink = context.createGain();
+    const id = recordingSessionIdRef.current;
     const chunks: Float32Array[][] = [];
-    sink.gain.value = 0;
-
-    processor.onaudioprocess = (event) => {
-      const input = event.inputBuffer;
-      const frame: Float32Array[] = [];
-      for (let channel = 0; channel < RECORDING_CHANNEL_COUNT; channel += 1) {
-        const sourceChannel = Math.min(channel, Math.max(0, input.numberOfChannels - 1));
-        frame.push(new Float32Array(input.getChannelData(sourceChannel)));
-      }
-      chunks.push(frame);
-    };
-
-    source.connect(processor);
-    processor.connect(sink);
-    sink.connect(context.destination);
     recordingCaptureRef.current = {
-      processor,
-      sink,
+      id,
       chunks,
       channelCount: RECORDING_CHANNEL_COUNT,
       sampleRate: context.sampleRate,
+      frames: 0,
+      stopping: false,
     };
+    node.port.postMessage({
+      type: 'startRecording',
+      payload: {
+        id,
+        channelCount: RECORDING_CHANNEL_COUNT,
+        chunkFrames: RECORDING_CHUNK_FRAMES,
+      },
+    });
     logDiagnosticEvent('audio-recording-started', {
       details: {
+        id,
         sampleRate: context.sampleRate,
         channelCount: RECORDING_CHANNEL_COUNT,
       },
@@ -413,46 +455,35 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
       return;
     }
 
-    recordingCaptureRef.current = null;
-    capture.processor.onaudioprocess = null;
-    capture.processor.disconnect();
-    capture.sink.disconnect();
+    if (capture.stopping) return;
 
-    const saveId = recordingSaveIdRef.current + 1;
-    recordingSaveIdRef.current = saveId;
-    const wavBlob = encodeWav(capture.chunks, capture.sampleRate, capture.channelCount);
-    logDiagnosticEvent('audio-recording-stopped', {
-      details: {
-        chunks: capture.chunks.length,
-        sampleRate: capture.sampleRate,
-        channelCount: capture.channelCount,
-        bytes: wavBlob.size,
-      },
-    });
+    capture.stopping = true;
     setRecordingStatus('saving');
-    setRecordingMessage('saving recording');
+    setRecordingMessage('finalizing recording');
+    const node = nodeRef.current;
+    if (node && contextRef.current?.state !== 'closed') {
+      node.port.postMessage({ type: 'stopRecording', payload: { id: capture.id } });
+      return;
+    }
 
-    void uploadRecording(wavBlob).then((result) => {
-      if (recordingSaveIdRef.current !== saveId) return;
-      setRecordingStatus('saved');
-      setRecordingMessage(`saved ${result.name}`);
-      setRecordingFileName(result.name);
-    }).catch((error) => {
-      if (recordingSaveIdRef.current !== saveId) return;
-      setRecordingStatus('error');
-      setRecordingMessage(error instanceof Error ? error.message : 'recording save failed');
-    });
-  }, [stopRecordingTimer]);
+    completeRecordingCapture(capture.id);
+  }, [completeRecordingCapture, stopRecordingTimer]);
 
   const startRecording = useCallback(() => {
+    if (recordingCaptureRef.current) {
+      setRecordingStatus('saving');
+      setRecordingMessage('finalizing recording');
+      return;
+    }
+    recordingSessionIdRef.current += 1;
     recordingSaveIdRef.current += 1;
     recordingRequestedRef.current = true;
     setRecordingFileName(null);
     setRecordingElapsedSeconds(0);
     const context = contextRef.current;
-    const analyser = analyserRef.current;
-    if (context?.state === 'running' && analyser) {
-      beginRecordingCapture(context, analyser);
+    const node = nodeRef.current;
+    if (context?.state === 'running' && node) {
+      beginRecordingCapture(context, node);
       return;
     }
 
@@ -883,8 +914,8 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
         },
       });
       startMeter();
-      if (recordingRequestedRef.current && analyser) {
-        beginRecordingCapture(context, analyser);
+      if (recordingRequestedRef.current && node) {
+        beginRecordingCapture(context, node);
       }
     }
   }, [beginRecordingCapture, startMeter, syncAudioInput, syncGraphSamples, syncMidiInput]);
@@ -990,6 +1021,26 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
               });
               return;
             }
+            if (type === 'recordingStarted') {
+              logDiagnosticEvent('audio-recording-worklet-started', {
+                details: {
+                  payload,
+                  contextState: context.state,
+                },
+              });
+              return;
+            }
+            if (type === 'recordingChunk') {
+              appendRecordingChunk(payload);
+              return;
+            }
+            if (type === 'recordingStopped') {
+              const id = Number(payload?.id);
+              if (Number.isFinite(id)) {
+                completeRecordingCapture(id);
+              }
+              return;
+            }
             if (type === 'linkMeters') {
               setLinkMeters(linkMetersFromPayload(payload));
               return;
@@ -1019,7 +1070,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
             });
             setMessage((current) => current.replace(/(audio|context) (running|suspended|interrupted|closed)/, `$1 ${context.state}`));
             if (recordingRequestedRef.current && context.state === 'running') {
-              beginRecordingCapture(context, analyser);
+              beginRecordingCapture(context, node);
             }
           };
 
@@ -1078,7 +1129,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     if (activate) {
       await activateAudioEngine();
     }
-  }, [activateAudioEngine, beginRecordingCapture, syncGraphSamples]);
+  }, [activateAudioEngine, appendRecordingChunk, beginRecordingCapture, completeRecordingCapture, syncGraphSamples]);
 
   const syncGraph = useCallback((graph: DspProgram) => {
     graphRef.current = graph;
@@ -1363,6 +1414,37 @@ function writeAscii(view: DataView, offset: number, value: string): void {
   for (let index = 0; index < value.length; index += 1) {
     view.setUint8(offset + index, value.charCodeAt(index));
   }
+}
+
+function recordingChunkFromPayload(payload: Record<string, unknown>, channelCount: number): Float32Array[] | null {
+  const channels = Array.isArray(payload.channels) ? payload.channels : [];
+  const firstChannel = float32ArrayFromUnknown(channels[0]);
+  if (!firstChannel || firstChannel.length === 0) return null;
+
+  const frameCount = firstChannel.length;
+  const output: Float32Array[] = [];
+  for (let channel = 0; channel < channelCount; channel += 1) {
+    const source = float32ArrayFromUnknown(channels[channel]) ?? firstChannel;
+    output.push(source.length === frameCount ? source : source.slice(0, frameCount));
+  }
+  return output;
+}
+
+function float32ArrayFromUnknown(value: unknown): Float32Array | null {
+  if (value instanceof Float32Array) return value;
+  if (Array.isArray(value)) {
+    return Float32Array.from(value.map((sample) => {
+      const numeric = Number(sample);
+      return Number.isFinite(numeric) ? numeric : 0;
+    }));
+  }
+  if (ArrayBuffer.isView(value) && !(value instanceof DataView) && 'length' in value) {
+    return Float32Array.from(Array.from(value as unknown as ArrayLike<number>, (sample) => {
+      const numeric = Number(sample);
+      return Number.isFinite(numeric) ? numeric : 0;
+    }));
+  }
+  return null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

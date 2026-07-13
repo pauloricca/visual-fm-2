@@ -118,7 +118,7 @@ const TEMPO_OUTPUT_COUNT: i32 = 10;
 const DSP_TEMPO_INTERNAL_SOURCE: usize = 0;
 const DSP_RENDER_FRAME_UNSET: u32 = u32::MAX;
 const SEQUENCER_MIN_STEPS: i32 = 1;
-const SEQUENCER_MAX_STEPS: i32 = 32;
+const SEQUENCER_MAX_STEPS: i32 = 128;
 const SEQUENCER_MIN_ROWS: i32 = 1;
 const SEQUENCER_MAX_ROWS: i32 = 16;
 
@@ -189,6 +189,9 @@ struct DspOp {
     e: i32,
     state: i32,
     value: f64,
+    value2: f64,
+    value3: f64,
+    value4: f64,
 }
 
 const EMPTY_NODE: Node = Node {
@@ -255,6 +258,9 @@ const EMPTY_DSP_OP: DspOp = DspOp {
     e: -1,
     state: -1,
     value: 0.0,
+    value2: 0.0,
+    value3: 0.0,
+    value4: 0.0,
 };
 
 #[derive(Copy, Clone)]
@@ -1043,6 +1049,9 @@ pub extern "C" fn addDspOp(
     e: i32,
     state: i32,
     value: f64,
+    value2: f64,
+    value3: f64,
+    value4: f64,
 ) -> i32 {
     unsafe {
         if DSP_OP_COUNT >= MAX_DSP_OPS {
@@ -1059,6 +1068,9 @@ pub extern "C" fn addDspOp(
             e,
             state,
             value,
+            value2,
+            value3,
+            value4,
         };
         DSP_OP_COUNT += 1;
         index as i32
@@ -4356,7 +4368,7 @@ fn render_dsp_function(op: DspOp) -> f64 {
         6 => x.min(y),
         7 => x.max(y),
         8 => x.clamp(y.min(z), y.max(z)),
-        9 => x.powf(y),
+        9 => sign_preserving_pow(x, y),
         10 => x.clamp(-60.0, 60.0).exp(),
         11 => x.max(0.000001).ln(),
         12 => x.max(0.0).sqrt(),
@@ -4377,6 +4389,17 @@ fn render_dsp_function(op: DspOp) -> f64 {
         _ => 0.0,
     };
     sanitize_control_value(output)
+}
+
+fn sign_preserving_pow(base: f64, exponent: f64) -> f64 {
+    let magnitude = base.abs().powf(exponent);
+    if base > 0.0 {
+        magnitude
+    } else if base < 0.0 {
+        -magnitude
+    } else {
+        0.0
+    }
 }
 
 fn render_dsp_midi_note(op: DspOp) -> f64 {
@@ -4468,6 +4491,52 @@ fn tempo_boundary_crossed(
     current_boundary > previous_boundary
 }
 
+fn tempo_swung_boundary_time(
+    boundary_index: i64,
+    division_beats: f64,
+    offset_beats: f64,
+    swing: f64,
+) -> f64 {
+    let base = offset_beats + boundary_index as f64 * division_beats;
+    if boundary_index.rem_euclid(2) == 0 {
+        base
+    } else {
+        base + swing.clamp(-1.0, 1.0) * division_beats * 0.5
+    }
+}
+
+fn tempo_swung_boundary_crossed(
+    previous_beats: f64,
+    current_beats: f64,
+    division_beats: f64,
+    offset_beats: f64,
+    swing: f64,
+) -> bool {
+    if swing.abs() < 0.000001 {
+        return tempo_boundary_crossed(previous_beats, current_beats, division_beats, offset_beats);
+    }
+
+    if division_beats <= 0.0 || current_beats <= previous_beats {
+        return false;
+    }
+
+    let max_shift = division_beats * 0.5;
+    let start_index =
+        ((previous_beats - offset_beats - max_shift) / division_beats).floor() as i64 - 1;
+    let end_index =
+        ((current_beats - offset_beats + max_shift) / division_beats).floor() as i64 + 1;
+
+    for boundary_index in start_index..=end_index {
+        let boundary =
+            tempo_swung_boundary_time(boundary_index, division_beats, offset_beats, swing);
+        if boundary > previous_beats && boundary <= current_beats {
+            return true;
+        }
+    }
+
+    false
+}
+
 fn render_dsp_tempo(op: DspOp, frame: usize, sample_rate: f64) -> f64 {
     unsafe {
         if sample_rate <= 0.0 {
@@ -4494,6 +4563,7 @@ fn render_dsp_tempo(op: DspOp, frame: usize, sample_rate: f64) -> f64 {
             internal_bpm
         }
         .clamp(1.0, 999.0);
+        let swing = dsp_reg(op.e).clamp(-1.0, 1.0);
         advance_dsp_tempo_clock(source_index, bpm, sample_rate, frame);
 
         let frequency = (bpm / 60.0) / tempo_division_beats(op.c);
@@ -4505,11 +4575,12 @@ fn render_dsp_tempo(op: DspOp, frame: usize, sample_rate: f64) -> f64 {
         let click = if DSP_TEMPO_STARTED_ON_FRAME_BY_SOURCE[source_index] && offset <= 0.0 {
             true
         } else {
-            tempo_boundary_crossed(
+            tempo_swung_boundary_crossed(
                 DSP_TEMPO_PREVIOUS_BEATS_BY_SOURCE[source_index],
                 DSP_TEMPO_BEATS_BY_SOURCE[source_index],
                 tempo_division_beats(op.c),
                 offset,
+                swing,
             )
         };
         if click {
@@ -4522,13 +4593,15 @@ fn render_dsp_tempo(op: DspOp, frame: usize, sample_rate: f64) -> f64 {
 
 fn render_dsp_accumulator(op: DspOp) -> f64 {
     unsafe {
-        if op.state < 0 || (op.state as usize + 1) >= MAX_DSP_STATE {
+        if op.state < 0 || (op.state as usize + 2) >= MAX_DSP_STATE {
             return dsp_reg(op.b);
         }
 
         let state_index = op.state as usize;
         let trigger = dsp_reg(op.a) >= ENVELOPE_TRIGGER_THRESHOLD;
         let previous_trigger = DSP_STATE[state_index + 1] >= ENVELOPE_TRIGGER_THRESHOLD;
+        let reset = dsp_reg(op.e) >= ENVELOPE_TRIGGER_THRESHOLD;
+        let previous_reset = DSP_STATE[state_index + 2] >= ENVELOPE_TRIGGER_THRESHOLD;
         let min = dsp_reg(op.b);
         let max = dsp_reg(op.c);
         let low = min.min(max);
@@ -4540,7 +4613,9 @@ fn render_dsp_accumulator(op: DspOp) -> f64 {
             value = low;
         }
 
-        if trigger && !previous_trigger {
+        if reset && !previous_reset {
+            value = low;
+        } else if trigger && !previous_trigger {
             value += 1.0;
             if span <= 0.0 || value > high {
                 value = low;
@@ -4549,6 +4624,7 @@ fn render_dsp_accumulator(op: DspOp) -> f64 {
 
         DSP_STATE[state_index] = sanitize_control_value(value);
         DSP_STATE[state_index + 1] = if trigger { 1.0 } else { 0.0 };
+        DSP_STATE[state_index + 2] = if reset { 1.0 } else { 0.0 };
         DSP_STATE[state_index]
     }
 }
@@ -4611,12 +4687,20 @@ fn render_dsp_sequencer(op: DspOp, frame: usize) -> f64 {
             return 0.0;
         }
 
-        if step < 0 || step >= steps || step >= 32 {
+        if step < 0 || step >= steps {
             return 0.0;
         }
 
-        let pattern = op.value.round().clamp(0.0, u32::MAX as f64) as u32;
-        if (pattern & (1_u32 << step)) != 0 {
+        let lane = match step / 32 {
+            0 => op.value,
+            1 => op.value2,
+            2 => op.value3,
+            3 => op.value4,
+            _ => 0.0,
+        };
+        let pattern = lane.round().clamp(0.0, u32::MAX as f64) as u32;
+        let bit = (step % 32) as u32;
+        if (pattern & (1_u32 << bit)) != 0 {
             1.0
         } else {
             0.0

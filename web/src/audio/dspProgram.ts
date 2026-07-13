@@ -79,6 +79,9 @@ export interface DspOp {
   e?: number;
   state?: number;
   value?: number;
+  value2?: number;
+  value3?: number;
+  value4?: number;
 }
 
 export interface DspValueBinding {
@@ -740,6 +743,17 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     );
   }
 
+  if (node.type === 'Pow') {
+    return emitFunction(
+      EXPRESSION_FUNCTIONS.pow.id,
+      [
+        resolveInput(node, 'signal', 0, context),
+        resolveInput(node, 'exponent', 1, context),
+      ],
+      context,
+    );
+  }
+
   if (node.type === 'RingMod') {
     return emitBinary(
       DSP_OP.Mul,
@@ -884,11 +898,11 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
 
   if (node.type === 'Accumulator') {
     const output = nextRegister(context);
-    const state = nextState(context, 2);
+    const state = nextState(context, 3);
     context.stateBindings.push({
       id: `${node.id}:accumulator`,
       state,
-      count: 2,
+      count: 3,
       kind: 'effect',
       nodeId: node.id,
     });
@@ -898,6 +912,7 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       a: resolveInput(node, 'trigger', 0, context),
       b: resolveInput(node, 'min', 0, context),
       c: resolveInput(node, 'max', 1, context),
+      e: resolveInput(node, 'reset', 0, context),
       state,
     });
     return output;
@@ -1055,6 +1070,7 @@ function compileTempo(node: PatchNode, port: string, context: CompileContext): n
     b: emitValue(sourceValueIndex, context),
     c: outputKind,
     d: emitValue(midiSourceValueIndex, context),
+    e: resolveInput(node, 'swing', 0, context),
     state: -1,
   });
   return output;
@@ -1181,6 +1197,7 @@ function compileSequencer(node: PatchNode, port: string, context: CompileContext
   const output = nextRegister(context);
   const shape = sequencerShape(node.params);
   const state = ensureSequencerStepRegister(node, context).state;
+  const pattern = sequencerPatternValue(node.params, rowIndex, shape.steps);
   context.ops.push({
     opcode: DSP_OP.Sequencer,
     out: output,
@@ -1190,7 +1207,10 @@ function compileSequencer(node: PatchNode, port: string, context: CompileContext
     d: resolveInput(node, 'rows', SEQUENCER_DEFAULT_ROWS, context),
     e: resolveInput(node, 'reset', 0, context),
     state,
-    value: sequencerPatternValue(node.params, rowIndex, shape.steps),
+    value: pattern[0],
+    value2: pattern[1],
+    value3: pattern[2],
+    value4: pattern[3],
   });
   return output;
 }

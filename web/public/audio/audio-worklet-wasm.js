@@ -20,6 +20,8 @@ const MASTER_DC_BLOCK_HZ = 10;
 const DENORMAL_EPSILON = 1e-20;
 const FORMANT_INTENSITY_MAX = 36;
 const MAX_CUSTOM_WAVE_POINTS = 64;
+const RECORDING_CHUNK_FRAMES = 16384;
+const RECORDING_CHANNEL_COUNT = 2;
 const QUANTISE_MIDI_ROOT = "midi-note";
 const DEFAULT_GRAPH_UPDATE_CROSSFADE_SECONDS = 0.02;
 
@@ -200,6 +202,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.reverbDelays = [this.createReverbDelays(), this.createReverbDelays()];
     this.inputDcBlockers = [this.createDcBlocker(), this.createDcBlocker()];
     this.outputDcBlockers = [this.createDcBlocker(), this.createDcBlocker()];
+    this.recordingCapture = null;
 
     this.port.onmessage = (event) => {
       const { type, payload } = event.data || {};
@@ -221,6 +224,10 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         this.resetRuntimeState();
       } else if (type === "setMuted") {
         this.setMuted(Boolean(payload?.muted));
+      } else if (type === "startRecording") {
+        this.startRecordingCapture(payload);
+      } else if (type === "stopRecording") {
+        this.stopRecordingCapture(payload);
       } else if (type === "setLinkScope") {
         this.setLinkScopes(payload);
       } else if (type === "setLinkScopes") {
@@ -239,6 +246,100 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         ? this.clamp(seconds, 0.001, MAX_WASM_FRAMES / sampleRate)
         : DEFAULT_GRAPH_UPDATE_CROSSFADE_SECONDS,
     };
+  }
+
+  startRecordingCapture(payload = {}) {
+    const id = String(payload?.id ?? "");
+    const channelCount = this.clamp(
+      Math.round(Number(payload?.channelCount) || RECORDING_CHANNEL_COUNT),
+      1,
+      RECORDING_CHANNEL_COUNT,
+    );
+    const chunkFrames = this.clamp(
+      Math.round(Number(payload?.chunkFrames) || RECORDING_CHUNK_FRAMES),
+      128,
+      Math.max(128, Math.round(sampleRate * 2)),
+    );
+    this.recordingCapture = {
+      id,
+      channelCount,
+      chunkFrames,
+      buffers: Array.from({ length: channelCount }, () => new Float32Array(chunkFrames)),
+      index: 0,
+      frames: 0,
+      chunks: 0,
+    };
+    this.port.postMessage({
+      type: "recordingStarted",
+      payload: {
+        id,
+        sampleRate,
+        channelCount,
+        chunkFrames,
+      },
+    });
+  }
+
+  stopRecordingCapture(payload = {}) {
+    const id = String(payload?.id ?? "");
+    const capture = this.recordingCapture;
+    if (!capture || (id && capture.id !== id)) return;
+    this.flushRecordingChunk(capture);
+    this.recordingCapture = null;
+    this.port.postMessage({
+      type: "recordingStopped",
+      payload: {
+        id: capture.id,
+        sampleRate,
+        channelCount: capture.channelCount,
+        frames: capture.frames,
+        chunks: capture.chunks,
+      },
+    });
+  }
+
+  recordOutputSamples(left, right, frames) {
+    const capture = this.recordingCapture;
+    if (!capture || !left) return;
+    const rightSource = right || left;
+    const usableFrames = Math.max(0, Math.min(frames, left.length));
+    let offset = 0;
+    while (offset < usableFrames) {
+      const count = Math.min(usableFrames - offset, capture.chunkFrames - capture.index);
+      capture.buffers[0].set(left.subarray(offset, offset + count), capture.index);
+      if (capture.channelCount > 1) {
+        capture.buffers[1].set(rightSource.subarray(offset, offset + count), capture.index);
+      }
+      capture.index += count;
+      capture.frames += count;
+      offset += count;
+      if (capture.index >= capture.chunkFrames) {
+        this.flushRecordingChunk(capture);
+      }
+    }
+  }
+
+  flushRecordingChunk(capture) {
+    const frames = capture.index;
+    if (frames <= 0) return;
+    const channels = capture.buffers.map((buffer) => (
+      frames === buffer.length ? buffer : buffer.slice(0, frames)
+    ));
+    const startFrame = capture.frames - frames;
+    capture.chunks += 1;
+    capture.buffers = Array.from({ length: capture.channelCount }, () => new Float32Array(capture.chunkFrames));
+    capture.index = 0;
+    const message = {
+      type: "recordingChunk",
+      payload: {
+        id: capture.id,
+        sequence: capture.chunks,
+        startFrame,
+        frames,
+        channels,
+      },
+    };
+    this.port.postMessage(message, channels.map((channel) => channel.buffer));
   }
 
   async loadWasm({ wasmBytes, wasmUrl } = {}) {
@@ -375,6 +476,9 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         e: Math.trunc(Number(op.e ?? -1)),
         state: Math.trunc(Number(op.state ?? -1)),
         value: Number(op.value ?? 0),
+        value2: Number(op.value2 ?? 0),
+        value3: Number(op.value3 ?? 0),
+        value4: Number(op.value4 ?? 0),
       })).filter((op) => Number.isFinite(op.opcode))
       : [];
     const values = Array.isArray(program.values)
@@ -610,6 +714,9 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         op.e,
         op.state,
         opValue,
+        op.value2 ?? 0,
+        op.value3 ?? 0,
+        op.value4 ?? 0,
       );
     }
     this.restoreDspState(preservedState);
@@ -1726,6 +1833,18 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       const level = Math.max(0, Number(this.wasm?.dspMeterLevel?.(state.slot)) || 0);
       levels.push([state.id, level, level, level]);
     }
+    for (const binding of this.dspProgram?.stateBindings || []) {
+      if (binding.kind !== "selector") continue;
+      const selectedIndex = Number(this.wasm?.getDspState?.(binding.state + 1));
+      if (!Number.isFinite(selectedIndex)) continue;
+      levels.push([binding.id, selectedIndex, selectedIndex, selectedIndex]);
+    }
+    for (const binding of this.dspProgram?.stateBindings || []) {
+      if (!String(binding.id || "").endsWith(":accumulator")) continue;
+      const currentValue = Number(this.wasm?.getDspState?.(binding.state));
+      if (!Number.isFinite(currentValue)) continue;
+      levels.push([binding.id, currentValue, currentValue, currentValue]);
+    }
     this.lastOutputPeak = 0;
     this.wasm?.clearLinkMeters?.();
     this.wasm?.resetDspMeterLevels?.();
@@ -1760,6 +1879,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     if (!left) return;
     left.fill(0);
     if (right !== left) right.fill(0);
+    this.recordOutputSamples(left, right, left.length);
     this.lastGraphLeftSample = 0;
     this.lastGraphRightSample = 0;
     this.outputLifecycleGain = 0;
@@ -1875,6 +1995,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       right[i] = 0;
     }
     this.lastOutputPeak = Math.max(this.lastOutputPeak, peak);
+    this.recordOutputSamples(left, right, left.length);
     this.sampleCursor += left.length;
     this.flushLinkMeters();
     return true;
