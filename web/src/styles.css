@@ -1215,14 +1215,12 @@ button:hover {
 }
 
 .shader-node-body-sequencer {
-  position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 0;
-  width: 100%;
+  grid-template-columns: max-content max-content;
+  gap: 10px;
+  justify-content: space-between;
+  width: auto;
   min-height: 0;
   padding: 0;
-  background: transparent;
 }
 
 .scope-preview {
@@ -1262,6 +1260,14 @@ button:hover {
   flex-direction: column;
   gap: 8px;
   min-width: max-content;
+}
+
+.shader-inputs {
+  grid-column: 1;
+}
+
+.shader-outputs {
+  grid-column: 2;
 }
 
 .shader-node-body-no-outputs .shader-ports {
@@ -1726,7 +1732,6 @@ button:hover {
 .shader-node-body-slider .shader-inputs,
 .shader-node-body-button .shader-inputs,
 .shader-node-body-accumulator .shader-inputs,
-.shader-node-body-sequencer .shader-inputs,
 .shader-node-body-scope .shader-inputs,
 .shader-node-body-meter .shader-inputs,
 .shader-node-body-custom-wave .shader-inputs {
@@ -1734,6 +1739,11 @@ button:hover {
   min-width: 0;
   padding: var(--node-content-padding);
   background: transparent;
+}
+
+.shader-node-body-sequencer .shader-inputs,
+.shader-node-body-sequencer .shader-outputs {
+  padding: var(--node-content-padding);
 }
 
 .shader-node-body-slider .shader-port,

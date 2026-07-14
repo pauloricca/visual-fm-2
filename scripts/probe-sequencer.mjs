@@ -150,7 +150,74 @@ pulse(resetValue);
 const afterReset = pulse(gateValue);
 assert(afterReset === 0, `Sequencer reset did not restart at step 0: ${afterReset}`);
 
-console.log(`Sequencer probe passed: advance ${advanced.join(',')}; reset next step ${afterReset}`);
+const indexPatch = {
+  nodes: [
+    node('gate', 'Constant', { value: 0 }),
+    node('seq', 'Sequencer', {
+      steps: 2,
+      rows: 3,
+      'cell:0:0': 1,
+      'cell:1:0': 1,
+      'cell:2:1': 1,
+    }),
+    node('out', 'AudioOut', { level: 1 }),
+  ],
+  links: [
+    link('gate', 'signal', 'seq', 'signal'),
+    link('seq', 'trigger index', 'out', 'both'),
+  ],
+};
+const indexDspProgram = compilePatchToDspProgram(indexPatch);
+assert(indexDspProgram.errors.length === 0, `Index DSP compile failed: ${indexDspProgram.errors.join('; ')}`);
+const indexGateValue = indexDspProgram.valueBindings.find((binding) => binding.id === 'gate.value')?.valueIndex;
+assert(Number.isInteger(indexGateValue), 'Index gate value binding was not emitted.');
+
+wasm.clearDspProgram();
+wasm.resetDspRuntimeState();
+for (let index = 0; index < indexDspProgram.values.length; index += 1) {
+  wasm.setDspValue(index, indexDspProgram.values[index]);
+}
+for (const op of indexDspProgram.ops) {
+  wasm.addDspOp(
+    op.opcode ?? -1,
+    op.out ?? -1,
+    op.a ?? -1,
+    op.b ?? -1,
+    op.c ?? -1,
+    op.d ?? -1,
+    op.e ?? -1,
+    op.state ?? -1,
+    op.value ?? 0,
+    op.value2 ?? 0,
+    op.value3 ?? 0,
+    op.value4 ?? 0,
+  );
+}
+
+const indexRenderFrames = 1000;
+const leftOutput = new Float32Array(wasm.memory.buffer, wasm.leftPtr(), indexRenderFrames);
+function renderIndexFrames() {
+  wasm.clear(indexRenderFrames);
+  wasm.beginDspRenderQuantum();
+  wasm.renderDspProgram(indexRenderFrames, 48000);
+  return Math.max(...leftOutput);
+}
+
+function indexPulse() {
+  wasm.setDspValue(indexGateValue, 1);
+  const output = renderIndexFrames();
+  wasm.setDspValue(indexGateValue, 0);
+  assert(renderIndexFrames() === 0, 'Sequencer index should return to zero after its trigger pulse.');
+  return output;
+}
+
+const indexOutputs = [indexPulse(), indexPulse()];
+assert(
+  indexOutputs.join(',') === '1,3',
+  `Sequencer index should select the first triggered row: ${indexOutputs.join(',')}`,
+);
+
+console.log(`Sequencer probe passed: advance ${advanced.join(',')}; reset next step ${afterReset}; index ${indexOutputs.join(',')}`);
 
 function node(id, type, params) {
   return { id, type, params };

@@ -46,7 +46,7 @@ Most node types are available from the node picker. `Ins` and `Outs` appear whil
 - `Constant`: outputs a fixed numeric value.
 - `Slider`: provides a playable UI control, optionally driven by MIDI CC, that outputs a mapped signal.
 - `Button`: provides a playable UI button, optionally driven by MIDI CC, for gate/toggle/trigger-style control.
-- `Sequencer`: displays a clickable step grid with configurable steps and rows; `signal` advances the sequence, `reset` restarts it, and each row has its own trigger output.
+- `Sequencer`: displays a clickable step grid with configurable steps and rows; `signal` advances the sequence, `reset` restarts it, each row has its own trigger output, and `trigger index` emits the 1-based index of the first triggered row.
 - `Tempo`: outputs clock triggers and matching frequency values from 4-bar divisions down to thirty-seconds.
 - `MIDI Note`: converts MIDI note input into note, frequency, velocity, gate, and trigger outputs.
 - `MIDI CC`: outputs the current value of a selected MIDI CC.

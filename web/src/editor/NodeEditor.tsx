@@ -106,6 +106,11 @@ interface NodeDragSelectionSnapshot {
   edgeSelection: Record<string, boolean>;
 }
 
+interface ScreenPoint {
+  x: number;
+  y: number;
+}
+
 interface SubpatchEditFrame {
   groupId: string;
   parentNodes: ShaderFlowNode[];
@@ -239,6 +244,7 @@ function NodeEditorInner() {
   const duplicateDragRef = useRef<DuplicateDragState | null>(null);
   const pendingNodeDragSelectionRef = useRef<NodeDragSelectionSnapshot | null>(null);
   const activeNodeDragSelectionRef = useRef<NodeDragSelectionSnapshot | null>(null);
+  const selectionDragStartRef = useRef<ScreenPoint | null>(null);
   const pendingBoundaryPortRef = useRef<BoundaryPortSelection | null>(null);
   const [draftNodeConnection, setDraftNodeConnection] = useState<DraftNodeConnection | null>(null);
   const [duplicateDrag, setDuplicateDrag] = useState<DuplicateDragState | null>(null);
@@ -2756,10 +2762,16 @@ function NodeEditorInner() {
   const handleEditorPointerDownCapture = useCallback((event: ReactPointerEvent<HTMLElement>) => {
     if (event.button !== 0) {
       pendingNodeDragSelectionRef.current = null;
+      selectionDragStartRef.current = null;
       return;
     }
 
     const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest('.react-flow__pane')) {
+      selectionDragStartRef.current = { x: event.clientX, y: event.clientY };
+    } else {
+      selectionDragStartRef.current = null;
+    }
     const nodeElement = target?.closest<HTMLElement>('.react-flow__node[data-id]');
     const nodeId = nodeElement?.dataset.id;
     if (!nodeId) {
@@ -2787,6 +2799,36 @@ function NodeEditorInner() {
     }
   }, []);
 
+  const syncRectangleSelection = useCallback((end: ScreenPoint) => {
+    const start = selectionDragStartRef.current;
+    const editorShell = editorShellRef.current;
+    if (!start || !editorShell) return;
+
+    const selectedNodeIds = selectedNodeIdsInScreenRect(
+      editorShell,
+      start,
+      end,
+      new Set(nodesRef.current.map((node) => node.id)),
+    );
+    const selectedEdgeIds = new Set(edgesRef.current.flatMap((edge) => {
+      const link = linkFromEdge(edge);
+      return link && (selectedNodeIds.has(link.from.node) || selectedNodeIds.has(link.to.node)) ? [edge.id] : [];
+    }));
+
+    setNodes((current) => updateSelection(current, selectedNodeIds));
+    setEdges((current) => updateSelection(current, selectedEdgeIds));
+  }, []);
+
+  const handleRectangleSelectionMove = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    if (event.buttons !== 1 || !selectionDragStartRef.current) return;
+    syncRectangleSelection({ x: event.clientX, y: event.clientY });
+  }, [syncRectangleSelection]);
+
+  const validateRectangleSelection = useCallback((event: ReactMouseEvent) => {
+    syncRectangleSelection({ x: event.clientX, y: event.clientY });
+    selectionDragStartRef.current = null;
+  }, [syncRectangleSelection]);
+
   const handleMoveEnd = useCallback((_event: globalThis.MouseEvent | TouchEvent | null, nextViewport: Viewport) => {
     setViewport(nextViewport);
   }, []);
@@ -2798,6 +2840,7 @@ function NodeEditorInner() {
           ref={editorShellRef}
           className="editor-shell"
           onPointerDownCapture={handleEditorPointerDownCapture}
+          onPointerMove={handleRectangleSelectionMove}
           onPointerUpCapture={clearPendingNodeDragSelection}
           onPointerCancelCapture={clearPendingNodeDragSelection}
           onDoubleClick={(event) => {
@@ -2820,6 +2863,7 @@ function NodeEditorInner() {
             onNodeDragStart={onNodeDragStart}
             onNodeDrag={onNodeDrag}
             onNodeDragStop={onNodeDragStop}
+            onSelectionEnd={validateRectangleSelection}
             onNodeDoubleClick={(event, node) => {
               if (!enterGroupNode(node)) return;
               event.preventDefault();
@@ -5303,6 +5347,46 @@ function isPlaybackShortcutControlEventTarget(target: EventTarget | null): boole
 
 function selectionById<T extends { id: string; selected?: boolean }>(items: T[]): Record<string, boolean> {
   return Object.fromEntries(items.map((item) => [item.id, item.selected === true]));
+}
+
+function selectedNodeIdsInScreenRect(
+  editorShell: HTMLElement,
+  start: ScreenPoint,
+  end: ScreenPoint,
+  nodeIds: Set<string>,
+): Set<string> {
+  const left = Math.min(start.x, end.x);
+  const right = Math.max(start.x, end.x);
+  const top = Math.min(start.y, end.y);
+  const bottom = Math.max(start.y, end.y);
+  const selectedNodeIds = new Set<string>();
+
+  for (const element of editorShell.querySelectorAll<HTMLElement>('.react-flow__node[data-id]')) {
+    const nodeId = element.dataset.id;
+    if (!nodeId || !nodeIds.has(nodeId)) continue;
+
+    const bounds = element.getBoundingClientRect();
+    const overlapsSelection = bounds.left < right
+      && bounds.right > left
+      && bounds.top < bottom
+      && bounds.bottom > top;
+    if (overlapsSelection) selectedNodeIds.add(nodeId);
+  }
+
+  return selectedNodeIds;
+}
+
+function updateSelection<T extends { id: string; selected?: boolean }>(items: T[], selectedIds: Set<string>): T[] {
+  let changed = false;
+  const nextItems = items.map((item) => {
+    const selected = selectedIds.has(item.id);
+    if (item.selected === selected) return item;
+
+    changed = true;
+    return { ...item, selected };
+  });
+
+  return changed ? nextItems : items;
 }
 
 function nodeZIndex(selected: boolean, compactPorts: boolean): number {

@@ -3,6 +3,7 @@ import { normalizeCustomWave } from '../graph/customWave';
 import {
   SEQUENCER_DEFAULT_ROWS,
   SEQUENCER_DEFAULT_STEPS,
+  SEQUENCER_INDEX_OUTPUT,
   getNodeDefinition,
   sequencerOutputIndex,
   sequencerPatternValue,
@@ -1219,12 +1220,45 @@ function compileSelector(node: PatchNode, context: CompileContext): number {
 }
 
 function compileSequencer(node: PatchNode, port: string, context: CompileContext): number {
+  if (port === SEQUENCER_INDEX_OUTPUT) {
+    return compileSequencerIndex(node, context);
+  }
+
   const rowIndex = sequencerOutputIndex(port);
   if (rowIndex === null) {
     context.errors.push(`Sequencer node "${node.id}" does not have supported output "${port}".`);
     return constantRegister(0, context);
   }
 
+  return compileSequencerRow(node, rowIndex, context);
+}
+
+function compileSequencerIndex(node: PatchNode, context: CompileContext): number {
+  const shape = sequencerShape(node.params);
+  let index = constantRegister(0, context);
+  let noEarlierTrigger = constantRegister(1, context);
+
+  for (let rowIndex = 0; rowIndex < shape.rows; rowIndex += 1) {
+    const trigger = compileSequencerRow(node, rowIndex, context);
+    const selectedTrigger = emitBinary(DSP_OP.Mul, trigger, noEarlierTrigger, context);
+    index = emitBinary(
+      DSP_OP.Add,
+      index,
+      emitBinary(DSP_OP.Mul, selectedTrigger, constantRegister(rowIndex + 1, context), context),
+      context,
+    );
+    noEarlierTrigger = emitBinary(
+      DSP_OP.Mul,
+      noEarlierTrigger,
+      emitBinary(DSP_OP.Sub, constantRegister(1, context), trigger, context),
+      context,
+    );
+  }
+
+  return index;
+}
+
+function compileSequencerRow(node: PatchNode, rowIndex: number, context: CompileContext): number {
   const output = nextRegister(context);
   const shape = sequencerShape(node.params);
   const state = ensureSequencerStepRegister(node, context).state;

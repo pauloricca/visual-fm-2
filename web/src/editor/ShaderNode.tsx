@@ -23,6 +23,7 @@ import {
   getNodeTypeLabel,
   NODE_TYPE_LIST,
   sequencerCellParamName,
+  SEQUENCER_INDEX_OUTPUT,
   sequencerOutputName,
   sequencerShape,
 } from '../graph/nodeTypes';
@@ -644,6 +645,9 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           const visibleOutputPorts = outputPorts.filter((output) => (
             showAllPorts || connectedOutputPorts.has(output.name)
           ));
+          const normalOutputPorts = showSequencerDisplay
+            ? visibleOutputPorts.filter((output) => output.name === SEQUENCER_INDEX_OUTPUT)
+            : visibleOutputPorts;
           const showBody = !compactPorts
             || isExpression
             || showSampleUpload
@@ -657,7 +661,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             || showAccumulatorDisplay
             || showAudioOutputDisplay
             || visibleInputPorts.length > 0
-            || (visibleOutputPorts.length > 0 && !showHeaderOutputPort)
+            || (normalOutputPorts.length > 0 && !showHeaderOutputPort)
             || showMeterDisplay
             || showScopeDisplay;
 
@@ -1081,9 +1085,9 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               </button>
             ) : null}
           </div>
-          {visibleOutputPorts.length > 0 && !showHeaderOutputPort && !showSequencerDisplay ? (
+          {normalOutputPorts.length > 0 && !showHeaderOutputPort ? (
             <div className="shader-ports shader-outputs">
-              {visibleOutputPorts.map((output) => (
+              {normalOutputPorts.map((output) => (
               <div
                 className={[
                   'shader-port shader-port-output',

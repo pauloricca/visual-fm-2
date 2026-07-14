@@ -8,6 +8,7 @@ export const SEQUENCER_MAX_ROWS = 16;
 export const SEQUENCER_DEFAULT_ROWS = 4;
 export const SEQUENCER_MIN_BEAT_LENGTH = 1;
 export const SEQUENCER_DEFAULT_BEAT_LENGTH = 4;
+export const SEQUENCER_INDEX_OUTPUT = 'trigger index';
 
 export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   Expression: {
@@ -487,7 +488,10 @@ export function sequencerPatternValue(params: Record<string, number>, rowIndex: 
 }
 
 function sequencerOutputDefinitions(rows: number): NodeDefinition['outputs'] {
-  return Array.from({ length: rows }, (_, rowIndex) => ({ name: sequencerOutputName(rowIndex) }));
+  return [
+    ...Array.from({ length: rows }, (_, rowIndex) => ({ name: sequencerOutputName(rowIndex) })),
+    { name: SEQUENCER_INDEX_OUTPUT },
+  ];
 }
 
 export function getNodeTypeLabel(type: NodeType): string {
