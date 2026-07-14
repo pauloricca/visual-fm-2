@@ -390,14 +390,14 @@ async function compileVisiblePatch() {
         {
           id: 'selector',
           type: 'Selector',
-          params: { select: 1, slide: 0.005, 0: 0, 1: 0, 2: 0, 3: 0 },
+          params: { select: 1, slide: 0.005, 1: 0, 2: 0, 3: 0, 4: 0 },
           inputs: [
             { name: 'select', defaultValue: 0, min: 0, integer: true },
             { name: 'slide', defaultValue: 0, min: 0 },
-            { name: '0', defaultValue: 0 },
             { name: '1', defaultValue: 0 },
             { name: '2', defaultValue: 0 },
             { name: '3', defaultValue: 0 },
+            { name: '4', defaultValue: 0 },
           ],
         },
         { id: 'meter', type: 'Meter', params: { range: 1 } },
@@ -519,10 +519,10 @@ async function compileVisiblePatch() {
         ? [
           { from: { node: 'holdSource', port: 'signal' }, to: { node: 'sampleHold', port: 'signal' }, weight: 1, mode: 'set' },
           { from: { node: 'holdTrigger', port: 'signal' }, to: { node: 'sampleHold', port: 'trigger' }, weight: 1, mode: 'set' },
-          { from: { node: 'sampleHold', port: 'signal' }, to: { node: 'selector', port: '0' }, weight: 0.6, mode: 'set' },
-          { from: { node: 'perlin', port: 'signal' }, to: { node: 'selector', port: '1' }, weight: 0.7, mode: 'set' },
-          { from: { node: 'noise', port: 'signal' }, to: { node: 'selector', port: '2' }, weight: 0.2, mode: 'set' },
-          { from: { node: 'input', port: 'signal' }, to: { node: 'selector', port: '3' }, weight: 1, mode: 'set' },
+          { from: { node: 'sampleHold', port: 'signal' }, to: { node: 'selector', port: '1' }, weight: 0.6, mode: 'set' },
+          { from: { node: 'perlin', port: 'signal' }, to: { node: 'selector', port: '2' }, weight: 0.7, mode: 'set' },
+          { from: { node: 'noise', port: 'signal' }, to: { node: 'selector', port: '3' }, weight: 0.2, mode: 'set' },
+          { from: { node: 'input', port: 'signal' }, to: { node: 'selector', port: '4' }, weight: 1, mode: 'set' },
           { from: { node: 'selector', port: 'signal' }, to: { node: 'meter', port: 'signal' }, weight: 1, mode: 'set' },
           ...(scope
             ? [

@@ -6,6 +6,8 @@ export const SEQUENCER_DEFAULT_STEPS = 16;
 export const SEQUENCER_MIN_ROWS = 1;
 export const SEQUENCER_MAX_ROWS = 16;
 export const SEQUENCER_DEFAULT_ROWS = 4;
+export const SEQUENCER_MIN_BEAT_LENGTH = 1;
+export const SEQUENCER_DEFAULT_BEAT_LENGTH = 4;
 
 export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   Expression: {
@@ -77,6 +79,8 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
       { name: 'frequency', defaultValue: 220 },
       { name: 'phase', defaultValue: 0 },
       { name: 'phaseReset', defaultValue: 0 },
+      { name: 'rangeMin', defaultValue: -1 },
+      { name: 'rangeMax', defaultValue: 1 },
     ],
     outputs: [{ name: 'signal' }],
   },
@@ -119,6 +123,11 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     inputs: [{ name: 'value', defaultValue: 1 }],
     outputs: [{ name: 'signal' }],
   },
+  Pass: {
+    type: 'Pass',
+    inputs: [{ name: 'signal', valueEditor: false }],
+    outputs: [{ name: 'signal' }],
+  },
   Slider: {
     type: 'Slider',
     inputs: [
@@ -147,6 +156,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     inputs: [
       { name: 'steps', defaultValue: SEQUENCER_DEFAULT_STEPS, min: SEQUENCER_MIN_STEPS, max: SEQUENCER_MAX_STEPS, integer: true },
       { name: 'rows', defaultValue: SEQUENCER_DEFAULT_ROWS, min: SEQUENCER_MIN_ROWS, max: SEQUENCER_MAX_ROWS, integer: true },
+      { name: 'beatLength', defaultValue: SEQUENCER_DEFAULT_BEAT_LENGTH, min: SEQUENCER_MIN_BEAT_LENGTH, max: SEQUENCER_MAX_STEPS, integer: true, connectable: false },
       { name: 'signal', defaultValue: 0, valueEditor: false },
       { name: 'reset', defaultValue: 0, valueEditor: false },
     ],
@@ -210,7 +220,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     inputs: [
       { name: 'select', defaultValue: 0, min: 0, integer: true },
       { name: 'slide', defaultValue: 0, min: 0 },
-      { name: '0', defaultValue: 0 },
+      { name: '1', defaultValue: 0 },
     ],
     outputs: [{ name: 'signal' }],
   },
@@ -282,6 +292,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     { name: 'attack', defaultValue: 0.01, min: 0 },
     { name: 'decay', defaultValue: 0.16, min: 0 },
     { name: 'sustain', defaultValue: 0.72 },
+    { name: 'gateLength', defaultValue: 0, min: 0 },
     { name: 'release', defaultValue: 0.24, min: 0 },
   ]),
   Follower: processor('Follower', [
@@ -344,6 +355,7 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   Buffer: 'Buffer',
   Playhead: 'Playhead',
   Constant: 'Constant',
+  Pass: 'Pass',
   Slider: 'Slider',
   Button: 'Button',
   Sequencer: 'Sequencer',
@@ -432,10 +444,11 @@ export function getNodeDefinition(node: PatchNode): NodeDefinition {
   };
 }
 
-export function sequencerShape(params: Record<string, number>): { steps: number; rows: number } {
+export function sequencerShape(params: Record<string, number>): { steps: number; rows: number; beatLength: number } {
   return {
     steps: clampInteger(params.steps, SEQUENCER_MIN_STEPS, SEQUENCER_MAX_STEPS, SEQUENCER_DEFAULT_STEPS),
     rows: clampInteger(params.rows, SEQUENCER_MIN_ROWS, SEQUENCER_MAX_ROWS, SEQUENCER_DEFAULT_ROWS),
+    beatLength: clampInteger(params.beatLength, SEQUENCER_MIN_BEAT_LENGTH, SEQUENCER_MAX_STEPS, SEQUENCER_DEFAULT_BEAT_LENGTH),
   };
 }
 
@@ -492,6 +505,8 @@ function oscillator(type: NodeType): NodeDefinition {
       { name: 'frequency', defaultValue: 220 },
       { name: 'phase', defaultValue: 0 },
       { name: 'phaseReset', defaultValue: 0 },
+      { name: 'rangeMin', defaultValue: -1 },
+      { name: 'rangeMax', defaultValue: 1 },
     ],
     outputs: [{ name: 'signal' }],
   };

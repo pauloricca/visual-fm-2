@@ -3757,7 +3757,7 @@ fn dsp_oscillator(wave: i32, phase: f64) -> f64 {
 
 fn dsp_sample_hold_value(input_register: i32) -> f64 {
     if input_register >= 0 {
-        sanitize_sample(dsp_reg(input_register), 8.0)
+        sanitize_control_value(dsp_reg(input_register))
     } else {
         random_unit(DRONE_VOICE_SLOT)
     }
@@ -3863,11 +3863,21 @@ fn render_dsp_selector(op: DspOp, sample_rate: f64) -> f64 {
 
         let state_index = op.state as usize;
         let input = dsp_reg(op.c);
-        let max_index = op.e.max(0) as f64;
-        let selected_index = dsp_reg(op.a).floor().clamp(0.0, max_index) as i32;
+        let max_index = op.e.max(1) as f64;
+        let selected_index = dsp_reg(op.a).floor() as i32;
 
-        if selected_index == op.d {
-            let previous_index = DSP_STATE[state_index + 1].round() as i32;
+        // Selector inputs are 1-based. A zero (or out-of-range) selection keeps
+        // the previous selection active, allowing sparse trigger signals to
+        // switch a selector without resetting it between pulses. The active
+        // selection must still be rendered while the input is zero so its slide
+        // can finish instead of advancing for a single sample only.
+        let previous_index = DSP_STATE[state_index + 1].round() as i32;
+        let has_new_selection = selected_index >= 1
+            && (selected_index as f64) <= max_index
+            && selected_index == op.d;
+        let continues_previous_selection = (selected_index < 1 || (selected_index as f64) > max_index)
+            && previous_index == op.d;
+        if has_new_selection || continues_previous_selection {
             let uninitialized = DSP_STATE[state_index] == 0.0
                 && DSP_STATE[state_index + 1] == 0.0
                 && DSP_STATE[state_index + 2] == 0.0
@@ -3880,7 +3890,7 @@ fn render_dsp_selector(op: DspOp, sample_rate: f64) -> f64 {
                 DSP_STATE[state_index + 1] = selected_index as f64;
                 DSP_STATE[state_index + 2] = sanitize_control_value(input);
                 DSP_STATE[state_index + 3] = slide;
-            } else if previous_index != selected_index {
+            } else if has_new_selection && previous_index != selected_index {
                 DSP_STATE[state_index + 2] = DSP_STATE[state_index];
                 DSP_STATE[state_index + 3] = 0.0;
                 DSP_STATE[state_index + 1] = selected_index as f64;
@@ -4099,6 +4109,12 @@ fn render_dsp_envelope(op: DspOp, sample_rate: f64) -> f64 {
         let sustain_register = packed.rem_euclid(MAX_DSP_REGS as i32);
         let release_register = packed.div_euclid(MAX_DSP_REGS as i32);
         let sustain = dsp_reg(sustain_register).clamp(0.0, 1.0);
+        let gate_length_register = (op.value2.round() as i32) - 1;
+        let gate_length = if gate_length_register >= 0 {
+            dsp_reg(gate_length_register).max(0.0)
+        } else {
+            0.0
+        };
         let release = dsp_reg(release_register).max(0.0);
         let dt = 1.0 / sample_rate.max(1.0);
         let mut env = DSP_STATE[state_index].clamp(0.0, 1.0);
@@ -4151,6 +4167,8 @@ fn render_dsp_envelope(op: DspOp, sample_rate: f64) -> f64 {
                     stage_time = 0.0;
                     if gate {
                         stage = 3;
+                    } else if gate_length > 0.0 {
+                        stage = 6;
                     } else {
                         stage = 4;
                         release_start = env;
@@ -4161,6 +4179,15 @@ fn render_dsp_envelope(op: DspOp, sample_rate: f64) -> f64 {
                 if gate {
                     env = sustain;
                 } else {
+                    stage = 4;
+                    stage_time = 0.0;
+                    release_start = env;
+                }
+            }
+            6 => {
+                stage_time += dt;
+                env = sustain;
+                if stage_time >= gate_length {
                     stage = 4;
                     stage_time = 0.0;
                     release_start = env;

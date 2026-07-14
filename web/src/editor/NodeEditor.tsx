@@ -881,6 +881,7 @@ function NodeEditorInner() {
       !relatedNode ||
       (
         relatedNode.data.patchNode.type !== 'Scope' &&
+        relatedNode.data.patchNode.type !== 'Meter' &&
         relatedNode.data.patchNode.type !== 'CustomWave' &&
         relatedNode.data.patchNode.type !== 'Slider' &&
         relatedNode.data.patchNode.type !== 'Button'
@@ -937,7 +938,7 @@ function NodeEditorInner() {
 
     const definition = getNodeDefinition(relatedNode.data.patchNode as PatchNode);
     const valueInputs = selectorValueInputs(definition.inputs);
-    const nextIndex = valueInputs.length;
+    const nextIndex = Math.max(0, ...valueInputs.map((input) => Number(input.name))) + 1;
     const nextPort = String(nextIndex);
     if (definition.inputs.some((input) => input.name === nextPort)) return;
 
@@ -2766,7 +2767,7 @@ function NodeEditorInner() {
             snapToGrid={false}
             proOptions={REACT_FLOW_PRO_OPTIONS}
           >
-            <Background color="rgba(255,255,255,0.08)" gap={28} size={1} />
+            <Background color="var(--color-foreground-08)" gap={28} size={1} />
             <Controls showInteractive={false} />
           </ReactFlow>
           <div ref={setEdgeOverlayElement} className="edge-overlay-layer" />
@@ -3572,6 +3573,7 @@ function parsePatchNode(value: unknown, index: number): PatchNode | null {
   }
 
   const position = value.position === undefined ? undefined : parsePosition(value.position, value.id);
+  const scopeSize = value.scopeSize === undefined ? undefined : parseNodeDisplaySize(value.scopeSize, value.id, value.type);
   const parsedInputs = value.inputs === undefined ? undefined : parsePortDefinitions(value.inputs, `Node "${value.id}" inputs`);
   const outputs = value.outputs === undefined ? undefined : parsePortDefinitions(value.outputs, `Node "${value.id}" outputs`);
   const subpatch = value.subpatch === undefined ? undefined : parsePatchObject(value.subpatch, `Node "${value.id}" subpatch`);
@@ -3598,6 +3600,7 @@ function parsePatchNode(value: unknown, index: number): PatchNode | null {
     ...(customWave ? { customWave } : {}),
     params,
     ...(position ? { position } : {}),
+    ...(scopeSize ? { scopeSize } : {}),
     ...(inputs ? { inputs } : {}),
     ...(outputs ? { outputs } : {}),
     ...(subpatch ? { subpatch } : {}),
@@ -3650,6 +3653,17 @@ function parsePosition(value: unknown, nodeId: string): { x: number; y: number }
     throw new Error(`Node "${nodeId}" position must have numeric x and y.`);
   }
   return { x: value.x, y: value.y };
+}
+
+function parseNodeDisplaySize(value: unknown, nodeId: string, type: NodeType): ScopeNodeSize {
+  if (!isRecord(value) || typeof value.width !== 'number' || typeof value.height !== 'number') {
+    throw new Error(`Node "${nodeId}" scopeSize must have numeric width and height.`);
+  }
+
+  const size = { width: value.width, height: value.height };
+  if (type === 'CustomWave') return clampCustomWaveNodeSize(size);
+  if (type === 'Slider' || type === 'Button') return clampControlNodeSize(size);
+  return clampScopeNodeSize(size);
 }
 
 function parsePortDefinitions(value: unknown, label: string): PortDefinition[] {
@@ -4336,6 +4350,7 @@ function patchNodeFromFlowNode(node: ShaderFlowNode): PatchNode {
     ...(patchNode.customWave ? { customWave: normalizeCustomWave(patchNode.customWave, patchNode.params) } : {}),
     params: { ...patchNode.params },
     position: { ...node.position },
+    ...(patchNode.scopeSize ? { scopeSize: { ...patchNode.scopeSize } } : {}),
     ...(patchNode.inputs ? { inputs: patchNode.inputs.map((port) => ({ ...port })) } : {}),
     ...(patchNode.outputs ? { outputs: patchNode.outputs.map((port) => ({ ...port })) } : {}),
     ...(patchNode.subpatch ? { subpatch: clonePatch(patchNode.subpatch) } : {}),
@@ -4355,6 +4370,7 @@ function clonePatch(patch: ReturnType<typeof patchFromFlow>): ReturnType<typeof 
       ...(node.customWave ? { customWave: normalizeCustomWave(node.customWave, node.params) } : {}),
       params: { ...node.params },
       ...(node.position ? { position: { ...node.position } } : {}),
+      ...(node.scopeSize ? { scopeSize: { ...node.scopeSize } } : {}),
       ...(node.inputs ? { inputs: node.inputs.map((port) => ({ ...port })) } : {}),
       ...(node.outputs ? { outputs: node.outputs.map((port) => ({ ...port })) } : {}),
       ...(node.subpatch ? { subpatch: clonePatch(node.subpatch) } : {}),
@@ -4682,7 +4698,7 @@ function uniquePortName(baseName: string, usedNames: Set<string>): string {
 }
 
 function isSelectorValuePortName(name: string): boolean {
-  return /^(0|[1-9][0-9]*)$/.test(name);
+  return /^[1-9][0-9]*$/.test(name);
 }
 
 function selectorValueInputs(inputs: PortDefinition[]): PortDefinition[] {
@@ -4694,7 +4710,7 @@ function selectorPortMapAfterRemoval(orderedPorts: string[], removedIndex: numbe
   orderedPorts
     .filter((port) => Number(port) !== removedIndex)
     .forEach((port, nextIndex) => {
-      portMap.set(port, String(nextIndex));
+      portMap.set(port, String(nextIndex + 1));
     });
   return portMap;
 }
@@ -4717,7 +4733,7 @@ function remapSelectorParamsAfterRemoval(
   const rawSelect = Number(params.select ?? 0);
   const currentSelect = Number.isFinite(rawSelect) ? rawSelect : 0;
   const shiftedSelect = currentSelect > removedIndex ? currentSelect - 1 : currentSelect;
-  nextParams.select = Math.min(Math.max(shiftedSelect, 0), Math.max(0, nextInputCount - 1));
+  nextParams.select = Math.min(Math.max(shiftedSelect, 0), nextInputCount);
   return nextParams;
 }
 
@@ -4746,7 +4762,7 @@ function remapSelectorEdgeAfterRemoval(
 }
 
 function selectorIndexFromKeyboardEvent(event: KeyboardEvent): number | null {
-  if (!/^[0-9]$/.test(event.key)) return null;
+  if (!/^[1-9]$/.test(event.key)) return null;
   return Number(event.key);
 }
 

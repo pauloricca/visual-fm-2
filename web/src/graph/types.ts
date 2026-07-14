@@ -18,6 +18,7 @@ export type NodeType =
   | 'Buffer'
   | 'Playhead'
   | 'Constant'
+  | 'Pass'
   | 'Slider'
   | 'Button'
   | 'Sequencer'
@@ -58,6 +59,11 @@ export interface Vec2 {
   y: number;
 }
 
+export interface NodeDisplaySize {
+  width: number;
+  height: number;
+}
+
 export interface PatchNode {
   id: string;
   type: NodeType;
@@ -68,6 +74,7 @@ export interface PatchNode {
   customWave?: CustomWaveSettings;
   params: Record<string, number>;
   position?: Vec2;
+  scopeSize?: NodeDisplaySize;
   inputs?: PortDefinition[];
   outputs?: PortDefinition[];
   subpatch?: Patch;

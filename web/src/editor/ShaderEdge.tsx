@@ -52,10 +52,10 @@ export function ShaderEdge(props: EdgeProps<ShaderFlowEdge>) {
     selected ? 'shader-edge-path-selected' : '',
   ].filter(Boolean).join(' ');
   const selectedUnderlayStyle = selected
-    ? { stroke: '#0b0b0b', strokeWidth: 8 }
+    ? { stroke: 'var(--color-edge-underlay)', strokeWidth: 8 }
     : undefined;
   const selectedForegroundStyle = selected
-    ? { stroke: 'var(--slider-green)', strokeWidth: 3 }
+    ? { stroke: 'var(--color-accent)', strokeWidth: 3 }
     : undefined;
 
   useEffect(() => {

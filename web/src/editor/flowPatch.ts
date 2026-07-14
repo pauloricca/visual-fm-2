@@ -319,6 +319,7 @@ export function patchFromFlow(nodes: ShaderFlowNode[], edges: ShaderFlowEdge[]):
       ...(patchNode.customWave ? { customWave: normalizeCustomWave(patchNode.customWave, patchNode.params) } : {}),
       params: patchNode.params,
       position: node.position,
+      ...(patchNode.scopeSize ? { scopeSize: patchNode.scopeSize } : {}),
       ...(patchNode.inputs ? { inputs: patchNode.inputs } : {}),
       ...(patchNode.outputs ? { outputs: patchNode.outputs } : {}),
       ...(patchNode.subpatch ? { subpatch: patchNode.subpatch } : {}),
@@ -494,6 +495,7 @@ function normalizePersistedState(state: PersistedEditorState): PersistedEditorSt
       ...(node.outputs ? { outputs: normalizePersistedOutputDefinitions(node) } : {}),
       ...(node.subpatch ? { subpatch: normalizePatchCompatibility(node.subpatch) } : {}),
       ...(node.compactPorts !== undefined ? { compactPorts: node.compactPorts } : {}),
+      ...(node.scopeSize ? { scopeSize: node.scopeSize } : {}),
     }));
   const typedPatch: Patch = {
     nodes: typedNodes,
@@ -502,14 +504,15 @@ function normalizePersistedState(state: PersistedEditorState): PersistedEditorSt
       .map((link) => normalizePersistedPatchLink(link, originalNodesById))
       .filter((link): link is PatchLink => link !== null && persistedLinkPortsExist(link, originalNodesById)),
   };
+  const normalizedTypedPatch = normalizePatchCompatibility(typedPatch);
   return {
     ...state,
     ui: normalizePersistedUi(state.ui),
     nodes: [
-      ...typedPatch.nodes.map((node) => persistedNodeFromPatchNode(node, originalNodesById.get(node.id))),
+      ...normalizedTypedPatch.nodes.map((node) => persistedNodeFromPatchNode(node, originalNodesById.get(node.id))),
       ...passthroughNodes,
     ],
-    edges: typedPatch.links.map(persistedEdgeFromPatchLink),
+    edges: normalizedTypedPatch.links.map(persistedEdgeFromPatchLink),
   };
 }
 
@@ -670,7 +673,7 @@ function persistedNodeFromPatchNode(
     outputs: node.outputs,
     subpatch: node.subpatch,
     compactPorts: node.compactPorts ?? original?.compactPorts,
-    scopeSize: original?.scopeSize,
+    scopeSize: node.scopeSize ?? original?.scopeSize,
   };
 }
 

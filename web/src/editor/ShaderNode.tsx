@@ -83,7 +83,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const showAudioInputDisplay = node.type === 'AudioInput';
   const showMidiNoteDisplay = node.type === 'MidiNote';
   const showCustomWaveEditor = node.type === 'CustomWave';
-  const showResizableDisplay = showScopeDisplay || showSliderDisplay || showButtonDisplay || showCustomWaveEditor;
+  const showResizableDisplay = showMeterDisplay || showScopeDisplay || showSliderDisplay || showButtonDisplay || showCustomWaveEditor;
   const showSampleUpload = node.type === 'SamplePlayer';
   const customWave = showCustomWaveEditor ? normalizeCustomWave(node.customWave, node.params) : null;
   const sequencer = showSequencerDisplay ? sequencerShape(node.params) : null;
@@ -97,13 +97,16 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const scopePath = showScopeDisplay ? samplesToScopePath(data.audioScope?.samples ?? [], amplitudeRange) : '';
   const scopeSize = showSliderDisplay || showButtonDisplay
     ? clampControlNodeSize(node.scopeSize ?? DEFAULT_SCOPE_NODE_SIZE)
-    : showScopeDisplay
+    : showMeterDisplay || showScopeDisplay
       ? clampScopeNodeSize(node.scopeSize ?? DEFAULT_SCOPE_NODE_SIZE)
     : DEFAULT_SCOPE_NODE_SIZE;
   const customWaveSize = showCustomWaveEditor
     ? clampCustomWaveNodeSize(node.scopeSize ?? DEFAULT_CUSTOM_WAVE_NODE_SIZE)
     : DEFAULT_CUSTOM_WAVE_NODE_SIZE;
   const displaySize = showCustomWaveEditor ? customWaveSize : scopeSize;
+  const meterScaleTicks = showMeterDisplay ? meterScaleTicksForRange(amplitudeRange, displaySize.width) : [];
+  const meterGridTicks = showMeterDisplay ? meterGridTicksForWidth(displaySize.width) : [];
+  const meterGridRows = showMeterDisplay ? meterGridRowsForHeight(displaySize.height) : [];
   const nodeSizeStyle = showResizableDisplay
     ? ({
         '--node-display-width': `${displaySize.width}px`,
@@ -336,7 +339,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('pointercancel', handlePointerCancel);
     };
-  }, [data, node.id, reactFlow, showCustomWaveEditor]);
+  }, [data, node.id, reactFlow, showCustomWaveEditor, showSliderDisplay, showButtonDisplay]);
 
   useEffect(() => {
     function handlePointerMove(event: globalThis.PointerEvent) {
@@ -774,6 +777,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               params={node.params}
               rows={sequencer.rows}
               steps={sequencer.steps}
+              beatLength={sequencer.beatLength}
               currentStep={data.audioSequencerStep}
               selectedLinkOutputs={selectedLinkOutputs}
               setOutputRowRef={(port, element) => {
@@ -1138,10 +1142,45 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           ) : null}
           {showMeterDisplay ? (
             <div className="audio-node-meter-display" aria-hidden="true">
+              <svg className="audio-node-meter-grid" viewBox="0 0 100 48" preserveAspectRatio="none" focusable="false">
+                {meterGridRows.map((fraction) => (
+                  <line
+                    key={`row-${fraction}`}
+                    className="audio-node-meter-grid-line"
+                    x1="0"
+                    y1={fraction * 48}
+                    x2="100"
+                    y2={fraction * 48}
+                  />
+                ))}
+                {meterGridTicks.map((tick) => (
+                  <line
+                    key={tick.fraction}
+                    className={tick.major ? 'audio-node-meter-grid-line audio-node-meter-grid-line-major' : 'audio-node-meter-grid-line'}
+                    x1={tick.fraction * 100}
+                    y1="0"
+                    x2={tick.fraction * 100}
+                    y2="48"
+                  />
+                ))}
+              </svg>
               <span className="audio-node-meter-fill" style={{ width: `${meterLevel * 100}%` }} />
               <span className="audio-node-meter-peak" style={{ left: `${meterPeak * 100}%` }} />
-              <span className="audio-node-meter-scale audio-node-meter-scale-min">0</span>
-              <span className="audio-node-meter-scale audio-node-meter-scale-max">{amplitudeRangeLabel}</span>
+              <span className="audio-node-meter-scale">
+                {meterScaleTicks.map((tick) => (
+                  <span
+                    key={tick.fraction}
+                    className={[
+                      'audio-node-meter-scale-label',
+                      tick.fraction === 0 ? 'audio-node-meter-scale-label-min' : '',
+                      tick.fraction === 1 ? 'audio-node-meter-scale-label-max' : '',
+                    ].filter(Boolean).join(' ')}
+                    style={{ left: `${tick.fraction * 100}%` }}
+                  >
+                    {tick.label}
+                  </span>
+                ))}
+              </span>
             </div>
           ) : null}
           {showScopeDisplay ? (
@@ -1161,7 +1200,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   'audio-node-scope-resize-handle audio-node-scope-resize-handle-left nodrag nopan',
                   scopeResizeCorner === 'bottom-left' ? 'audio-node-scope-resize-handle-active' : '',
                 ].filter(Boolean).join(' ')}
-                title={showCustomWaveEditor ? 'Resize custom wave' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : 'Resize scope'}
+                title={showCustomWaveEditor ? 'Resize custom wave' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : 'Resize scope'}
                 onPointerDown={(event) => handleScopeResizePointerDown(event, 'bottom-left')}
                 onClick={handleScopeResizeClick}
                 onDoubleClick={(event) => event.stopPropagation()}
@@ -1171,7 +1210,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   'audio-node-scope-resize-handle audio-node-scope-resize-handle-right nodrag nopan',
                   scopeResizeCorner === 'bottom-right' ? 'audio-node-scope-resize-handle-active' : '',
                 ].filter(Boolean).join(' ')}
-                title={showCustomWaveEditor ? 'Resize custom wave' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : 'Resize scope'}
+                title={showCustomWaveEditor ? 'Resize custom wave' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : 'Resize scope'}
                 onPointerDown={(event) => handleScopeResizePointerDown(event, 'bottom-right')}
                 onClick={handleScopeResizeClick}
                 onDoubleClick={(event) => event.stopPropagation()}
@@ -1560,6 +1599,7 @@ interface SequencerGridProps {
   params: Record<string, number>;
   rows: number;
   steps: number;
+  beatLength: number;
   currentStep?: number;
   selectedLinkOutputs: string[];
   setOutputRowRef: (port: string, element: HTMLDivElement | null) => void;
@@ -1570,6 +1610,7 @@ function SequencerGrid({
   params,
   rows,
   steps,
+  beatLength,
   currentStep,
   selectedLinkOutputs,
   setOutputRowRef,
@@ -1664,10 +1705,12 @@ function SequencerGrid({
             <div className="sequencer-cells" role="row">
               {Array.from({ length: steps }, (_, stepIndex) => {
                 const active = (params[sequencerCellParamName(rowIndex, stepIndex)] ?? 0) >= 0.5;
+                const highlightedBeat = Math.floor(stepIndex / beatLength) % 2 === 1;
                 return (
                   <button
                     className={[
                       'sequencer-cell',
+                      highlightedBeat ? 'sequencer-cell-beat-highlight' : '',
                       activeStep === stepIndex ? 'sequencer-cell-current' : '',
                       active ? 'sequencer-cell-active' : '',
                     ].filter(Boolean).join(' ')}
@@ -1920,6 +1963,53 @@ function displayAmplitudeRange(value: number | undefined): number {
   return Number.isFinite(range) && range > 0 ? range : 1;
 }
 
+function meterScaleTicksForRange(range: number, width: number): Array<{ fraction: number; label: string }> {
+  const divisions = meterLabelDivisionsForWidth(width);
+  return Array.from({ length: divisions + 1 }, (_, index) => {
+    const fraction = index / divisions;
+    return {
+      fraction,
+      label: formatAmplitude(range * fraction),
+    };
+  });
+}
+
+function meterGridTicksForWidth(width: number): Array<{ fraction: number; major: boolean }> {
+  const labelDivisions = meterLabelDivisionsForWidth(width);
+  const divisions = width >= 560
+    ? 64
+    : width >= 400
+      ? 48
+      : width >= 280
+        ? 32
+        : width >= 200
+          ? 24
+          : 12;
+  const majorStep = divisions / labelDivisions;
+
+  return Array.from({ length: divisions + 1 }, (_, index) => ({
+    fraction: index / divisions,
+    major: index % majorStep === 0,
+  }));
+}
+
+function meterGridRowsForHeight(height: number): number[] {
+  const rows = height >= 112
+    ? 8
+    : height >= 84
+      ? 6
+      : height >= 64
+        ? 4
+        : 2;
+  return Array.from({ length: rows }, (_, index) => (index + 1) / (rows + 1));
+}
+
+function meterLabelDivisionsForWidth(width: number): number {
+  if (width >= 560) return 16;
+  if (width >= 360) return 8;
+  return 4;
+}
+
 function shouldForceCompactPorts(definition: NodeDefinition): boolean {
   return definition.inputs.length === 1
     && definition.inputs[0]?.name === 'signal'
@@ -1927,7 +2017,7 @@ function shouldForceCompactPorts(definition: NodeDefinition): boolean {
 }
 
 function isSelectorValuePort(name: string): boolean {
-  return /^(0|[1-9][0-9]*)$/.test(name);
+  return /^[1-9][0-9]*$/.test(name);
 }
 
 function samplesToScopePath(samples: number[], range: number): string {
@@ -2101,6 +2191,10 @@ function PortNameLabel({
 
 function displayPortName(name: string): string {
   if (name === 'originalFrequency') return 'original frequency';
+  if (name === 'rangeMin') return 'range min';
+  if (name === 'rangeMax') return 'range max';
+  if (name === 'beatLength') return 'beat length';
+  if (name === 'gateLength') return 'gate length';
   if (name === 'midiChannel') return 'midi channel';
   if (name === 'midiCc') return 'midi cc';
   return name;

@@ -16,6 +16,7 @@ export function normalizePatch(patch: Patch): Patch {
         ...(node.customWave ? { customWave: normalizeCustomWave(node.customWave, node.params) } : {}),
         params: sortRecord(node.params),
         ...(node.position ? { position: node.position } : {}),
+        ...(node.scopeSize ? { scopeSize: { ...node.scopeSize } } : {}),
         ...(node.inputs ? { inputs: node.inputs.map((input) => ({ ...input })) } : {}),
         ...(node.outputs ? { outputs: node.outputs.map((output) => ({ ...output })) } : {}),
         ...(node.subpatch ? { subpatch: normalizePatch(node.subpatch) } : {}),

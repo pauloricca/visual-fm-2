@@ -10,6 +10,7 @@ services:
       VISUAL_VISUAL_HTTPS_KEY: "${VISUAL_VISUAL_HTTPS_KEY:-}"
       VISUAL_VISUAL_HTTPS_CERT: "${VISUAL_VISUAL_HTTPS_CERT:-}"
       VITE_VISUAL_VISUAL_PATCH_STORAGE: "${VITE_VISUAL_VISUAL_PATCH_STORAGE:-local}"
+      VITE_VISUAL_FM_THEME: "${VITE_VISUAL_FM_THEME:-}"
     volumes:
       - .:/app
       - node_modules:/app/node_modules

@@ -1,13 +1,8 @@
 :root {
-  color: #f5f5f5;
-  background: #000;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  color: var(--color-main);
+  background: var(--color-background);
+  font-family: var(--font-main);
   font-size: 13px;
-  --surface-bg: rgba(0, 0, 0, 0.72);
-  --control-bg: rgba(0, 0, 0, 0.62);
-  --menu-bg: rgba(0, 0, 0, 0.9);
-  --slider-green: #2fd061;
-  --slider-green-glow: rgba(47, 208, 97, 0.38);
   --viewport-inset: 14px;
   --control-size: 28px;
   --viewport-gap: 6px;
@@ -35,10 +30,10 @@ button,
 select,
 input,
 textarea {
-  border: 1px solid #fff;
+  border: 1px solid var(--color-foreground);
   border-radius: 0;
-  background: var(--control-bg);
-  color: #fff;
+  background: var(--color-control);
+  color: var(--color-foreground);
   font: inherit;
 }
 
@@ -54,8 +49,8 @@ button {
 
 button:hover,
 select:hover {
-  background: #fff;
-  color: #000;
+  background: var(--color-foreground);
+  color: var(--color-background);
 }
 
 .app-shell {
@@ -73,7 +68,7 @@ select:hover {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #000;
+  background: var(--color-background);
   cursor: none;
 }
 
@@ -88,7 +83,7 @@ select:hover {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(0, 0, 0, 0.72);
+  background: var(--color-background-72);
   cursor: default;
 }
 
@@ -98,9 +93,9 @@ select:hover {
   flex-direction: column;
   gap: 12px;
   padding: 12px;
-  border: 1px solid #fff;
-  background: var(--menu-bg);
-  color: #fff;
+  border: 1px solid var(--color-foreground);
+  background: var(--color-menu);
+  color: var(--color-foreground);
 }
 
 .viewer-app-id-modal header,
@@ -116,7 +111,7 @@ select:hover {
 
 .viewer-app-id-modal header p {
   margin-top: 4px;
-  color: rgba(255, 255, 255, 0.66);
+  color: var(--color-foreground-66);
 }
 
 .viewer-app-id-modal input {
@@ -131,7 +126,7 @@ select:hover {
 }
 
 .viewer-app-id-error {
-  color: #ff7474;
+  color: var(--color-error);
 }
 
 .app-shell-panel-closed {
@@ -141,7 +136,7 @@ select:hover {
 .editor-shell {
   position: relative;
   min-width: 0;
-  border-right: 1px solid #fff;
+  border-right: 1px solid var(--color-foreground);
   background: transparent;
   isolation: isolate;
 }
@@ -165,20 +160,20 @@ select:hover {
   width: min(220px, 28vw);
   height: var(--control-size);
   padding: 0 8px;
-  border: 1px solid #fff;
-  background: var(--surface-bg);
-  color: #fff;
+  border: 1px solid var(--color-foreground);
+  background: var(--color-surface);
+  color: var(--color-foreground);
   line-height: 26px;
 }
 
 .patch-name-input::placeholder {
-  color: rgba(255, 255, 255, 0.56);
+  color: var(--color-foreground-56);
 }
 
 .patch-name-input:hover,
 .patch-name-input:focus {
-  background: var(--surface-bg);
-  color: #fff;
+  background: var(--color-surface);
+  color: var(--color-foreground);
   outline: 0;
 }
 
@@ -190,9 +185,9 @@ select:hover {
   max-width: min(520px, calc(100vw - 24px));
   margin: 0;
   padding: 8px 10px;
-  border: 1px solid #fff;
-  background: #000;
-  color: #ff7a7a;
+  border: 1px solid var(--color-foreground);
+  background: var(--color-background);
+  color: var(--color-error-bright);
   white-space: pre-wrap;
 }
 
@@ -205,9 +200,9 @@ select:hover {
   max-height: 156px;
   overflow: auto;
   padding: 8px 10px;
-  border: 1px solid #ff7474;
-  background: var(--surface-bg);
-  color: #ffb0b0;
+  border: 1px solid var(--color-error);
+  background: var(--color-surface);
+  color: var(--color-error-text);
   font-size: 12px;
   line-height: 1.35;
 }
@@ -217,7 +212,7 @@ select:hover {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 6px;
-  color: #fff;
+  color: var(--color-foreground);
   font-weight: 700;
 }
 
@@ -230,7 +225,7 @@ select:hover {
 
 .dsp-error-more {
   margin: 6px 0 0;
-  color: rgba(255, 255, 255, 0.72);
+  color: var(--color-foreground-72);
 }
 
 .viewport-button {
@@ -240,9 +235,9 @@ select:hover {
   min-width: var(--control-size);
   height: var(--control-size);
   padding: 0 8px;
-  border: 1px solid #fff;
-  background: var(--surface-bg);
-  color: #fff;
+  border: 1px solid var(--color-foreground);
+  background: var(--color-surface);
+  color: var(--color-foreground);
   line-height: 26px;
   text-align: center;
   white-space: nowrap;
@@ -296,28 +291,28 @@ select:hover {
 }
 
 .viewport-button:disabled {
-  color: rgba(255, 255, 255, 0.34);
+  color: var(--color-foreground-34);
   cursor: default;
 }
 
 .viewport-button:disabled:hover,
 .viewport-button:disabled:focus-visible {
-  background: var(--surface-bg);
-  color: rgba(255, 255, 255, 0.34);
+  background: var(--color-surface);
+  color: var(--color-foreground-34);
 }
 
 .viewport-button:hover,
 .viewport-button:focus-visible {
-  background: #fff;
-  color: #000;
+  background: var(--color-foreground);
+  color: var(--color-background);
   outline: 0;
 }
 
 .viewport-button[aria-checked='true'],
 .viewport-button[aria-checked='true']:hover,
 .viewport-button[aria-checked='true']:focus-visible {
-  background: var(--slider-green);
-  color: #000;
+  background: var(--color-accent);
+  color: var(--color-background);
   outline: 0;
 }
 
@@ -325,8 +320,8 @@ select:hover {
 .viewport-button-record[aria-checked='true']:hover,
 .viewport-button-record[aria-checked='true']:focus-visible {
   min-width: 58px;
-  background: #ff4e64;
-  color: #000;
+  background: var(--color-record);
+  color: var(--color-background);
   font-variant-numeric: tabular-nums;
   outline: 0;
 }
@@ -334,8 +329,8 @@ select:hover {
 .viewport-button-save-confirmed,
 .viewport-button-save-confirmed:hover,
 .viewport-button-save-confirmed:focus-visible {
-  background: var(--slider-green);
-  color: #000;
+  background: var(--color-accent);
+  color: var(--color-background);
   outline: 0;
 }
 
@@ -359,9 +354,9 @@ select:hover {
   max-height: 160px;
   overflow: auto;
   padding: 8px;
-  border: 1px solid #ff7474;
-  background: var(--surface-bg);
-  color: #ff7474;
+  border: 1px solid var(--color-error);
+  background: var(--color-surface);
+  color: var(--color-error);
   pointer-events: none;
   white-space: pre-wrap;
 }
@@ -379,9 +374,9 @@ select:hover {
   height: var(--control-size);
   min-width: 72px;
   padding: 0 8px;
-  border: 1px solid #fff;
-  background: var(--surface-bg);
-  color: #fff;
+  border: 1px solid var(--color-foreground);
+  background: var(--color-surface);
+  color: var(--color-foreground);
   line-height: 26px;
   pointer-events: none;
 }
@@ -405,9 +400,9 @@ select:hover {
 }
 
 .react-flow__controls {
-  border: 1px solid #fff;
+  border: 1px solid var(--color-foreground);
   border-radius: 0;
-  background: var(--surface-bg);
+  background: var(--color-surface);
 }
 
 .react-flow__controls {
@@ -428,15 +423,15 @@ select:hover {
   width: var(--control-size);
   height: var(--control-size);
   padding: 0;
-  border-bottom: 1px solid #fff;
+  border-bottom: 1px solid var(--color-foreground);
   background: transparent;
-  color: #fff;
-  fill: #fff;
+  color: var(--color-foreground);
+  fill: var(--color-foreground);
 }
 
 .react-flow__selection {
-  border: 1px solid #fff;
-  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--color-foreground);
+  background: var(--color-foreground-12);
   pointer-events: none;
 }
 
@@ -475,33 +470,38 @@ select:hover {
   --node-content-padding: 8px;
   --node-body-pin-offset: calc(-1 * (var(--node-content-padding) + var(--node-pin-half-size)));
   --node-title-pin-offset: calc(-1 * var(--node-pin-half-size));
-  border: 1px solid #fff;
-  background: var(--surface-bg);
-  color: #fff;
+  border: 1px solid var(--color-foreground);
+  background: var(--color-surface);
+  color: var(--color-foreground);
   box-shadow: none;
   overflow: visible;
 }
 
 .shader-node-scope {
   width: max(var(--node-display-width, 224px), 160px);
-  background: var(--surface-bg);
+  background: var(--color-surface);
+}
+
+.shader-node-meter {
+  width: max(var(--node-display-width, 224px), 160px);
+  background: var(--color-surface);
 }
 
 .shader-node-slider {
   width: var(--node-display-width, 224px);
   min-width: 72px;
-  background: var(--surface-bg);
+  background: var(--color-surface);
 }
 
 .shader-node-button {
   width: var(--node-display-width, 224px);
   min-width: 72px;
-  background: var(--surface-bg);
+  background: var(--color-surface);
 }
 
 .shader-node-accumulator {
   min-width: 116px;
-  background: var(--surface-bg);
+  background: var(--color-surface);
 }
 
 .shader-node-slider:has(.shader-inputs:not(:empty)),
@@ -511,7 +511,7 @@ select:hover {
 
 .shader-node-sequencer {
   min-width: 168px;
-  background: var(--surface-bg);
+  background: var(--color-surface);
 }
 
 .shader-node-audio-out {
@@ -520,17 +520,17 @@ select:hover {
 
 .shader-node-audio-input {
   width: 244px;
-  background: var(--surface-bg);
+  background: var(--color-surface);
 }
 
 .shader-node-midi-note {
   width: 252px;
-  background: var(--surface-bg);
+  background: var(--color-surface);
 }
 
 .shader-node-custom-wave {
   width: max(var(--node-display-width, 372px), 220px);
-  background: var(--surface-bg);
+  background: var(--color-surface);
 }
 
 .shader-node-expression {
@@ -539,15 +539,15 @@ select:hover {
 
 .react-flow__node.selected .shader-node,
 .shader-node-selected {
-  outline: 2px solid #fff;
+  outline: 2px solid var(--color-foreground);
   outline-offset: 4px;
-  box-shadow: 0 0 0 1px #000, 0 0 0 6px rgba(255, 255, 255, 0.28);
+  box-shadow: 0 0 0 1px var(--color-background), 0 0 0 6px var(--color-foreground-28);
 }
 
 .react-flow__node.selected .shader-node-title,
 .shader-node-selected .shader-node-title {
-  background: #ffff8a;
-  color: #000;
+  background: var(--color-selection);
+  color: var(--color-background);
 }
 
 .react-flow__node.shader-node-preview {
@@ -557,11 +557,11 @@ select:hover {
 
 .shader-node-preview .shader-node {
   border-style: dashed;
-  background: rgba(0, 0, 0, 0.42);
+  background: var(--color-background-42);
 }
 
 .shader-node-preview .shader-node-title {
-  background: rgba(255, 255, 255, 0.72);
+  background: var(--color-foreground-72);
 }
 
 .shader-node-title {
@@ -572,9 +572,9 @@ select:hover {
   min-width: 0;
   min-height: 31px;
   padding: 4px 8px;
-  border-bottom: 1px solid #fff;
-  background: #fff;
-  color: #000;
+  border-bottom: 1px solid var(--color-foreground);
+  background: var(--color-foreground);
+  color: var(--color-background);
   font-weight: 700;
 }
 
@@ -583,16 +583,16 @@ select:hover {
 }
 
 .shader-node-group .shader-node-title {
-  background: var(--slider-green);
-  color: #000;
+  background: var(--color-accent);
+  color: var(--color-background);
 }
 
 .shader-node-dsp-error {
-  border-color: #ff7474;
+  border-color: var(--color-error);
 }
 
 .shader-node-dsp-error .shader-node-title {
-  box-shadow: inset 0 -2px 0 #ff7474;
+  box-shadow: inset 0 -2px 0 var(--color-error);
 }
 
 .node-dsp-error-marker {
@@ -602,9 +602,9 @@ select:hover {
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  border: 1px solid #ff7474;
-  background: #000;
-  color: #ffb0b0;
+  border: 1px solid var(--color-error);
+  background: var(--color-background);
+  color: var(--color-error-text);
   font-size: 12px;
   font-weight: 700;
   line-height: 1;
@@ -619,7 +619,7 @@ select:hover {
   overflow: hidden;
   border: 0;
   background: transparent;
-  color: #000;
+  color: var(--color-background);
   cursor: text;
   font-weight: 700;
   line-height: 22px;
@@ -646,8 +646,8 @@ select:hover {
 
 .node-compact-toggle:hover,
 .node-compact-toggle:focus-visible {
-  background: #000;
-  color: #fff;
+  background: var(--color-background);
+  color: var(--color-foreground);
   outline: 0;
 }
 
@@ -668,8 +668,8 @@ select:hover {
 
 .node-type-picker-button:hover,
 .node-type-picker-button:focus {
-  background: var(--surface-bg);
-  color: #fff;
+  background: var(--color-surface);
+  color: var(--color-foreground);
   outline: 0;
 }
 
@@ -681,7 +681,7 @@ select:hover {
 .node-type-picker-button-drag-intent:hover,
 .node-type-picker-button-drag-intent:focus {
   background: transparent;
-  color: #000;
+  color: var(--color-background);
   outline: 0;
 }
 
@@ -715,16 +715,16 @@ select:hover {
   width: 100%;
   height: 22px;
   padding: 0 4px;
-  border: 1px solid #000;
-  background: #fff;
-  color: #000;
+  border: 1px solid var(--color-background);
+  background: var(--color-foreground);
+  color: var(--color-background);
   font: inherit;
   font-weight: 700;
 }
 
 .node-type-picker-input::selection {
-  background: rgba(0, 0, 0, 0.72);
-  color: #fff;
+  background: var(--color-background-72);
+  color: var(--color-foreground);
 }
 
 .node-type-picker-menu {
@@ -737,10 +737,10 @@ select:hover {
   max-height: 220px;
   overflow: auto;
   overscroll-behavior: contain;
-  border: 1px solid #fff;
-  background: var(--menu-bg);
-  color: #fff;
-  box-shadow: 0 0 0 1px #000;
+  border: 1px solid var(--color-foreground);
+  background: var(--color-menu);
+  color: var(--color-foreground);
+  box-shadow: 0 0 0 1px var(--color-background);
 }
 
 .node-type-picker-menu button,
@@ -750,9 +750,9 @@ select:hover {
   height: 24px;
   padding: 0 6px;
   border: 0;
-  border-bottom: 1px solid #333;
+  border-bottom: 1px solid var(--color-border-subtle);
   background: transparent;
-  color: #fff;
+  color: var(--color-foreground);
   font: inherit;
   text-align: left;
   white-space: nowrap;
@@ -760,12 +760,12 @@ select:hover {
 
 .node-type-picker-menu button.active,
 .node-type-picker-menu button:hover {
-  background: #fff;
-  color: #000;
+  background: var(--color-foreground);
+  color: var(--color-background);
 }
 
 .node-type-picker-empty {
-  color: #777;
+  color: var(--color-text-muted);
 }
 
 .shader-node-body {
@@ -793,21 +793,21 @@ select:hover {
   width: 100%;
   height: 26px;
   padding: 0 6px;
-  border: 1px solid #fff;
+  border: 1px solid var(--color-foreground);
   background: transparent;
-  color: #fff;
+  color: var(--color-foreground);
   font: inherit;
   line-height: 24px;
 }
 
 .expression-editor:focus {
-  outline: 1px solid #fff;
+  outline: 1px solid var(--color-foreground);
   outline-offset: 1px;
 }
 
 .expression-editor::selection {
-  background: #fff;
-  color: #000;
+  background: var(--color-foreground);
+  color: var(--color-background);
 }
 
 .sample-upload-row {
@@ -822,9 +822,9 @@ select:hover {
   height: 22px;
   min-width: 0;
   padding: 0 6px;
-  border: 1px solid #fff;
+  border: 1px solid var(--color-foreground);
   background: transparent;
-  color: #fff;
+  color: var(--color-foreground);
   cursor: pointer;
   font: inherit;
   font-weight: 700;
@@ -836,8 +836,8 @@ select:hover {
 
 .sample-upload-button:hover,
 .sample-upload-button:focus {
-  background: #fff;
-  color: #000;
+  background: var(--color-foreground);
+  color: var(--color-background);
   outline: 0;
 }
 
@@ -868,20 +868,20 @@ select:hover {
   width: 9px;
   height: 9px;
   flex: 0 0 auto;
-  border: 1px solid #fff;
+  border: 1px solid var(--color-foreground);
   background: transparent;
 }
 
 .audio-input-node-status-dot-connected,
 .midi-input-node-status-dot-connected {
-  background: var(--slider-green);
+  background: var(--color-accent);
 }
 
 .audio-input-node-status-dot-requesting,
 .audio-input-node-status-dot-needs-permission,
 .midi-input-node-status-dot-requesting,
 .midi-input-node-status-dot-needs-permission {
-  background: #ffff8a;
+  background: var(--color-selection);
 }
 
 .audio-input-node-status-dot-denied,
@@ -890,7 +890,7 @@ select:hover {
 .midi-input-node-status-dot-denied,
 .midi-input-node-status-dot-unsupported,
 .midi-input-node-status-dot-error {
-  background: #ff7474;
+  background: var(--color-error);
 }
 
 .audio-input-node-status-text,
@@ -898,7 +898,7 @@ select:hover {
   min-width: 0;
   flex: 1 1 auto;
   overflow: hidden;
-  color: #fff;
+  color: var(--color-foreground);
   font-size: 11px;
   font-weight: 700;
   line-height: 1.2;
@@ -910,14 +910,14 @@ select:hover {
 .midi-input-node-message {
   min-width: 0;
   overflow-wrap: anywhere;
-  color: rgba(255, 255, 255, 0.72);
+  color: var(--color-foreground-72);
   font-size: 10px;
   line-height: 1.25;
 }
 
 .audio-input-node-message-warning,
 .midi-input-node-message-warning {
-  color: #ffb0b0;
+  color: var(--color-error-text);
 }
 
 .audio-input-node-mute-button,
@@ -929,9 +929,9 @@ select:hover {
 .tempo-source-select {
   height: 22px;
   min-width: 0;
-  border: 1px solid #fff;
-  background: #000;
-  color: #fff;
+  border: 1px solid var(--color-foreground);
+  background: var(--color-background);
+  color: var(--color-foreground);
   font: inherit;
   font-size: 11px;
   line-height: 20px;
@@ -959,20 +959,20 @@ select:hover {
 .audio-input-node-refresh-button:focus-visible,
 .midi-input-node-refresh-button:hover,
 .midi-input-node-refresh-button:focus-visible {
-  background: #fff;
-  color: #000;
+  background: var(--color-foreground);
+  color: var(--color-background);
   outline: 0;
 }
 
 .audio-input-node-mute-button-active {
-  background: #ff7474;
-  color: #000;
+  background: var(--color-error);
+  color: var(--color-background);
 }
 
 .audio-input-node-mute-button-active:hover,
 .audio-input-node-mute-button-active:focus-visible {
-  background: #ffb0b0;
-  color: #000;
+  background: var(--color-error-text);
+  color: var(--color-background);
 }
 
 .audio-input-node-device-select {
@@ -982,7 +982,7 @@ select:hover {
 
 .midi-input-node-device-count {
   background: transparent;
-  color: #fff;
+  color: var(--color-foreground);
 }
 
 .midi-input-node-device-list {
@@ -991,7 +991,7 @@ select:hover {
   min-width: 0;
   max-height: 42px;
   overflow: hidden;
-  color: rgba(255, 255, 255, 0.82);
+  color: var(--color-foreground-82);
   font-size: 10px;
   line-height: 1.25;
 }
@@ -1038,8 +1038,8 @@ select:hover {
   height: var(--node-display-height, 128px);
   border: 0;
   background:
-    linear-gradient(rgba(255, 255, 255, 0.18) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.18) 1px, transparent 1px),
+    linear-gradient(var(--color-foreground-18) 1px, transparent 1px),
+    linear-gradient(90deg, var(--color-foreground-18) 1px, transparent 1px),
     transparent;
   background-size: 18px 18px;
   cursor: crosshair;
@@ -1053,29 +1053,29 @@ select:hover {
 }
 
 .custom-wave-grid-line {
-  stroke: rgba(255, 255, 255, 0.28);
+  stroke: var(--color-foreground-28);
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
 
 .custom-wave-zero {
-  stroke: rgba(255, 255, 255, 0.52);
+  stroke: var(--color-foreground-52);
 }
 
 .custom-wave-sustain-line {
-  stroke: #7db7ff;
+  stroke: var(--color-add-link);
   stroke-dasharray: 7 6;
   stroke-width: 2;
   vector-effect: non-scaling-stroke;
 }
 
 .custom-wave-sustain-line.is-end {
-  stroke: #ffd27a;
+  stroke: var(--color-add-link-end);
 }
 
 .custom-wave-path {
   fill: none;
-  stroke: var(--slider-green);
+  stroke: var(--color-accent);
   stroke-linecap: square;
   stroke-linejoin: round;
   stroke-width: 2;
@@ -1093,8 +1093,8 @@ select:hover {
 }
 
 .custom-wave-handle {
-  fill: #000;
-  stroke: var(--slider-green);
+  fill: var(--color-background);
+  stroke: var(--color-accent);
   stroke-width: 2;
   cursor: grab;
   pointer-events: none;
@@ -1102,7 +1102,7 @@ select:hover {
 }
 
 .custom-wave-endpoint {
-  stroke: #fff;
+  stroke: var(--color-foreground);
 }
 
 .custom-wave-handle.is-locked {
@@ -1128,7 +1128,7 @@ select:hover {
 .custom-wave-node-field span {
   width: var(--input-label-width, auto);
   overflow: hidden;
-  color: #fff;
+  color: var(--color-foreground);
   font-size: inherit;
   line-height: inherit;
   text-overflow: ellipsis;
@@ -1249,7 +1249,7 @@ select:hover {
   width: 100%;
   min-width: max-content;
   overflow: visible;
-  color: #fff;
+  color: var(--color-foreground);
   font-variant-numeric: tabular-nums;
   font-weight: 700;
   white-space: nowrap;
@@ -1299,9 +1299,9 @@ select:hover {
   height: 20px;
   flex: 0 0 auto;
   padding: 0 4px;
-  border: 1px solid #fff;
+  border: 1px solid var(--color-foreground);
   background: transparent;
-  color: #fff;
+  color: var(--color-foreground);
   cursor: pointer;
   font: inherit;
   font-weight: 700;
@@ -1310,25 +1310,25 @@ select:hover {
 }
 
 .selector-index-button-active {
-  background: #fff;
-  color: #000;
+  background: var(--color-foreground);
+  color: var(--color-background);
   outline: 0;
 }
 
 .selector-index-button:hover {
-  background: rgba(255, 255, 255, 0.18);
-  color: #fff;
+  background: var(--color-foreground-18);
+  color: var(--color-foreground);
   outline: 0;
 }
 
 .selector-index-button:focus-visible {
-  outline: 1px solid #fff;
+  outline: 1px solid var(--color-foreground);
   outline-offset: 2px;
 }
 
 .selector-index-button-active:hover {
-  background: #fff;
-  color: #000;
+  background: var(--color-foreground);
+  color: var(--color-background);
 }
 
 .selector-add-input-button {
@@ -1336,9 +1336,9 @@ select:hover {
   height: 22px;
   box-sizing: border-box;
   padding: 0;
-  border: 1px solid #fff;
+  border: 1px solid var(--color-foreground);
   background: transparent;
-  color: #fff;
+  color: var(--color-foreground);
   cursor: pointer;
   font: inherit;
   font-weight: 700;
@@ -1347,8 +1347,8 @@ select:hover {
 
 .selector-add-input-button:hover,
 .selector-add-input-button:focus-visible {
-  background: #fff;
-  color: #000;
+  background: var(--color-foreground);
+  color: var(--color-background);
   outline: 0;
 }
 
@@ -1382,45 +1382,49 @@ select:hover {
   min-width: 0;
   padding: 0;
   border: 0;
-  border-right: 1px solid rgba(255, 255, 255, 0.44);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.44);
+  border-right: 1px solid var(--color-foreground-44);
+  border-bottom: 1px solid var(--color-foreground-44);
   background: transparent;
-  color: #fff;
+  color: var(--color-foreground);
   cursor: pointer;
 }
 
 .sequencer-row:first-child .sequencer-cell {
-  border-top: 1px solid rgba(255, 255, 255, 0.44);
+  border-top: 1px solid var(--color-foreground-44);
 }
 
 .sequencer-cell:first-child {
-  border-left: 1px solid rgba(255, 255, 255, 0.44);
+  border-left: 1px solid var(--color-foreground-44);
+}
+
+.sequencer-cell-beat-highlight {
+  background: var(--color-foreground-15);
 }
 
 .sequencer-cell:hover,
 .sequencer-cell:focus-visible {
-  background: rgba(255, 255, 255, 0.2);
-  color: #fff;
+  background: var(--color-foreground-20);
+  color: var(--color-foreground);
   outline: 0;
 }
 
 .sequencer-cell-current {
-  background: rgba(255, 255, 255, 0.12);
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.28);
+  background: var(--color-foreground-12);
+  box-shadow: inset 0 0 0 2px var(--color-foreground-28);
 }
 
 .sequencer-cell-active,
 .sequencer-cell-active:hover,
 .sequencer-cell-active:focus-visible {
-  background: var(--slider-green);
-  color: #000;
+  background: var(--color-accent);
+  color: var(--color-background);
 }
 
 .sequencer-cell-active.sequencer-cell-current,
 .sequencer-cell-active.sequencer-cell-current:hover,
 .sequencer-cell-active.sequencer-cell-current:focus-visible {
-  background: var(--slider-green);
-  box-shadow: inset 0 0 0 2px #fff;
+  background: var(--color-accent);
+  box-shadow: inset 0 0 0 2px var(--color-foreground);
 }
 
 .sequencer-output-port {
@@ -1436,9 +1440,9 @@ select:hover {
   max-width: 68px;
   height: 22px;
   padding: 0 4px;
-  border: 1px solid #fff;
+  border: 1px solid var(--color-foreground);
   background: transparent;
-  color: #fff;
+  color: var(--color-foreground);
   cursor: ns-resize;
   line-height: 20px;
   overflow: hidden;
@@ -1449,7 +1453,7 @@ select:hover {
 }
 
 .numeric-scrubber:focus {
-  outline: 1px solid #fff;
+  outline: 1px solid var(--color-foreground);
   outline-offset: 1px;
 }
 
@@ -1464,8 +1468,8 @@ select:hover {
 }
 
 .numeric-scrubber-editing::selection {
-  background: #fff;
-  color: #000;
+  background: var(--color-foreground);
+  color: var(--color-background);
 }
 
 .shader-port-output {
@@ -1496,20 +1500,9 @@ select:hover {
 
 .audio-node-meter-display {
   position: relative;
-  height: 48px;
-  border: 1px solid #fff;
-  background:
-    linear-gradient(rgba(255, 255, 255, 0.18) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.18) 1px, transparent 1px),
-    repeating-linear-gradient(
-      90deg,
-      transparent 0,
-      transparent 13px,
-      rgba(255, 255, 255, 0.26) 13px,
-      rgba(255, 255, 255, 0.26) 14px
-    ),
-    var(--surface-bg);
-  background-size: 16px 16px, 16px 16px, auto;
+  height: var(--node-display-height, 48px);
+  border: 1px solid var(--color-foreground);
+  background: var(--color-surface);
   overflow: hidden;
 }
 
@@ -1521,43 +1514,79 @@ select:hover {
 .audio-node-meter-scale,
 .audio-node-scope-scale {
   position: absolute;
-  z-index: 1;
-  color: rgba(255, 255, 255, 0.76);
+  color: var(--color-foreground-76);
   font-size: 9px;
   font-variant-numeric: tabular-nums;
   line-height: 1;
   pointer-events: none;
-  text-shadow: 0 1px 0 #000, 1px 0 0 #000, 0 -1px 0 #000, -1px 0 0 #000;
+  text-shadow: 0 1px 0 var(--color-background), 1px 0 0 var(--color-background), 0 -1px 0 var(--color-background), -1px 0 0 var(--color-background);
 }
 
 .audio-node-meter-scale {
-  bottom: 4px;
+  inset: auto 4px 4px;
+  z-index: 4;
+  height: 9px;
 }
 
-.audio-node-meter-scale-min {
-  left: 4px;
+.audio-node-meter-scale-label {
+  position: absolute;
+  max-width: 38px;
+  overflow: hidden;
+  transform: translateX(-50%);
+  text-overflow: clip;
+  white-space: nowrap;
 }
 
-.audio-node-meter-scale-max {
-  right: 4px;
+.audio-node-meter-scale-label-min {
+  transform: none;
+}
+
+.audio-node-meter-scale-label-max {
+  transform: translateX(-100%);
+}
+
+.audio-node-meter-grid {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.audio-node-meter-grid-line {
+  stroke: var(--color-foreground-18);
+  stroke-width: 0.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.audio-node-meter-grid-line-major {
+  stroke: var(--color-foreground-32);
+  stroke-width: 1;
 }
 
 .audio-node-meter-fill {
   position: absolute;
-  inset: 18px auto 18px 0;
+  top: 50%;
+  left: 0;
+  z-index: 2;
+  height: 12px;
   width: 48%;
-  background: var(--slider-green);
-  box-shadow: 0 0 10px var(--slider-green-glow);
+  transform: translateY(-50%);
+  background: var(--color-accent);
+  box-shadow: 0 0 10px var(--color-accent-glow);
 }
 
 .audio-node-meter-peak {
   position: absolute;
-  inset: 18px auto 18px;
+  top: 50%;
   left: 70%;
+  z-index: 3;
+  height: 14px;
   width: 2px;
-  transform: translateX(-50%);
-  background: #fff;
-  box-shadow: 0 0 7px rgba(255, 255, 255, 0.62);
+  transform: translate(-50%, -50%);
+  background: var(--color-foreground);
+  box-shadow: 0 0 7px var(--color-foreground-62);
   transition: left 150ms ease-out;
 }
 
@@ -1579,7 +1608,7 @@ select:hover {
 }
 
 .audio-out-node-meter-label {
-  color: rgba(255, 255, 255, 0.72);
+  color: var(--color-foreground-72);
   font-size: 8px;
   font-weight: 700;
   line-height: 1;
@@ -1589,33 +1618,33 @@ select:hover {
   position: relative;
   height: 5px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--color-foreground-72);
   background:
     repeating-linear-gradient(
       90deg,
       transparent 0,
       transparent 11px,
-      rgba(255, 255, 255, 0.18) 11px,
-      rgba(255, 255, 255, 0.18) 12px
+      var(--color-foreground-18) 11px,
+      var(--color-foreground-18) 12px
     ),
-    rgba(0, 0, 0, 0.42);
+    var(--color-background-42);
 }
 
 .audio-out-node-meter-fill {
   position: absolute;
   inset: 0 auto 0 0;
   width: 0;
-  background: var(--slider-green);
-  box-shadow: 0 0 6px var(--slider-green-glow);
+  background: var(--color-accent);
+  box-shadow: 0 0 6px var(--color-accent-glow);
 }
 
 .audio-node-scope-display {
   position: relative;
   height: var(--node-display-height, 48px);
-  border: 1px solid #fff;
+  border: 1px solid var(--color-foreground);
   background:
-    linear-gradient(rgba(255, 255, 255, 0.18) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.18) 1px, transparent 1px),
+    linear-gradient(var(--color-foreground-18) 1px, transparent 1px),
+    linear-gradient(90deg, var(--color-foreground-18) 1px, transparent 1px),
     transparent;
   background-size: 16px 16px;
 }
@@ -1626,6 +1655,7 @@ select:hover {
 }
 
 .audio-node-scope-scale {
+  z-index: 1;
   left: 4px;
 }
 
@@ -1651,7 +1681,7 @@ select:hover {
 
 .audio-node-scope-display path {
   fill: none;
-  stroke: var(--slider-green);
+  stroke: var(--color-accent);
   stroke-width: 2;
   vector-effect: non-scaling-stroke;
 }
@@ -1679,20 +1709,20 @@ select:hover {
 
 .audio-node-button-display:hover,
 .audio-node-button-display:focus-visible {
-  background: rgba(255, 255, 255, 0.08);
-  color: #fff;
+  background: var(--color-foreground-08);
+  color: var(--color-foreground);
   outline: 0;
 }
 
 .audio-node-button-display-active {
-  background: var(--slider-green);
-  color: #000;
+  background: var(--color-accent);
+  color: var(--color-background);
 }
 
 .audio-node-button-display-active:hover,
 .audio-node-button-display-active:focus-visible {
-  background: var(--slider-green);
-  color: #000;
+  background: var(--color-accent);
+  color: var(--color-background);
 }
 
 .shader-node-body-slider .shader-inputs,
@@ -1734,7 +1764,7 @@ select:hover {
 .accumulator-value-label {
   grid-column: 1 / -1;
   min-width: 0;
-  color: #fff;
+  color: var(--color-foreground);
   font-size: 16px;
   font-variant-numeric: tabular-nums;
   font-weight: 700;
@@ -1781,7 +1811,7 @@ select:hover {
   inset: auto auto 0 0;
   width: 0;
   height: 100%;
-  background: var(--slider-green);
+  background: var(--color-accent);
   pointer-events: none;
 }
 
@@ -1812,9 +1842,9 @@ select:hover {
   min-width: 0;
   height: 22px;
   padding: 0 4px;
-  border: 1px solid #fff;
-  background: #000;
-  color: #fff;
+  border: 1px solid var(--color-foreground);
+  background: var(--color-background);
+  color: var(--color-foreground);
   font: inherit;
   line-height: 20px;
 }
@@ -1833,7 +1863,7 @@ select:hover {
 .audio-node-scope-resize-handle::after {
   position: absolute;
   content: '';
-  background: rgba(255, 255, 255, 0.86);
+  background: var(--color-foreground-86);
 }
 
 .audio-node-scope-resize-handle::before {
@@ -1872,7 +1902,7 @@ select:hover {
 .audio-node-scope-resize-handle:hover::after,
 .audio-node-scope-resize-handle-active::before,
 .audio-node-scope-resize-handle-active::after {
-  background: #fff;
+  background: var(--color-foreground);
 }
 
 .port-name-label {
@@ -1885,7 +1915,7 @@ select:hover {
 }
 
 .port-name-label-editable:focus {
-  outline: 1px solid #fff;
+  outline: 1px solid var(--color-foreground);
   outline-offset: 2px;
 }
 
@@ -1894,7 +1924,7 @@ select:hover {
 }
 
 .port-name-label-drag-target {
-  outline: 1px dashed rgba(255, 255, 255, 0.85);
+  outline: 1px dashed var(--color-foreground-85);
   outline-offset: 2px;
 }
 
@@ -1903,7 +1933,7 @@ select:hover {
 }
 
 .port-name-label-selected {
-  outline: 1px solid rgba(255, 255, 255, 0.9);
+  outline: 1px solid var(--color-foreground-90);
   outline-offset: 2px;
 }
 
@@ -1916,9 +1946,9 @@ select:hover {
   min-width: max-content;
   height: 22px;
   padding: 0 4px;
-  border: 1px solid #fff;
-  background: #000;
-  color: #fff;
+  border: 1px solid var(--color-foreground);
+  background: var(--color-background);
+  color: var(--color-foreground);
   font: inherit;
   line-height: 20px;
 }
@@ -1926,17 +1956,17 @@ select:hover {
 .shader-handle {
   width: var(--node-pin-size);
   height: var(--node-pin-size);
-  border: 1px solid #fff;
+  border: 1px solid var(--color-foreground);
   border-radius: 0;
-  background: var(--control-bg);
+  background: var(--color-control);
   top: 50%;
   transform: translateY(-50%);
 }
 
 .shader-handle-selected-link {
-  border-color: var(--slider-green);
-  background: var(--slider-green);
-  box-shadow: 0 0 0 2px #0b0b0b;
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  box-shadow: 0 0 0 2px var(--color-edge-underlay);
   cursor: grab;
   pointer-events: none;
 }
@@ -1975,24 +2005,24 @@ select:hover {
 
 .shader-edge .shader-edge-path-foreground,
 .shader-edge-path-foreground {
-  stroke: #fff;
+  stroke: var(--color-foreground);
   stroke-width: 2;
 }
 
 .react-flow__connection-path {
-  stroke: var(--slider-green) !important;
+  stroke: var(--color-accent) !important;
   stroke-width: 3 !important;
 }
 
 .react-flow__edge.updating .react-flow__edge-path.shader-edge-path-foreground,
 .react-flow__edge.selectable:focus .react-flow__edge-path.shader-edge-path-foreground,
 .react-flow__edge.selectable:focus-visible .react-flow__edge-path.shader-edge-path-foreground {
-  stroke: #fff !important;
+  stroke: var(--color-foreground) !important;
 }
 
 .shader-edge .shader-edge-path-underlay,
 .shader-edge-path-underlay {
-  stroke: #0b0b0b;
+  stroke: var(--color-edge-underlay);
   stroke-width: 5.4;
   pointer-events: none;
 }
@@ -2000,46 +2030,46 @@ select:hover {
 .react-flow__edge.updating .react-flow__edge-path.shader-edge-path-underlay,
 .react-flow__edge.selectable:focus .react-flow__edge-path.shader-edge-path-underlay,
 .react-flow__edge.selectable:focus-visible .react-flow__edge-path.shader-edge-path-underlay {
-  stroke: #0b0b0b !important;
+  stroke: var(--color-edge-underlay) !important;
 }
 
 .shader-edge-path-mode-set.shader-edge-path-foreground {
-  stroke: #fff;
+  stroke: var(--color-foreground);
 }
 
 .shader-edge-path-mode-add.shader-edge-path-foreground {
-  stroke: #ffe45c;
+  stroke: var(--color-link-set);
 }
 
 .shader-edge-path-mode-multiply.shader-edge-path-foreground {
-  stroke: #8fdcff;
+  stroke: var(--color-add-link-active);
 }
 
 .react-flow__edge.updating .react-flow__edge-path.shader-edge-path-mode-set.shader-edge-path-foreground,
 .react-flow__edge.selectable:focus .react-flow__edge-path.shader-edge-path-mode-set.shader-edge-path-foreground,
 .react-flow__edge.selectable:focus-visible .react-flow__edge-path.shader-edge-path-mode-set.shader-edge-path-foreground {
-  stroke: #fff !important;
+  stroke: var(--color-foreground) !important;
 }
 
 .react-flow__edge.updating .react-flow__edge-path.shader-edge-path-mode-add.shader-edge-path-foreground,
 .react-flow__edge.selectable:focus .react-flow__edge-path.shader-edge-path-mode-add.shader-edge-path-foreground,
 .react-flow__edge.selectable:focus-visible .react-flow__edge-path.shader-edge-path-mode-add.shader-edge-path-foreground {
-  stroke: #ffe45c !important;
+  stroke: var(--color-link-set) !important;
 }
 
 .react-flow__edge.updating .react-flow__edge-path.shader-edge-path-mode-multiply.shader-edge-path-foreground,
 .react-flow__edge.selectable:focus .react-flow__edge-path.shader-edge-path-mode-multiply.shader-edge-path-foreground,
 .react-flow__edge.selectable:focus-visible .react-flow__edge-path.shader-edge-path-mode-multiply.shader-edge-path-foreground {
-  stroke: #8fdcff !important;
+  stroke: var(--color-add-link-active) !important;
 }
 
 .shader-edge-path-dsp-error.shader-edge-path-foreground {
-  stroke: #ff7474;
+  stroke: var(--color-error);
   stroke-dasharray: 6 4;
 }
 
 .shader-edge-path-dsp-error.shader-edge-path-underlay {
-  stroke: #2a0505;
+  stroke: var(--color-edge-error-underlay);
   stroke-width: 7;
 }
 
@@ -2051,9 +2081,9 @@ select:hover {
   height: 18px;
   align-items: center;
   justify-content: center;
-  border: 1px solid #ff7474;
-  background: #000;
-  color: #ffb0b0;
+  border: 1px solid var(--color-error);
+  background: var(--color-background);
+  color: var(--color-error-text);
   font-size: 12px;
   font-weight: 700;
   line-height: 1;
@@ -2062,18 +2092,18 @@ select:hover {
 
 .react-flow__edge.selected .shader-edge-path-foreground,
 .shader-edge-path-selected {
-  stroke: var(--slider-green) !important;
+  stroke: var(--color-accent) !important;
   stroke-width: 3;
 }
 
 .react-flow__edge.selected.updating .react-flow__edge-path.shader-edge-path-foreground,
 .react-flow__edge.selected.selectable:focus .react-flow__edge-path.shader-edge-path-foreground,
 .react-flow__edge.selected.selectable:focus-visible .react-flow__edge-path.shader-edge-path-foreground {
-  stroke: var(--slider-green) !important;
+  stroke: var(--color-accent) !important;
 }
 
 .react-flow__edge.selected .shader-edge-path-underlay {
-  stroke: #0b0b0b !important;
+  stroke: var(--color-edge-underlay) !important;
   stroke-width: 8;
 }
 
@@ -2099,7 +2129,7 @@ select:hover {
 
 .shader-edge-preview .shader-edge-path-underlay,
 .shader-edge-preview.shader-edge-path-underlay {
-  stroke: rgba(0, 0, 0, 0.82);
+  stroke: var(--color-background-82);
   stroke-width: 5;
   stroke-dasharray: 5 5;
   pointer-events: none;
@@ -2107,7 +2137,7 @@ select:hover {
 
 .shader-edge-preview .shader-edge-path-foreground,
 .shader-edge-preview.shader-edge-path-foreground {
-  stroke: rgba(255, 255, 255, 0.72);
+  stroke: var(--color-foreground-72);
   stroke-dasharray: 5 5;
   pointer-events: none;
 }
@@ -2119,18 +2149,18 @@ select:hover {
   flex-direction: column;
   gap: 4px;
   padding: 4px;
-  border: 1px solid #fff;
+  border: 1px solid var(--color-foreground);
   background:
-    linear-gradient(#fff, #fff) left top / 100% 4px no-repeat,
-    linear-gradient(#fff, #fff) left bottom / 100% 4px no-repeat,
-    linear-gradient(#fff, #fff) left top / 4px 100% no-repeat,
-    linear-gradient(#fff, #fff) right top / 4px 100% no-repeat,
-    linear-gradient(#fff, #fff) left 26px / 100% 4px no-repeat;
-  color: #000;
+    linear-gradient(var(--color-foreground), var(--color-foreground)) left top / 100% 4px no-repeat,
+    linear-gradient(var(--color-foreground), var(--color-foreground)) left bottom / 100% 4px no-repeat,
+    linear-gradient(var(--color-foreground), var(--color-foreground)) left top / 4px 100% no-repeat,
+    linear-gradient(var(--color-foreground), var(--color-foreground)) right top / 4px 100% no-repeat,
+    linear-gradient(var(--color-foreground), var(--color-foreground)) left 26px / 100% 4px no-repeat;
+  color: var(--color-background);
   font-size: 13px;
   font-weight: 400;
   pointer-events: all;
-  box-shadow: 6px 6px 0 rgba(0, 0, 0, 0.42);
+  box-shadow: 6px 6px 0 var(--color-background-42);
   transform-origin: center;
   --edge-control-width: 96px;
 }
@@ -2139,9 +2169,9 @@ select:hover {
   width: var(--edge-control-width);
   height: 22px;
   padding: 0 4px;
-  border: 1px solid #fff;
-  background: var(--surface-bg);
-  color: #fff;
+  border: 1px solid var(--color-foreground);
+  background: var(--color-surface);
+  color: var(--color-foreground);
   cursor: ns-resize;
   font-size: 13px;
   font-weight: 400;
@@ -2154,15 +2184,15 @@ select:hover {
 }
 
 .edge-weight-scrubber:focus {
-  outline: 1px solid #fff;
+  outline: 1px solid var(--color-foreground);
   outline-offset: 1px;
 }
 
 .edge-weight-scrubber-editing {
   display: block;
-  border-color: #fff;
-  background: var(--surface-bg);
-  color: #fff;
+  border-color: var(--color-foreground);
+  background: var(--color-surface);
+  color: var(--color-foreground);
   cursor: text;
   font-size: 13px;
   font-weight: 400;
@@ -2171,18 +2201,18 @@ select:hover {
 }
 
 .edge-weight-scrubber-editing::selection {
-  background: #fff;
-  color: #000;
+  background: var(--color-foreground);
+  color: var(--color-background);
 }
 
 .edge-link-mode {
   width: var(--edge-control-width);
   height: 22px;
   padding: 0 4px;
-  border: 1px solid #fff;
+  border: 1px solid var(--color-foreground);
   border-radius: 0;
-  background: var(--surface-bg);
-  color: #fff;
+  background: var(--color-surface);
+  color: var(--color-foreground);
   cursor: pointer;
   font-size: 13px;
   font-weight: 400;
@@ -2190,7 +2220,7 @@ select:hover {
 }
 
 .edge-link-mode:focus {
-  outline: 1px solid #fff;
+  outline: 1px solid var(--color-foreground);
   outline-offset: 1px;
 }
 
@@ -2203,7 +2233,7 @@ select:hover {
   flex-direction: column;
   height: 100%;
   overflow: hidden;
-  background: var(--surface-bg);
+  background: var(--color-surface);
 }
 
 .panel-header {
@@ -2212,7 +2242,7 @@ select:hover {
   justify-content: space-between;
   gap: 12px;
   padding: 12px;
-  border-bottom: 1px solid #fff;
+  border-bottom: 1px solid var(--color-foreground);
 }
 
 .panel-tabs,
@@ -2226,10 +2256,10 @@ select:hover {
 .panel-action {
   height: 32px;
   padding: 0 12px;
-  border: 1px solid #fff;
+  border: 1px solid var(--color-foreground);
   border-radius: 0;
   background: transparent;
-  color: #fff;
+  color: var(--color-foreground);
   font: inherit;
   line-height: 1;
   cursor: pointer;
@@ -2241,14 +2271,14 @@ select:hover {
 }
 
 .panel-tab-active {
-  background: rgba(255, 255, 255, 0.95);
-  color: #000;
+  background: var(--color-foreground-95);
+  color: var(--color-background);
 }
 
 .panel-actions {
   gap: 8px;
   padding: 12px;
-  border-bottom: 1px solid #fff;
+  border-bottom: 1px solid var(--color-foreground);
 }
 
 .panel-action {
@@ -2257,11 +2287,11 @@ select:hover {
 
 .panel-action:hover,
 .panel-tab:hover {
-  background: rgba(255, 255, 255, 0.18);
+  background: var(--color-foreground-18);
 }
 
 .panel-tab-active:hover {
-  background: rgba(255, 255, 255, 0.95);
+  background: var(--color-foreground-95);
 }
 
 .panel-file-input {
@@ -2275,7 +2305,7 @@ select:hover {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(0, 0, 0, 0.54);
+  background: var(--color-background-54);
 }
 
 .import-modal {
@@ -2283,9 +2313,9 @@ select:hover {
   max-height: min(640px, calc(100vh - 48px));
   display: flex;
   flex-direction: column;
-  border: 1px solid #fff;
-  background: var(--menu-bg);
-  color: #fff;
+  border: 1px solid var(--color-foreground);
+  background: var(--color-menu);
+  color: var(--color-foreground);
 }
 
 .local-patch-modal {
@@ -2310,7 +2340,7 @@ select:hover {
   justify-content: space-between;
   gap: 16px;
   padding: 12px;
-  border-bottom: 1px solid #fff;
+  border-bottom: 1px solid var(--color-foreground);
 }
 
 .import-modal-header h2,
@@ -2327,7 +2357,7 @@ select:hover {
 .import-modal-header p,
 .import-subpatch-path,
 .import-subpatch-meta {
-  color: rgba(255, 255, 255, 0.66);
+  color: var(--color-foreground-66);
 }
 
 .import-modal-close {
@@ -2341,7 +2371,7 @@ select:hover {
 }
 
 .import-modal-message.error {
-  color: #ffb0b0;
+  color: var(--color-error-text);
 }
 
 .midi-settings-device-list {
@@ -2349,8 +2379,8 @@ select:hover {
   min-height: 120px;
   max-height: min(360px, calc(100vh - 240px));
   overflow: auto;
-  border-top: 1px solid #333;
-  border-bottom: 1px solid #fff;
+  border-top: 1px solid var(--color-border-subtle);
+  border-bottom: 1px solid var(--color-foreground);
 }
 
 .midi-settings-device {
@@ -2360,7 +2390,7 @@ select:hover {
   align-items: center;
   min-height: 36px;
   padding: 7px 12px;
-  border-bottom: 1px solid #333;
+  border-bottom: 1px solid var(--color-border-subtle);
   cursor: pointer;
 }
 
@@ -2370,14 +2400,14 @@ select:hover {
 
 .midi-settings-device:hover,
 .midi-settings-device:focus-within {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--color-foreground-10);
 }
 
 .midi-settings-device input {
   width: 14px;
   height: 14px;
   margin: 0;
-  accent-color: var(--slider-green);
+  accent-color: var(--color-accent);
 }
 
 .midi-settings-device span {
@@ -2389,14 +2419,14 @@ select:hover {
 }
 
 .midi-settings-device small {
-  color: rgba(255, 255, 255, 0.62);
+  color: var(--color-foreground-62);
   font-size: 10px;
   text-transform: uppercase;
 }
 
 .midi-settings-device-missing span,
 .midi-settings-device-missing small {
-  color: #ffb0b0;
+  color: var(--color-error-text);
 }
 
 .import-subpatch-list {
@@ -2412,7 +2442,7 @@ select:hover {
   gap: 4px 12px;
   padding: 10px 12px;
   border: 0;
-  border-bottom: 1px solid #333;
+  border-bottom: 1px solid var(--color-border-subtle);
   background: transparent;
   text-align: left;
   line-height: 1.25;
@@ -2425,8 +2455,8 @@ select:hover {
 .import-subpatch-option:hover,
 .import-subpatch-option:focus,
 .import-subpatch-option-selected {
-  background: #fff;
-  color: #000;
+  background: var(--color-foreground);
+  color: var(--color-background);
   outline: 0;
 }
 
@@ -2436,7 +2466,7 @@ select:hover {
 .import-subpatch-option:focus .import-subpatch-meta,
 .import-subpatch-option-selected .import-subpatch-path,
 .import-subpatch-option-selected .import-subpatch-meta {
-  color: rgba(0, 0, 0, 0.62);
+  color: var(--color-background-62);
 }
 
 .import-subpatch-name,
@@ -2467,14 +2497,14 @@ select:hover {
   justify-content: flex-end;
   gap: 8px;
   padding: 12px;
-  border-top: 1px solid #fff;
+  border-top: 1px solid var(--color-foreground);
 }
 
 .sample-list {
   min-height: 220px;
   max-height: min(420px, calc(100vh - 220px));
   overflow: auto;
-  border-bottom: 1px solid #fff;
+  border-bottom: 1px solid var(--color-foreground);
 }
 
 .sample-option {
@@ -2484,9 +2514,9 @@ select:hover {
   align-items: center;
   padding: 0 12px;
   border: 0;
-  border-bottom: 1px solid #333;
+  border-bottom: 1px solid var(--color-border-subtle);
   background: transparent;
-  color: #fff;
+  color: var(--color-foreground);
   text-align: left;
 }
 
@@ -2503,16 +2533,16 @@ select:hover {
 
 .sample-option:hover,
 .sample-option:focus {
-  background: rgba(255, 255, 255, 0.18);
-  color: #fff;
+  background: var(--color-foreground-18);
+  color: var(--color-foreground);
   outline: 0;
 }
 
 .sample-option-selected,
 .sample-option-selected:hover,
 .sample-option-selected:focus {
-  background: var(--slider-green);
-  color: #000;
+  background: var(--color-accent);
+  color: var(--color-background);
 }
 
 .local-patch-browser {
@@ -2532,7 +2562,7 @@ select:hover {
 
 .local-patch-column h3 {
   margin: 0 0 8px;
-  color: rgba(255, 255, 255, 0.66);
+  color: var(--color-foreground-66);
   font-size: 13px;
   letter-spacing: 0;
 }
@@ -2541,7 +2571,7 @@ select:hover {
   min-height: 260px;
   max-height: min(460px, calc(100vh - 220px));
   overflow: auto;
-  border: 1px solid #fff;
+  border: 1px solid var(--color-foreground);
 }
 
 .local-patch-option {
@@ -2553,9 +2583,9 @@ select:hover {
   gap: 12px;
   padding: 0 10px;
   border: 0;
-  border-bottom: 1px solid #333;
+  border-bottom: 1px solid var(--color-border-subtle);
   background: transparent;
-  color: #fff;
+  color: var(--color-foreground);
   text-align: left;
 }
 
@@ -2571,27 +2601,27 @@ select:hover {
 }
 
 .local-patch-option span:last-child {
-  color: rgba(255, 255, 255, 0.66);
+  color: var(--color-foreground-66);
 }
 
 .local-patch-option:hover,
 .local-patch-option:focus {
-  background: rgba(255, 255, 255, 0.18);
-  color: #fff;
+  background: var(--color-foreground-18);
+  color: var(--color-foreground);
   outline: 0;
 }
 
 .local-patch-option-selected,
 .local-patch-option-selected:hover,
 .local-patch-option-selected:focus {
-  background: var(--slider-green);
-  color: #000;
+  background: var(--color-accent);
+  color: var(--color-background);
 }
 
 .local-patch-option-selected span:last-child,
 .local-patch-option-selected:hover span:last-child,
 .local-patch-option-selected:focus span:last-child {
-  color: rgba(0, 0, 0, 0.62);
+  color: var(--color-background-62);
 }
 
 .status {
@@ -2599,28 +2629,28 @@ select:hover {
 }
 
 .status-ok {
-  color: var(--slider-green);
+  color: var(--color-accent);
 }
 
 .status-error,
 .error {
-  color: #ff7474;
+  color: var(--color-error);
 }
 
 .messages {
   max-height: 120px;
   overflow: auto;
-  border-bottom: 1px solid #fff;
+  border-bottom: 1px solid var(--color-foreground);
 }
 
 .message {
   margin: 0;
   padding: 6px 12px;
-  border-bottom: 1px solid #333;
+  border-bottom: 1px solid var(--color-border-subtle);
 }
 
 .warning {
-  color: #ffff9a;
+  color: var(--color-warning);
 }
 
 .shader-preview {
@@ -2633,7 +2663,7 @@ select:hover {
   border: 0;
   outline: 0;
   background: transparent;
-  color: #fff;
+  color: var(--color-foreground);
   white-space: pre;
 }
 
@@ -2649,7 +2679,7 @@ select:hover {
 
   .editor-shell {
     border-right: 0;
-    border-bottom: 1px solid #fff;
+    border-bottom: 1px solid var(--color-foreground);
   }
 
   .app-shell-panel-closed .editor-shell {

@@ -509,6 +509,10 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     return resolveInput(node, 'value', 1, context);
   }
 
+  if (node.type === 'Pass') {
+    return resolveInput(node, 'signal', 0, context);
+  }
+
   if (node.type === 'Slider') {
     const unitValue = resolveSliderUnitValue(node, context);
     context.monitorIds[node.id] = unitValue;
@@ -628,7 +632,7 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       e: wave === 5 ? -1 : resolveInput(node, 'phaseReset', 0, context),
       state,
     });
-    return output;
+    return wave === 5 ? output : mapBipolarOscillatorAmplitude(output, node, context);
   }
 
   if (node.type === 'CustomWave') {
@@ -657,7 +661,7 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       state,
       value: customWaveIndex,
     });
-    return output;
+    return mapBipolarOscillatorAmplitude(output, node, context);
   }
 
   if (node.type === 'PerlinNoise') {
@@ -782,6 +786,7 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     const envelope = nextRegister(context);
     const state = nextState(context, 6);
     const sustain = resolveInput(node, 'sustain', 0.72, context);
+    const gateLength = resolveInput(node, 'gateLength', 0, context);
     const release = resolveInput(node, 'release', 0.24, context);
     context.stateBindings.push({
       id: `${node.id}:envelope`,
@@ -800,6 +805,7 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       e: resolveInput(node, 'decay', 0.16, context),
       state,
       value: packRegisterPair(sustain, release),
+      value2: gateLength + 1,
     });
     return emitBinary(DSP_OP.Mul, resolveInput(node, 'signal', 0, context), envelope, context);
   }
@@ -1155,7 +1161,7 @@ function midiNoteFrequency(note: number): number {
 function compileSelector(node: PatchNode, context: CompileContext): number {
   const definition = getNodeDefinition(node);
   const valueInputs = definition.inputs
-    .filter((input) => /^(0|[1-9][0-9]*)$/.test(input.name))
+    .filter((input) => /^[1-9][0-9]*$/.test(input.name))
     .sort((left, right) => Number(left.name) - Number(right.name));
   if (valueInputs.length === 0) return constantRegister(0, context);
 
@@ -1575,6 +1581,19 @@ function emitBinary(opcode: number, a: number, b: number, context: CompileContex
   const out = nextRegister(context);
   context.ops.push({ opcode, out, a, b });
   return out;
+}
+
+function mapBipolarOscillatorAmplitude(signal: number, node: PatchNode, context: CompileContext): number {
+  const min = resolveInput(node, 'rangeMin', -1, context);
+  const max = resolveInput(node, 'rangeMax', 1, context);
+  const unitSignal = emitBinary(
+    DSP_OP.Mul,
+    emitBinary(DSP_OP.Add, signal, constantRegister(1, context), context),
+    constantRegister(0.5, context),
+    context,
+  );
+  const range = emitBinary(DSP_OP.Sub, max, min, context);
+  return emitBinary(DSP_OP.Add, min, emitBinary(DSP_OP.Mul, unitSignal, range, context), context);
 }
 
 function emitFunction(functionId: number, args: number[], context: CompileContext): number {
