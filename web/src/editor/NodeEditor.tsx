@@ -235,6 +235,7 @@ function NodeEditorInner() {
   const editorShellRef = useRef<HTMLElement | null>(null);
   const historyGroupRef = useRef<{ key: string; time: number } | null>(null);
   const draftNodeConnectionRef = useRef<DraftNodeConnection | null>(null);
+  const provisionalNodeIdsRef = useRef(new Set<string>());
   const duplicateDragRef = useRef<DuplicateDragState | null>(null);
   const pendingNodeDragSelectionRef = useRef<NodeDragSelectionSnapshot | null>(null);
   const activeNodeDragSelectionRef = useRef<NodeDragSelectionSnapshot | null>(null);
@@ -266,7 +267,8 @@ function NodeEditorInner() {
   const reconnectingEdgeRef = useRef(false);
   const reconnectDuplicateRef = useRef(false);
   const reconnectingEdgeSnapshotRef = useRef<ShaderFlowEdge | null>(null);
-  const audio = useAudioEngine({ selectedMidiInputDeviceIds });
+  const rootPatchName = editingStack[0]?.parentPatchName ?? patchName;
+  const audio = useAudioEngine({ selectedMidiInputDeviceIds, recordingPatchName: rootPatchName });
   const selectedMidiInputDeviceKey = useMemo(() => selectedMidiInputDeviceIds.join('\n'), [selectedMidiInputDeviceIds]);
   const audioPlaybackActive = audio.status === 'running' || audio.status === 'starting';
   const audioRecordingActive = audio.recording.status === 'waiting' || audio.recording.status === 'recording';
@@ -673,6 +675,7 @@ function NodeEditorInner() {
             ...edge.data,
             weight,
             mode: edge.data?.mode ?? 'set',
+            enabled: edge.data?.enabled !== false,
             onWeightChange: updateEdgeWeightPlaceholder,
             onModeChange: updateEdgeModePlaceholder,
             onInsertNode: insertNodeOnEdgePlaceholder,
@@ -691,6 +694,7 @@ function NodeEditorInner() {
             ...edge.data,
             weight: edge.data?.weight ?? 1,
             mode,
+            enabled: edge.data?.enabled !== false,
             onWeightChange: updateEdgeWeightPlaceholder,
             onModeChange: updateEdgeModePlaceholder,
             onInsertNode: insertNodeOnEdgePlaceholder,
@@ -698,6 +702,51 @@ function NodeEditorInner() {
         }
       : edge,
     ));
+  }, [commitHistory]);
+
+  const updateEdgeEnabled = useCallback((edgeIdToUpdate: string, enabled: boolean) => {
+    commitHistory();
+    setEdges((current) => current.map((edge) => edge.id === edgeIdToUpdate
+      ? {
+          ...edge,
+          data: {
+            ...edge.data,
+            weight: edge.data?.weight ?? 1,
+            mode: edge.data?.mode ?? 'set',
+            enabled,
+            onWeightChange: updateEdgeWeightPlaceholder,
+            onModeChange: updateEdgeModePlaceholder,
+            onInsertNode: insertNodeOnEdgePlaceholder,
+          },
+        }
+      : edge,
+    ));
+  }, [commitHistory]);
+
+  const toggleSelectedEdges = useCallback(() => {
+    const selectedEdgeIds = new Set(
+      edgesRef.current.filter((edge) => edge.selected === true).map((edge) => edge.id),
+    );
+    if (selectedEdgeIds.size === 0) return false;
+
+    commitHistory();
+    setEdges((current) => current.map((edge) => (
+      selectedEdgeIds.has(edge.id)
+        ? {
+            ...edge,
+            data: {
+              ...edge.data,
+              weight: edge.data?.weight ?? 1,
+              mode: edge.data?.mode ?? 'set',
+              enabled: edge.data?.enabled === false,
+              onWeightChange: updateEdgeWeightPlaceholder,
+              onModeChange: updateEdgeModePlaceholder,
+              onInsertNode: insertNodeOnEdgePlaceholder,
+            },
+          }
+        : edge
+    )));
+    return true;
   }, [commitHistory]);
 
   const updateNodeId = useCallback((nodeId: string, requestedId: string) => {
@@ -723,6 +772,8 @@ function NodeEditorInner() {
   const updateNodeType = useCallback((nodeId: string, type: NodeType) => {
     const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
     if (!relatedNode) return;
+
+    provisionalNodeIdsRef.current.delete(nodeId);
 
     const previousDefinition = relatedNode.data.patchNode.type
       ? getNodeDefinition(relatedNode.data.patchNode as PatchNode)
@@ -1022,6 +1073,7 @@ function NodeEditorInner() {
 
   const addDraftNode = useCallback((position: { x: number; y: number }) => {
     const id = makeNodeId('node', new Set(nodesRef.current.map((node) => node.id)));
+    provisionalNodeIdsRef.current.add(id);
     commitHistory();
     setNodes((current) => [
       ...current.map((node) => ({ ...node, selected: false })),
@@ -1039,6 +1091,24 @@ function NodeEditorInner() {
     ]);
     setEditingTypeNodeId(id);
   }, [commitHistory]);
+
+  const cancelProvisionalNode = useCallback((nodeId: string) => {
+    if (!provisionalNodeIdsRef.current.delete(nodeId)) {
+      setEditingTypeNodeId(null);
+      return;
+    }
+
+    setNodes((current) => current.filter((node) => node.id !== nodeId));
+    setEdges((current) => current.filter((edge) => {
+      const link = linkFromEdge(edge);
+      return !link || (link.from.node !== nodeId && link.to.node !== nodeId);
+    }));
+    setEditingTypeNodeId((current) => current === nodeId ? null : current);
+    setHistory((current) => ({
+      ...current,
+      past: current.past.slice(0, -1),
+    }));
+  }, []);
 
   const insertNodeOnEdges = useCallback((relatedEdges: ShaderFlowEdge[]) => {
     if (relatedEdges.length === 0) return;
@@ -1078,12 +1148,14 @@ function NodeEditorInner() {
           to: { node: id, port: 'value' },
           weight: 1,
           mode: 'set',
+          enabled: link.enabled,
         }, updateEdgeWeight, updateEdgeMode, insertNodeOnEdgePlaceholder),
         edgeFromLink({
           from: { node: id, port: 'value' },
           to: link.to,
           weight: link.weight,
           mode: link.mode,
+          enabled: link.enabled,
         }, updateEdgeWeight, updateEdgeMode, insertNodeOnEdgePlaceholder),
       ];
     })));
@@ -1310,6 +1382,7 @@ function NodeEditorInner() {
     const link = linkForDraftNodeConnection(draftConnection, id);
     if (!link) return;
 
+    provisionalNodeIdsRef.current.add(id);
     commitHistory();
     setNodes((current) => [
       ...current.map((node) => ({ ...node, selected: false })),
@@ -1492,6 +1565,7 @@ function NodeEditorInner() {
         onExpressionCommit: updateExpression,
         onTypeEditStart: setEditingTypeNodeId,
         onTypeEditEnd: () => setEditingTypeNodeId(null),
+        onTypeEditCancel: cancelProvisionalNode,
         onIdChange: updateNodeId,
         onSubpatchNameChange: updateGroupSubpatchName,
         onSampleSelect: openSampleLibrary,
@@ -1546,6 +1620,7 @@ function NodeEditorInner() {
     updateGroupSubpatchName,
     addSelectorInput,
     clearSelectorInput,
+    cancelProvisionalNode,
     audio.audioInput,
     audio.midiInput,
     audio.refreshAudioInputDevices,
@@ -1570,19 +1645,20 @@ function NodeEditorInner() {
         ...edge.data,
         weight: edge.data?.weight ?? 1,
         mode: edge.data?.mode ?? 'set',
+        enabled: edge.data?.enabled !== false,
         onWeightChange: updateEdgeWeight,
         onModeChange: updateEdgeMode,
+        onEnabledChange: updateEdgeEnabled,
         onInsertNode: insertNodeOnEdge,
         showLinkControls: edge.selected === true && selectedEdgeCount === 1,
       },
     }));
-  }, [edges, insertNodeOnEdge, updateEdgeMode, updateEdgeWeight]);
+  }, [edges, insertNodeOnEdge, updateEdgeEnabled, updateEdgeMode, updateEdgeWeight]);
 
   const materializedGraph = useMemo(
     () => materializeRootGraph(nodesWithCallbacks, edgesWithCallbacks, editingStack, patchName),
     [edgesWithCallbacks, editingStack, nodesWithCallbacks, patchName],
   );
-  const rootPatchName = editingStack[0]?.parentPatchName ?? patchName;
   const isEditingSubpatch = editingStack.length > 0;
   const canGroupSelection = useMemo(() => (
     nodes.some((node) => node.selected) &&
@@ -1713,6 +1789,7 @@ function NodeEditorInner() {
           to: { ...link.to, node: toNode },
           weight: link.weight,
           mode: link.mode,
+          enabled: link.enabled,
         }, updateEdgeWeightPlaceholder, updateEdgeModePlaceholder, insertNodeOnEdgePlaceholder),
         selectable: false,
         deletable: false,
@@ -2143,8 +2220,9 @@ function NodeEditorInner() {
     const oldLink = linkFromEdge(oldEdge);
     const weight = oldEdge.data?.weight ?? oldLink?.weight ?? 1;
     const mode = oldEdge.data?.mode ?? oldLink?.mode ?? 'set';
+    const enabled = oldEdge.data?.enabled ?? oldLink?.enabled ?? true;
     const nextEdge = {
-      ...edgeFromLink({ from: link.from, to: link.to, weight, mode }, updateEdgeWeight, updateEdgeMode, insertNodeOnEdge),
+      ...edgeFromLink({ from: link.from, to: link.to, weight, mode, enabled }, updateEdgeWeight, updateEdgeMode, insertNodeOnEdge),
       selected: true,
       reconnectable: true,
     };
@@ -2573,6 +2651,20 @@ function NodeEditorInner() {
     window.addEventListener('pointerdown', handlePointerDown, { capture: true });
     return () => window.removeEventListener('pointerdown', handlePointerDown, { capture: true });
   }, [selectedBoundaryPort]);
+
+  useEffect(() => {
+    const handleToggleSelectedEdgesKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+      if (isEditableEventTarget(event.target) || event.key.toLowerCase() !== 'x') return;
+      if (!toggleSelectedEdges()) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    window.addEventListener('keydown', handleToggleSelectedEdgesKeyDown, { capture: true });
+    return () => window.removeEventListener('keydown', handleToggleSelectedEdgesKeyDown, { capture: true });
+  }, [toggleSelectedEdges]);
 
   useEffect(() => {
     const handleBoundaryPortDeleteKeyDown = (event: KeyboardEvent) => {
@@ -3430,6 +3522,7 @@ function stripPatchForDsp(patch: Patch): Patch {
       to: { ...link.to },
       weight: link.weight,
       mode: link.mode,
+      ...(link.enabled === false ? { enabled: false } : {}),
     })),
   };
 }
@@ -3695,6 +3788,7 @@ function parsePatchLink(value: unknown, index: number): PatchLink {
     to: parseEndpoint(value.to, `Link ${index} target`),
     ...(typeof value.weight === 'number' ? { weight: value.weight } : {}),
     ...(value.mode === 'set' || value.mode === 'add' || value.mode === 'multiply' ? { mode: value.mode } : {}),
+    ...(typeof value.enabled === 'boolean' ? { enabled: value.enabled } : {}),
   };
 }
 
@@ -4278,11 +4372,11 @@ function groupSelectedGraph(
       ...internalEdges.map(({ link }) => link),
       ...incomingBoundary.flatMap(({ link }) => {
         const port = inputNameByEndpoint.get(endpointKey(link.to));
-        return port ? [{ from: { node: 'ins_1', port }, to: link.to, weight: link.weight, mode: link.mode }] : [];
+        return port ? [{ from: { node: 'ins_1', port }, to: link.to, weight: link.weight, mode: link.mode, enabled: link.enabled }] : [];
       }),
       ...outgoingBoundary.flatMap(({ link }) => {
         const port = outputNameByEndpoint.get(endpointKey(link.from));
-        return port ? [{ from: link.from, to: { node: 'outs_1', port }, weight: link.weight, mode: link.mode }] : [];
+        return port ? [{ from: link.from, to: { node: 'outs_1', port }, weight: link.weight, mode: link.mode, enabled: link.enabled }] : [];
       }),
     ]),
   };
@@ -4314,12 +4408,12 @@ function groupSelectedGraph(
 
     if (!sourceSelected && targetSelected) {
       const port = inputNameByEndpoint.get(endpointKey(link.to));
-      return port ? [edgeFromLink({ from: link.from, to: { node: groupId, port }, weight: link.weight, mode: link.mode }, onWeightChange, onModeChange, onInsertNode)] : [];
+      return port ? [edgeFromLink({ from: link.from, to: { node: groupId, port }, weight: link.weight, mode: link.mode, enabled: link.enabled }, onWeightChange, onModeChange, onInsertNode)] : [];
     }
 
     if (sourceSelected && !targetSelected) {
       const port = outputNameByEndpoint.get(endpointKey(link.from));
-      return port ? [edgeFromLink({ from: { node: groupId, port }, to: link.to, weight: link.weight, mode: link.mode }, onWeightChange, onModeChange, onInsertNode)] : [];
+      return port ? [edgeFromLink({ from: { node: groupId, port }, to: link.to, weight: link.weight, mode: link.mode, enabled: link.enabled }, onWeightChange, onModeChange, onInsertNode)] : [];
     }
 
     return [edge];
@@ -4381,6 +4475,7 @@ function clonePatch(patch: ReturnType<typeof patchFromFlow>): ReturnType<typeof 
       to: { ...link.to },
       weight: link.weight,
       mode: link.mode,
+      enabled: link.enabled,
     })),
   };
 }
@@ -4651,14 +4746,14 @@ function renameEdgePort(
 
   if (side === 'input' && link.to.node === nodeId && link.to.port === previousPort) {
     return {
-      ...edgeFromLink({ from: link.from, to: { node: nodeId, port: nextPort }, weight: link.weight, mode: link.mode }, updateEdgeWeightPlaceholder, updateEdgeModePlaceholder, insertNodeOnEdgePlaceholder),
+      ...edgeFromLink({ from: link.from, to: { node: nodeId, port: nextPort }, weight: link.weight, mode: link.mode, enabled: link.enabled }, updateEdgeWeightPlaceholder, updateEdgeModePlaceholder, insertNodeOnEdgePlaceholder),
       selected: edge.selected,
     };
   }
 
   if (side === 'output' && link.from.node === nodeId && link.from.port === previousPort) {
     return {
-      ...edgeFromLink({ from: { node: nodeId, port: nextPort }, to: link.to, weight: link.weight, mode: link.mode }, updateEdgeWeightPlaceholder, updateEdgeModePlaceholder, insertNodeOnEdgePlaceholder),
+      ...edgeFromLink({ from: { node: nodeId, port: nextPort }, to: link.to, weight: link.weight, mode: link.mode, enabled: link.enabled }, updateEdgeWeightPlaceholder, updateEdgeModePlaceholder, insertNodeOnEdgePlaceholder),
       selected: edge.selected,
     };
   }
@@ -4752,7 +4847,7 @@ function remapSelectorEdgeAfterRemoval(
 
   return [{
     ...edgeFromLink(
-      { from: link.from, to: { node: nodeId, port: nextPort }, weight: link.weight, mode: link.mode },
+      { from: link.from, to: { node: nodeId, port: nextPort }, weight: link.weight, mode: link.mode, enabled: link.enabled },
       updateEdgeWeightPlaceholder,
       updateEdgeModePlaceholder,
       insertNodeOnEdgePlaceholder,
@@ -4816,6 +4911,7 @@ function cloneFlowEdgeSnapshot(edge: ShaderFlowEdge): ShaderFlowEdge {
       ...edge.data,
       weight: edge.data?.weight ?? 1,
       mode: edge.data?.mode ?? 'set',
+      enabled: edge.data?.enabled !== false,
       onWeightChange: updateEdgeWeightPlaceholder,
       onModeChange: updateEdgeModePlaceholder,
       onInsertNode: insertNodeOnEdgePlaceholder,
@@ -4837,6 +4933,7 @@ function reconnectPreviewEdgeFromEdge(edge: ShaderFlowEdge): ShaderFlowEdge {
       ...snapshot.data,
       weight: snapshot.data?.weight ?? 1,
       mode: snapshot.data?.mode ?? 'set',
+      enabled: snapshot.data?.enabled !== false,
       onWeightChange: snapshot.data?.onWeightChange ?? updateEdgeWeightPlaceholder,
       onModeChange: snapshot.data?.onModeChange ?? updateEdgeModePlaceholder,
       onInsertNode: snapshot.data?.onInsertNode ?? insertNodeOnEdgePlaceholder,
@@ -5008,6 +5105,7 @@ function duplicateDraggedGraph(
         to: { ...link.to, node: nextToNode },
         weight: link.weight,
         mode: link.mode,
+        enabled: link.enabled,
       }, onWeightChange, onModeChange, onInsertNode),
       selected: false,
     }];
@@ -5048,6 +5146,7 @@ function buildBridgeEdges(
       to: output.to,
       weight: output.weight,
       mode: output.mode,
+      enabled: input.enabled !== false && output.enabled !== false,
     }, onWeightChange, onModeChange, onInsertNode)));
   });
 }
@@ -5114,6 +5213,7 @@ function duplicateCopiedGraph(
       to: { ...link.to, node: toNode },
       weight: link.weight,
       mode: link.mode,
+      enabled: link.enabled,
     }, onWeightChange, onModeChange, onInsertNode)];
   });
 
@@ -5143,6 +5243,7 @@ function cloneFlowEdgeForClipboard(edge: ShaderFlowEdge): ShaderFlowEdge {
     data: {
       weight: edge.data?.weight ?? 1,
       mode: edge.data?.mode ?? 'set',
+      enabled: edge.data?.enabled !== false,
       onWeightChange: updateEdgeWeightPlaceholder,
       onModeChange: updateEdgeModePlaceholder,
       onInsertNode: insertNodeOnEdgePlaceholder,
@@ -5264,6 +5365,7 @@ function renameEdgeNode(edge: ShaderFlowEdge, fromNodeId: string, toNodeId: stri
     to: { ...link.to, node: link.to.node === fromNodeId ? toNodeId : link.to.node },
     weight: link.weight,
     mode: link.mode,
+    enabled: link.enabled,
   };
   return edgeFromLink(renamedLink, updateEdgeWeightPlaceholder, updateEdgeModePlaceholder, insertNodeOnEdgePlaceholder);
 }
@@ -5337,6 +5439,7 @@ function nodeCallbacksPlaceholder() {
     onTypeChange: updateTypePlaceholder,
     onTypeEditStart: updateTypeEditStartPlaceholder,
     onTypeEditEnd: updateTypeEditEndPlaceholder,
+    onTypeEditCancel: updateTypeEditCancelPlaceholder,
     onIdChange: updateIdPlaceholder,
     onPortDoubleClick: noopPortDoubleClick,
     onPortNameChange: noopPortNameChange,
@@ -5350,6 +5453,7 @@ function updateParamPlaceholder() {}
 function updateTypePlaceholder() {}
 function updateTypeEditStartPlaceholder() {}
 function updateTypeEditEndPlaceholder() {}
+function updateTypeEditCancelPlaceholder() {}
 function updateIdPlaceholder() {}
 function updateEdgeWeightPlaceholder() {}
 function updateEdgeModePlaceholder() {}

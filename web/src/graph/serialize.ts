@@ -23,7 +23,15 @@ export function normalizePatch(patch: Patch): Patch {
         ...(node.compactPorts !== undefined ? { compactPorts: node.compactPorts } : {}),
       }))
       .sort((a, b) => a.id.localeCompare(b.id)),
-    links: [...patch.links].sort(compareLinks),
+    links: [...patch.links]
+      .map((link) => ({
+        from: { ...link.from },
+        to: { ...link.to },
+        ...(link.weight !== undefined ? { weight: link.weight } : {}),
+        ...(link.mode !== undefined ? { mode: link.mode } : {}),
+        ...(link.enabled === false ? { enabled: false } : {}),
+      }))
+      .sort(compareLinks),
   };
 }
 

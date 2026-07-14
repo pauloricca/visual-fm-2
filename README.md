@@ -69,6 +69,7 @@ Most node types are available from the node picker. `Ins` and `Outs` appear whil
 - `Lowpass Filter`: filters out frequencies above the cutoff.
 - `Highpass Filter`: filters out frequencies below the cutoff.
 - `Bandpass Filter`: keeps frequencies around the cutoff and attenuates the rest.
+- `Equaliser`: shapes a signal with independent low, mid, and high gain controls (in dB).
 - `Formant Filter`: applies a vowel/formant-style filter with morph and intensity controls.
 - `Comb Filter`: applies a resonant comb filter tuned by frequency and feedback.
 - `Comb Notch`: applies a comb-style notch filter tuned by frequency and feedback.

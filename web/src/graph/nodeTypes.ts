@@ -314,6 +314,11 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   LowpassFilter: filter('LowpassFilter'),
   HighpassFilter: filter('HighpassFilter'),
   BandpassFilter: filter('BandpassFilter'),
+  Equalizer: processor('Equalizer', [
+    { name: 'lows', defaultValue: 0, min: -24, max: 24, step: 0.1 },
+    { name: 'mids', defaultValue: 0, min: -24, max: 24, step: 0.1 },
+    { name: 'highs', defaultValue: 0, min: -24, max: 24, step: 0.1 },
+  ]),
   FormantFilter: processor('FormantFilter', [
     { name: 'morph', defaultValue: 0, min: 0, max: 1 },
     { name: 'intensity', defaultValue: 8, min: 0 },
@@ -382,6 +387,7 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   LowpassFilter: 'Lowpass Filter',
   HighpassFilter: 'Highpass Filter',
   BandpassFilter: 'Bandpass Filter',
+  Equalizer: 'Equaliser',
   FormantFilter: 'Formant Filter',
   CombFilter: 'Comb Filter',
   CombNotchFilter: 'Comb Notch',

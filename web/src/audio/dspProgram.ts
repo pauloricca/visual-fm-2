@@ -288,6 +288,7 @@ function createContext(patch: Patch): CompileContext {
   const nodeById = new Map(patch.nodes.map((node) => [node.id, node]));
   const incomingByInput = new Map<string, PatchLink[]>();
   for (const link of patch.links) {
+    if (link.enabled === false) continue;
     const target = nodeById.get(link.to.node);
     const targetPort = target?.type === 'Sequencer' && link.to.port === 'tick'
       ? 'signal'
@@ -360,6 +361,7 @@ function compileAudioOut(node: PatchNode, context: CompileContext): void {
 
 function validatePatchLinks(context: CompileContext): void {
   for (const link of context.patch.links) {
+    if (link.enabled === false) continue;
     const source = context.nodeById.get(link.from.node);
     const target = context.nodeById.get(link.to.node);
 
@@ -945,6 +947,29 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       b: resolveInput(node, 'signal', 0, context),
       c: resolveInput(node, 'morph', 0, context),
       d: resolveInput(node, 'intensity', 8, context),
+      state,
+    });
+    return output;
+  }
+
+  if (node.type === 'Equalizer') {
+    const output = nextRegister(context);
+    const state = nextState(context, 12);
+    context.stateBindings.push({
+      id: `${node.id}:equalizer`,
+      state,
+      count: 12,
+      kind: 'filter',
+      nodeId: node.id,
+    });
+    context.ops.push({
+      opcode: DSP_OP.Filter,
+      out: output,
+      a: 7,
+      b: resolveInput(node, 'signal', 0, context),
+      c: resolveInput(node, 'lows', 0, context),
+      d: resolveInput(node, 'mids', 0, context),
+      e: resolveInput(node, 'highs', 0, context),
       state,
     });
     return output;

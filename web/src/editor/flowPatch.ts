@@ -61,6 +61,7 @@ export interface ShaderNodeData extends Record<string, unknown> {
   onSampleDrop?: (nodeId: string, files: FileList) => void;
   onTypeEditStart: (nodeId: string) => void;
   onTypeEditEnd: () => void;
+  onTypeEditCancel: (nodeId: string) => void;
   onIdChange: (nodeId: string, nextId: string) => void;
   onPortDoubleClick: (nodeId: string, side: 'input' | 'output', port: string) => void;
   onPortNameChange: (nodeId: string, side: 'input' | 'output', port: string, nextPort: string) => void;
@@ -85,8 +86,10 @@ export type ShaderFlowNode = Node<ShaderNodeData, 'shaderNode'>;
 export interface ShaderEdgeData extends Record<string, unknown> {
   weight: number;
   mode: LinkMode;
+  enabled: boolean;
   onWeightChange: (edgeId: string, weight: number) => void;
   onModeChange: (edgeId: string, mode: LinkMode) => void;
+  onEnabledChange?: (edgeId: string, enabled: boolean) => void;
   onInsertNode: (edgeId: string) => void;
   showLinkControls?: boolean;
   isFeedback?: boolean;
@@ -131,6 +134,7 @@ export interface PersistedEditorState {
     targetHandle: string | null;
     weight?: number;
     mode?: LinkMode;
+    enabled?: boolean;
   }>;
 }
 
@@ -141,6 +145,7 @@ type NodeCallbacks = Pick<
   | 'onTypeChange'
   | 'onTypeEditStart'
   | 'onTypeEditEnd'
+  | 'onTypeEditCancel'
   | 'onIdChange'
   | 'onPortDoubleClick'
   | 'onPortNameChange'
@@ -223,6 +228,7 @@ export function editorStateToFlowEdges(
     data: {
       weight: edge.weight ?? 1,
       mode: edge.mode ?? 'set',
+      enabled: edge.enabled !== false,
       onWeightChange,
       onModeChange,
       onInsertNode,
@@ -266,6 +272,7 @@ export function flowToEditorState(
       targetHandle: edge.targetHandle ?? null,
       weight: edge.data?.weight ?? 1,
       mode: edge.data?.mode ?? 'set',
+      ...(edge.data?.enabled === false ? { enabled: false } : {}),
     })),
   };
 }
@@ -353,6 +360,7 @@ export function edgeFromLink(
     data: {
       weight: link.weight ?? 1,
       mode: link.mode ?? 'set',
+      enabled: link.enabled !== false,
       onWeightChange,
       onModeChange,
       onInsertNode,
@@ -373,6 +381,7 @@ export function linkFromEdge(edge: Edge): PatchLink | null {
       to: { node: edge.target, port: targetPort.port },
       weight: edge.data?.weight as number | undefined,
       mode: edge.data?.mode as LinkMode | undefined,
+      ...(edge.data?.enabled === false ? { enabled: false } : {}),
     };
   }
 
@@ -382,6 +391,7 @@ export function linkFromEdge(edge: Edge): PatchLink | null {
       to: { node: edge.source, port: sourcePort.port },
       weight: edge.data?.weight as number | undefined,
       mode: edge.data?.mode as LinkMode | undefined,
+      ...(edge.data?.enabled === false ? { enabled: false } : {}),
     };
   }
 
@@ -420,6 +430,7 @@ function materializeTypedLinks(
         to: downstream.to,
         weight: downstream.weight,
         mode: downstream.mode,
+        enabled: link.enabled !== false && downstream.enabled !== false,
       });
     }
   }
@@ -447,7 +458,10 @@ function resolvePassthroughLinks(
     }
 
     if (passthroughNodeIds.has(link.to.node)) {
-      resolved.push(...resolvePassthroughLinks(link.to.node, outgoing, typedNodeIds, passthroughNodeIds, nextVisited));
+      resolved.push(...resolvePassthroughLinks(link.to.node, outgoing, typedNodeIds, passthroughNodeIds, nextVisited).map((downstream) => ({
+        ...downstream,
+        enabled: link.enabled !== false && downstream.enabled !== false,
+      })));
     }
   }
 
@@ -652,6 +666,7 @@ function patchLinkFromPersistedEdge(edge: PersistedEditorState['edges'][number])
     to: { node: edge.target, port: targetPort.port },
     ...(edge.weight !== undefined ? { weight: edge.weight } : {}),
     ...(edge.mode !== undefined ? { mode: edge.mode } : {}),
+    ...(edge.enabled === false ? { enabled: false } : {}),
   };
 }
 
@@ -686,5 +701,6 @@ function persistedEdgeFromPatchLink(link: PatchLink): PersistedEditorState['edge
     targetHandle: `in:${link.to.port}`,
     weight: link.weight ?? 1,
     mode: link.mode ?? 'set',
+    ...(link.enabled === false ? { enabled: false } : {}),
   };
 }

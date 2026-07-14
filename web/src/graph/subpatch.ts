@@ -56,6 +56,7 @@ function expandGroupNodes(patch: Patch, prefix: string): Patch {
             to: innerLink.to,
             weight: externalLink.weight,
             mode: externalLink.mode,
+            enabled: externalLink.enabled !== false && innerLink.enabled !== false,
           });
         }
       }
@@ -70,6 +71,7 @@ function expandGroupNodes(patch: Patch, prefix: string): Patch {
             to: prefixEndpoint(externalLink.to, prefix),
             weight: externalLink.weight,
             mode: externalLink.mode,
+            enabled: externalLink.enabled !== false && innerLink.enabled !== false,
           });
         }
       }
@@ -86,6 +88,7 @@ function expandGroupNodes(patch: Patch, prefix: string): Patch {
       to: prefixEndpoint(link.to, prefix),
       weight: link.weight,
       mode: link.mode,
+      enabled: link.enabled,
     });
   }
 
@@ -178,6 +181,7 @@ function clonePatch(patch: Patch): Patch {
       to: { ...link.to },
       weight: link.weight,
       mode: link.mode,
+      enabled: link.enabled,
     })),
   };
 }

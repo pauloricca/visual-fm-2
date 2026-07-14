@@ -569,6 +569,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           open={data.isTypePickerOpen}
           onOpen={() => data.onTypeEditStart(node.id)}
           onClose={data.onTypeEditEnd}
+          onCancel={() => data.onTypeEditCancel(node.id)}
           onChange={(type) => data.onTypeChange(node.id, type)}
           onCustomLabelCommit={isGroup ? (label) => data.onSubpatchNameChange?.(node.id, label) : undefined}
         />
@@ -2075,6 +2076,7 @@ interface NodeTypePickerProps {
   open: boolean;
   onOpen: () => void;
   onClose: () => void;
+  onCancel: () => void;
   onChange: (type: NodeType) => void;
   onCustomLabelCommit?: (label: string) => void;
 }
@@ -2214,6 +2216,7 @@ function NodeTypePicker({
   open,
   onOpen,
   onClose,
+  onCancel,
   onChange,
   onCustomLabelCommit,
 }: NodeTypePickerProps) {
@@ -2229,14 +2232,30 @@ function NodeTypePicker({
   const searchQuery = displayLabel && query.trim() === pickerLabel
     ? nodeTypeLabel
     : query;
-  const options = useMemo(() => NODE_TYPE_LIST.filter((type) => {
-    if (!isEditingSubpatch && (type === 'Ins' || type === 'Outs')) return false;
+  const options = useMemo(() => {
     const normalizedQuery = searchQuery.trim().toLowerCase();
-    return (
-      type.toLowerCase().includes(normalizedQuery) ||
-      getNodeTypeLabel(type).toLowerCase().includes(normalizedQuery)
-    );
-  }), [isEditingSubpatch, searchQuery]);
+
+    return NODE_TYPE_LIST
+      .filter((type) => {
+        if (!isEditingSubpatch && (type === 'Ins' || type === 'Outs')) return false;
+        return (
+          type.toLowerCase().includes(normalizedQuery) ||
+          getNodeTypeLabel(type).toLowerCase().includes(normalizedQuery)
+        );
+      })
+      .sort((left, right) => {
+        const leftStartsWithQuery = (
+          left.toLowerCase().startsWith(normalizedQuery) ||
+          getNodeTypeLabel(left).toLowerCase().startsWith(normalizedQuery)
+        );
+        const rightStartsWithQuery = (
+          right.toLowerCase().startsWith(normalizedQuery) ||
+          getNodeTypeLabel(right).toLowerCase().startsWith(normalizedQuery)
+        );
+
+        return Number(rightStartsWithQuery) - Number(leftStartsWithQuery);
+      });
+  }, [isEditingSubpatch, searchQuery]);
   useEffect(() => {
     if (!open) {
       setQuery(nodeType ? pickerLabel : '');
@@ -2309,7 +2328,7 @@ function NodeTypePicker({
     }
     if (event.key === 'Escape') {
       event.preventDefault();
-      onClose();
+      onCancel();
     }
   }
 

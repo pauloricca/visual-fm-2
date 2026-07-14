@@ -89,6 +89,7 @@ interface AudioEngineState {
 
 interface UseAudioEngineOptions {
   selectedMidiInputDeviceIds?: string[];
+  recordingPatchName?: string;
 }
 
 interface MidiInputLike {
@@ -108,6 +109,7 @@ interface MidiAccessLike {
 
 interface RecordingCapture {
   id: number;
+  patchName: string;
   chunks: Float32Array[][];
   channelCount: number;
   sampleRate: number;
@@ -225,6 +227,8 @@ function holdAudioParamAtCurrentValue(param: AudioParam, time: number): void {
 
 export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngineState {
   const selectedMidiInputDeviceIds = options.selectedMidiInputDeviceIds ?? [];
+  const recordingPatchNameRef = useRef(options.recordingPatchName ?? 'untitled-patch');
+  recordingPatchNameRef.current = options.recordingPatchName ?? 'untitled-patch';
   const selectedMidiInputDeviceKey = selectedMidiInputDeviceIds.join('\n');
   const selectedMidiInputDeviceIdSet = useMemo(() => new Set(selectedMidiInputDeviceIds), [selectedMidiInputDeviceKey]);
   const midiInputEnabled = selectedMidiInputDeviceIds.length > 0;
@@ -393,7 +397,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     setRecordingStatus('saving');
     setRecordingMessage('saving recording');
 
-    void uploadRecording(wavBlob).then((result) => {
+    void uploadRecording(wavBlob, capture.patchName).then((result) => {
       if (recordingSaveIdRef.current !== saveId) return;
       setRecordingStatus('saved');
       setRecordingMessage(`saved ${result.name}`);
@@ -412,6 +416,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     const chunks: Float32Array[][] = [];
     recordingCaptureRef.current = {
       id,
+      patchName: recordingPatchNameRef.current,
       chunks,
       channelCount: RECORDING_CHANNEL_COUNT,
       sampleRate: context.sampleRate,
@@ -1451,11 +1456,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-async function uploadRecording(blob: Blob): Promise<{ name: string }> {
+async function uploadRecording(blob: Blob, patchName: string): Promise<{ name: string }> {
   const response = await fetch('/api/recordings', {
     method: 'POST',
     headers: {
       'Content-Type': 'audio/wav',
+      'X-Visual-Fm-Patch-Name': patchName,
     },
     body: blob,
   });

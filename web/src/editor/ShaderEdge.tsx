@@ -30,6 +30,7 @@ export function ShaderEdge(props: EdgeProps<ShaderFlowEdge>) {
   const screenPosition = reactFlow.flowToScreenPosition({ x: labelX, y: labelY });
   const weight = props.data?.weight ?? 1;
   const mode = props.data?.mode ?? 'set';
+  const enabled = props.data?.enabled !== false;
   const dspErrors = props.data?.dspErrors ?? [];
   const hasDspErrors = dspErrors.length > 0;
   const selected = props.selected ?? false;
@@ -40,6 +41,7 @@ export function ShaderEdge(props: EdgeProps<ShaderFlowEdge>) {
     `shader-edge-path-mode-${mode}`,
     isFeedback ? 'shader-edge-path-feedback' : '',
     isControl ? 'shader-edge-path-control' : '',
+    enabled ? '' : 'shader-edge-path-disabled',
     hasDspErrors ? 'shader-edge-path-dsp-error' : '',
   ].join(' ');
   const edgeClassName = [
@@ -48,6 +50,7 @@ export function ShaderEdge(props: EdgeProps<ShaderFlowEdge>) {
     `shader-edge-path-mode-${mode}`,
     isFeedback ? 'shader-edge-path-feedback' : '',
     isControl ? 'shader-edge-path-control' : '',
+    enabled ? '' : 'shader-edge-path-disabled',
     hasDspErrors ? 'shader-edge-path-dsp-error' : '',
     selected ? 'shader-edge-path-selected' : '',
   ].filter(Boolean).join(' ');
@@ -98,8 +101,10 @@ export function ShaderEdge(props: EdgeProps<ShaderFlowEdge>) {
             <EdgeLinkControls
               value={weight}
               mode={mode}
+              enabled={enabled}
               onChange={(nextWeight) => props.data?.onWeightChange(props.id, nextWeight)}
               onModeChange={(nextMode) => props.data?.onModeChange(props.id, nextMode)}
+              onEnabledChange={(nextEnabled) => props.data?.onEnabledChange?.(props.id, nextEnabled)}
             />
           </div>,
           overlayTarget,
@@ -186,14 +191,32 @@ function getSameNodeFeedbackPath(
 interface EdgeLinkControlsProps {
   value: number;
   mode: LinkMode;
+  enabled: boolean;
   onChange: (value: number) => void;
   onModeChange: (mode: LinkMode) => void;
+  onEnabledChange: (enabled: boolean) => void;
 }
 
-function EdgeLinkControls({ value, mode, onChange, onModeChange }: EdgeLinkControlsProps) {
+function EdgeLinkControls({ value, mode, enabled, onChange, onModeChange, onEnabledChange }: EdgeLinkControlsProps) {
   return (
     <>
-      <EdgeWeightScrubber value={value} onChange={onChange} />
+      <div className="edge-link-value-row">
+        <EdgeWeightScrubber value={value} onChange={onChange} />
+        <button
+          className={`edge-link-enabled-toggle nodrag nopan${enabled ? ' edge-link-enabled-toggle-active' : ''}`}
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onEnabledChange(!enabled);
+          }}
+          onPointerDown={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => event.stopPropagation()}
+          aria-label={enabled ? 'Disable link' : 'Enable link'}
+          aria-pressed={enabled}
+          title={enabled ? 'Disable link' : 'Enable link'}
+        />
+      </div>
       <select
         className="edge-link-mode nodrag nopan"
         value={mode}

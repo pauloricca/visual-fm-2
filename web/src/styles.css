@@ -37,8 +37,7 @@ textarea {
   font: inherit;
 }
 
-button,
-select {
+button {
   height: 28px;
   padding: 0 8px;
 }
@@ -47,9 +46,8 @@ button {
   cursor: pointer;
 }
 
-button:hover,
-select:hover {
-  background: var(--color-foreground);
+button:hover {
+  background-color: var(--color-foreground);
   color: var(--color-background);
 }
 
@@ -2045,6 +2043,11 @@ select:hover {
   stroke: var(--color-add-link-active);
 }
 
+.shader-edge-path-disabled {
+  stroke-dasharray: 7 5;
+  opacity: 0.42;
+}
+
 .react-flow__edge.updating .react-flow__edge-path.shader-edge-path-mode-set.shader-edge-path-foreground,
 .react-flow__edge.selectable:focus .react-flow__edge-path.shader-edge-path-mode-set.shader-edge-path-foreground,
 .react-flow__edge.selectable:focus-visible .react-flow__edge-path.shader-edge-path-mode-set.shader-edge-path-foreground {
@@ -2163,13 +2166,19 @@ select:hover {
   box-shadow: 6px 6px 0 var(--color-background-42);
   transform-origin: center;
   --edge-control-width: 96px;
+  --edge-weight-control-width: 74px;
+}
+
+.edge-link-value-row {
+  display: flex;
+  gap: 0;
 }
 
 .edge-weight-scrubber {
-  width: var(--edge-control-width);
+  width: var(--edge-weight-control-width);
   height: 22px;
   padding: 0 4px;
-  border: 1px solid var(--color-foreground);
+  border: 0;
   background: var(--color-surface);
   color: var(--color-foreground);
   cursor: ns-resize;
@@ -2190,7 +2199,6 @@ select:hover {
 
 .edge-weight-scrubber-editing {
   display: block;
-  border-color: var(--color-foreground);
   background: var(--color-surface);
   color: var(--color-foreground);
   cursor: text;
@@ -2205,11 +2213,47 @@ select:hover {
   color: var(--color-background);
 }
 
+.edge-link-enabled-toggle {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.edge-link-enabled-toggle::after {
+  display: block;
+  width: 9px;
+  height: 9px;
+  border: 1px solid var(--color-foreground);
+  border-radius: 50%;
+  content: '';
+}
+
+.edge-link-enabled-toggle-active::after {
+  background: var(--color-foreground);
+}
+
+.edge-link-enabled-toggle:hover {
+  background: transparent;
+  color: var(--color-foreground);
+}
+
+.edge-link-enabled-toggle:focus-visible {
+  outline: 1px solid var(--color-foreground);
+  outline-offset: 2px;
+}
+
 .edge-link-mode {
   width: var(--edge-control-width);
   height: 22px;
   padding: 0 4px;
-  border: 1px solid var(--color-foreground);
+  border: 0;
   border-radius: 0;
   background: var(--color-surface);
   color: var(--color-foreground);
@@ -2222,6 +2266,27 @@ select:hover {
 .edge-link-mode:focus {
   outline: 1px solid var(--color-foreground);
   outline-offset: 1px;
+}
+
+/*
+ * Class-specific control rules use the `background` shorthand, which otherwise
+ * clears this image again. The extra pseudo-class keeps the arrow and its text
+ * clearance above those rules while leaving multi-selects native.
+ */
+select:not([multiple]) {
+  appearance: none;
+  padding: 0 22px 0 4px;
+  background-image: var(--select-arrow-icon);
+  background-position: right 6.5px center;
+  background-repeat: no-repeat !important;
+  background-size: 9px 6px;
+  -webkit-appearance: none;
+}
+
+select:not([multiple]):hover {
+  background-color: var(--color-foreground);
+  color: var(--color-background);
+  background-image: var(--select-arrow-icon-hover);
 }
 
 .export-panel {

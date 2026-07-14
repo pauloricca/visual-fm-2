@@ -45,6 +45,7 @@ export type NodeType =
   | 'LowpassFilter'
   | 'HighpassFilter'
   | 'BandpassFilter'
+  | 'Equalizer'
   | 'FormantFilter'
   | 'CombFilter'
   | 'CombNotchFilter'
@@ -112,6 +113,8 @@ export interface PatchLink {
   to: Endpoint;
   weight?: number;
   mode?: LinkMode;
+  /** Links are enabled unless explicitly disabled. */
+  enabled?: boolean;
 }
 
 export interface Patch {

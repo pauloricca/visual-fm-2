@@ -18,6 +18,8 @@
   --color-surface: var(--color-background-72);
   --color-control: var(--color-background-62);
   --color-menu: var(--color-background-90);
+  --select-arrow-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 5'%3E%3Cpath d='M1 1 4 4 7 1' fill='none' stroke='%23fff' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.25'/%3E%3C/svg%3E");
+  --select-arrow-icon-hover: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 5'%3E%3Cpath d='M1 1 4 4 7 1' fill='none' stroke='%23000' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.25'/%3E%3C/svg%3E");
 
   --color-foreground: #fff;
   --color-foreground-08: rgba(255, 255, 255, 0.08);
@@ -75,6 +77,8 @@
   --color-surface: var(--color-background-72);
   --color-control: var(--color-background-62);
   --color-menu: var(--color-background-90);
+  --select-arrow-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 5'%3E%3Cpath d='M1 1 4 4 7 1' fill='none' stroke='%23d6f5d2' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.25'/%3E%3C/svg%3E");
+  --select-arrow-icon-hover: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 5'%3E%3Cpath d='M1 1 4 4 7 1' fill='none' stroke='%23061006' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.25'/%3E%3C/svg%3E");
 
   --color-foreground: #d6f5d2;
   --color-foreground-08: rgba(214, 245, 210, 0.08);
@@ -132,6 +136,8 @@
   --color-surface: var(--color-background-72);
   --color-control: var(--color-background-62);
   --color-menu: var(--color-background-90);
+  --select-arrow-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 5'%3E%3Cpath d='M1 1 4 4 7 1' fill='none' stroke='%23ffe0b0' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.25'/%3E%3C/svg%3E");
+  --select-arrow-icon-hover: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 5'%3E%3Cpath d='M1 1 4 4 7 1' fill='none' stroke='%231a0d05' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.25'/%3E%3C/svg%3E");
 
   --color-foreground: #ffe0b0;
   --color-foreground-08: rgba(255, 224, 176, 0.08);
@@ -189,6 +195,8 @@
   --color-surface: var(--color-background-72);
   --color-control: var(--color-background-62);
   --color-menu: var(--color-background-90);
+  --select-arrow-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 5'%3E%3Cpath d='M1 1 4 4 7 1' fill='none' stroke='%23d3f1ff' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.25'/%3E%3C/svg%3E");
+  --select-arrow-icon-hover: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 5'%3E%3Cpath d='M1 1 4 4 7 1' fill='none' stroke='%23041520' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.25'/%3E%3C/svg%3E");
 
   --color-foreground: #d3f1ff;
   --color-foreground-08: rgba(211, 241, 255, 0.08);

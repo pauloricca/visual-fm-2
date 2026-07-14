@@ -429,7 +429,10 @@ async function saveUploadedRecording(recordingsDir: string, request: Connect.Inc
   }
 
   await mkdir(recordingsDir, { recursive: true });
-  const name = await uniqueSampleFilename(recordingsDir, recordingFilename());
+  const patchName = Array.isArray(request.headers['x-visual-fm-patch-name'])
+    ? request.headers['x-visual-fm-patch-name'][0]
+    : request.headers['x-visual-fm-patch-name'];
+  const name = await uniqueSampleFilename(recordingsDir, recordingFilename(patchName));
   await writeFile(join(recordingsDir, name), data);
 
   return { name };
@@ -502,11 +505,23 @@ async function saveUploadedSample(samplesDir: string, request: Connect.IncomingM
   };
 }
 
-function recordingFilename(): string {
+function recordingFilename(patchName: string | undefined): string {
+  const patchStem = sanitizeRecordingPatchName(patchName);
   const timestamp = new Date().toISOString()
     .replace(/\.\d{3}Z$/, 'Z')
     .replace(/:/g, '-');
-  return `recording-${timestamp}.wav`;
+  return `${patchStem}-recording-${timestamp}.wav`;
+}
+
+function sanitizeRecordingPatchName(name: string | undefined): string {
+  const cleaned = (name ?? '')
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001f]+/g, '-')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^\.+/, '')
+    .replace(/\.+$/, '');
+  return cleaned || 'untitled-patch';
 }
 
 function isWavData(data: Buffer): boolean {

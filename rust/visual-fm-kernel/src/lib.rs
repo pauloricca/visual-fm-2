@@ -2707,6 +2707,54 @@ fn filter_coefficients(
     (b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0)
 }
 
+fn equalizer_coefficients(
+    band: i32,
+    gain_db: f64,
+    sample_rate: f64,
+) -> (f64, f64, f64, f64, f64) {
+    let (frequency, q): (f64, f64) = match band {
+        1 => (1_000.0, 0.9),
+        2 => (5_000.0, 0.707),
+        _ => (180.0, 0.707),
+    };
+    let omega = TWO_PI * frequency.clamp(20.0, sample_rate * 0.45) / sample_rate.max(1.0);
+    let sin = omega.sin();
+    let cos = omega.cos();
+    let gain = gain_db.clamp(-24.0, 24.0);
+    let a = 10.0_f64.powf(gain / 40.0);
+    let alpha = sin / (2.0 * q);
+    let beta = 2.0 * a.sqrt() * alpha;
+
+    let (b0, b1, b2, a0, a1, a2) = match band {
+        1 => (
+            1.0 + alpha * a,
+            -2.0 * cos,
+            1.0 - alpha * a,
+            1.0 + alpha / a,
+            -2.0 * cos,
+            1.0 - alpha / a,
+        ),
+        2 => (
+            a * ((a + 1.0) + (a - 1.0) * cos + beta),
+            -2.0 * a * ((a - 1.0) + (a + 1.0) * cos),
+            a * ((a + 1.0) + (a - 1.0) * cos - beta),
+            (a + 1.0) - (a - 1.0) * cos + beta,
+            2.0 * ((a - 1.0) - (a + 1.0) * cos),
+            (a + 1.0) - (a - 1.0) * cos - beta,
+        ),
+        _ => (
+            a * ((a + 1.0) - (a - 1.0) * cos + beta),
+            2.0 * a * ((a - 1.0) - (a + 1.0) * cos),
+            a * ((a + 1.0) - (a - 1.0) * cos - beta),
+            (a + 1.0) + (a - 1.0) * cos + beta,
+            -2.0 * ((a - 1.0) + (a + 1.0) * cos),
+            (a + 1.0) + (a - 1.0) * cos - beta,
+        ),
+    };
+
+    (b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0)
+}
+
 fn apply_biquad_filter(
     state: &mut FilterState,
     sample: f64,
@@ -3812,6 +3860,25 @@ fn render_dsp_formant_filter(op: DspOp, sample_rate: f64) -> f64 {
     sanitize_sample(sample * dry_mix + wet * wet_mix, 4.0)
 }
 
+fn render_dsp_equalizer(op: DspOp, sample_rate: f64) -> f64 {
+    let sample = sanitize_sample(dsp_reg(op.b), 4.0);
+    if op.state < 0 || (op.state as usize + 11) >= MAX_DSP_STATE {
+        return sample;
+    }
+
+    let state_index = op.state as usize;
+    let gains = [dsp_reg(op.c), dsp_reg(op.d), dsp_reg(op.e)];
+    let mut output = sample;
+    for (band, gain) in gains.into_iter().enumerate() {
+        output = render_dsp_biquad_state(
+            state_index + band * 4,
+            output,
+            equalizer_coefficients(band as i32, gain, sample_rate),
+        );
+    }
+    sanitize_sample(output, 4.0)
+}
+
 fn render_dsp_comb_filter(op: DspOp, sample_rate: f64) -> f64 {
     let Some(slot) = dsp_effect_slot(op.state) else {
         return sanitize_sample(dsp_reg(op.b), 4.0);
@@ -3844,6 +3911,9 @@ fn render_dsp_filter(op: DspOp, sample_rate: f64) -> f64 {
     }
     if op.a == 5 || op.a == 6 {
         return render_dsp_comb_filter(op, sample_rate);
+    }
+    if op.a == 7 {
+        return render_dsp_equalizer(op, sample_rate);
     }
 
     if op.state < 0 {
