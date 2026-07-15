@@ -149,6 +149,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.linksById = new Map();
     this.dspProgram = null;
     this.sampleDataByNodeId = new Map();
+    this.imageDataByNodeId = new Map();
     this.graphUpdateCrossfade = this.normalizeGraphUpdateCrossfade(options.processorOptions?.audioConfig?.graphUpdateCrossfade);
     this.graphUpdateTransition = null;
     this.maxVoices = 5;
@@ -212,6 +213,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         this.setDspValues(payload);
       } else if (type === "sampleData") {
         this.setSampleData(payload);
+      } else if (type === "imageData") {
+        this.setImageData(payload);
       } else if (type === "noteOn") {
         if (!this.muted) this.noteOn(payload.channel, payload.note, payload.velocity);
       } else if (type === "noteOff") {
@@ -513,6 +516,12 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         release: Math.max(0, Number(binding?.release) || 0),
       })).filter((binding) => binding.nodeId)
       : [];
+    const imageBindings = Array.isArray(program.imageBindings)
+      ? program.imageBindings.map((binding) => ({
+        nodeId: String(binding?.nodeId || ""),
+        image: { name: String(binding?.image?.name || ""), url: String(binding?.image?.url || "") },
+      })).filter((binding) => binding.nodeId)
+      : [];
     const customWaveBindings = Array.isArray(program.customWaveBindings)
       ? program.customWaveBindings.map((binding) => ({
         nodeId: String(binding?.nodeId || ""),
@@ -563,6 +572,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       stateCount: Math.max(0, Math.trunc(Number(program.stateCount) || 0)),
       monitorIds,
       sampleBindings,
+      imageBindings,
       customWaveBindings,
       maxVoices: this.clamp(Math.round(Number(program.maxVoices) || 1), 1, MAX_ACTIVE_VOICES),
       usesMidiNote: Boolean(program.usesMidiNote),
@@ -705,6 +715,9 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       this.nodesById.set(sampleNode.id, sampleNode);
       this.wasm.setDspSampleNode?.(index, sampleNode.wasmIndex);
       this.copySampleDataToWasm(sampleNode);
+    }
+    for (let index = 0; index < this.dspProgram.imageBindings.length; index += 1) {
+      this.copyImageDataToWasm(index, this.dspProgram.imageBindings[index].nodeId);
     }
     for (const op of this.dspProgram.ops) {
       const opValue = op.opcode === 3 && op.a === 9
@@ -1033,6 +1046,34 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       this.monitorScopeStates.clear();
       this.setLinkScopes({ ...this.linkScopeRequests[0], linkIds: this.linkScopeRequests.map((request) => request.linkId) });
     }
+  }
+
+  setImageData(payload = {}) {
+    if (!payload.nodeId) return;
+    const data = payload.data instanceof Uint8Array
+      ? payload.data
+      : Uint8Array.from(Array.isArray(payload.data) ? payload.data : []);
+    this.imageDataByNodeId.set(payload.nodeId, {
+      data,
+      width: Math.max(0, Math.trunc(Number(payload.width) || 0)),
+      height: Math.max(0, Math.trunc(Number(payload.height) || 0)),
+      name: payload.name || "",
+    });
+    const index = this.dspProgram?.imageBindings?.findIndex((binding) => binding.nodeId === payload.nodeId) ?? -1;
+    if (index >= 0) this.copyImageDataToWasm(index, payload.nodeId);
+  }
+
+  copyImageDataToWasm(slot, nodeId) {
+    if (!this.wasm || typeof this.wasm.setImageData !== "function" || typeof this.wasm.imageDataPtr !== "function") return;
+    const entry = this.imageDataByNodeId.get(nodeId);
+    if (!entry?.data?.length || !entry.width || !entry.height) return;
+    const maxBytes = typeof this.wasm.maxImageBytes === "function" ? this.wasm.maxImageBytes() : entry.data.length;
+    const length = Math.min(entry.data.length, Math.max(0, maxBytes || 0));
+    if (!length) return;
+    if (this.wasm.setImageData(slot, entry.width, entry.height, length) < 0) return;
+    const ptr = this.wasm.imageDataPtr(slot);
+    if (!ptr) return;
+    new Uint8Array(this.wasm.memory.buffer, ptr, length).set(entry.data.subarray(0, length));
   }
 
   copySampleDataToWasm(node) {
@@ -1865,8 +1906,11 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       state.wasm.clearLinkMeters?.();
     }
     for (const state of this.dspMeterStates.values()) {
-      const level = Math.max(0, Number(this.wasm?.dspMeterLevel?.(state.slot)) || 0);
-      levels.push([state.id, level, level, level]);
+      const isImageCoordinate = state.id.endsWith(":image-x") || state.id.endsWith(":image-y");
+      const readLevel = isImageCoordinate ? this.wasm?.dspMeterSignedLevel : this.wasm?.dspMeterLevel;
+      const level = Number(readLevel?.(state.slot)) || 0;
+      const displayedLevel = isImageCoordinate ? level : Math.max(0, level);
+      levels.push([state.id, displayedLevel, displayedLevel, displayedLevel]);
     }
     for (const binding of this.dspProgram?.stateBindings || []) {
       if (binding.kind !== "selector") continue;

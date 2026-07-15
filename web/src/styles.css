@@ -582,6 +582,12 @@ button:hover {
   background: var(--color-surface);
 }
 
+.shader-node-image {
+  width: var(--node-display-width, 372px);
+  min-width: 160px;
+  background: var(--color-surface);
+}
+
 .shader-node-expression {
   width: 240px;
 }
@@ -970,6 +976,53 @@ button:hover {
   outline: 0;
 }
 
+.image-node-display {
+  position: relative;
+  grid-column: 1 / -1;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  height: auto;
+  aspect-ratio: var(--image-aspect-ratio, 1.7777778);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: var(--color-background-2);
+  color: var(--color-foreground-50);
+}
+
+.image-node-display > img {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  height: 100%;
+  display: block;
+  object-fit: fill;
+  user-select: none;
+}
+
+.image-node-crosshair {
+  position: absolute;
+  z-index: 1;
+  display: block;
+  pointer-events: none;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.95);
+}
+
+.image-node-crosshair-vertical {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
+
+.image-node-crosshair-horizontal {
+  right: 0;
+  left: 0;
+  height: 1px;
+}
+
 .shader-node-body-audio-input {
   grid-template-columns: minmax(0, 1fr);
   width: 100%;
@@ -1159,6 +1212,22 @@ button:hover {
   width: 100%;
   min-width: 220px;
   padding: 0;
+}
+
+.shader-node-body-full-width-display {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  width: 100%;
+}
+
+.shader-node-body-full-width-display .shader-ports {
+  min-width: 0;
+}
+
+.shader-node-full-width-display {
+  grid-column: 1 / -1;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .shader-node-body-sampleplayer .sample-upload-row,
@@ -2573,6 +2642,73 @@ select:not([multiple]):hover {
 
 .sample-modal {
   width: min(520px, 100%);
+}
+
+.image-modal {
+  width: min(680px, calc(100vw - 32px));
+}
+
+.image-library-browser {
+  display: grid;
+  grid-template-columns: minmax(190px, 1fr) minmax(180px, 1.15fr);
+  gap: 12px;
+  min-height: 210px;
+}
+
+.image-list {
+  overflow: auto;
+  border: 1px solid var(--color-foreground-18);
+}
+
+.image-option {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: center;
+  width: 100%;
+  min-height: 56px;
+  gap: 9px;
+  padding: 4px 8px;
+  border: 0;
+  border-bottom: 1px solid var(--color-foreground-10);
+  color: inherit;
+  background: transparent;
+  text-align: left;
+}
+
+.image-option:hover,
+.image-option:focus,
+.image-option-selected {
+  color: var(--color-background);
+  background: var(--color-foreground);
+}
+
+.image-option > img {
+  width: 48px;
+  height: 48px;
+  object-fit: cover;
+  background: var(--color-background-2);
+}
+
+.image-option > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.image-modal-preview {
+  display: grid;
+  min-height: 210px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--color-foreground-18);
+  color: var(--color-foreground-50);
+  background: var(--color-background-2);
+}
+
+.image-modal-preview > img {
+  width: 100%;
+  height: 210px;
+  object-fit: contain;
 }
 
 .midi-settings-modal {

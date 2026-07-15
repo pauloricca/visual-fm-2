@@ -48,6 +48,8 @@ export const DSP_OP = {
   Playhead: 33,
   Buffer: 34,
   Sequencer: 35,
+  Image: 36,
+  Time: 37,
 } as const;
 
 export interface DspProgram {
@@ -63,6 +65,7 @@ export interface DspProgram {
   feedbackLinkIds: string[];
   monitorIds: Record<string, number>;
   sampleBindings: DspSampleBinding[];
+  imageBindings: DspImageBinding[];
   customWaveBindings: DspCustomWaveBinding[];
   maxVoices: number;
   usesMidiNote: boolean;
@@ -132,6 +135,11 @@ export interface DspCustomWaveBinding {
   customWave: CustomWaveSettings;
 }
 
+export interface DspImageBinding {
+  nodeId: string;
+  image: { name: string; url: string };
+}
+
 interface FeedbackBinding {
   readRegister: number;
   state: number;
@@ -159,6 +167,8 @@ interface CompileContext {
   feedbackLinkIds: string[];
   monitorIds: Record<string, number>;
   sampleBindings: DspSampleBinding[];
+  imageBindings: DspImageBinding[];
+  imageBindingIndexByNodeId: Map<string, number>;
   customWaveBindings: DspCustomWaveBinding[];
   usesMidiNote: boolean;
   usesMidiClock: boolean;
@@ -220,10 +230,11 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
   const monitorNodes = expandedPatch.nodes.filter((node) => node.type === 'Meter' || node.type === 'Scope');
   const sliderMonitorNodes = expandedPatch.nodes.filter((node) => node.type === 'Slider');
   const sequencerMonitorNodes = expandedPatch.nodes.filter((node) => node.type === 'Sequencer');
+  const imagePreviewNodes = expandedPatch.nodes.filter((node) => node.type === 'Image');
 
   validatePatchLinks(context);
 
-  if (audioOutNodes.length === 0 && monitorNodes.length === 0 && sequencerMonitorNodes.length === 0) {
+  if (audioOutNodes.length === 0 && monitorNodes.length === 0 && sequencerMonitorNodes.length === 0 && imagePreviewNodes.length === 0) {
     context.errors.push('Patch needs an Audio Out node.');
   }
 
@@ -243,6 +254,14 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
     registerSequencerMonitor(node, context);
   }
 
+  // The image preview needs the actual signals arriving at its coordinate
+  // inputs, even when no image output is otherwise connected to a monitor.
+  // Expose those registers through the existing control-meter channel.
+  for (const node of imagePreviewNodes) {
+    context.monitorIds[`${node.id}:image-x`] = resolveInput(node, 'x', 0.5, context);
+    context.monitorIds[`${node.id}:image-y`] = resolveInput(node, 'y', 0.5, context);
+  }
+
   if (context.errors.length > 0) {
     return {
       version: 1,
@@ -257,6 +276,7 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
       feedbackLinkIds: context.feedbackLinkIds,
       monitorIds: context.monitorIds,
       sampleBindings: context.sampleBindings,
+      imageBindings: context.imageBindings,
       customWaveBindings: context.customWaveBindings,
       maxVoices: context.maxVoices,
       usesMidiNote: context.usesMidiNote,
@@ -278,6 +298,7 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
     feedbackLinkIds: context.feedbackLinkIds,
     monitorIds: context.monitorIds,
     sampleBindings: context.sampleBindings,
+    imageBindings: context.imageBindings,
     customWaveBindings: context.customWaveBindings,
     maxVoices: context.maxVoices,
     usesMidiNote: context.usesMidiNote,
@@ -320,6 +341,8 @@ function createContext(patch: Patch): CompileContext {
     feedbackLinkIds: [],
     monitorIds: {},
     sampleBindings: [],
+    imageBindings: [],
+    imageBindingIndexByNodeId: new Map(),
     customWaveBindings: [],
     usesMidiNote: false,
     usesMidiClock: false,
@@ -700,6 +723,33 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     return compileSamplePlayer(node, context);
   }
 
+  if (node.type === 'Image') {
+    let imageIndex = context.imageBindingIndexByNodeId.get(node.id);
+    if (imageIndex === undefined) {
+      imageIndex = context.imageBindings.length;
+      context.imageBindingIndexByNodeId.set(node.id, imageIndex);
+      context.imageBindings.push({
+        nodeId: node.id,
+        image: { name: node.image?.name ?? '', url: node.image?.url ?? '' },
+      });
+    }
+    const channel = port === 'brightness' ? 0 : port === 'r' ? 1 : port === 'g' ? 2 : port === 'b' ? 3 : -1;
+    if (channel < 0) {
+      context.errors.push(`Node "${node.id}" does not have supported output "${port}".`);
+      return null;
+    }
+    const output = nextRegister(context);
+    context.ops.push({
+      opcode: DSP_OP.Image,
+      out: output,
+      a: resolveInput(node, 'x', 0.5, context),
+      b: resolveInput(node, 'y', 0.5, context),
+      c: channel,
+      value: imageIndex,
+    });
+    return output;
+  }
+
   if (node.type === 'Playhead') {
     const output = nextRegister(context);
     const state = nextState(context, 1);
@@ -715,6 +765,24 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       out: output,
       a: resolveInput(node, 'start', 0, context),
       b: resolveInput(node, 'speed', 1, context),
+      state,
+    });
+    return output;
+  }
+
+  if (node.type === 'Time') {
+    const output = nextRegister(context);
+    const state = nextState(context, 1);
+    context.stateBindings.push({
+      id: `${node.id}:time`,
+      state,
+      count: 1,
+      kind: 'effect',
+      nodeId: node.id,
+    });
+    context.ops.push({
+      opcode: DSP_OP.Time,
+      out: output,
       state,
     });
     return output;
@@ -788,14 +856,14 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
 
   if (node.type === 'Envelope') {
     const envelope = nextRegister(context);
-    const state = nextState(context, 6);
+    const state = nextState(context, 7);
     const sustain = resolveInput(node, 'sustain', 0.72, context);
     const gateLength = resolveInput(node, 'gateLength', 0, context);
     const release = resolveInput(node, 'release', 0.24, context);
     context.stateBindings.push({
       id: `${node.id}:envelope`,
       state,
-      count: 6,
+      count: 7,
       kind: 'effect',
       nodeId: node.id,
     });

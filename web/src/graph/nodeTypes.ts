@@ -103,6 +103,19 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     ],
     outputs: [{ name: 'signal' }],
   },
+  Image: {
+    type: 'Image',
+    inputs: [
+      { name: 'x', defaultValue: 0, min: -1, max: 1 },
+      { name: 'y', defaultValue: 0, min: -1, max: 1 },
+    ],
+    outputs: [
+      { name: 'brightness' },
+      { name: 'r' },
+      { name: 'g' },
+      { name: 'b' },
+    ],
+  },
   Buffer: {
     type: 'Buffer',
     inputs: [
@@ -120,6 +133,11 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
       { name: 'speed', defaultValue: 1 },
     ],
     outputs: [{ name: 'playhead' }],
+  },
+  Time: {
+    type: 'Time',
+    inputs: [],
+    outputs: [{ name: 'seconds' }],
   },
   Constant: {
     type: 'Constant',
@@ -361,8 +379,10 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   AudioInput: 'Audio Input',
   CustomWave: 'Custom Wave',
   SamplePlayer: 'Sample',
+  Image: 'Image',
   Buffer: 'Buffer',
   Playhead: 'Playhead',
+  Time: 'Time',
   Constant: 'Constant',
   Pass: 'Pass',
   Slider: 'Slider',

@@ -15,8 +15,10 @@ export type NodeType =
   | 'AudioInput'
   | 'CustomWave'
   | 'SamplePlayer'
+  | 'Image'
   | 'Buffer'
   | 'Playhead'
+  | 'Time'
   | 'Constant'
   | 'Pass'
   | 'Slider'
@@ -72,6 +74,7 @@ export interface PatchNode {
   subpatchCloneId?: string;
   expression?: string;
   sample?: SampleAsset;
+  image?: ImageAsset;
   customWave?: CustomWaveSettings;
   params: Record<string, number>;
   position?: Vec2;
@@ -83,6 +86,11 @@ export interface PatchNode {
 }
 
 export interface SampleAsset {
+  name: string;
+  url: string;
+}
+
+export interface ImageAsset {
   name: string;
   url: string;
 }

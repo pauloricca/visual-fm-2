@@ -96,6 +96,50 @@ const wasmBytes = fs.readFileSync(path.join(repoRoot, 'web/public/audio/visual-f
 const { instance } = await WebAssembly.instantiate(wasmBytes, {});
 const wasm = instance.exports;
 
+const timeProgram = compilePatchToDspProgram({
+  nodes: [
+    node('time', 'Time', {}),
+    node('out', 'AudioOut', { level: 1 }),
+  ],
+  links: [link('time', 'seconds', 'out', 'both')],
+});
+assert(timeProgram.errors.length === 0, `Time DSP compile failed: ${timeProgram.errors.join('; ')}`);
+const timeState = timeProgram.stateBindings.find((binding) => binding.id === 'time:time')?.state;
+assert(Number.isInteger(timeState), 'Time state binding was not emitted.');
+
+wasm.clearDspProgram();
+wasm.resetDspRuntimeState();
+for (let index = 0; index < timeProgram.values.length; index += 1) {
+  wasm.setDspValue(index, timeProgram.values[index]);
+}
+for (const op of timeProgram.ops) {
+  wasm.addDspOp(
+    op.opcode ?? -1,
+    op.out ?? -1,
+    op.a ?? -1,
+    op.b ?? -1,
+    op.c ?? -1,
+    op.d ?? -1,
+    op.e ?? -1,
+    op.state ?? -1,
+    op.value ?? 0,
+    op.value2 ?? 0,
+    op.value3 ?? 0,
+    op.value4 ?? 0,
+  );
+}
+wasm.beginDspRenderQuantum();
+const timeFrames = 2048;
+const timeSampleRate = 48000;
+wasm.renderDspProgram(timeFrames, timeSampleRate);
+const elapsedTime = wasm.getDspState(timeState);
+assert(
+  Math.abs(elapsedTime - timeFrames / timeSampleRate) < 0.000001,
+  `Time should advance in fractional seconds (got ${elapsedTime}).`,
+);
+wasm.resetDspRuntimeState();
+assert(wasm.getDspState(timeState) === 0, 'Time should reset when DSP runtime stops.');
+
 wasm.clearDspProgram();
 wasm.resetDspRuntimeState();
 for (let index = 0; index < dspProgram.values.length; index += 1) {

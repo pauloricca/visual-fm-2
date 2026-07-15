@@ -27,13 +27,14 @@ import { extractExpressionInputs } from '../graph/expression';
 import { defaultParamsFor, getDefinition, getNodeDefinition, sequencerShape } from '../graph/nodeTypes';
 import { normalizePatchCompatibility } from '../graph/patchCompatibility';
 import { patchToJson } from '../graph/serialize';
-import type { CustomWaveSettings, LinkMode, NodeType, Patch, PatchLink, PatchNode, PortDefinition, SampleAsset } from '../graph/types';
+import type { CustomWaveSettings, ImageAsset, LinkMode, NodeType, Patch, PatchLink, PatchNode, PortDefinition, SampleAsset } from '../graph/types';
 import { EdgeOverlayProvider } from './EdgeOverlayContext';
 import {
   edgeFromLink,
   edgeId,
   clampControlNodeSize,
   clampCustomWaveNodeSize,
+  clampImageNodeSize,
   clampScopeNodeSize,
   DEFAULT_CUSTOM_WAVE_NODE_SIZE,
   DEFAULT_SCOPE_NODE_SIZE,
@@ -163,6 +164,14 @@ interface SampleLibraryState {
   error: string | null;
 }
 
+interface ImageLibraryState {
+  nodeId: string;
+  images: ImageAsset[];
+  selectedUrl: string | null;
+  loading: boolean;
+  error: string | null;
+}
+
 interface ImportedSubpatchCandidate {
   key: string;
   name: string;
@@ -260,6 +269,7 @@ function NodeEditorInner() {
   const [saveFeedbackActive, setSaveFeedbackActive] = useState(false);
   const [localPatchLibrary, setLocalPatchLibrary] = useState<LocalPatchLibraryState | null>(null);
   const [sampleLibrary, setSampleLibrary] = useState<SampleLibraryState | null>(null);
+  const [imageLibrary, setImageLibrary] = useState<ImageLibraryState | null>(null);
   const [subpatchImportModal, setSubpatchImportModal] = useState<SubpatchImportModalState | null>(null);
   const [localSubpatchImport, setLocalSubpatchImport] = useState<LocalSubpatchImportState | null>(null);
   const [midiSettingsOpen, setMidiSettingsOpen] = useState(false);
@@ -272,7 +282,9 @@ function NodeEditorInner() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const importFileInputRef = useRef<HTMLInputElement | null>(null);
   const sampleFileInputRef = useRef<HTMLInputElement | null>(null);
+  const imageFileInputRef = useRef<HTMLInputElement | null>(null);
   const pendingSampleUploadNodeIdRef = useRef<string | null>(null);
+  const pendingImageUploadNodeIdRef = useRef<string | null>(null);
   const saveFeedbackTimeoutRef = useRef<number | null>(null);
   const selectedLocalPatchOptionRef = useRef<HTMLButtonElement | null>(null);
   const reconnectingEdgeRef = useRef(false);
@@ -557,6 +569,15 @@ function NodeEditorInner() {
     ));
   }, [commitHistory]);
 
+  const updateNodeImage = useCallback((nodeId: string, image: ImageAsset) => {
+    const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
+    if (!relatedNode || relatedNode.data.patchNode.type !== 'Image') return;
+    commitHistory(`image:${nodeId}`);
+    setNodes((current) => current.map((node) => node.id === nodeId
+      ? { ...node, data: { ...node.data, patchNode: { ...node.data.patchNode, image } } }
+      : node));
+  }, [commitHistory]);
+
   const openSampleLibrary = useCallback(async (nodeId: string) => {
     const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
     if (!relatedNode || relatedNode.data.patchNode.type !== 'SamplePlayer') return;
@@ -676,6 +697,87 @@ function NodeEditorInner() {
     event.stopPropagation();
     uploadDroppedSampleFiles(sampleLibrary.nodeId, event.dataTransfer.files);
   }, [sampleLibrary, uploadDroppedSampleFiles]);
+
+  const openImageLibrary = useCallback(async (nodeId: string) => {
+    const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
+    if (!relatedNode || relatedNode.data.patchNode.type !== 'Image') return;
+    const currentImage = relatedNode.data.patchNode.image ?? null;
+    setImageLibrary({ nodeId, images: currentImage ? [currentImage] : [], selectedUrl: currentImage?.url ?? null, loading: true, error: null });
+    try {
+      const images = await fetchLocalImageLibrary();
+      const visibleImages = currentImage && !images.some((image) => image.url === currentImage.url) ? [currentImage, ...images] : images;
+      setImageLibrary((current) => current && current.nodeId === nodeId ? {
+        ...current,
+        images: visibleImages,
+        selectedUrl: current.selectedUrl ?? visibleImages[0]?.url ?? null,
+        loading: false,
+        error: visibleImages.length === 0 ? 'No images found in images/.' : null,
+      } : current);
+      setImportError(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setImageLibrary((current) => current && current.nodeId === nodeId ? { ...current, images: currentImage ? [currentImage] : [], loading: false, error: message } : current);
+      setImportError(message);
+    }
+  }, []);
+
+  const requestImageUpload = useCallback((nodeId: string) => {
+    pendingImageUploadNodeIdRef.current = nodeId;
+    imageFileInputRef.current?.click();
+  }, []);
+
+  const uploadImageForNode = useCallback(async (nodeId: string, file: File) => {
+    if (!file || !nodeId) return;
+    try {
+      setImageLibrary((current) => current && current.nodeId === nodeId ? { ...current, loading: true, error: null } : current);
+      const formData = new FormData();
+      formData.append('image', file);
+      const response = await fetch('/api/local-images', { method: 'POST', body: formData });
+      if (!response.ok) throw new Error(await response.text() || `Image upload failed (${response.status}).`);
+      const payload = await response.json() as unknown;
+      if (!isRecord(payload) || typeof payload.name !== 'string' || typeof payload.url !== 'string') throw new Error('Image upload returned an invalid response.');
+      updateNodeImage(nodeId, { name: payload.name, url: payload.url });
+      setImageLibrary((current) => current && current.nodeId === nodeId ? null : current);
+      setImportError(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setImageLibrary((current) => current && current.nodeId === nodeId ? { ...current, loading: false, error: message } : current);
+      setImportError(message);
+    }
+  }, [updateNodeImage]);
+
+  const uploadImageFile = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = '';
+    const nodeId = pendingImageUploadNodeIdRef.current;
+    pendingImageUploadNodeIdRef.current = null;
+    if (file && nodeId) await uploadImageForNode(nodeId, file);
+  }, [uploadImageForNode]);
+
+  const handleImageLibraryDragOver = useCallback((event: DragEvent<HTMLElement>) => {
+    if (!imageLibrary || !hasDraggedFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'copy';
+  }, [imageLibrary]);
+
+  const handleImageLibraryDrop = useCallback((event: DragEvent<HTMLElement>) => {
+    if (!imageLibrary || event.dataTransfer.files.length === 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void uploadImageForNode(imageLibrary.nodeId, event.dataTransfer.files[0]);
+  }, [imageLibrary, uploadImageForNode]);
+
+  const selectImageFromLibrary = useCallback((image: ImageAsset) => {
+    if (!imageLibrary) return;
+    updateNodeImage(imageLibrary.nodeId, image);
+    setImageLibrary(null);
+    setImportError(null);
+  }, [imageLibrary, updateNodeImage]);
+
+  const requestImageUploadFromLibrary = useCallback(() => {
+    if (imageLibrary) requestImageUpload(imageLibrary.nodeId);
+  }, [imageLibrary, requestImageUpload]);
 
   const updateEdgeWeight = useCallback((edgeIdToUpdate: string, weight: number) => {
     commitHistory(`weight:${edgeIdToUpdate}`);
@@ -974,6 +1076,7 @@ function NodeEditorInner() {
         relatedNode.data.patchNode.type !== 'Meter' &&
         relatedNode.data.patchNode.type !== 'CustomWave' &&
         relatedNode.data.patchNode.type !== 'SamplePlayer' &&
+        relatedNode.data.patchNode.type !== 'Image' &&
         relatedNode.data.patchNode.type !== 'Slider' &&
         relatedNode.data.patchNode.type !== 'Button'
       )
@@ -981,7 +1084,9 @@ function NodeEditorInner() {
       return;
     }
 
-    const nextSize = relatedNode.data.patchNode.type === 'CustomWave' || relatedNode.data.patchNode.type === 'SamplePlayer'
+    const nextSize = relatedNode.data.patchNode.type === 'Image'
+      ? clampImageNodeSize(size, size.width / Math.max(1, size.height))
+      : relatedNode.data.patchNode.type === 'CustomWave' || relatedNode.data.patchNode.type === 'SamplePlayer'
       ? clampCustomWaveNodeSize(size)
       : relatedNode.data.patchNode.type === 'Slider' || relatedNode.data.patchNode.type === 'Button'
         ? clampControlNodeSize(size)
@@ -999,7 +1104,7 @@ function NodeEditorInner() {
       if (node.id !== nodeId) return node;
 
       const currentSize = node.data.patchNode.scopeSize ?? (
-        node.data.patchNode.type === 'CustomWave' || node.data.patchNode.type === 'SamplePlayer'
+        node.data.patchNode.type === 'CustomWave' || node.data.patchNode.type === 'SamplePlayer' || node.data.patchNode.type === 'Image'
           ? DEFAULT_CUSTOM_WAVE_NODE_SIZE
           : DEFAULT_SCOPE_NODE_SIZE
       );
@@ -1610,6 +1715,7 @@ function NodeEditorInner() {
         onSubpatchNameChange: updateGroupSubpatchName,
         onSampleSelect: openSampleLibrary,
         onSampleDrop: uploadDroppedSampleFiles,
+        onImageSelect: openImageLibrary,
         onPortDoubleClick: insertNodeOnPort,
         onPortSelect: (nodeId: string, side: 'input' | 'output', port: string) => {
           setSelectedBoundaryPort({ nodeId, side, port });
@@ -1652,6 +1758,7 @@ function NodeEditorInner() {
     pendingBoundaryPort,
     openSampleLibrary,
     uploadDroppedSampleFiles,
+    openImageLibrary,
     selectedBoundaryPort,
     selectedLinkPortsByNode,
     updateBoundaryPortName,
@@ -1715,6 +1822,7 @@ function NodeEditorInner() {
   const trimmedRootPatchName = rootPatchName.trim();
   const selectedLocalPatch = localPatchLibrary?.patches.find((entry) => entry.name === localPatchLibrary.selectedPatchName) ?? null;
   const selectedSample = sampleLibrary?.samples.find((sample) => sample.url === sampleLibrary.selectedUrl) ?? null;
+  const selectedImage = imageLibrary?.images.find((image) => image.url === imageLibrary.selectedUrl) ?? null;
   const selectedSubpatchCandidate = subpatchImportModal?.candidates.find((candidate) => candidate.key === subpatchImportModal.selectedKey) ?? null;
   const selectedLocalSubpatch = localSubpatchImport?.subpatches.find((entry) => entry.name === localSubpatchImport.selectedSubpatchName) ?? null;
   const dspPatch = useMemo(() => stripPatchForDsp(patch), [patch]);
@@ -1744,9 +1852,18 @@ function NodeEditorInner() {
     const audioAccumulatorValue = node.data.patchNode.type === 'Accumulator'
       ? audio.linkMeters[`${node.id}:accumulator`]?.output
       : undefined;
+    const audioImageX = node.data.patchNode.type === 'Image'
+      ? audio.linkMeters[`${node.id}:image-x`]?.output
+      : undefined;
+    const audioImageY = node.data.patchNode.type === 'Image'
+      ? audio.linkMeters[`${node.id}:image-y`]?.output
+      : undefined;
+    const audioImagePosition = typeof audioImageX === 'number' && typeof audioImageY === 'number'
+      ? { x: audioImageX, y: audioImageY }
+      : undefined;
     const showsPlaybackVisual = node.data.patchNode.type === 'CustomWave' || node.data.patchNode.type === 'SamplePlayer';
     const audioPlayhead = showsPlaybackVisual ? audio.playheads[node.id] : undefined;
-    if (!hasAudioMonitor && !hasAudioOutputMeter && audioSelectorIndex === undefined && audioAccumulatorValue === undefined && !midiControlVisual && dspErrors.length === 0 && !showsPlaybackVisual) return node;
+    if (!hasAudioMonitor && !hasAudioOutputMeter && audioSelectorIndex === undefined && audioAccumulatorValue === undefined && !audioImagePosition && !midiControlVisual && dspErrors.length === 0 && !showsPlaybackVisual) return node;
 
     return {
       ...node,
@@ -1759,6 +1876,7 @@ function NodeEditorInner() {
         ...(monitorLinkId && node.data.patchNode.type === 'Slider' ? { audioSliderValue: audio.linkMeters[monitorLinkId]?.output } : {}),
         ...(audioSelectorIndex !== undefined ? { audioSelectorIndex } : {}),
         ...(audioAccumulatorValue !== undefined ? { audioAccumulatorValue } : {}),
+        ...(audioImagePosition ? { audioImagePosition } : {}),
         ...(monitorLinkId && node.data.patchNode.type === 'Sequencer' ? { audioSequencerStep: audio.linkMeters[monitorLinkId]?.output } : {}),
         ...(audioPlayhead !== undefined ? { audioPlayhead } : {}),
         ...(midiControlVisual?.sliderValue !== undefined ? { midiSliderValue: midiControlVisual.sliderValue } : {}),
@@ -3076,6 +3194,7 @@ function NodeEditorInner() {
           <input ref={fileInputRef} className="file-input" type="file" accept="application/json,.json" onChange={loadPatchFile} />
           <input ref={importFileInputRef} className="file-input" type="file" accept="application/json,.json" onChange={loadSubpatchImportFile} />
           <input ref={sampleFileInputRef} className="file-input" type="file" accept="audio/*,.wav,.mp3,.aiff,.aif,.flac,.ogg,.m4a" onChange={uploadSampleFile} />
+          <input ref={imageFileInputRef} className="file-input" type="file" accept="image/avif,image/gif,image/jpeg,image/png,image/webp,.avif,.gif,.jpg,.jpeg,.png,.webp" onChange={uploadImageFile} />
           {importError ? <p className="import-error-floating">{importError}</p> : null}
           {audioGraph.errors.length > 0 ? (
             <section className="dsp-error-panel" aria-live="polite" aria-label="DSP compile errors">
@@ -3154,6 +3273,36 @@ function NodeEditorInner() {
                   <button type="button" onClick={closeSampleLibrary}>Cancel</button>
                   <button type="button" onClick={requestSampleUploadFromLibrary}>Upload new</button>
                   <button type="button" onClick={() => selectedSample && selectSampleFromLibrary(selectedSample)} disabled={!selectedSample}>Select</button>
+                </footer>
+              </section>
+            </div>
+          ) : null}
+          {imageLibrary ? (
+            <div className="import-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setImageLibrary(null); }}>
+              <section className="import-modal image-modal" role="dialog" aria-modal="true" aria-labelledby="image-modal-title" onDragOver={handleImageLibraryDragOver} onDrop={handleImageLibraryDrop}>
+                <header className="import-modal-header">
+                  <div><h2 id="image-modal-title">Select image</h2><p>images/</p></div>
+                  <button className="import-modal-close" type="button" onClick={() => setImageLibrary(null)} aria-label="Close image picker" title="Close">X</button>
+                </header>
+                {imageLibrary.loading || imageLibrary.error ? <p className={['import-modal-message', imageLibrary.error ? 'error' : ''].filter(Boolean).join(' ')}>{imageLibrary.error ?? 'Reading images...'}</p> : null}
+                <div className="image-library-browser">
+                  {imageLibrary.images.length > 0 ? (
+                    <div className="image-list" role="listbox" aria-label="Images">
+                      {imageLibrary.images.map((image) => (
+                        <button className={['image-option', image.url === imageLibrary.selectedUrl ? 'image-option-selected' : ''].filter(Boolean).join(' ')} key={image.url} type="button" role="option" aria-selected={image.url === imageLibrary.selectedUrl} onClick={() => setImageLibrary((current) => current ? { ...current, selectedUrl: image.url } : current)} onDoubleClick={() => selectImageFromLibrary(image)}>
+                          <img src={image.url} alt="" /><span>{image.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  <div className="image-modal-preview" aria-label="Selected image preview">
+                    {selectedImage ? <img src={selectedImage.url} alt={selectedImage.name} /> : <span>No image selected</span>}
+                  </div>
+                </div>
+                <footer className="import-modal-actions">
+                  <button type="button" onClick={() => setImageLibrary(null)}>Cancel</button>
+                  <button type="button" onClick={requestImageUploadFromLibrary}>Upload new</button>
+                  <button type="button" onClick={() => selectedImage && selectImageFromLibrary(selectedImage)} disabled={!selectedImage}>Select</button>
                 </footer>
               </section>
             </div>
@@ -3419,6 +3568,16 @@ async function fetchLocalSampleLibrary(): Promise<SampleAsset[]> {
     isRecord(entry) && typeof entry.name === 'string' && typeof entry.url === 'string'
       ? [{ name: entry.name, url: entry.url }]
       : []
+  ));
+}
+
+async function fetchLocalImageLibrary(): Promise<ImageAsset[]> {
+  const response = await fetch('/api/local-images', { method: 'GET', headers: { Accept: 'application/json' } });
+  if (!response.ok) throw new Error(await localPatchStorageError(response));
+  const payload = await response.json() as unknown;
+  if (!isRecord(payload) || !Array.isArray(payload.images)) throw new Error('Local image library response was not valid.');
+  return payload.images.flatMap((entry): ImageAsset[] => (
+    isImageAsset(entry) ? [{ name: entry.name, url: entry.url }] : []
   ));
 }
 
@@ -3774,6 +3933,7 @@ function stripPatchNodeForDsp(node: PatchNode): PatchNode {
     ...(node.subpatchCloneId ? { subpatchCloneId: node.subpatchCloneId } : {}),
     ...(node.expression !== undefined ? { expression: node.expression } : {}),
     ...(node.sample ? { sample: { ...node.sample } } : {}),
+    ...(node.image ? { image: { ...node.image } } : {}),
     ...(node.customWave ? { customWave: normalizeCustomWave(node.customWave, node.params) } : {}),
     params: { ...node.params },
     ...(node.inputs ? { inputs: node.inputs.map((port) => ({ ...port })) } : {}),
@@ -3807,6 +3967,9 @@ function parsePatchNode(value: unknown, index: number): PatchNode | null {
   if (value.sample !== undefined && !isSampleAsset(value.sample)) {
     throw new Error(`Node "${value.id}" sample must include a string name and url.`);
   }
+  if (value.image !== undefined && !isImageAsset(value.image)) {
+    throw new Error(`Node "${value.id}" image must include a string name and url.`);
+  }
   if (value.compactPorts !== undefined && typeof value.compactPorts !== 'boolean') {
     throw new Error(`Node "${value.id}" compactPorts must be a boolean.`);
   }
@@ -3836,6 +3999,7 @@ function parsePatchNode(value: unknown, index: number): PatchNode | null {
     ...(value.subpatchCloneId ? { subpatchCloneId: value.subpatchCloneId } : {}),
     ...(expression !== undefined ? { expression } : {}),
     ...(isSampleAsset(value.sample) ? { sample: value.sample } : {}),
+    ...(isImageAsset(value.image) ? { image: value.image } : {}),
     ...(customWave ? { customWave } : {}),
     params,
     ...(position ? { position } : {}),
@@ -3887,6 +4051,10 @@ function isSampleAsset(value: unknown): value is SampleAsset {
   return isRecord(value) && typeof value.name === 'string' && typeof value.url === 'string';
 }
 
+function isImageAsset(value: unknown): value is ImageAsset {
+  return isRecord(value) && typeof value.name === 'string' && typeof value.url === 'string';
+}
+
 function parsePosition(value: unknown, nodeId: string): { x: number; y: number } {
   if (!isRecord(value) || typeof value.x !== 'number' || typeof value.y !== 'number') {
     throw new Error(`Node "${nodeId}" position must have numeric x and y.`);
@@ -3900,6 +4068,7 @@ function parseNodeDisplaySize(value: unknown, nodeId: string, type: NodeType): S
   }
 
   const size = { width: value.width, height: value.height };
+  if (type === 'Image') return clampImageNodeSize(size, size.width / Math.max(1, size.height));
   if (type === 'CustomWave' || type === 'SamplePlayer') return clampCustomWaveNodeSize(size);
   if (type === 'Slider' || type === 'Button') return clampControlNodeSize(size);
   return clampScopeNodeSize(size);
@@ -4587,6 +4756,7 @@ function patchNodeFromFlowNode(node: ShaderFlowNode): PatchNode {
     ...(patchNode.subpatchCloneId ? { subpatchCloneId: patchNode.subpatchCloneId } : {}),
     ...(patchNode.expression !== undefined ? { expression: patchNode.expression } : {}),
     ...(patchNode.sample ? { sample: { ...patchNode.sample } } : {}),
+    ...(patchNode.image ? { image: { ...patchNode.image } } : {}),
     ...(patchNode.customWave ? { customWave: normalizeCustomWave(patchNode.customWave, patchNode.params) } : {}),
     params: { ...patchNode.params },
     position: { ...node.position },
@@ -4607,6 +4777,7 @@ function clonePatch(patch: ReturnType<typeof patchFromFlow>): ReturnType<typeof 
       ...(node.subpatchCloneId ? { subpatchCloneId: node.subpatchCloneId } : {}),
       ...(node.expression !== undefined ? { expression: node.expression } : {}),
       ...(node.sample ? { sample: { ...node.sample } } : {}),
+      ...(node.image ? { image: { ...node.image } } : {}),
       ...(node.customWave ? { customWave: normalizeCustomWave(node.customWave, node.params) } : {}),
       params: { ...node.params },
       ...(node.position ? { position: { ...node.position } } : {}),
@@ -4744,6 +4915,11 @@ function viewportNodeSize(node: ShaderFlowNode): { width: number; height: number
 
   if (patchNode.type === 'Scope' || patchNode.type === 'Meter') {
     const size = clampScopeNodeSize(patchNode.scopeSize ?? DEFAULT_SCOPE_NODE_SIZE);
+    return { width: size.width, height: size.height + NODE_HEADER_HEIGHT };
+  }
+
+  if (patchNode.type === 'Image') {
+    const size = clampImageNodeSize(patchNode.scopeSize ?? DEFAULT_CUSTOM_WAVE_NODE_SIZE, (patchNode.scopeSize?.width ?? DEFAULT_CUSTOM_WAVE_NODE_SIZE.width) / Math.max(1, patchNode.scopeSize?.height ?? DEFAULT_CUSTOM_WAVE_NODE_SIZE.height));
     return { width: size.width, height: size.height + NODE_HEADER_HEIGHT };
   }
 

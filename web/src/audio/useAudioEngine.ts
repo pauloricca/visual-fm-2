@@ -136,7 +136,23 @@ interface SampleDataRequest {
   promise: Promise<SampleDataCacheEntry | null>;
 }
 
-const AUDIO_ENGINE_ASSET_VERSION = '2026-07-15-scope-window';
+interface ImageDataCacheEntry {
+  key: string;
+  data: Uint8Array;
+  width: number;
+  height: number;
+  name: string;
+}
+
+interface ImageDataRequest {
+  key: string;
+  promise: Promise<ImageDataCacheEntry | null>;
+}
+
+// Keep this in step with public/audio/visual-fm-kernel.wasm.  AudioWorklet
+// modules and WASM are aggressively cached, and an older kernel has no image
+// upload/sampling exports, which otherwise looks exactly like a black image.
+const AUDIO_ENGINE_ASSET_VERSION = '2026-07-15-image-bipolar-coordinates';
 const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const METER_UPDATE_INTERVAL_MS = 80;
@@ -284,6 +300,10 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   const sampleDataKeysRef = useRef<Record<string, string>>({});
   const sampleDataCacheRef = useRef<Record<string, SampleDataCacheEntry>>({});
   const sampleDataRequestRef = useRef<Record<string, SampleDataRequest>>({});
+  const imageDataKeysRef = useRef<Record<string, string>>({});
+  const imageDataCacheRef = useRef<Record<string, ImageDataCacheEntry>>({});
+  const imageDataRequestRef = useRef<Record<string, ImageDataRequest>>({});
+  const imageDataWorkletRef = useRef<AudioWorkletNode | null>(null);
   const recordingRequestedRef = useRef(false);
   const recordingCaptureRef = useRef<RecordingCapture | null>(null);
   const recordingSessionIdRef = useRef(0);
@@ -846,6 +866,48 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     }
   }, []);
 
+  const syncGraphImages = useCallback((graph: DspProgram, node: AudioWorkletNode) => {
+    // The cache records delivery to a particular worklet, not merely that the
+    // image was decoded once. A recreated AudioContext starts with blank WASM
+    // image slots and must receive the bytes again.
+    if (imageDataWorkletRef.current !== node) {
+      imageDataWorkletRef.current = node;
+      imageDataKeysRef.current = {};
+    }
+    const nextKeys: Record<string, string> = {};
+    for (const binding of graph.imageBindings) {
+      const imageUrl = binding.image.url.trim();
+      if (!imageUrl) continue;
+      const key = `${imageUrl}\n${binding.image.name}`;
+      nextKeys[binding.nodeId] = key;
+      if (imageDataKeysRef.current[binding.nodeId] === key) continue;
+      imageDataKeysRef.current[binding.nodeId] = key;
+      void loadAndPostImageData(binding.nodeId, imageUrl, binding.image.name, key, node, imageDataCacheRef, imageDataRequestRef)
+        .catch(() => {
+          if (imageDataKeysRef.current[binding.nodeId] === key) delete imageDataKeysRef.current[binding.nodeId];
+        });
+    }
+    for (const nodeId of Object.keys(imageDataKeysRef.current)) {
+      if (nextKeys[nodeId]) continue;
+      delete imageDataKeysRef.current[nodeId];
+      node.port.postMessage({ type: 'imageData', payload: { nodeId, data: new Uint8Array(), width: 0, height: 0, name: '' } });
+    }
+  }, []);
+
+  const preloadGraphImages = useCallback((graph: DspProgram) => {
+    const nextKeys: Record<string, string> = {};
+    for (const binding of graph.imageBindings) {
+      const imageUrl = binding.image.url.trim();
+      if (!imageUrl) continue;
+      const key = `${imageUrl}\n${binding.image.name}`;
+      nextKeys[binding.nodeId] = key;
+      void loadCachedImageData(binding.nodeId, imageUrl, binding.image.name, key, imageDataCacheRef, imageDataRequestRef).catch(() => undefined);
+    }
+    for (const nodeId of Object.keys(imageDataCacheRef.current)) {
+      if (nextKeys[nodeId] !== imageDataCacheRef.current[nodeId]?.key) delete imageDataCacheRef.current[nodeId];
+    }
+  }, []);
+
   const syncMidiInput = useCallback((graph: DspProgram, node: AudioWorkletNode) => {
     if (!programUsesMidi(graph) && !midiInputEnabled && !midiAccessRequestedRef.current) {
       disconnectMidiInput();
@@ -909,6 +971,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
 
     if (graphRef.current) {
       syncGraphSamples(graphRef.current, context, node);
+      syncGraphImages(graphRef.current, node);
       syncAudioInput(graphRef.current, context, node);
       syncMidiInput(graphRef.current, node);
     }
@@ -929,7 +992,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
         beginRecordingCapture(context, node);
       }
     }
-  }, [beginRecordingCapture, startMeter, syncAudioInput, syncGraphSamples, syncMidiInput]);
+  }, [beginRecordingCapture, startMeter, syncAudioInput, syncGraphImages, syncGraphSamples, syncMidiInput]);
 
   const ensureAudioEngine = useCallback(async (activate: boolean) => {
     if (stopTimeoutRef.current !== null) {
@@ -1100,10 +1163,12 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
 
           if (graphRef.current) {
             sampleDataKeysRef.current = {};
+            imageDataKeysRef.current = {};
             lastSentProgramStructureRef.current = dspProgramStructureKey(graphRef.current);
             lastSentValuesRef.current = [...graphRef.current.values];
             node.port.postMessage({ type: 'dspProgram', payload: graphRef.current });
             syncGraphSamples(graphRef.current, context, node);
+            syncGraphImages(graphRef.current, node);
           }
           if (activeScopeRequestsRef.current.length > 0) {
             node.port.postMessage({
@@ -1144,11 +1209,12 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     if (activate) {
       await activateAudioEngine();
     }
-  }, [activateAudioEngine, appendRecordingChunk, beginRecordingCapture, completeRecordingCapture, syncGraphSamples]);
+  }, [activateAudioEngine, appendRecordingChunk, beginRecordingCapture, completeRecordingCapture, syncGraphImages, syncGraphSamples]);
 
   const syncGraph = useCallback((graph: DspProgram) => {
     graphRef.current = graph;
     preloadGraphSamples(graph);
+    preloadGraphImages(graph);
     if (!nodeRef.current || !contextRef.current) {
       if (programUsesAudioInput(graph)) {
         const mediaDevices = navigator.mediaDevices;
@@ -1194,6 +1260,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
       && arraysEqual(lastSentValuesRef.current, graph.values)
     ) {
       syncGraphSamples(graph, contextRef.current, nodeRef.current);
+      syncGraphImages(graph, nodeRef.current);
       if (shouldSyncExternalInputs) {
         syncAudioInput(graph, contextRef.current, nodeRef.current);
         syncMidiInput(graph, nodeRef.current);
@@ -1205,6 +1272,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
       lastSentValuesRef.current = [...graph.values];
       nodeRef.current.port.postMessage({ type: 'dspValues', payload: { values: graph.values } });
       syncGraphSamples(graph, contextRef.current, nodeRef.current);
+      syncGraphImages(graph, nodeRef.current);
       if (shouldSyncExternalInputs) {
         syncAudioInput(graph, contextRef.current, nodeRef.current);
         syncMidiInput(graph, nodeRef.current);
@@ -1216,6 +1284,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     lastSentValuesRef.current = [...graph.values];
     nodeRef.current.port.postMessage({ type: 'dspProgram', payload: graph });
     syncGraphSamples(graph, contextRef.current, nodeRef.current);
+    syncGraphImages(graph, nodeRef.current);
     if (shouldSyncExternalInputs) {
       syncAudioInput(graph, contextRef.current, nodeRef.current);
       syncMidiInput(graph, nodeRef.current);
@@ -1226,7 +1295,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
         ? scopePayload(activeScopeRequestsRef.current)
         : {},
     });
-  }, [disconnectAudioInput, disconnectMidiInput, ensureAudioEngine, midiInputEnabled, preloadGraphSamples, refreshAudioInputDevices, selectedMidiInputDeviceIdSet, selectedMidiInputDeviceIds.length, selectedMidiInputDeviceKey, syncAudioInput, syncGraphSamples, syncMidiInput, updateMidiInputDevices]);
+  }, [disconnectAudioInput, disconnectMidiInput, ensureAudioEngine, midiInputEnabled, preloadGraphImages, preloadGraphSamples, refreshAudioInputDevices, selectedMidiInputDeviceIdSet, selectedMidiInputDeviceIds.length, selectedMidiInputDeviceKey, syncAudioInput, syncGraphImages, syncGraphSamples, syncMidiInput, updateMidiInputDevices]);
 
   const setLinkScopes = useCallback((requests: ScopeCaptureRequest[]) => {
     const nextRequests = normalizeScopeCaptureRequests(requests);
@@ -1510,6 +1579,7 @@ function dspProgramStructureKey(program: DspProgram): string {
     feedbackLinkIds: program.feedbackLinkIds,
     monitorIds: program.monitorIds,
     sampleBindings: program.sampleBindings,
+    imageBindings: program.imageBindings,
     customWaveBindings: program.customWaveBindings,
     maxVoices: program.maxVoices,
     usesMidiNote: program.usesMidiNote,
@@ -1675,6 +1745,68 @@ async function loadAndPostSampleData(
   const entry = await loadCachedSampleData(nodeId, url, name, key, cacheRef, requestRef, context);
   if (!entry || keysRef.current[nodeId] !== key) return;
   postSampleData(node, nodeId, entry);
+}
+
+async function loadAndPostImageData(
+  nodeId: string,
+  url: string,
+  name: string,
+  key: string,
+  node: AudioWorkletNode,
+  cacheRef: { current: Record<string, ImageDataCacheEntry> },
+  requestRef: { current: Record<string, ImageDataRequest> },
+): Promise<void> {
+  const entry = await loadCachedImageData(nodeId, url, name, key, cacheRef, requestRef);
+  if (!entry) return;
+  node.port.postMessage({
+    type: 'imageData',
+    payload: { nodeId, data: entry.data, width: entry.width, height: entry.height, name: entry.name },
+  });
+}
+
+async function loadCachedImageData(
+  nodeId: string,
+  url: string,
+  name: string,
+  key: string,
+  cacheRef: { current: Record<string, ImageDataCacheEntry> },
+  requestRef: { current: Record<string, ImageDataRequest> },
+): Promise<ImageDataCacheEntry | null> {
+  if (cacheRef.current[nodeId]?.key === key) return cacheRef.current[nodeId];
+  const existing = requestRef.current[nodeId];
+  if (existing?.key === key) return existing.promise;
+  const promise = (async (): Promise<ImageDataCacheEntry | null> => {
+    const response = await fetch(url, { cache: 'force-cache' });
+    if (!response.ok) throw new Error(`Could not load image "${name || url}" (${response.status}).`);
+    const decoded = await decodeImageRgba(await response.blob());
+    const entry: ImageDataCacheEntry = { key, name, ...decoded };
+    cacheRef.current[nodeId] = entry;
+    return entry;
+  })().finally(() => {
+    if (requestRef.current[nodeId]?.key === key) delete requestRef.current[nodeId];
+  });
+  requestRef.current[nodeId] = { key, promise };
+  return promise;
+}
+
+async function decodeImageRgba(blob: Blob): Promise<{ data: Uint8Array; width: number; height: number }> {
+  const bitmap = await createImageBitmap(blob);
+  const scale = Math.min(1, 1024 / Math.max(bitmap.width, bitmap.height));
+  const width = Math.max(1, Math.round(bitmap.width * scale));
+  const height = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas: OffscreenCanvas | HTMLCanvasElement = typeof OffscreenCanvas === 'undefined'
+    ? document.createElement('canvas')
+    : new OffscreenCanvas(width, height);
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) {
+    bitmap.close();
+    throw new Error('This browser cannot read image pixels.');
+  }
+  context.drawImage(bitmap, 0, 0, width, height);
+  bitmap.close();
+  return { data: new Uint8Array(context.getImageData(0, 0, width, height).data), width, height };
 }
 
 async function loadCachedSampleData(

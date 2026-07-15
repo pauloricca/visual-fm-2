@@ -13,6 +13,7 @@ export function normalizePatch(patch: Patch): Patch {
         ...(node.subpatchCloneId ? { subpatchCloneId: node.subpatchCloneId } : {}),
         ...(node.expression !== undefined ? { expression: node.expression } : {}),
         ...(node.sample ? { sample: { ...node.sample } } : {}),
+        ...(node.image ? { image: { ...node.image } } : {}),
         ...(node.customWave ? { customWave: normalizeCustomWave(node.customWave, node.params) } : {}),
         params: sortRecord(node.params),
         ...(node.position ? { position: node.position } : {}),

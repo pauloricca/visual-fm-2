@@ -48,6 +48,7 @@ const auditedPorts = {
   SamplePlayer: ['start', 'end', 'attack', 'release', 'stretch', 'cycleLength', 'overlapRatio', 'originalFrequency'],
   Buffer: ['signal', 'playhead', 'recordHead', 'length'],
   Playhead: ['start', 'speed'],
+  Time: [],
   Slider: ['signal'],
   Button: ['signal'],
   Clamp: ['min', 'max'],
@@ -88,6 +89,7 @@ const patch = {
       level: 0.7,
     }),
     node('playhead', 'Playhead', { start: 0, speed: 1 }),
+    node('time', 'Time'),
     node('buffer', 'Buffer', { playhead: 0, recordHead: 0.5, length: 1 }),
     node('slider', 'Slider', { value: 0.25, min: 10, max: 20, direction: 0 }),
     node('clamp', 'Clamp', { min: -0.5, max: 0.5 }),
@@ -131,6 +133,15 @@ const patch = {
 
 const dspProgram = compilePatchToDspProgram(patch);
 assert(dspProgram.errors.length === 0, `DSP compile failed: ${dspProgram.errors.join('; ')}`);
+
+const timeProgram = compilePatchToDspProgram({
+  nodes: [
+    node('time', 'Time'),
+    node('out', 'AudioOut', { level: 0.75 }),
+  ],
+  links: [link('time', 'seconds', 'out', 'both')],
+});
+assert(timeProgram.errors.length === 0, `Time DSP compile failed: ${timeProgram.errors.join('; ')}`);
 
 for (const [type, ports] of Object.entries(auditedPorts)) {
   const nodeId = type === 'LowpassFilter' ? 'filter' : type === 'SamplePlayer' ? 'sample' : type.toLowerCase();
@@ -179,6 +190,11 @@ assert(
   dspProgram.stateBindings.some((binding) => binding.id === 'playhead:playhead' && binding.count === 1)
     && dspProgram.ops.some((op) => op.opcode === 33),
   'Playhead should compile with one relative-position state slot.',
+);
+assert(
+  timeProgram.stateBindings.some((binding) => binding.id === 'time:time' && binding.count === 1)
+    && timeProgram.ops.some((op) => op.opcode === 37),
+  'Time should compile with one elapsed-seconds state slot.',
 );
 assert(
   dspProgram.stateBindings.some((binding) => binding.id === 'buffer:buffer' && binding.count === 1)

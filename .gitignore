@@ -5,6 +5,7 @@ node_modules/
 patches/
 recordings/
 samples/
+images/
 
 # Build output
 dist/

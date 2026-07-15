@@ -11,6 +11,7 @@ import {
   type MouseEvent,
   type PointerEvent,
   type RefObject,
+  type SyntheticEvent,
 } from 'react';
 import {
   CUSTOM_WAVE_MODES,
@@ -31,7 +32,9 @@ import type { CustomWaveMode, CustomWavePoint, CustomWaveSettings, NodeDefinitio
 import {
   clampControlNodeSize,
   clampCustomWaveNodeSize,
+  clampImageNodeSize,
   clampScopeNodeSize,
+  DEFAULT_IMAGE_ASPECT_RATIO,
   DEFAULT_CUSTOM_WAVE_NODE_SIZE,
   DEFAULT_SCOPE_NODE_SIZE,
   type ScopeNodeSize,
@@ -63,6 +66,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const [dragTarget, setDragTarget] = useState<{ side: 'input' | 'output'; port: string } | null>(null);
   const [scopeResizeCorner, setScopeResizeCorner] = useState<'bottom-left' | 'bottom-right' | null>(null);
   const [expressionDraft, setExpressionDraft] = useState(node.expression ?? '');
+  const [imageAspectRatio, setImageAspectRatio] = useState(DEFAULT_IMAGE_ASPECT_RATIO);
   const [pointerOver, setPointerOver] = useState(false);
   const definition = node.type ? getNodeDefinition(node as PatchNode) : null;
   const isExpression = node.type === 'Expression';
@@ -85,7 +89,10 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const showMidiNoteDisplay = node.type === 'MidiNote';
   const showCustomWaveEditor = node.type === 'CustomWave';
   const showSampleUpload = node.type === 'SamplePlayer';
-  const showResizableDisplay = showMeterDisplay || showScopeDisplay || showSliderDisplay || showButtonDisplay || showCustomWaveEditor || showSampleUpload;
+  const showImageDisplay = node.type === 'Image';
+  const imageX = centeredCoordinateToUnit(data.audioImagePosition?.x ?? node.params.x ?? 0);
+  const imageY = centeredCoordinateToUnit(data.audioImagePosition?.y ?? node.params.y ?? 0);
+  const showResizableDisplay = showMeterDisplay || showScopeDisplay || showSliderDisplay || showButtonDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay;
   const customWave = showCustomWaveEditor ? normalizeCustomWave(node.customWave, node.params) : null;
   const customWavePlayhead = clamp(data.audioPlayhead ?? normalizeUnitInterval(node.params.phase ?? 0), 0, 1);
   const sequencer = showSequencerDisplay ? sequencerShape(node.params) : null;
@@ -102,10 +109,12 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     : showMeterDisplay || showScopeDisplay
       ? clampScopeNodeSize(node.scopeSize ?? DEFAULT_SCOPE_NODE_SIZE)
     : DEFAULT_SCOPE_NODE_SIZE;
-  const waveformDisplaySize = showCustomWaveEditor || showSampleUpload
-    ? clampCustomWaveNodeSize(node.scopeSize ?? DEFAULT_CUSTOM_WAVE_NODE_SIZE)
-    : DEFAULT_CUSTOM_WAVE_NODE_SIZE;
-  const displaySize = showCustomWaveEditor || showSampleUpload ? waveformDisplaySize : scopeSize;
+  const waveformDisplaySize = showImageDisplay
+    ? clampImageNodeSize(node.scopeSize ?? DEFAULT_CUSTOM_WAVE_NODE_SIZE, imageAspectRatio)
+    : showCustomWaveEditor || showSampleUpload
+      ? clampCustomWaveNodeSize(node.scopeSize ?? DEFAULT_CUSTOM_WAVE_NODE_SIZE)
+      : DEFAULT_CUSTOM_WAVE_NODE_SIZE;
+  const displaySize = showCustomWaveEditor || showSampleUpload || showImageDisplay ? waveformDisplaySize : scopeSize;
   const meterScaleTicks = showMeterDisplay ? meterScaleTicksForRange(amplitudeRange, displaySize.width) : [];
   const meterGridTicks = showMeterDisplay ? meterGridTicksForWidth(displaySize.width) : [];
   const meterGridRows = showMeterDisplay ? meterGridRowsForHeight(displaySize.height) : [];
@@ -113,6 +122,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     ? ({
         '--node-display-width': `${displaySize.width}px`,
         '--node-display-height': `${displaySize.height}px`,
+        ...(showImageDisplay ? { '--image-aspect-ratio': String(imageAspectRatio) } : {}),
       } as CSSProperties)
     : undefined;
   const dspErrors = data.dspErrors ?? [];
@@ -163,6 +173,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     showSequencerDisplay ? 'shader-node-sequencer' : '',
     showAudioOutputDisplay ? 'shader-node-audio-out' : '',
     showSampleUpload ? 'shader-node-sampleplayer' : '',
+    showImageDisplay ? 'shader-node-image' : '',
     showAudioInputDisplay ? 'shader-node-audio-input' : '',
     showMidiNoteDisplay ? 'shader-node-midi-note' : '',
     showCustomWaveEditor ? 'shader-node-custom-wave' : '',
@@ -192,6 +203,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     showAllPorts,
     displaySize.height,
     displaySize.width,
+    imageAspectRatio,
     customWave?.mode,
     customWave?.points,
     customWave?.sustainEnd,
@@ -303,13 +315,13 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
       const zoom = reactFlow.getZoom() || 1;
       const deltaX = (event.clientX - resize.startPointer.x) / zoom;
       const deltaY = (event.clientY - resize.startPointer.y) / zoom;
-      const rawNextSize = {
-        width: resize.corner === 'bottom-left'
-          ? resize.startSize.width - deltaX
-          : resize.startSize.width + deltaX,
-        height: resize.startSize.height + deltaY,
-      };
-      const nextSize = showCustomWaveEditor || showSampleUpload
+      const rawWidth = resize.corner === 'bottom-left'
+        ? resize.startSize.width - deltaX
+        : resize.startSize.width + deltaX;
+      const rawNextSize = { width: rawWidth, height: resize.startSize.height + deltaY };
+      const nextSize = showImageDisplay
+        ? clampImageNodeSize({ width: rawWidth, height: rawWidth / imageAspectRatio }, imageAspectRatio)
+        : showCustomWaveEditor || showSampleUpload
         ? clampCustomWaveNodeSize(rawNextSize)
         : showSliderDisplay || showButtonDisplay
           ? clampControlNodeSize(rawNextSize)
@@ -341,7 +353,20 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('pointercancel', handlePointerCancel);
     };
-  }, [data, node.id, reactFlow, showCustomWaveEditor, showSampleUpload, showSliderDisplay, showButtonDisplay]);
+  }, [data, imageAspectRatio, node.id, reactFlow, showCustomWaveEditor, showSampleUpload, showImageDisplay, showSliderDisplay, showButtonDisplay]);
+
+  useEffect(() => {
+    setImageAspectRatio(DEFAULT_IMAGE_ASPECT_RATIO);
+  }, [node.image?.url]);
+
+  function handleImageLoad(event: SyntheticEvent<HTMLImageElement>) {
+    const image = event.currentTarget;
+    const aspect = image.naturalWidth / Math.max(1, image.naturalHeight);
+    if (!Number.isFinite(aspect) || aspect <= 0) return;
+    setImageAspectRatio(aspect);
+    const width = node.scopeSize?.width ?? DEFAULT_CUSTOM_WAVE_NODE_SIZE.width;
+    data.onScopeResize(node.id, clampImageNodeSize({ width, height: width / aspect }, aspect), 'right');
+  }
 
   useEffect(() => {
     function handlePointerMove(event: globalThis.PointerEvent) {
@@ -455,7 +480,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
 
     const rect = editor.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return null;
-    const padding = 18;
+    const padding = 12;
     const width = 300;
     const height = 128;
     const innerWidth = width - padding * 2;
@@ -652,6 +677,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           const showBody = !compactPorts
             || isExpression
             || showSampleUpload
+            || showImageDisplay
             || showAudioInputDisplay
             || showMidiNoteDisplay
             || showTempoDisplay
@@ -683,6 +709,8 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           showMidiNoteDisplay ? 'shader-node-body-midi-note' : '',
           showCustomWaveEditor ? 'shader-node-body-custom-wave' : '',
           showSampleUpload ? 'shader-node-body-sampleplayer' : '',
+          showImageDisplay ? 'shader-node-body-image' : '',
+          showImageDisplay ? 'shader-node-body-full-width-display' : '',
           !showSequencerDisplay && (visibleOutputPorts.length === 0 || showHeaderOutputPort) ? 'shader-node-body-no-outputs' : '',
         ].filter(Boolean).join(' ')}>
           {isExpression ? (
@@ -736,6 +764,22 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                 onPointerDown={(event) => event.stopPropagation()}
               >
                 {node.sample?.name ?? 'Select sample'}
+              </button>
+            </div>
+          ) : null}
+          {showImageDisplay ? (
+            <div className="shader-node-full-width-display image-node-display nodrag nopan" aria-label={node.image?.url ? 'Image coordinate preview' : 'Image preview'}>
+              {node.image?.url ? <img src={node.image.url} alt={node.image.name} draggable={false} onLoad={handleImageLoad} /> : <span>Select an image</span>}
+              {node.image?.url ? <>
+                <i className="image-node-crosshair image-node-crosshair-vertical" style={{ left: `calc(${imageX} * (100% - 1px))` }} />
+                <i className="image-node-crosshair image-node-crosshair-horizontal" style={{ top: `calc(${imageY} * (100% - 1px))` }} />
+              </> : null}
+            </div>
+          ) : null}
+          {showImageDisplay ? (
+            <div className="sample-upload-row">
+              <button className="sample-upload-button nodrag nopan" type="button" title={node.image?.name ?? 'Select image'} onClick={() => data.onImageSelect?.(node.id)} onPointerDown={(event) => event.stopPropagation()}>
+                {node.image?.name ?? 'Select image'}
               </button>
             </div>
           ) : null}
@@ -1221,7 +1265,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   'audio-node-scope-resize-handle audio-node-scope-resize-handle-left nodrag nopan',
                   scopeResizeCorner === 'bottom-left' ? 'audio-node-scope-resize-handle-active' : '',
                 ].filter(Boolean).join(' ')}
-                title={showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : 'Resize scope'}
+                title={showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showImageDisplay ? 'Resize image' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : 'Resize scope'}
                 onPointerDown={(event) => handleScopeResizePointerDown(event, 'bottom-left')}
                 onClick={handleScopeResizeClick}
                 onDoubleClick={(event) => event.stopPropagation()}
@@ -1231,7 +1275,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   'audio-node-scope-resize-handle audio-node-scope-resize-handle-right nodrag nopan',
                   scopeResizeCorner === 'bottom-right' ? 'audio-node-scope-resize-handle-active' : '',
                 ].filter(Boolean).join(' ')}
-                title={showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : 'Resize scope'}
+                title={showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showImageDisplay ? 'Resize image' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : 'Resize scope'}
                 onPointerDown={(event) => handleScopeResizePointerDown(event, 'bottom-right')}
                 onClick={handleScopeResizeClick}
                 onDoubleClick={(event) => event.stopPropagation()}
@@ -1311,8 +1355,9 @@ function SampleWaveformDisplay({
   const safeEnd = clamp(end, 0, 1);
   const width = 300;
   const height = 128;
-  const padding = 18;
-  const innerWidth = width - padding * 2;
+  const horizontalPadding = 8;
+  const verticalPadding = 0;
+  const innerWidth = width - horizontalPadding * 2;
   const sampleDuration = Math.max(0.001, waveform?.duration ?? 1);
   const safeAttack = Math.max(0, attack);
   const safeRelease = Math.max(0, release);
@@ -1324,9 +1369,15 @@ function SampleWaveformDisplay({
   const timelineStart = Math.min(0, attackEndSeconds, releaseEndSeconds);
   const timelineEnd = Math.max(sampleDuration, attackEndSeconds, releaseEndSeconds);
   const timelineDuration = Math.max(0.001, timelineEnd - timelineStart);
-  const timelineX = (seconds: number) => padding + ((seconds - timelineStart) / timelineDuration) * innerWidth;
+  const timelineX = (seconds: number) => horizontalPadding + ((seconds - timelineStart) / timelineDuration) * innerWidth;
   const waveformPath = waveform
-    ? sampleWaveformPath(waveformBinsForDetail(waveform.bins, detail), timelineX(0), timelineX(sampleDuration), height, padding)
+    ? sampleWaveformPath(
+      waveformBinsForDetail(waveform.bins, detail),
+      timelineX(0),
+      timelineX(sampleDuration),
+      height,
+      verticalPadding,
+    )
     : '';
   const playheadX = timelineX(clamp(playhead ?? safeStart, 0, 1) * sampleDuration);
   const startX = timelineX(startSeconds);
@@ -1345,10 +1396,10 @@ function SampleWaveformDisplay({
     const bounds = canvasRef.current?.getBoundingClientRect();
     if (!drag || !bounds || bounds.width <= 0) return;
     // Pointer coordinates span the full SVG, while the editable timeline spans
-    // only the padded chart area. Convert through the SVG coordinate system first
+    // the horizontally inset chart area. Convert through the SVG coordinate system first
     // so clicking a boundary leaves it at its current value.
     const svgX = ((event.clientX - bounds.left) / bounds.width) * width;
-    const value = clamp((timelineStart + ((svgX - padding) / innerWidth) * timelineDuration) / sampleDuration, 0, 1);
+    const value = clamp((timelineStart + ((svgX - horizontalPadding) / innerWidth) * timelineDuration) / sampleDuration, 0, 1);
     if (drag.boundary === 'start') onStartChange(value);
     else onEndChange(value);
   }
@@ -1398,40 +1449,50 @@ function SampleWaveformDisplay({
         aria-label={sampleUrl ? 'Sample waveform' : 'Sample waveform preview'}
         role="img"
         onPointerMove={handlePointerMove}
-        onPointerUp={(event) => finishBoundaryDrag(event.pointerId)}
-        onPointerCancel={(event) => finishBoundaryDrag(event.pointerId)}
-        onLostPointerCapture={(event) => finishBoundaryDrag(event.pointerId)}
+        onPointerUp={(event) => {
+          event.stopPropagation();
+          finishBoundaryDrag(event.pointerId);
+        }}
+        onPointerCancel={(event) => {
+          event.stopPropagation();
+          finishBoundaryDrag(event.pointerId);
+        }}
+        onLostPointerCapture={(event) => {
+          event.stopPropagation();
+          finishBoundaryDrag(event.pointerId);
+        }}
+        onClick={(event) => event.stopPropagation()}
       >
         <g className="sample-waveform-chart-chrome">
-          <line className="custom-wave-grid-line" x1={padding} y1={padding} x2={width - padding} y2={padding} />
-          <line className="custom-wave-grid-line custom-wave-zero" x1={padding} y1={height / 2} x2={width - padding} y2={height / 2} />
-          <line className="custom-wave-grid-line" x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} />
+          <line className="custom-wave-grid-line" x1={horizontalPadding} y1={verticalPadding} x2={width - horizontalPadding} y2={verticalPadding} />
+          <line className="custom-wave-grid-line custom-wave-zero" x1={horizontalPadding} y1={height / 2} x2={width - horizontalPadding} y2={height / 2} />
+          <line className="custom-wave-grid-line" x1={horizontalPadding} y1={height - verticalPadding} x2={width - horizontalPadding} y2={height - verticalPadding} />
           {waveformPath ? <path className="sample-waveform-path" d={waveformPath} /> : null}
-          <rect className="sample-waveform-fade" x={padding} y={padding} width={rangeStartX - padding} height={height - padding * 2} />
-          <rect className="sample-waveform-fade" x={rangeEndX} y={padding} width={width - padding - rangeEndX} height={height - padding * 2} />
-          {safeAttack > 0 ? <rect className="sample-waveform-phase is-attack" x={attackPhaseX} y={padding} width={attackPhaseWidth} height={height - padding * 2} /> : null}
-          {safeRelease > 0 ? <rect className="sample-waveform-phase is-release" x={releasePhaseX} y={padding} width={releasePhaseWidth} height={height - padding * 2} /> : null}
-          <line className="wave-playhead-line" x1={playheadX} y1={padding} x2={playheadX} y2={height - padding} />
-          <line className="sample-waveform-boundary-line is-start" x1={startX} y1={padding} x2={startX} y2={height - padding} />
-          <line className="sample-waveform-boundary-line is-end" x1={endX} y1={padding} x2={endX} y2={height - padding} />
-          {safeAttack > 0 ? <line className="sample-waveform-phase-line is-attack" x1={startX} y1={padding} x2={attackEndX} y2={height - padding}><title>Attack phase</title></line> : null}
-          {safeRelease > 0 ? <line className="sample-waveform-phase-line is-release" x1={endX} y1={padding} x2={releaseEndX} y2={height - padding}><title>Release phase</title></line> : null}
+          <rect className="sample-waveform-fade" x={horizontalPadding} y={verticalPadding} width={rangeStartX - horizontalPadding} height={height - verticalPadding * 2} />
+          <rect className="sample-waveform-fade" x={rangeEndX} y={verticalPadding} width={width - horizontalPadding - rangeEndX} height={height - verticalPadding * 2} />
+          {safeAttack > 0 ? <rect className="sample-waveform-phase is-attack" x={attackPhaseX} y={verticalPadding} width={attackPhaseWidth} height={height - verticalPadding * 2} /> : null}
+          {safeRelease > 0 ? <rect className="sample-waveform-phase is-release" x={releasePhaseX} y={verticalPadding} width={releasePhaseWidth} height={height - verticalPadding * 2} /> : null}
+          <line className="wave-playhead-line" x1={playheadX} y1={verticalPadding} x2={playheadX} y2={height - verticalPadding} />
+          <line className="sample-waveform-boundary-line is-start" x1={startX} y1={verticalPadding} x2={startX} y2={height - verticalPadding} />
+          <line className="sample-waveform-boundary-line is-end" x1={endX} y1={verticalPadding} x2={endX} y2={height - verticalPadding} />
+          {safeAttack > 0 ? <line className="sample-waveform-phase-line is-attack" x1={startX} y1={verticalPadding} x2={attackEndX} y2={height - verticalPadding}><title>Attack phase</title></line> : null}
+          {safeRelease > 0 ? <line className="sample-waveform-phase-line is-release" x1={endX} y1={verticalPadding} x2={releaseEndX} y2={height - verticalPadding}><title>Release phase</title></line> : null}
         </g>
         <rect
           className="sample-waveform-boundary-hit-target is-start"
           x={startX - 8}
-          y={padding}
+          y={verticalPadding}
           width={16}
-          height={height - padding * 2}
+          height={height - verticalPadding * 2}
           aria-label="Drag sample start"
           onPointerDown={(event) => handleBoundaryPointerDown(event, 'start')}
         />
         <rect
           className="sample-waveform-boundary-hit-target is-end"
           x={endX - 8}
-          y={padding}
+          y={verticalPadding}
           width={16}
-          height={height - padding * 2}
+          height={height - verticalPadding * 2}
           aria-label="Drag sample end"
           onPointerDown={(event) => handleBoundaryPointerDown(event, 'end')}
         />
@@ -1483,14 +1544,14 @@ function sampleWaveformPath(
   startX: number,
   endX: number,
   height: number,
-  padding: number,
+  verticalPadding: number,
 ): string {
   if (bins.length === 0) return '';
-  const innerHeight = height - padding * 2;
+  const innerHeight = height - verticalPadding * 2;
   return bins.map((bin, index) => {
     const x = startX + (index / Math.max(1, bins.length - 1)) * (endX - startX);
-    const top = padding + (1 - (clamp(bin.max, -1, 1) + 1) / 2) * innerHeight;
-    const bottom = padding + (1 - (clamp(bin.min, -1, 1) + 1) / 2) * innerHeight;
+    const top = verticalPadding + (1 - (clamp(bin.max, -1, 1) + 1) / 2) * innerHeight;
+    const bottom = verticalPadding + (1 - (clamp(bin.min, -1, 1) + 1) / 2) * innerHeight;
     return `M${roundPathNumber(x)} ${roundPathNumber(top)} V${roundPathNumber(bottom)}`;
   }).join(' ');
 }
@@ -1514,6 +1575,11 @@ function waveformBinsForDetail(bins: SampleWaveformBin[], detail: number): Sampl
 
 function normalizeUnitInterval(value: number): number {
   return ((value % 1) + 1) % 1;
+}
+
+function centeredCoordinateToUnit(value: number): number {
+  if (!Number.isFinite(value)) return 0.5;
+  return (Math.max(-1, Math.min(1, value)) + 1) * 0.5;
 }
 
 interface CustomWaveEditorProps {
@@ -2038,7 +2104,7 @@ function CustomWaveEditor({
 }: CustomWaveEditorProps) {
   const width = 300;
   const height = 128;
-  const padding = 18;
+  const padding = 12;
   const innerWidth = width - padding * 2;
   const innerHeight = height - padding * 2;
   const points = customWave.points;
@@ -2281,8 +2347,10 @@ function meterLabelDivisionsForWidth(width: number): number {
 }
 
 function shouldForceCompactPorts(definition: NodeDefinition): boolean {
-  return definition.inputs.length === 1
-    && definition.inputs[0]?.name === 'signal'
+  const onlySignalInput = definition.inputs.length === 0
+    || (definition.inputs.length === 1 && definition.inputs[0]?.name === 'signal');
+
+  return onlySignalInput
     && definition.outputs.length <= 1;
 }
 

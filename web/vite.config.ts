@@ -11,6 +11,7 @@ export default defineConfig({
     localDiagnosticsPlugin(),
     renderSyncPlugin(),
     localSampleStoragePlugin(),
+    localImageStoragePlugin(),
     localRecordingStoragePlugin(),
     ...(process.env.VITE_VISUAL_VISUAL_PATCH_STORAGE === 'browser' ? [] : [localPatchStoragePlugin()]),
   ],
@@ -159,6 +160,67 @@ function localSampleStoragePlugin(): Plugin {
     configurePreviewServer(server) {
       server.middlewares.use(middleware);
     },
+  };
+}
+
+function localImageStoragePlugin(): Plugin {
+  const imagesDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'images');
+
+  const middleware: Connect.NextHandleFunction = (request, response, next) => {
+    const url = new URL(request.url ?? '/', 'http://localhost');
+    const path = url.pathname;
+
+    if (path === '/api/local-images' && request.method === 'GET') {
+      listLocalImages(imagesDir).then((images) => {
+        response.statusCode = 200;
+        response.setHeader('Cache-Control', 'no-store');
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify({ images }));
+      }).catch((error: unknown) => sendPatchStorageError(response, error));
+      return;
+    }
+
+    if (path === '/api/local-images' && request.method === 'POST') {
+      saveUploadedImage(imagesDir, request).then((image) => {
+        response.statusCode = 201;
+        response.setHeader('Cache-Control', 'no-store');
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify(image));
+      }).catch((error: unknown) => sendPatchStorageError(response, error));
+      return;
+    }
+
+    if (path.startsWith('/images/') && (request.method === 'GET' || request.method === 'HEAD')) {
+      const fileName = safeDecodedPathSegment(path.slice('/images/'.length));
+      if (!fileName || !isSafePatchStorageSegment(fileName)) {
+        response.statusCode = 404;
+        response.end();
+        return;
+      }
+      const filePath = join(imagesDir, fileName);
+      if (!existsSync(filePath)) {
+        response.statusCode = 404;
+        response.end();
+        return;
+      }
+      response.statusCode = 200;
+      response.setHeader('Cache-Control', 'no-store');
+      response.setHeader('Content-Type', imageContentType(fileName));
+      if (request.method === 'HEAD') {
+        response.end();
+        return;
+      }
+      createReadStream(filePath).pipe(response);
+      return;
+    }
+
+    next();
+  };
+
+  return {
+    name: 'visual-visual-local-image-storage',
+    configureServer(server) { server.middlewares.use(middleware); },
+    configurePreviewServer(server) { server.middlewares.use(middleware); },
   };
 }
 
@@ -400,6 +462,7 @@ interface DiagnosticLogEntry {
 }
 
 const MAX_SAMPLE_UPLOAD_BYTES = 100 * 1024 * 1024;
+const MAX_IMAGE_UPLOAD_BYTES = 50 * 1024 * 1024;
 const MAX_RECORDING_UPLOAD_BYTES = 1024 * 1024 * 1024;
 const SAMPLE_AUDIO_EXTENSIONS = new Set([
   '.aac',
@@ -414,6 +477,7 @@ const SAMPLE_AUDIO_EXTENSIONS = new Set([
   '.wave',
   '.webm',
 ]);
+const IMAGE_EXTENSIONS = new Set(['.avif', '.gif', '.jpeg', '.jpg', '.png', '.webp']);
 
 async function saveUploadedRecording(recordingsDir: string, request: Connect.IncomingMessage) {
   const contentType = Array.isArray(request.headers['content-type'])
@@ -505,6 +569,22 @@ async function saveUploadedSample(samplesDir: string, request: Connect.IncomingM
   };
 }
 
+async function saveUploadedImage(imagesDir: string, request: Connect.IncomingMessage) {
+  const boundary = multipartBoundary(request.headers['content-type']);
+  if (!boundary) throw new Error('Expected a multipart image upload.');
+  const body = await readRequestBuffer(request, MAX_IMAGE_UPLOAD_BYTES, 'Image upload is too large.');
+  const uploaded = parseMultipartFile(body, boundary, 'image');
+  if (!uploaded) throw new Error('Expected an image file named "image".');
+  if (!uploaded.contentType.startsWith('image/') && uploaded.contentType !== 'application/octet-stream') {
+    throw new Error('Expected an image file upload.');
+  }
+  const fileName = sanitizeImageFilename(uploaded.name);
+  await mkdir(imagesDir, { recursive: true });
+  const savedName = await uniqueSampleFilename(imagesDir, fileName);
+  await writeFile(join(imagesDir, savedName), uploaded.data);
+  return { name: savedName, url: `/images/${encodeURIComponent(savedName)}` };
+}
+
 function recordingFilename(patchName: string | undefined): string {
   const patchStem = sanitizeRecordingPatchName(patchName);
   const timestamp = new Date().toISOString()
@@ -552,6 +632,20 @@ async function listLocalSamples(samplesDir: string) {
     .map(({ name, url }) => ({ name, url }));
 }
 
+async function listLocalImages(imagesDir: string) {
+  if (!existsSync(imagesDir)) return [];
+  const entries = await readdir(imagesDir, { withFileTypes: true });
+  const images = await Promise.all(entries
+    .filter((entry) => entry.isFile() && isSafePatchStorageSegment(entry.name) && IMAGE_EXTENSIONS.has(extname(entry.name).toLowerCase()))
+    .map(async (entry) => {
+      const fileStats = await stat(join(imagesDir, entry.name));
+      return { name: entry.name, url: `/images/${encodeURIComponent(entry.name)}`, updatedAt: fileStats.mtime.getTime() };
+    }));
+  return images
+    .sort((a, b) => b.updatedAt - a.updatedAt || a.name.localeCompare(b.name))
+    .map(({ name, url }) => ({ name, url }));
+}
+
 function multipartBoundary(contentType: string | string[] | undefined): string | null {
   const header = Array.isArray(contentType) ? contentType[0] : contentType;
   const match = header?.match(/(?:^|;)\s*boundary=(?:"([^"]+)"|([^;]+))/i);
@@ -559,6 +653,10 @@ function multipartBoundary(contentType: string | string[] | undefined): string |
 }
 
 function parseMultipartSampleFile(body: Buffer, boundary: string): UploadedSampleFile | null {
+  return parseMultipartFile(body, boundary, 'sample');
+}
+
+function parseMultipartFile(body: Buffer, boundary: string, expectedFieldName: string): UploadedSampleFile | null {
   const delimiter = Buffer.from(`--${boundary}`);
   const headerDelimiter = Buffer.from('\r\n\r\n');
   let searchFrom = 0;
@@ -583,7 +681,7 @@ function parseMultipartSampleFile(body: Buffer, boundary: string): UploadedSampl
     const disposition = headers.match(/content-disposition:[^\r\n]*/i)?.[0] ?? '';
     const fieldName = disposition.match(/\bname="([^"]+)"/i)?.[1] ?? '';
     const fileName = disposition.match(/\bfilename="([^"]*)"/i)?.[1] ?? '';
-    if (fieldName === 'sample' && fileName) {
+    if (fieldName === expectedFieldName && fileName) {
       return {
         name: fileName,
         contentType: headers.match(/content-type:\s*([^\r\n]+)/i)?.[1]?.trim().toLowerCase() ?? 'application/octet-stream',
@@ -610,6 +708,18 @@ function sanitizeSampleFilename(name: string): string {
     .replace(/^\.+/, '')
     .replace(/\.+$/, '') || 'sample';
 
+  return `${stem}${extension}`;
+}
+
+function sanitizeImageFilename(name: string): string {
+  const extension = extname(name).toLowerCase();
+  if (!IMAGE_EXTENSIONS.has(extension)) throw new Error('Unsupported image file type.');
+  const stem = basename(name, extension)
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001f]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^\.+/, '')
+    .replace(/\.+$/, '') || 'image';
   return `${stem}${extension}`;
 }
 
@@ -753,6 +863,18 @@ function sampleContentType(fileName: string): string {
       return 'audio/webm';
     default:
       return 'application/octet-stream';
+  }
+}
+
+function imageContentType(fileName: string): string {
+  switch (extname(fileName).toLowerCase()) {
+    case '.avif': return 'image/avif';
+    case '.gif': return 'image/gif';
+    case '.jpeg':
+    case '.jpg': return 'image/jpeg';
+    case '.png': return 'image/png';
+    case '.webp': return 'image/webp';
+    default: return 'application/octet-stream';
   }
 }
 

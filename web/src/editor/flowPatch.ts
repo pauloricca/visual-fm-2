@@ -17,6 +17,10 @@ export const MIN_CONTROL_NODE_SIZE: ScopeNodeSize = { width: 72, height: 24 };
 export const DEFAULT_CUSTOM_WAVE_NODE_SIZE: ScopeNodeSize = { width: 372, height: 128 };
 export const MIN_CUSTOM_WAVE_NODE_SIZE: ScopeNodeSize = { width: 220, height: 96 };
 export const MAX_CUSTOM_WAVE_NODE_SIZE: ScopeNodeSize = { width: 720, height: 360 };
+export const DEFAULT_IMAGE_ASPECT_RATIO = 16 / 9;
+export const MIN_IMAGE_NODE_WIDTH = 160;
+export const MAX_IMAGE_NODE_WIDTH = 720;
+export const MAX_IMAGE_NODE_HEIGHT = 720;
 
 export type EditorPatchNode = Omit<PatchNode, 'type'> & {
   type: NodeType | null;
@@ -40,6 +44,10 @@ export interface ShaderNodeData extends Record<string, unknown> {
     samples: number[];
   };
   audioSliderValue?: number;
+  audioImagePosition?: {
+    x: number;
+    y: number;
+  };
   audioAccumulatorValue?: number;
   audioSelectorIndex?: number;
   audioSequencerStep?: number;
@@ -60,6 +68,7 @@ export interface ShaderNodeData extends Record<string, unknown> {
   onSubpatchNameChange?: (nodeId: string, nextName: string) => void;
   onSampleSelect?: (nodeId: string) => void;
   onSampleDrop?: (nodeId: string, files: FileList) => void;
+  onImageSelect?: (nodeId: string) => void;
   onTypeEditStart: (nodeId: string) => void;
   onTypeEditEnd: () => void;
   onTypeEditCancel: (nodeId: string) => void;
@@ -118,6 +127,7 @@ export interface PersistedEditorState {
     subpatchCloneId?: string;
     expression?: string;
     sample?: PatchNode['sample'];
+    image?: PatchNode['image'];
     customWave?: PatchNode['customWave'];
     params: Record<string, number>;
     position: { x: number; y: number };
@@ -201,6 +211,7 @@ export function editorStateToFlowNodes(
         subpatchCloneId: node.subpatchCloneId,
         expression: node.expression,
         sample: node.sample,
+        image: node.image,
         customWave: node.customWave ? normalizeCustomWave(node.customWave, node.params) : undefined,
         params: node.params,
         position: node.position,
@@ -254,6 +265,7 @@ export function flowToEditorState(
       subpatchCloneId: node.data.patchNode.subpatchCloneId,
       expression: node.data.patchNode.expression,
       sample: node.data.patchNode.sample,
+      image: node.data.patchNode.image,
       customWave: node.data.patchNode.customWave
         ? normalizeCustomWave(node.data.patchNode.customWave, node.data.patchNode.params)
         : undefined,
@@ -299,6 +311,14 @@ export function clampCustomWaveNodeSize(size: ScopeNodeSize): ScopeNodeSize {
   };
 }
 
+export function clampImageNodeSize(size: ScopeNodeSize, aspectRatio: number): ScopeNodeSize {
+  const aspect = Number.isFinite(aspectRatio) && aspectRatio > 0 ? aspectRatio : DEFAULT_IMAGE_ASPECT_RATIO;
+  const minWidth = Math.max(MIN_IMAGE_NODE_WIDTH, 72 * aspect);
+  const maxWidth = Math.min(MAX_IMAGE_NODE_WIDTH, MAX_IMAGE_NODE_HEIGHT * aspect);
+  const width = clampNumber(size.width, minWidth, Math.max(minWidth, maxWidth));
+  return { width, height: Math.round(width / aspect) };
+}
+
 function clampNumber(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, Math.round(value)));
@@ -324,6 +344,7 @@ export function patchFromFlow(nodes: ShaderFlowNode[], edges: ShaderFlowEdge[]):
       ...(patchNode.subpatchCloneId ? { subpatchCloneId: patchNode.subpatchCloneId } : {}),
       ...(patchNode.expression !== undefined ? { expression: patchNode.expression } : {}),
       ...(patchNode.sample ? { sample: patchNode.sample } : {}),
+      ...(patchNode.image ? { image: patchNode.image } : {}),
       ...(patchNode.customWave ? { customWave: normalizeCustomWave(patchNode.customWave, patchNode.params) } : {}),
       params: patchNode.params,
       position: node.position,
@@ -503,6 +524,7 @@ function normalizePersistedState(state: PersistedEditorState): PersistedEditorSt
       ...(node.subpatchCloneId ? { subpatchCloneId: node.subpatchCloneId } : {}),
       ...(node.expression !== undefined ? { expression: node.expression } : {}),
       ...(node.sample ? { sample: node.sample } : {}),
+      ...(node.image ? { image: node.image } : {}),
       ...(node.customWave ? { customWave: normalizeCustomWave(node.customWave, normalizePersistedNodeParams(node)) } : {}),
       params: normalizePersistedNodeParams(node),
       position: node.position,
@@ -682,6 +704,7 @@ function persistedNodeFromPatchNode(
     subpatchCloneId: node.subpatchCloneId,
     expression: node.expression,
     sample: node.sample,
+    image: node.image,
     customWave: node.customWave,
     params: node.params,
     position: node.position ?? original?.position ?? { x: 0, y: 0 },
