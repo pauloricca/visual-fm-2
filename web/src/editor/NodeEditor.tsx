@@ -4,6 +4,7 @@ import {
   Background,
   Connection,
   ConnectionMode,
+  ControlButton,
   Controls,
   EdgeChange,
   HandleType,
@@ -62,6 +63,10 @@ const EXPANDED_NODE_Z_INDEX = 1;
 const SELECTED_NODE_Z_INDEX = 2;
 const SELECTED_EDGE_Z_INDEX = 10000;
 const DEFAULT_FIT_VIEW_PADDING = 0.2;
+const MIN_CANVAS_ZOOM = 0.05;
+const USER_ZOOM_BASELINE = 0.5;
+const ZOOM_SNAP_TARGET = USER_ZOOM_BASELINE;
+const ZOOM_SNAP_THRESHOLD = USER_ZOOM_BASELINE * 0.04;
 const PASTE_OFFSET = { x: 36, y: 36 };
 const DRAFT_NODE_WIDTH = 168;
 const DRAFT_NODE_HANDLE_X_OFFSET = 13;
@@ -218,7 +223,7 @@ export function NodeEditor() {
 function NodeEditorInner() {
   const initialState = useMemo(() => loadInitialEditorState(), []);
   const [patchName, setPatchName] = useState(initialState?.ui?.patchName ?? 'single-patch');
-  const [viewport, setViewport] = useState<Viewport>(initialState?.ui?.viewport ?? { x: 0, y: 0, zoom: 1 });
+  const [viewport, setViewport] = useState<Viewport>(initialState?.ui?.viewport ?? { x: 0, y: 0, zoom: USER_ZOOM_BASELINE });
   const [editorSize, setEditorSize] = useState({ width: 0, height: 0 });
   const [editingTypeNodeId, setEditingTypeNodeId] = useState<string | null>(null);
   const [reactFlow, setReactFlow] = useState<ReactFlowInstance<ShaderFlowNode, ShaderFlowEdge> | null>(null);
@@ -745,6 +750,34 @@ function NodeEditorInner() {
               weight: edge.data?.weight ?? 1,
               mode: edge.data?.mode ?? 'set',
               enabled: edge.data?.enabled === false,
+              onWeightChange: updateEdgeWeightPlaceholder,
+              onModeChange: updateEdgeModePlaceholder,
+              onInsertNode: insertNodeOnEdgePlaceholder,
+            },
+          }
+        : edge
+    )));
+    return true;
+  }, [commitHistory]);
+
+  const setSelectedEdgesMode = useCallback((mode: LinkMode) => {
+    const selectedEdgeIds = new Set(
+      edgesRef.current
+        .filter((edge) => edge.selected === true && (edge.data?.mode ?? 'set') !== mode)
+        .map((edge) => edge.id),
+    );
+    if (selectedEdgeIds.size === 0) return false;
+
+    commitHistory(`mode:${mode}`);
+    setEdges((current) => current.map((edge) => (
+      selectedEdgeIds.has(edge.id)
+        ? {
+            ...edge,
+            data: {
+              ...edge.data,
+              weight: edge.data?.weight ?? 1,
+              mode,
+              enabled: edge.data?.enabled !== false,
               onWeightChange: updateEdgeWeightPlaceholder,
               onModeChange: updateEdgeModePlaceholder,
               onInsertNode: insertNodeOnEdgePlaceholder,
@@ -2663,6 +2696,27 @@ function NodeEditorInner() {
   }, [selectedBoundaryPort]);
 
   useEffect(() => {
+    const handleSelectedEdgeModeKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+      if (isEditableEventTarget(event.target)) return;
+
+      const modeByKey: Record<string, LinkMode> = {
+        a: 'add',
+        s: 'set',
+        m: 'multiply',
+      };
+      const mode = modeByKey[event.key.toLowerCase()];
+      if (!mode || !setSelectedEdgesMode(mode)) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    window.addEventListener('keydown', handleSelectedEdgeModeKeyDown, { capture: true });
+    return () => window.removeEventListener('keydown', handleSelectedEdgeModeKeyDown, { capture: true });
+  }, [setSelectedEdgesMode]);
+
+  useEffect(() => {
     const handleToggleSelectedEdgesKeyDown = (event: KeyboardEvent) => {
       if (event.repeat || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
       if (isEditableEventTarget(event.target) || event.key.toLowerCase() !== 'x') return;
@@ -2833,9 +2887,25 @@ function NodeEditorInner() {
     selectionDragStartRef.current = null;
   }, [syncRectangleSelection]);
 
+  const handleMove = useCallback((_event: globalThis.MouseEvent | TouchEvent | null, nextViewport: Viewport) => {
+    const snappedViewport = snapViewportZoom(nextViewport);
+    if (snappedViewport === nextViewport || !reactFlow) return;
+
+    setViewport(snappedViewport);
+    void reactFlow.setViewport(snappedViewport);
+  }, [reactFlow]);
+
   const handleMoveEnd = useCallback((_event: globalThis.MouseEvent | TouchEvent | null, nextViewport: Viewport) => {
-    setViewport(nextViewport);
-  }, []);
+    const snappedViewport = snapViewportZoom(nextViewport);
+    setViewport(snappedViewport);
+    if (snappedViewport !== nextViewport) {
+      void reactFlow?.setViewport(snappedViewport);
+    }
+  }, [reactFlow]);
+
+  const resetZoom = useCallback(() => {
+    void reactFlow?.zoomTo(ZOOM_SNAP_TARGET, { duration: 120 });
+  }, [reactFlow]);
 
   return (
     <div className="app-shell app-shell-panel-closed">
@@ -2886,6 +2956,7 @@ function NodeEditorInner() {
               event.stopPropagation();
               insertNodeOnEdge(edge.id);
             }}
+            onMove={handleMove}
             onMoveEnd={handleMoveEnd}
             connectionMode={ConnectionMode.Loose}
             panOnScroll
@@ -2898,6 +2969,7 @@ function NodeEditorInner() {
             selectionKeyCode={null}
             panActivationKeyCode={null}
             defaultViewport={initialState?.ui?.viewport}
+            minZoom={MIN_CANVAS_ZOOM}
             fitView={!initialState?.ui?.viewport}
             fitViewOptions={FIT_VIEW_OPTIONS}
             translateExtent={panTranslateExtent}
@@ -2908,7 +2980,17 @@ function NodeEditorInner() {
             proOptions={REACT_FLOW_PRO_OPTIONS}
           >
             <Background color="var(--color-foreground-08)" gap={28} size={1} />
-            <Controls showInteractive={false} />
+            <Controls showInteractive={false}>
+              <ControlButton
+                className="react-flow__controls-zoom-percentage"
+                type="button"
+                onClick={resetZoom}
+                aria-label={`Reset zoom to 100% (currently ${formatZoomPercentage(viewport.zoom)})`}
+                title={`Reset zoom to 100% (currently ${formatZoomPercentage(viewport.zoom)})`}
+              >
+                {formatZoomPercentage(viewport.zoom)}
+              </ControlButton>
+            </Controls>
           </ReactFlow>
           <div ref={setEdgeOverlayElement} className="edge-overlay-layer" />
           <div className="viewport-buttons">
@@ -4674,7 +4756,19 @@ function viewportNodeSize(node: ShaderFlowNode): { width: number; height: number
 }
 
 function normalizedViewportZoom(zoom: number): number {
-  return finitePositiveNumber(zoom) ?? 1;
+  return finitePositiveNumber(zoom) ?? USER_ZOOM_BASELINE;
+}
+
+function snapViewportZoom(viewport: Viewport): Viewport {
+  if (viewport.zoom === ZOOM_SNAP_TARGET || Math.abs(viewport.zoom - ZOOM_SNAP_TARGET) > ZOOM_SNAP_THRESHOLD) {
+    return viewport;
+  }
+
+  return { ...viewport, zoom: ZOOM_SNAP_TARGET };
+}
+
+function formatZoomPercentage(zoom: number): string {
+  return `${Math.round((zoom / USER_ZOOM_BASELINE) * 100)}%`;
 }
 
 function finitePositiveNumber(value: number | undefined): number | null {

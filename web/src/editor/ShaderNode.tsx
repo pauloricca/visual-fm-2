@@ -1410,8 +1410,8 @@ function SampleWaveformDisplay({
           <line className="wave-playhead-line" x1={playheadX} y1={padding} x2={playheadX} y2={height - padding} />
           <line className="sample-waveform-boundary-line is-start" x1={startX} y1={padding} x2={startX} y2={height - padding} />
           <line className="sample-waveform-boundary-line is-end" x1={endX} y1={padding} x2={endX} y2={height - padding} />
-          {safeAttack > 0 ? <line className="sample-waveform-phase-line is-attack" x1={attackEndX} y1={padding} x2={attackEndX} y2={height - padding}><title>Attack ends</title></line> : null}
-          {safeRelease > 0 ? <line className="sample-waveform-phase-line is-release" x1={releaseEndX} y1={padding} x2={releaseEndX} y2={height - padding}><title>Release ends</title></line> : null}
+          {safeAttack > 0 ? <line className="sample-waveform-phase-line is-attack" x1={startX} y1={padding} x2={attackEndX} y2={height - padding}><title>Attack phase</title></line> : null}
+          {safeRelease > 0 ? <line className="sample-waveform-phase-line is-release" x1={endX} y1={padding} x2={releaseEndX} y2={height - padding}><title>Release phase</title></line> : null}
         </g>
         <rect
           className="sample-waveform-boundary-hit-target is-start"
