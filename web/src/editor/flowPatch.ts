@@ -43,6 +43,7 @@ export interface ShaderNodeData extends Record<string, unknown> {
   audioAccumulatorValue?: number;
   audioSelectorIndex?: number;
   audioSequencerStep?: number;
+  audioPlayhead?: number;
   midiSliderValue?: number;
   midiButtonPressed?: number;
   audioInput?: AudioInputState;

@@ -940,6 +940,7 @@ function NodeEditorInner() {
         relatedNode.data.patchNode.type !== 'Scope' &&
         relatedNode.data.patchNode.type !== 'Meter' &&
         relatedNode.data.patchNode.type !== 'CustomWave' &&
+        relatedNode.data.patchNode.type !== 'SamplePlayer' &&
         relatedNode.data.patchNode.type !== 'Slider' &&
         relatedNode.data.patchNode.type !== 'Button'
       )
@@ -947,7 +948,7 @@ function NodeEditorInner() {
       return;
     }
 
-    const nextSize = relatedNode.data.patchNode.type === 'CustomWave'
+    const nextSize = relatedNode.data.patchNode.type === 'CustomWave' || relatedNode.data.patchNode.type === 'SamplePlayer'
       ? clampCustomWaveNodeSize(size)
       : relatedNode.data.patchNode.type === 'Slider' || relatedNode.data.patchNode.type === 'Button'
         ? clampControlNodeSize(size)
@@ -965,7 +966,7 @@ function NodeEditorInner() {
       if (node.id !== nodeId) return node;
 
       const currentSize = node.data.patchNode.scopeSize ?? (
-        node.data.patchNode.type === 'CustomWave'
+        node.data.patchNode.type === 'CustomWave' || node.data.patchNode.type === 'SamplePlayer'
           ? DEFAULT_CUSTOM_WAVE_NODE_SIZE
           : DEFAULT_SCOPE_NODE_SIZE
       );
@@ -1710,7 +1711,9 @@ function NodeEditorInner() {
     const audioAccumulatorValue = node.data.patchNode.type === 'Accumulator'
       ? audio.linkMeters[`${node.id}:accumulator`]?.output
       : undefined;
-    if (!hasAudioMonitor && !hasAudioOutputMeter && audioSelectorIndex === undefined && audioAccumulatorValue === undefined && !midiControlVisual && dspErrors.length === 0) return node;
+    const showsPlaybackVisual = node.data.patchNode.type === 'CustomWave' || node.data.patchNode.type === 'SamplePlayer';
+    const audioPlayhead = showsPlaybackVisual ? audio.playheads[node.id] : undefined;
+    if (!hasAudioMonitor && !hasAudioOutputMeter && audioSelectorIndex === undefined && audioAccumulatorValue === undefined && !midiControlVisual && dspErrors.length === 0 && !showsPlaybackVisual) return node;
 
     return {
       ...node,
@@ -1719,16 +1722,17 @@ function NodeEditorInner() {
         ...(dspErrors.length > 0 ? { dspErrors } : {}),
         ...(hasAudioOutputMeter ? { audioOutputMeter: { left: audioOutputLeft, right: audioOutputRight } } : {}),
         ...(monitorLinkId && node.data.patchNode.type === 'Meter' ? { audioMeter: audio.linkMeters[monitorLinkId] } : {}),
-        ...(monitorLinkId && node.data.patchNode.type === 'Scope' ? { audioScope: audio.linkScopes[monitorLinkId] } : {}),
+        ...(monitorLinkId && node.data.patchNode.type === 'Scope' ? { audioScope: audio.linkScopes[node.id] } : {}),
         ...(monitorLinkId && node.data.patchNode.type === 'Slider' ? { audioSliderValue: audio.linkMeters[monitorLinkId]?.output } : {}),
         ...(audioSelectorIndex !== undefined ? { audioSelectorIndex } : {}),
         ...(audioAccumulatorValue !== undefined ? { audioAccumulatorValue } : {}),
         ...(monitorLinkId && node.data.patchNode.type === 'Sequencer' ? { audioSequencerStep: audio.linkMeters[monitorLinkId]?.output } : {}),
+        ...(audioPlayhead !== undefined ? { audioPlayhead } : {}),
         ...(midiControlVisual?.sliderValue !== undefined ? { midiSliderValue: midiControlVisual.sliderValue } : {}),
         ...(midiControlVisual?.buttonPressed !== undefined ? { midiButtonPressed: midiControlVisual.buttonPressed } : {}),
       },
     };
-  }), [audio.linkMeters, audio.linkScopes, dspDiagnostics, midiControlVisuals, monitorLinkIdByNode, nodesWithCallbacks]);
+  }), [audio.linkMeters, audio.linkScopes, audio.playheads, dspDiagnostics, midiControlVisuals, monitorLinkIdByNode, nodesWithCallbacks]);
 
   const renderedEdges = useMemo(() => edgesWithCallbacks.map((edge) => {
     const dspErrors = dspDiagnostics.edgeErrors.get(edge.id) ?? [];
@@ -1881,12 +1885,12 @@ function NodeEditorInner() {
   }, [editorSize, panTranslateExtent, reactFlow, viewport]);
 
   useEffect(() => {
-    const scopeLinkIds = nodesWithCallbacks.flatMap((node) => {
+    const scopeRequests = nodesWithCallbacks.flatMap((node) => {
       if (node.data.patchNode.type !== 'Scope') return [];
       const linkId = monitorLinkIdByNode.get(node.id);
-      return linkId ? [linkId] : [];
+      return linkId ? [{ id: node.id, length: node.data.patchNode.params.length ?? 0.08 }] : [];
     });
-    audio.setLinkScopes(scopeLinkIds);
+    audio.setLinkScopes(scopeRequests);
   }, [audio.setLinkScopes, monitorLinkIdByNode, nodesWithCallbacks]);
 
   useEffect(() => {
@@ -2767,7 +2771,7 @@ function NodeEditorInner() {
     }
 
     const target = event.target instanceof Element ? event.target : null;
-    if (target?.closest('.react-flow__pane')) {
+    if (target?.classList.contains('react-flow__pane')) {
       selectionDragStartRef.current = { x: event.clientX, y: event.clientY };
     } else {
       selectionDragStartRef.current = null;
@@ -3798,7 +3802,7 @@ function parseNodeDisplaySize(value: unknown, nodeId: string, type: NodeType): S
   }
 
   const size = { width: value.width, height: value.height };
-  if (type === 'CustomWave') return clampCustomWaveNodeSize(size);
+  if (type === 'CustomWave' || type === 'SamplePlayer') return clampCustomWaveNodeSize(size);
   if (type === 'Slider' || type === 'Button') return clampControlNodeSize(size);
   return clampScopeNodeSize(size);
 }
@@ -4645,7 +4649,7 @@ function viewportNodeSize(node: ShaderFlowNode): { width: number; height: number
     return { width: size.width, height: size.height + NODE_HEADER_HEIGHT };
   }
 
-  if (patchNode.type === 'CustomWave') {
+  if (patchNode.type === 'CustomWave' || patchNode.type === 'SamplePlayer') {
     const size = clampCustomWaveNodeSize(patchNode.scopeSize ?? DEFAULT_CUSTOM_WAVE_NODE_SIZE);
     return { width: size.width, height: size.height + NODE_HEADER_HEIGHT };
   }

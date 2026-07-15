@@ -60,6 +60,11 @@ export interface LinkScopeReading {
   samples: number[];
 }
 
+export interface ScopeCaptureRequest {
+  id: string;
+  length: number;
+}
+
 export interface RecordingState {
   status: RecordingStatus;
   message: string;
@@ -73,6 +78,7 @@ interface AudioEngineState {
   peak: number;
   linkMeters: Record<string, LinkMeterReading>;
   linkScopes: Record<string, LinkScopeReading>;
+  playheads: Record<string, number>;
   recording: RecordingState;
   audioInput: AudioInputState;
   midiInput: MidiInputState;
@@ -81,7 +87,7 @@ interface AudioEngineState {
   startRecording: () => void;
   stopRecording: () => void;
   syncGraph: (program: DspProgram) => void;
-  setLinkScopes: (linkIds: string[]) => void;
+  setLinkScopes: (requests: ScopeCaptureRequest[]) => void;
   setAudioInputDeviceId: (deviceId: string) => void;
   refreshAudioInputDevices: () => Promise<void>;
   refreshMidiInputDevices: () => Promise<void>;
@@ -130,7 +136,7 @@ interface SampleDataRequest {
   promise: Promise<SampleDataCacheEntry | null>;
 }
 
-const AUDIO_ENGINE_ASSET_VERSION = '2026-07-10-midi-channel-inputs';
+const AUDIO_ENGINE_ASSET_VERSION = '2026-07-15-scope-window';
 const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const METER_UPDATE_INTERVAL_MS = 80;
@@ -138,8 +144,7 @@ const RECORDING_CHUNK_FRAMES = 16384;
 const RECORDING_CHANNEL_COUNT = 2;
 const SCOPE_CAPTURE_POINTS = 512;
 const SCOPE_DISPLAY_POINTS = 160;
-const SCOPE_SECONDS = 0.08;
-const SCOPE_MODE = 'zero-crossing';
+const SCOPE_MODE = 'continuous';
 const AUDIO_OUTPUT_FADE_SECONDS = 0.02;
 const AUDIO_OUTPUT_STOP_DELAY_MS = Math.ceil(AUDIO_OUTPUT_FADE_SECONDS * 1000) + 24;
 const AUDIO_SILENCE_PEAK_THRESHOLD = 0.00001;
@@ -237,6 +242,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   const [peak, setPeak] = useState(0);
   const [linkMeters, setLinkMeters] = useState<Record<string, LinkMeterReading>>({});
   const [linkScopes, setLinkScopeReadings] = useState<Record<string, LinkScopeReading>>({});
+  const [playheads, setPlayheads] = useState<Record<string, number>>({});
   const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>('idle');
   const [recordingMessage, setRecordingMessage] = useState('recording stopped');
   const [recordingFileName, setRecordingFileName] = useState<string | null>(null);
@@ -274,7 +280,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   const backendReadyRef = useRef(false);
   const lastSentProgramStructureRef = useRef<string | null>(null);
   const lastSentValuesRef = useRef<number[] | null>(null);
-  const activeScopeLinkIdsRef = useRef<string[]>([]);
+  const activeScopeRequestsRef = useRef<ScopeCaptureRequest[]>([]);
   const sampleDataKeysRef = useRef<Record<string, string>>({});
   const sampleDataCacheRef = useRef<Record<string, SampleDataCacheEntry>>({});
   const sampleDataRequestRef = useRef<Record<string, SampleDataRequest>>({});
@@ -1050,6 +1056,10 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
               setLinkMeters(linkMetersFromPayload(payload));
               return;
             }
+            if (type === 'playheads') {
+              setPlayheads(playheadsFromPayload(payload));
+              return;
+            }
             if (type === 'linkScope') {
               const id = typeof payload?.id === 'string' ? payload.id : null;
               if (!id) return;
@@ -1095,10 +1105,10 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
             node.port.postMessage({ type: 'dspProgram', payload: graphRef.current });
             syncGraphSamples(graphRef.current, context, node);
           }
-          if (activeScopeLinkIdsRef.current.length > 0) {
+          if (activeScopeRequestsRef.current.length > 0) {
             node.port.postMessage({
               type: 'setLinkScopes',
-              payload: scopePayload(activeScopeLinkIdsRef.current),
+              payload: scopePayload(activeScopeRequestsRef.current),
             });
           }
         } catch (error) {
@@ -1212,21 +1222,21 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     }
     nodeRef.current.port.postMessage({
       type: 'setLinkScopes',
-      payload: activeScopeLinkIdsRef.current.length > 0
-        ? scopePayload(activeScopeLinkIdsRef.current)
+      payload: activeScopeRequestsRef.current.length > 0
+        ? scopePayload(activeScopeRequestsRef.current)
         : {},
     });
   }, [disconnectAudioInput, disconnectMidiInput, ensureAudioEngine, midiInputEnabled, preloadGraphSamples, refreshAudioInputDevices, selectedMidiInputDeviceIdSet, selectedMidiInputDeviceIds.length, selectedMidiInputDeviceKey, syncAudioInput, syncGraphSamples, syncMidiInput, updateMidiInputDevices]);
 
-  const setLinkScopes = useCallback((linkIds: string[]) => {
-    const nextLinkIds = uniqueScopeLinkIds(linkIds);
-    if (stringArraysEqual(activeScopeLinkIdsRef.current, nextLinkIds)) return;
+  const setLinkScopes = useCallback((requests: ScopeCaptureRequest[]) => {
+    const nextRequests = normalizeScopeCaptureRequests(requests);
+    if (scopeCaptureRequestsEqual(activeScopeRequestsRef.current, nextRequests)) return;
 
-    activeScopeLinkIdsRef.current = nextLinkIds;
+    activeScopeRequestsRef.current = nextRequests;
     nodeRef.current?.port.postMessage({
       type: 'setLinkScopes',
-      payload: activeScopeLinkIdsRef.current.length > 0
-        ? scopePayload(activeScopeLinkIdsRef.current)
+      payload: activeScopeRequestsRef.current.length > 0
+        ? scopePayload(activeScopeRequestsRef.current)
         : {},
     });
   }, []);
@@ -1363,6 +1373,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     peak,
     linkMeters,
     linkScopes,
+    playheads,
     recording,
     audioInput,
     midiInput,
@@ -1476,12 +1487,12 @@ async function uploadRecording(blob: Blob, patchName: string): Promise<{ name: s
   return { name: payload.name };
 }
 
-function scopePayload(linkIds: string[]) {
+function scopePayload(requests: ScopeCaptureRequest[]) {
   return {
-    linkIds,
+    linkIds: requests.map((request) => request.id),
+    scopes: requests.map((request) => ({ id: request.id, seconds: request.length })),
     points: SCOPE_CAPTURE_POINTS,
     displayPoints: SCOPE_DISPLAY_POINTS,
-    seconds: SCOPE_SECONDS,
     mode: SCOPE_MODE,
   };
 }
@@ -1515,14 +1526,19 @@ function arraysEqual(left: number[] | null, right: number[]): boolean {
   return true;
 }
 
-function uniqueScopeLinkIds(linkIds: string[]): string[] {
-  return [...new Set(linkIds.map((id) => String(id)).filter(Boolean))];
+function normalizeScopeCaptureRequests(requests: ScopeCaptureRequest[]): ScopeCaptureRequest[] {
+  const seen = new Set<string>();
+  return requests.flatMap((request) => {
+    if (!request.id || seen.has(request.id)) return [];
+    seen.add(request.id);
+    return [{ id: request.id, length: clampNumber(request.length, 0.01, 30) }];
+  });
 }
 
-function stringArraysEqual(left: string[], right: string[]): boolean {
+function scopeCaptureRequestsEqual(left: ScopeCaptureRequest[], right: ScopeCaptureRequest[]): boolean {
   if (left.length !== right.length) return false;
   for (let index = 0; index < left.length; index += 1) {
-    if (left[index] !== right[index]) return false;
+    if (left[index].id !== right[index].id || left[index].length !== right[index].length) return false;
   }
   return true;
 }
@@ -1623,6 +1639,21 @@ function linkMetersFromPayload(payload: unknown): Record<string, LinkMeterReadin
     };
   }
   return readings;
+}
+
+function playheadsFromPayload(payload: unknown): Record<string, number> {
+  const values = (payload as { values?: unknown })?.values;
+  if (!Array.isArray(values)) return {};
+
+  const playheads: Record<string, number> = {};
+  for (const entry of values) {
+    if (!Array.isArray(entry)) continue;
+    const [id, value] = entry;
+    const playhead = Number(value);
+    if (typeof id !== 'string' || !Number.isFinite(playhead)) continue;
+    playheads[id] = clampNumber(playhead, 0, 1);
+  }
+  return playheads;
 }
 
 function finiteNumber(value: unknown): number {

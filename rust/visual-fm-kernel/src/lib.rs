@@ -141,6 +141,8 @@ struct Node {
     sample_mode: i32,
     sample_start: f64,
     sample_end: f64,
+    sample_attack: f64,
+    sample_release: f64,
     sample_stretch: f64,
     sample_cycle_length: f64,
     sample_overlap_ratio: f64,
@@ -212,6 +214,8 @@ const EMPTY_NODE: Node = Node {
     sample_mode: SAMPLE_MODE_ONE_SHOT,
     sample_start: 0.0,
     sample_end: 1.0,
+    sample_attack: 0.0,
+    sample_release: 0.0,
     sample_stretch: 1.0,
     sample_cycle_length: 4096.0,
     sample_overlap_ratio: 0.09,
@@ -469,6 +473,10 @@ static mut SAMPLE_POSITIONS: [[f64; MAX_NODES]; MAX_VOICE_SLOTS] =
     [[0.0; MAX_NODES]; MAX_VOICE_SLOTS];
 static mut SAMPLE_DIRECTIONS: [[f64; MAX_NODES]; MAX_VOICE_SLOTS] =
     [[1.0; MAX_NODES]; MAX_VOICE_SLOTS];
+static mut SAMPLE_PLAYBACK_AGES: [[f64; MAX_NODES]; MAX_VOICE_SLOTS] =
+    [[0.0; MAX_NODES]; MAX_VOICE_SLOTS];
+static mut SAMPLE_RELEASE_AGES: [[f64; MAX_NODES]; MAX_VOICE_SLOTS] =
+    [[-1.0; MAX_NODES]; MAX_VOICE_SLOTS];
 static mut SAMPLE_START_VALUES: [[f64; MAX_NODES]; MAX_VOICE_SLOTS] =
     [[0.0; MAX_NODES]; MAX_VOICE_SLOTS];
 static mut SAMPLE_STRETCH_PHASES: [[f64; MAX_NODES]; MAX_VOICE_SLOTS] =
@@ -862,6 +870,32 @@ pub extern "C" fn setDspSampleNode(slot: u32, node_index: i32) -> i32 {
 }
 
 #[no_mangle]
+pub extern "C" fn dspSamplePlayhead(slot: u32) -> f64 {
+    unsafe {
+        let slot = slot as usize;
+        if slot >= MAX_DSP_SAMPLE_NODES {
+            return -1.0;
+        }
+        let node_index = DSP_SAMPLE_NODE_INDICES[slot];
+        if node_index < 0 || node_index as usize >= MAX_NODES {
+            return -1.0;
+        }
+        let node_index = node_index as usize;
+        if !SAMPLE_PLAYING[DRONE_VOICE_SLOT][node_index] {
+            return -1.0;
+        }
+        let Some(sample_slot) = sample_slot_for_node(node_index) else {
+            return -1.0;
+        };
+        let length = SAMPLE_LENGTHS[sample_slot];
+        if length <= 1 {
+            return -1.0;
+        }
+        (SAMPLE_POSITIONS[DRONE_VOICE_SLOT][node_index] / (length - 1) as f64).clamp(0.0, 1.0)
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn getDspState(index: u32) -> f64 {
     unsafe {
         let index = index as usize;
@@ -1159,6 +1193,8 @@ pub extern "C" fn addNode(
     sample_cycle_length: f64,
     sample_overlap_ratio: f64,
     sample_original_frequency: f64,
+    sample_attack: f64,
+    sample_release: f64,
 ) -> i32 {
     unsafe {
         if NODE_COUNT >= MAX_NODES {
@@ -1188,6 +1224,8 @@ pub extern "C" fn addNode(
             sample_mode: sample_mode.clamp(SAMPLE_MODE_ONE_SHOT, SAMPLE_MODE_PING_PONG),
             sample_start: sample_start.clamp(0.0, 1.0),
             sample_end: sample_end.clamp(0.0, 1.0),
+            sample_attack: sample_attack.max(0.0),
+            sample_release: sample_release.max(0.0),
             sample_stretch: sample_stretch.max(0.001),
             sample_cycle_length: sample_cycle_length.round().max(1.0),
             sample_overlap_ratio: sample_overlap_ratio.clamp(0.0, 1.0),
@@ -1729,6 +1767,8 @@ pub extern "C" fn resetVoiceSlot(voice_slot: u32) {
                 node_index < NODE_COUNT && NODES[node_index].wave == 10;
             SAMPLE_POSITIONS[voice_slot][node_index] = 0.0;
             SAMPLE_DIRECTIONS[voice_slot][node_index] = 1.0;
+            SAMPLE_PLAYBACK_AGES[voice_slot][node_index] = 0.0;
+            SAMPLE_RELEASE_AGES[voice_slot][node_index] = -1.0;
             SAMPLE_START_VALUES[voice_slot][node_index] = 0.0;
             SAMPLE_STRETCH_PHASES[voice_slot][node_index] = 0.0;
             SAMPLE_STRETCH_ANCHORS[voice_slot][node_index] = 0.0;
@@ -2061,7 +2101,7 @@ fn sample_playback_duration(
     )
     .abs()
     .max(0.0001);
-    Some((length / step / sample_rate.max(1.0)) * node.sample_stretch.max(0.001))
+    Some((length / step / sample_rate.max(1.0)) * node.sample_stretch.max(0.001) + node.sample_release.max(0.0))
 }
 
 fn start_sample_player(
@@ -2087,6 +2127,8 @@ fn start_sample_player(
         SAMPLE_PLAYING[voice_slot][node_index] = true;
         SAMPLE_POSITIONS[voice_slot][node_index] = start_frame;
         SAMPLE_DIRECTIONS[voice_slot][node_index] = direction;
+        SAMPLE_PLAYBACK_AGES[voice_slot][node_index] = 0.0;
+        SAMPLE_RELEASE_AGES[voice_slot][node_index] = -1.0;
         SAMPLE_START_VALUES[voice_slot][node_index] = SAMPLE_DATA[slot][start_index] as f64;
         SAMPLE_STRETCH_PHASES[voice_slot][node_index] = 0.0;
         SAMPLE_STRETCH_ANCHORS[voice_slot][node_index] = start_frame;
@@ -2159,6 +2201,9 @@ fn finish_sample_boundary(
             SAMPLE_DIRECTIONS[voice_slot][node_index] = next_direction;
             SAMPLE_POSITIONS[voice_slot][node_index] =
                 (boundary + overshoot * next_direction).clamp(first_frame, last_frame);
+        } else if node.sample_release > 0.0 && SAMPLE_RELEASE_AGES[voice_slot][node_index] < 0.0 {
+            SAMPLE_POSITIONS[voice_slot][node_index] = boundary;
+            SAMPLE_RELEASE_AGES[voice_slot][node_index] = 0.0;
         } else {
             SAMPLE_PLAYING[voice_slot][node_index] = false;
         }
@@ -2188,6 +2233,11 @@ fn sample_value(
             SAMPLE_PLAYING[voice_slot][node_index] = false;
             return 0.0;
         };
+        let release_age = SAMPLE_RELEASE_AGES[voice_slot][node_index];
+        if release_age >= node.sample_release.max(0.0) && release_age >= 0.0 {
+            SAMPLE_PLAYING[voice_slot][node_index] = false;
+            return 0.0;
+        }
         if sample_player_before_start(
             SAMPLE_POSITIONS[voice_slot][node_index],
             SAMPLE_DIRECTIONS[voice_slot][node_index],
@@ -2238,7 +2288,11 @@ fn sample_value(
                 mix,
             )
         };
-        let position = position.clamp(first_frame, last_frame);
+        let position = if SAMPLE_RELEASE_AGES[voice_slot][node_index] >= 0.0 {
+            end_frame
+        } else {
+            position.clamp(first_frame, last_frame)
+        };
         let sample_at = |read_position: f64| -> f64 {
             let read_position = read_position.clamp(first_frame, last_frame);
             let lower =
@@ -2261,10 +2315,25 @@ fn sample_value(
         let fade_frames = (SAMPLE_RATES[slot].max(sample_rate) * SAMPLE_EDGE_FADE_SECONDS)
             .round()
             .clamp(1.0, (length * 0.5).max(1.0));
-        let edge = smooth_step((start_distance / fade_frames).min(end_distance / fade_frames));
+        let end_edge = if node.sample_mode == SAMPLE_MODE_ONE_SHOT && node.sample_release > 0.0 {
+            1.0
+        } else {
+            smooth_step(end_distance / fade_frames)
+        };
+        let edge = smooth_step(start_distance / fade_frames) * end_edge;
         let correction = SAMPLE_START_VALUES[voice_slot][node_index]
             * (1.0 - smooth_step(start_distance / fade_frames));
-        sanitize_sample((blended - correction) * edge, 4.0)
+        let attack = if node.sample_attack > 0.0 {
+            smooth_step((SAMPLE_PLAYBACK_AGES[voice_slot][node_index] / node.sample_attack).clamp(0.0, 1.0))
+        } else {
+            1.0
+        };
+        let release = if release_age >= 0.0 && node.sample_release > 0.0 {
+            1.0 - smooth_step((release_age / node.sample_release).clamp(0.0, 1.0))
+        } else {
+            1.0
+        };
+        sanitize_sample((blended - correction) * edge * attack * release, 4.0)
     }
 }
 
@@ -3661,6 +3730,13 @@ fn advance_phases(voice_slot: usize, sample_rate: f64, note_frequency: f64, rele
             }
             if node.wave == 10 {
                 if SAMPLE_PLAYING[voice_slot][node_index] {
+                    if SAMPLE_RELEASE_AGES[voice_slot][node_index] >= 0.0 {
+                        SAMPLE_RELEASE_AGES[voice_slot][node_index] += 1.0 / sample_rate.max(1.0);
+                        SAMPLE_STRETCH_MODS[node_index] = 0.0;
+                        FREQUENCY_MODS[node_index] = 0.0;
+                        FREQUENCY_MOD_ACTIVE[node_index] = false;
+                        continue;
+                    }
                     let sample_step = sample_playback_step(
                         node_index,
                         node,
@@ -3672,6 +3748,7 @@ fn advance_phases(voice_slot: usize, sample_rate: f64, note_frequency: f64, rele
                     .max(0.0001);
                     let stretch =
                         (node.sample_stretch + SAMPLE_STRETCH_MODS[node_index]).max(0.001);
+                    SAMPLE_PLAYBACK_AGES[voice_slot][node_index] += 1.0 / sample_rate.max(1.0);
                     SAMPLE_POSITIONS[voice_slot][node_index] +=
                         (sample_step / stretch) * SAMPLE_DIRECTIONS[voice_slot][node_index];
                     if (stretch - 1.0).abs() < 0.001 {
@@ -4361,10 +4438,12 @@ fn render_dsp_sample_param(op: DspOp) {
             }
             1 => NODES[node_index].sample_start = value.clamp(0.0, 1.0),
             2 => NODES[node_index].sample_end = value.clamp(0.0, 1.0),
-            3 => NODES[node_index].sample_stretch = value.max(0.001),
-            4 => NODES[node_index].sample_cycle_length = value.round().max(1.0),
-            5 => NODES[node_index].sample_overlap_ratio = value.clamp(0.0, 1.0),
-            6 => NODES[node_index].sample_original_frequency = value.max(0.0001),
+            3 => NODES[node_index].sample_attack = value.max(0.0),
+            4 => NODES[node_index].sample_release = value.max(0.0),
+            5 => NODES[node_index].sample_stretch = value.max(0.001),
+            6 => NODES[node_index].sample_cycle_length = value.round().max(1.0),
+            7 => NODES[node_index].sample_overlap_ratio = value.clamp(0.0, 1.0),
+            8 => NODES[node_index].sample_original_frequency = value.max(0.0001),
             _ => {}
         }
     }
@@ -4381,6 +4460,10 @@ fn advance_dsp_sample_player(
         if !SAMPLE_PLAYING[voice_slot][node_index] {
             return;
         }
+        if SAMPLE_RELEASE_AGES[voice_slot][node_index] >= 0.0 {
+            SAMPLE_RELEASE_AGES[voice_slot][node_index] += 1.0 / sample_rate.max(1.0);
+            return;
+        }
 
         let sample_step = sample_playback_step(
             node_index,
@@ -4392,6 +4475,7 @@ fn advance_dsp_sample_player(
         .abs()
         .max(0.0001);
         let stretch = node.sample_stretch.max(0.001);
+        SAMPLE_PLAYBACK_AGES[voice_slot][node_index] += 1.0 / sample_rate.max(1.0);
         SAMPLE_POSITIONS[voice_slot][node_index] +=
             (sample_step / stretch) * SAMPLE_DIRECTIONS[voice_slot][node_index];
         if (stretch - 1.0).abs() < 0.001 {
@@ -4996,29 +5080,37 @@ fn render_dsp_op(
             } else {
                 phase
             };
-            let mut output = match op.a {
-                5 => {
-                    if let Some(index) = state_index {
-                        if index + 2 < MAX_DSP_STATE && DSP_STATE[index + 2] == 0.0 {
-                            DSP_STATE[index + 1] = dsp_sample_hold_value(op.c);
-                            DSP_STATE[index + 2] = 1.0;
-                        }
-                        let trigger = dsp_reg(op.d) >= ENVELOPE_TRIGGER_THRESHOLD;
-                        let previous_trigger = DSP_STATE[index] >= ENVELOPE_TRIGGER_THRESHOLD;
-                        if trigger && !previous_trigger {
-                            DSP_STATE[index + 1] = dsp_sample_hold_value(op.c);
-                        }
-                        DSP_STATE[index] = if trigger { 1.0 } else { 0.0 };
-                        if index + 1 < MAX_DSP_STATE {
-                            DSP_STATE[index + 1]
+            let custom_wave_is_done = op.a == 9
+                && state_index
+                    .map(|index| index + 3 < MAX_DSP_STATE && DSP_STATE[index + 3] >= 0.5)
+                    .unwrap_or(false);
+            let mut output = if custom_wave_is_done {
+                0.0
+            } else {
+                match op.a {
+                    5 => {
+                        if let Some(index) = state_index {
+                            if index + 2 < MAX_DSP_STATE && DSP_STATE[index + 2] == 0.0 {
+                                DSP_STATE[index + 1] = dsp_sample_hold_value(op.c);
+                                DSP_STATE[index + 2] = 1.0;
+                            }
+                            let trigger = dsp_reg(op.d) >= ENVELOPE_TRIGGER_THRESHOLD;
+                            let previous_trigger = DSP_STATE[index] >= ENVELOPE_TRIGGER_THRESHOLD;
+                            if trigger && !previous_trigger {
+                                DSP_STATE[index + 1] = dsp_sample_hold_value(op.c);
+                            }
+                            DSP_STATE[index] = if trigger { 1.0 } else { 0.0 };
+                            if index + 1 < MAX_DSP_STATE {
+                                DSP_STATE[index + 1]
+                            } else {
+                                0.0
+                            }
                         } else {
                             0.0
                         }
-                    } else {
-                        0.0
                     }
+                    _ => render_dsp_phase_oscillator_output(op, render_phase, state_index),
                 }
-                _ => render_dsp_phase_oscillator_output(op, render_phase, state_index),
             };
             if op.a != 5 && op.a != 7 {
                 if let Some(index) = state_index {
@@ -5058,50 +5150,54 @@ fn render_dsp_op(
                         let mut custom_next = next_phase;
                         let mut done = DSP_STATE[index + 3] >= 0.5;
 
-                        match node.custom_mode {
-                            CUSTOM_MODE_PING_PONG => {
-                                custom_next =
-                                    phase + (frequency / sample_rate.max(1.0)) * direction;
-                                if custom_next >= 1.0 {
-                                    custom_next = 1.0 - (custom_next - 1.0);
-                                    direction = -1.0;
-                                } else if custom_next <= 0.0 {
-                                    custom_next = -custom_next;
-                                    direction = 1.0;
+                        if done {
+                            custom_next = phase;
+                        } else {
+                            match node.custom_mode {
+                                CUSTOM_MODE_PING_PONG => {
+                                    custom_next =
+                                        phase + (frequency / sample_rate.max(1.0)) * direction;
+                                    if custom_next >= 1.0 {
+                                        custom_next = 1.0 - (custom_next - 1.0);
+                                        direction = -1.0;
+                                    } else if custom_next <= 0.0 {
+                                        custom_next = -custom_next;
+                                        direction = 1.0;
+                                    }
                                 }
-                            }
-                            CUSTOM_MODE_ONCE => {
-                                if custom_next >= 1.0 {
-                                    custom_next = 1.0;
-                                    done = true;
+                                CUSTOM_MODE_ONCE => {
+                                    if custom_next >= 1.0 {
+                                        custom_next = 1.0;
+                                        done = true;
+                                    }
                                 }
-                            }
-                            CUSTOM_MODE_SUSTAIN => {
-                                if custom_next >= start {
-                                    custom_next = start;
+                                CUSTOM_MODE_SUSTAIN => {
+                                    if custom_next >= start {
+                                        custom_next = start;
+                                    }
                                 }
-                            }
-                            CUSTOM_MODE_SUSTAIN_LOOP => {
-                                if custom_next >= start {
-                                    custom_next = start
-                                        + (((custom_next - start) % length) + length) % length;
+                                CUSTOM_MODE_SUSTAIN_LOOP => {
+                                    if custom_next >= start {
+                                        custom_next = start
+                                            + (((custom_next - start) % length) + length) % length;
+                                    }
                                 }
-                            }
-                            CUSTOM_MODE_SUSTAIN_PING_PONG => {
-                                custom_next =
-                                    phase + (frequency / sample_rate.max(1.0)) * direction;
-                                if custom_next >= end {
-                                    custom_next = end - (custom_next - end);
-                                    direction = -1.0;
-                                } else if custom_next <= start && phase >= start {
-                                    custom_next = start + (start - custom_next);
-                                    direction = 1.0;
-                                } else if custom_next >= start && phase < start {
-                                    direction = 1.0;
+                                CUSTOM_MODE_SUSTAIN_PING_PONG => {
+                                    custom_next =
+                                        phase + (frequency / sample_rate.max(1.0)) * direction;
+                                    if custom_next >= end {
+                                        custom_next = end - (custom_next - end);
+                                        direction = -1.0;
+                                    } else if custom_next <= start && phase >= start {
+                                        custom_next = start + (start - custom_next);
+                                        direction = 1.0;
+                                    } else if custom_next >= start && phase < start {
+                                        direction = 1.0;
+                                    }
                                 }
-                            }
-                            _ => {
-                                custom_next = normalize_phase(custom_next);
+                                _ => {
+                                    custom_next = normalize_phase(custom_next);
+                                }
                             }
                         }
 

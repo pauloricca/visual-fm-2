@@ -124,6 +124,7 @@ export interface DspSampleBinding {
     name: string;
     url: string;
   };
+  release: number;
 }
 
 export interface DspCustomWaveBinding {
@@ -1125,6 +1126,7 @@ function compileSamplePlayer(node: PatchNode, context: CompileContext): number {
       name: node.sample?.name ?? '',
       url: node.sample?.url ?? '',
     },
+    release: Math.max(0, Number(node.params.release) || 0),
   });
 
   const state = nextState(context, 1);
@@ -1141,10 +1143,12 @@ function compileSamplePlayer(node: PatchNode, context: CompileContext): number {
     [0, 'mode', 0],
     [1, 'start', 0],
     [2, 'end', 1],
-    [3, 'stretch', 1],
-    [4, 'cycleLength', 4096],
-    [5, 'overlapRatio', 0.09],
-    [6, null, 440, originalFrequency],
+    [3, 'attack', 0],
+    [4, 'release', 0],
+    [5, 'stretch', 1],
+    [6, 'cycleLength', 4096],
+    [7, 'overlapRatio', 0.09],
+    [8, null, 440, originalFrequency],
   ];
   for (const [kind, port, fallback, register] of sampleParams) {
     context.ops.push({

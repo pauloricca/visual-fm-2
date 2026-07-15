@@ -510,6 +510,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
           name: String(binding?.sample?.name || ""),
           url: String(binding?.sample?.url || ""),
         },
+        release: Math.max(0, Number(binding?.release) || 0),
       })).filter((binding) => binding.nodeId)
       : [];
     const customWaveBindings = Array.isArray(program.customWaveBindings)
@@ -644,6 +645,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         customNode.sample?.cycleLength ?? 4096,
         customNode.sample?.overlapRatio ?? 0.09,
         customNode.sample?.originalFrequency ?? 440,
+        0,
+        0,
       ) ?? -1;
       if (customNode.wasmIndex >= 0 && typeof this.wasm.addCustomWavePoint === "function") {
         for (const point of customNode.customWave.points) {
@@ -670,6 +673,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
           cycleLength: 4096,
           overlapRatio: 0.09,
           originalFrequency: 440,
+          release: binding.release,
         },
       });
       sampleNode.wasmIndex = this.wasm.addNode?.(
@@ -694,6 +698,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         sampleNode.sample?.cycleLength ?? 4096,
         sampleNode.sample?.overlapRatio ?? 0.09,
         sampleNode.sample?.originalFrequency ?? 440,
+        0,
+        binding.release,
       ) ?? -1;
       this.nodes.push(sampleNode);
       this.nodesById.set(sampleNode.id, sampleNode);
@@ -718,6 +724,18 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         op.value3 ?? 0,
         op.value4 ?? 0,
       );
+    }
+
+    // A one-shot custom wave is an event-driven source.  It must stay silent
+    // after the engine starts (or when it is newly added) until its phase-reset
+    // input receives a rising edge.  Restore any existing state afterwards so
+    // a running one-shot is not interrupted by an unrelated graph update.
+    for (const op of this.dspProgram.ops) {
+      if (op.opcode !== 3 || op.a !== 9 || op.state < 0) continue;
+      const binding = this.dspProgram.customWaveBindings[Math.trunc(op.value)];
+      if (binding?.customWave?.mode === "once") {
+        this.wasm.setDspState?.(op.state + 3, 1);
+      }
     }
     this.restoreDspState(preservedState);
   }
@@ -770,15 +788,31 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
   }
 
   configureDspScopes() {
-    this.dspScopeStates.clear();
-    this.wasm?.clearDspScopes?.();
     if (!this.dspProgram || !this.wasm?.setDspScope || !this.wasm?.dspScopePtr) return;
 
+    const nextScopes = [];
     let slot = 0;
     for (const request of this.linkScopeRequests) {
       if (slot >= 32) break;
       const register = Math.trunc(Number(this.dspProgram.monitorIds?.[request.linkId]));
       if (!Number.isFinite(register) || register < 0) continue;
+      nextScopes.push({ request, register, slot });
+      slot += 1;
+    }
+
+    const scopeConfigurationIsUnchanged = nextScopes.length === this.dspScopeStates.size
+      && nextScopes.every(({ request, register, slot }) => {
+        const existing = this.dspScopeStates.get(request.linkId);
+        return existing
+          && existing.slot === slot
+          && existing.register === register
+          && sameScopeRequest(existing.request, request);
+      });
+    if (scopeConfigurationIsUnchanged) return;
+
+    this.dspScopeStates.clear();
+    this.wasm.clearDspScopes?.();
+    for (const { request, register, slot } of nextScopes) {
       const scopeSlot = this.wasm.setDspScope(slot, register, request.seconds, request.points, sampleRate);
       if (scopeSlot < 0) continue;
       const ptr = this.wasm.dspScopePtr(slot);
@@ -786,9 +820,9 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       this.dspScopeStates.set(request.linkId, {
         request,
         slot,
+        register,
         samples: new Float32Array(this.wasm.memory.buffer, ptr, 512),
       });
-      slot += 1;
     }
   }
 
@@ -1383,7 +1417,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     const base = this.baseFrequency(node, noteFrequency);
     const playbackRate = Math.max(0.0001, base) / Math.max(0.0001, original);
     const sourceRate = Math.max(1, entry?.sampleRate || sampleRate);
-    return rangeLength / sourceRate / playbackRate;
+    return (rangeLength / sourceRate / playbackRate) + Math.max(0, Number(node.sample?.release) || 0);
   }
 
   baseFrequency(node, noteFrequency) {
@@ -1476,17 +1510,25 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       return;
     }
 
+    const scopeSettings = new Map(
+      (Array.isArray(payload.scopes) ? payload.scopes : [])
+        .filter((scope) => scope && typeof scope.id === "string")
+        .map((scope) => [scope.id, scope]),
+    );
     const points = this.clamp(Math.round(Number(payload.points) || 256), 32, 512);
     const displayPoints = this.clamp(Math.round(Number(payload.displayPoints) || points), 32, points);
-    const seconds = this.clamp(Number(payload.seconds) || 0.08, 0.01, LINK_SCOPE_SECONDS_MAX);
+    const defaultSeconds = this.clamp(Number(payload.seconds) || 0.08, 0.01, LINK_SCOPE_SECONDS_MAX);
     const mode = payload.mode === "zero-crossing" ? "zero-crossing" : payload.mode === "envelope" ? "envelope" : "continuous";
-    this.linkScopeRequests = [...new Set(linkIds)].map((linkId) => ({
+    const nextRequests = [...new Set(linkIds)].map((linkId) => ({
       linkId,
       mode,
       points,
       displayPoints,
-      seconds,
+      seconds: this.clamp(Number(scopeSettings.get(linkId)?.seconds) || defaultSeconds, 0.01, LINK_SCOPE_SECONDS_MAX),
     }));
+    if (scopeRequestListsEqual(this.linkScopeRequests, nextRequests)) return;
+
+    this.linkScopeRequests = nextRequests;
     this.linkScopeRequestIndex = Math.min(this.linkScopeRequestIndex, this.linkScopeRequests.length - 1);
     this.linkScopeRequest = this.linkScopeRequests[this.linkScopeRequestIndex] || null;
     this.wasm?.setLinkScope?.(-1, 0, 0.08, 256, sampleRate);
@@ -1596,6 +1638,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         node.sample?.cycleLength ?? 4096,
         node.sample?.overlapRatio ?? 0.09,
         node.sample?.originalFrequency ?? 440,
+        0,
+        node.sample?.release ?? 0,
       );
       nodeIndices.set(node.id, nodeIndex);
       if (nodeIndex >= 0 && node.wave === "custom" && typeof wasm.addCustomWavePoint === "function") {
@@ -1725,10 +1769,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       : count < state.request.points
       ? raw.slice(0, count)
       : raw.slice(writeIndex).concat(raw.slice(0, writeIndex));
-    if (samples.length < displayPoints) {
-      return Array(Math.max(0, displayPoints - samples.length)).fill(0).concat(samples).slice(-displayPoints);
-    }
-    if (mode !== "zero-crossing") return samples.slice(-displayPoints);
+    if (mode !== "zero-crossing") return resampleScopeSamples(samples, displayPoints);
     const maxCrossing = samples.length - displayPoints;
     const crossing = samples.findIndex((sample, index) => (
       index > 0
@@ -1736,7 +1777,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       && samples[index - 1] < 0
       && sample >= 0
     ));
-    return (crossing > 0 ? samples.slice(crossing, crossing + displayPoints) : samples.slice(-displayPoints));
+    return resampleScopeSamples(crossing > 0 ? samples.slice(crossing, crossing + displayPoints) : samples, displayPoints);
   }
 
   linkScopeFrameSamples() {
@@ -1753,10 +1794,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       : count < this.linkScopeRequest.points
       ? raw.slice(0, count)
       : raw.slice(writeIndex).concat(raw.slice(0, writeIndex));
-    if (samples.length < displayPoints) {
-      return Array(Math.max(0, displayPoints - samples.length)).fill(0).concat(samples).slice(-displayPoints);
-    }
-    if (mode !== "zero-crossing") return samples.slice(-displayPoints);
+    if (mode !== "zero-crossing") return resampleScopeSamples(samples, displayPoints);
     const maxCrossing = samples.length - displayPoints;
     const crossing = samples.findIndex((sample, index) => (
       index > 0
@@ -1764,7 +1802,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       && samples[index - 1] < 0
       && sample >= 0
     ));
-    return (crossing > 0 ? samples.slice(crossing, crossing + displayPoints) : samples.slice(-displayPoints));
+    return resampleScopeSamples(crossing > 0 ? samples.slice(crossing, crossing + displayPoints) : samples, displayPoints);
   }
 
   dspScopeFrameSamples(state) {
@@ -1781,10 +1819,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       : count < state.request.points
       ? raw.slice(0, count)
       : raw.slice(writeIndex).concat(raw.slice(0, writeIndex));
-    if (samples.length < displayPoints) {
-      return Array(Math.max(0, displayPoints - samples.length)).fill(0).concat(samples).slice(-displayPoints);
-    }
-    if (mode !== "zero-crossing") return samples.slice(-displayPoints);
+    if (mode !== "zero-crossing") return resampleScopeSamples(samples, displayPoints);
     const maxCrossing = samples.length - displayPoints;
     const crossing = samples.findIndex((sample, index) => (
       index > 0
@@ -1792,7 +1827,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       && samples[index - 1] < 0
       && sample >= 0
     ));
-    return (crossing > 0 ? samples.slice(crossing, crossing + displayPoints) : samples.slice(-displayPoints));
+    return resampleScopeSamples(crossing > 0 ? samples.slice(crossing, crossing + displayPoints) : samples, displayPoints);
   }
 
   flushLinkMeters() {
@@ -1845,10 +1880,23 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       if (!Number.isFinite(currentValue)) continue;
       levels.push([binding.id, currentValue, currentValue, currentValue]);
     }
+    const playheads = [];
+    const customWaveNodeIds = new Set((this.dspProgram?.customWaveBindings || []).map((binding) => binding.nodeId));
+    for (const binding of this.dspProgram?.stateBindings || []) {
+      if (!customWaveNodeIds.has(binding.nodeId)) continue;
+      const playhead = Number(this.wasm?.getDspState?.(binding.state));
+      if (Number.isFinite(playhead)) playheads.push([binding.nodeId, this.clamp(playhead, 0, 1)]);
+    }
+    for (let slot = 0; slot < (this.dspProgram?.sampleBindings?.length || 0); slot += 1) {
+      const nodeId = this.dspProgram.sampleBindings[slot]?.nodeId;
+      const playhead = Number(this.wasm?.dspSamplePlayhead?.(slot));
+      if (nodeId && Number.isFinite(playhead) && playhead >= 0) playheads.push([nodeId, this.clamp(playhead, 0, 1)]);
+    }
     this.lastOutputPeak = 0;
     this.wasm?.clearLinkMeters?.();
     this.wasm?.resetDspMeterLevels?.();
     this.port.postMessage({ type: "linkMeters", payload: { levels } });
+    this.port.postMessage({ type: "playheads", payload: { values: playheads } });
     for (const state of this.monitorScopeStates.values()) {
       if (!state.ready) continue;
       this.port.postMessage({
@@ -2052,6 +2100,34 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       return true;
     }
   }
+}
+
+function sameScopeRequest(left, right) {
+  return Boolean(left)
+    && Boolean(right)
+    && left.linkId === right.linkId
+    && left.mode === right.mode
+    && left.points === right.points
+    && left.displayPoints === right.displayPoints
+    && left.seconds === right.seconds;
+}
+
+function scopeRequestListsEqual(left, right) {
+  return left.length === right.length
+    && left.every((request, index) => sameScopeRequest(request, right[index]));
+}
+
+function resampleScopeSamples(samples, targetCount) {
+  if (samples.length <= targetCount) return samples;
+  if (targetCount <= 1) return [samples[samples.length - 1]];
+
+  return Array.from({ length: targetCount }, (_, index) => {
+    const sourcePosition = index * (samples.length - 1) / (targetCount - 1);
+    const leftIndex = Math.floor(sourcePosition);
+    const rightIndex = Math.min(samples.length - 1, leftIndex + 1);
+    const fraction = sourcePosition - leftIndex;
+    return samples[leftIndex] + (samples[rightIndex] - samples[leftIndex]) * fraction;
+  });
 }
 
 registerProcessor("visual-fm-wasm-engine", VisualFmWasmEngine);

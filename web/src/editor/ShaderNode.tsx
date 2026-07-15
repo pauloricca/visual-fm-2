@@ -84,9 +84,10 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const showAudioInputDisplay = node.type === 'AudioInput';
   const showMidiNoteDisplay = node.type === 'MidiNote';
   const showCustomWaveEditor = node.type === 'CustomWave';
-  const showResizableDisplay = showMeterDisplay || showScopeDisplay || showSliderDisplay || showButtonDisplay || showCustomWaveEditor;
   const showSampleUpload = node.type === 'SamplePlayer';
+  const showResizableDisplay = showMeterDisplay || showScopeDisplay || showSliderDisplay || showButtonDisplay || showCustomWaveEditor || showSampleUpload;
   const customWave = showCustomWaveEditor ? normalizeCustomWave(node.customWave, node.params) : null;
+  const customWavePlayhead = clamp(data.audioPlayhead ?? normalizeUnitInterval(node.params.phase ?? 0), 0, 1);
   const sequencer = showSequencerDisplay ? sequencerShape(node.params) : null;
   const amplitudeRange = displayAmplitudeRange(node.params.range);
   const amplitudeRangeLabel = formatAmplitude(amplitudeRange);
@@ -101,10 +102,10 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     : showMeterDisplay || showScopeDisplay
       ? clampScopeNodeSize(node.scopeSize ?? DEFAULT_SCOPE_NODE_SIZE)
     : DEFAULT_SCOPE_NODE_SIZE;
-  const customWaveSize = showCustomWaveEditor
+  const waveformDisplaySize = showCustomWaveEditor || showSampleUpload
     ? clampCustomWaveNodeSize(node.scopeSize ?? DEFAULT_CUSTOM_WAVE_NODE_SIZE)
     : DEFAULT_CUSTOM_WAVE_NODE_SIZE;
-  const displaySize = showCustomWaveEditor ? customWaveSize : scopeSize;
+  const displaySize = showCustomWaveEditor || showSampleUpload ? waveformDisplaySize : scopeSize;
   const meterScaleTicks = showMeterDisplay ? meterScaleTicksForRange(amplitudeRange, displaySize.width) : [];
   const meterGridTicks = showMeterDisplay ? meterGridTicksForWidth(displaySize.width) : [];
   const meterGridRows = showMeterDisplay ? meterGridRowsForHeight(displaySize.height) : [];
@@ -308,7 +309,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           : resize.startSize.width + deltaX,
         height: resize.startSize.height + deltaY,
       };
-      const nextSize = showCustomWaveEditor
+      const nextSize = showCustomWaveEditor || showSampleUpload
         ? clampCustomWaveNodeSize(rawNextSize)
         : showSliderDisplay || showButtonDisplay
           ? clampControlNodeSize(rawNextSize)
@@ -340,7 +341,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('pointercancel', handlePointerCancel);
     };
-  }, [data, node.id, reactFlow, showCustomWaveEditor, showSliderDisplay, showButtonDisplay]);
+  }, [data, node.id, reactFlow, showCustomWaveEditor, showSampleUpload, showSliderDisplay, showButtonDisplay]);
 
   useEffect(() => {
     function handlePointerMove(event: globalThis.PointerEvent) {
@@ -681,6 +682,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           showAudioInputDisplay ? 'shader-node-body-audio-input' : '',
           showMidiNoteDisplay ? 'shader-node-body-midi-note' : '',
           showCustomWaveEditor ? 'shader-node-body-custom-wave' : '',
+          showSampleUpload ? 'shader-node-body-sampleplayer' : '',
           !showSequencerDisplay && (visibleOutputPorts.length === 0 || showHeaderOutputPort) ? 'shader-node-body-no-outputs' : '',
         ].filter(Boolean).join(' ')}>
           {isExpression ? (
@@ -712,6 +714,19 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             />
           ) : null}
           {showSampleUpload ? (
+            <SampleWaveformDisplay
+              sampleUrl={node.sample?.url}
+              playhead={data.audioPlayhead}
+              start={node.params.start ?? 0}
+              end={node.params.end ?? 1}
+              attack={node.params.attack ?? 0}
+              release={node.params.release ?? 0}
+              detail={Math.max(120, Math.round(displaySize.width))}
+              onStartChange={(value) => data.onParamChange(node.id, 'start', value)}
+              onEndChange={(value) => data.onParamChange(node.id, 'end', value)}
+            />
+          ) : null}
+          {showSampleUpload ? (
             <div className="sample-upload-row">
               <button
                 className="sample-upload-button nodrag nopan"
@@ -736,6 +751,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           {showCustomWaveEditor && customWave ? (
             <CustomWaveEditor
               customWave={customWave}
+              playhead={customWavePlayhead}
               compact={!showAllPorts}
               displaySize={displaySize}
               editorRef={customWaveEditorRef}
@@ -1205,7 +1221,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   'audio-node-scope-resize-handle audio-node-scope-resize-handle-left nodrag nopan',
                   scopeResizeCorner === 'bottom-left' ? 'audio-node-scope-resize-handle-active' : '',
                 ].filter(Boolean).join(' ')}
-                title={showCustomWaveEditor ? 'Resize custom wave' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : 'Resize scope'}
+                title={showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : 'Resize scope'}
                 onPointerDown={(event) => handleScopeResizePointerDown(event, 'bottom-left')}
                 onClick={handleScopeResizeClick}
                 onDoubleClick={(event) => event.stopPropagation()}
@@ -1215,7 +1231,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   'audio-node-scope-resize-handle audio-node-scope-resize-handle-right nodrag nopan',
                   scopeResizeCorner === 'bottom-right' ? 'audio-node-scope-resize-handle-active' : '',
                 ].filter(Boolean).join(' ')}
-                title={showCustomWaveEditor ? 'Resize custom wave' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : 'Resize scope'}
+                title={showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : 'Resize scope'}
                 onPointerDown={(event) => handleScopeResizePointerDown(event, 'bottom-right')}
                 onClick={handleScopeResizeClick}
                 onDoubleClick={(event) => event.stopPropagation()}
@@ -1255,8 +1271,250 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   );
 }
 
+interface SampleWaveformBin {
+  min: number;
+  max: number;
+}
+
+interface SampleWaveform {
+  bins: SampleWaveformBin[];
+  duration: number;
+}
+
+interface SampleWaveformDisplayProps {
+  sampleUrl?: string;
+  playhead?: number;
+  start: number;
+  end: number;
+  attack: number;
+  release: number;
+  detail: number;
+  onStartChange: (value: number) => void;
+  onEndChange: (value: number) => void;
+}
+
+function SampleWaveformDisplay({
+  sampleUrl,
+  playhead,
+  start,
+  end,
+  attack,
+  release,
+  detail,
+  onStartChange,
+  onEndChange,
+}: SampleWaveformDisplayProps) {
+  const [waveform, setWaveform] = useState<SampleWaveform | null>(null);
+  const canvasRef = useRef<SVGSVGElement | null>(null);
+  const dragRef = useRef<{ boundary: 'start' | 'end'; pointerId: number } | null>(null);
+  const safeStart = clamp(start, 0, 1);
+  const safeEnd = clamp(end, 0, 1);
+  const width = 300;
+  const height = 128;
+  const padding = 18;
+  const innerWidth = width - padding * 2;
+  const sampleDuration = Math.max(0.001, waveform?.duration ?? 1);
+  const safeAttack = Math.max(0, attack);
+  const safeRelease = Math.max(0, release);
+  const playbackDirection = safeEnd >= safeStart ? 1 : -1;
+  const startSeconds = safeStart * sampleDuration;
+  const endSeconds = safeEnd * sampleDuration;
+  const attackEndSeconds = startSeconds + playbackDirection * safeAttack;
+  const releaseEndSeconds = endSeconds + playbackDirection * safeRelease;
+  const timelineStart = Math.min(0, attackEndSeconds, releaseEndSeconds);
+  const timelineEnd = Math.max(sampleDuration, attackEndSeconds, releaseEndSeconds);
+  const timelineDuration = Math.max(0.001, timelineEnd - timelineStart);
+  const timelineX = (seconds: number) => padding + ((seconds - timelineStart) / timelineDuration) * innerWidth;
+  const waveformPath = waveform
+    ? sampleWaveformPath(waveformBinsForDetail(waveform.bins, detail), timelineX(0), timelineX(sampleDuration), height, padding)
+    : '';
+  const playheadX = timelineX(clamp(playhead ?? safeStart, 0, 1) * sampleDuration);
+  const startX = timelineX(startSeconds);
+  const endX = timelineX(endSeconds);
+  const attackEndX = timelineX(attackEndSeconds);
+  const releaseEndX = timelineX(releaseEndSeconds);
+  const rangeStartX = Math.min(startX, endX);
+  const rangeEndX = Math.max(startX, endX);
+  const attackPhaseX = Math.min(startX, attackEndX);
+  const attackPhaseWidth = Math.abs(attackEndX - startX);
+  const releasePhaseX = Math.min(endX, releaseEndX);
+  const releasePhaseWidth = Math.abs(releaseEndX - endX);
+
+  function updateBoundaryFromPointer(event: Pick<PointerEvent<SVGSVGElement>, 'clientX'>) {
+    const drag = dragRef.current;
+    const bounds = canvasRef.current?.getBoundingClientRect();
+    if (!drag || !bounds || bounds.width <= 0) return;
+    const value = clamp((timelineStart + ((event.clientX - bounds.left) / bounds.width) * timelineDuration) / sampleDuration, 0, 1);
+    if (drag.boundary === 'start') onStartChange(value);
+    else onEndChange(value);
+  }
+
+  function handleBoundaryPointerDown(event: PointerEvent<SVGRectElement>, boundary: 'start' | 'end') {
+    event.preventDefault();
+    event.stopPropagation();
+    dragRef.current = { boundary, pointerId: event.pointerId };
+    canvasRef.current?.setPointerCapture(event.pointerId);
+    updateBoundaryFromPointer(event);
+  }
+
+  function handlePointerMove(event: PointerEvent<SVGSVGElement>) {
+    if (dragRef.current?.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    updateBoundaryFromPointer(event);
+  }
+
+  function finishBoundaryDrag(pointerId: number) {
+    if (dragRef.current?.pointerId !== pointerId) return;
+    dragRef.current = null;
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    setWaveform(null);
+    if (!sampleUrl) return () => {
+      cancelled = true;
+    };
+
+    void loadSampleWaveform(sampleUrl).then((nextWaveform) => {
+      if (!cancelled) setWaveform(nextWaveform);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sampleUrl]);
+
+  return (
+    <div className="sample-waveform-display nodrag nopan">
+      <svg
+        ref={canvasRef}
+        className="sample-waveform-canvas"
+        viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="none"
+        aria-label={sampleUrl ? 'Sample waveform' : 'Sample waveform preview'}
+        role="img"
+        onPointerMove={handlePointerMove}
+        onPointerUp={(event) => finishBoundaryDrag(event.pointerId)}
+        onPointerCancel={(event) => finishBoundaryDrag(event.pointerId)}
+        onLostPointerCapture={(event) => finishBoundaryDrag(event.pointerId)}
+      >
+        <g className="sample-waveform-chart-chrome">
+          <line className="custom-wave-grid-line" x1={padding} y1={padding} x2={width - padding} y2={padding} />
+          <line className="custom-wave-grid-line custom-wave-zero" x1={padding} y1={height / 2} x2={width - padding} y2={height / 2} />
+          <line className="custom-wave-grid-line" x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} />
+          {waveformPath ? <path className="sample-waveform-path" d={waveformPath} /> : null}
+          <rect className="sample-waveform-fade" x={padding} y={padding} width={rangeStartX - padding} height={height - padding * 2} />
+          <rect className="sample-waveform-fade" x={rangeEndX} y={padding} width={width - padding - rangeEndX} height={height - padding * 2} />
+          {safeAttack > 0 ? <rect className="sample-waveform-phase is-attack" x={attackPhaseX} y={padding} width={attackPhaseWidth} height={height - padding * 2} /> : null}
+          {safeRelease > 0 ? <rect className="sample-waveform-phase is-release" x={releasePhaseX} y={padding} width={releasePhaseWidth} height={height - padding * 2} /> : null}
+          <line className="wave-playhead-line" x1={playheadX} y1={padding} x2={playheadX} y2={height - padding} />
+          <line className="sample-waveform-boundary-line is-start" x1={startX} y1={padding} x2={startX} y2={height - padding} />
+          <line className="sample-waveform-boundary-line is-end" x1={endX} y1={padding} x2={endX} y2={height - padding} />
+          {safeAttack > 0 ? <line className="sample-waveform-phase-line is-attack" x1={attackEndX} y1={padding} x2={attackEndX} y2={height - padding}><title>Attack ends</title></line> : null}
+          {safeRelease > 0 ? <line className="sample-waveform-phase-line is-release" x1={releaseEndX} y1={padding} x2={releaseEndX} y2={height - padding}><title>Release ends</title></line> : null}
+        </g>
+        <rect
+          className="sample-waveform-boundary-hit-target is-start"
+          x={startX - 8}
+          y={padding}
+          width={16}
+          height={height - padding * 2}
+          aria-label="Drag sample start"
+          onPointerDown={(event) => handleBoundaryPointerDown(event, 'start')}
+        />
+        <rect
+          className="sample-waveform-boundary-hit-target is-end"
+          x={endX - 8}
+          y={padding}
+          width={16}
+          height={height - padding * 2}
+          aria-label="Drag sample end"
+          onPointerDown={(event) => handleBoundaryPointerDown(event, 'end')}
+        />
+      </svg>
+    </div>
+  );
+}
+
+async function loadSampleWaveform(url: string): Promise<SampleWaveform | null> {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    const OfflineAudioContextConstructor = window.OfflineAudioContext
+      || (window as Window & { webkitOfflineAudioContext?: typeof OfflineAudioContext }).webkitOfflineAudioContext;
+    if (!OfflineAudioContextConstructor) return null;
+    const context = new OfflineAudioContextConstructor(1, 1, 44100);
+    const buffer = await context.decodeAudioData(await response.arrayBuffer());
+    return {
+      bins: sampleWaveformBins(buffer, 720),
+      duration: Math.max(0.001, buffer.duration),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function sampleWaveformBins(buffer: AudioBuffer, count = 180): SampleWaveformBin[] {
+  const bins: SampleWaveformBin[] = [];
+  const framesPerBin = Math.max(1, Math.ceil(buffer.length / count));
+  for (let start = 0; start < buffer.length; start += framesPerBin) {
+    const end = Math.min(buffer.length, start + framesPerBin);
+    let min = 0;
+    let max = 0;
+    for (let frame = start; frame < end; frame += 1) {
+      let value = 0;
+      for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+        value += buffer.getChannelData(channel)[frame] / buffer.numberOfChannels;
+      }
+      min = Math.min(min, value);
+      max = Math.max(max, value);
+    }
+    bins.push({ min, max });
+  }
+  return bins;
+}
+
+function sampleWaveformPath(
+  bins: SampleWaveformBin[],
+  startX: number,
+  endX: number,
+  height: number,
+  padding: number,
+): string {
+  if (bins.length === 0) return '';
+  const innerHeight = height - padding * 2;
+  return bins.map((bin, index) => {
+    const x = startX + (index / Math.max(1, bins.length - 1)) * (endX - startX);
+    const top = padding + (1 - (clamp(bin.max, -1, 1) + 1) / 2) * innerHeight;
+    const bottom = padding + (1 - (clamp(bin.min, -1, 1) + 1) / 2) * innerHeight;
+    return `M${roundPathNumber(x)} ${roundPathNumber(top)} V${roundPathNumber(bottom)}`;
+  }).join(' ');
+}
+
+function waveformBinsForDetail(bins: SampleWaveformBin[], detail: number): SampleWaveformBin[] {
+  const count = Math.max(1, Math.min(bins.length, Math.round(detail)));
+  if (count >= bins.length) return bins;
+  return Array.from({ length: count }, (_, index) => {
+    const start = Math.floor(index * bins.length / count);
+    const end = Math.max(start + 1, Math.floor((index + 1) * bins.length / count));
+    let min = 0;
+    let max = 0;
+    for (let sourceIndex = start; sourceIndex < end; sourceIndex += 1) {
+      const source = bins[sourceIndex];
+      min = Math.min(min, source.min);
+      max = Math.max(max, source.max);
+    }
+    return { min, max };
+  });
+}
+
+function normalizeUnitInterval(value: number): number {
+  return ((value % 1) + 1) % 1;
+}
+
 interface CustomWaveEditorProps {
   customWave: CustomWaveSettings;
+  playhead: number;
   compact: boolean;
   displaySize: ScopeNodeSize;
   editorRef: RefObject<SVGSVGElement | null>;
@@ -1764,6 +2022,7 @@ function SequencerGrid({
 
 function CustomWaveEditor({
   customWave,
+  playhead,
   compact,
   displaySize,
   editorRef,
@@ -1784,6 +2043,7 @@ function CustomWaveEditor({
   const sustainEndX = padding + customWave.sustainEnd * innerWidth;
   const showSustainStart = customWaveUsesSustainStart(customWave.mode);
   const showSustainEnd = customWaveUsesSustainEnd(customWave.mode);
+  const playheadX = padding + playhead * innerWidth;
   const hitRadius = screenCircleRadius(15, width, height, displaySize);
   const endpointRadius = screenCircleRadius(5, width, height, displaySize);
   const handleRadius = screenCircleRadius(6, width, height, displaySize);
@@ -1811,6 +2071,7 @@ function CustomWaveEditor({
             <line className="custom-wave-sustain-line is-end" x1={sustainEndX} y1={padding} x2={sustainEndX} y2={height - padding} />
           ) : null}
           <path className="custom-wave-path" d={path} />
+          <line className="wave-playhead-line" x1={playheadX} y1={padding} x2={playheadX} y2={height - padding} />
         </g>
         {points.map((point, index) => {
           const screen = customWavePointToScreen(point, width, height, padding);

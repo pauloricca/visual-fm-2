@@ -93,6 +93,8 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
       { name: 'trigger', defaultValue: 0 },
       { name: 'start', defaultValue: 0, min: 0, max: 1 },
       { name: 'end', defaultValue: 1, min: 0, max: 1 },
+      { name: 'attack', defaultValue: 0, min: 0, step: 0.001 },
+      { name: 'release', defaultValue: 0, min: 0, step: 0.001 },
       { name: 'stretch', defaultValue: 1, min: 0.001 },
       { name: 'cycleLength', defaultValue: 4096, min: 1 },
       { name: 'overlapRatio', defaultValue: 0.09, min: 0, max: 1 },
@@ -311,6 +313,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   ]),
   Scope: processor('Scope', [
     { name: 'range', defaultValue: 1, min: 0.001 },
+    { name: 'length', defaultValue: 0.08, min: 0.01, max: 30, step: 0.01, connectable: false },
   ]),
   LowpassFilter: filter('LowpassFilter'),
   HighpassFilter: filter('HighpassFilter'),
