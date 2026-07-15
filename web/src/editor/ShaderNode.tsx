@@ -1344,7 +1344,11 @@ function SampleWaveformDisplay({
     const drag = dragRef.current;
     const bounds = canvasRef.current?.getBoundingClientRect();
     if (!drag || !bounds || bounds.width <= 0) return;
-    const value = clamp((timelineStart + ((event.clientX - bounds.left) / bounds.width) * timelineDuration) / sampleDuration, 0, 1);
+    // Pointer coordinates span the full SVG, while the editable timeline spans
+    // only the padded chart area. Convert through the SVG coordinate system first
+    // so clicking a boundary leaves it at its current value.
+    const svgX = ((event.clientX - bounds.left) / bounds.width) * width;
+    const value = clamp((timelineStart + ((svgX - padding) / innerWidth) * timelineDuration) / sampleDuration, 0, 1);
     if (drag.boundary === 'start') onStartChange(value);
     else onEndChange(value);
   }
