@@ -2907,6 +2907,22 @@ function NodeEditorInner() {
     void reactFlow?.zoomTo(ZOOM_SNAP_TARGET, { duration: 120 });
   }, [reactFlow]);
 
+  useEffect(() => {
+    const handleResetZoomKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat || event.altKey || event.shiftKey) return;
+      if (isEditableEventTarget(event.target)) return;
+      if (!event.metaKey && !event.ctrlKey) return;
+      if (event.key !== '0' && event.code !== 'Digit0' && event.code !== 'Numpad0') return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      resetZoom();
+    };
+
+    window.addEventListener('keydown', handleResetZoomKeyDown, { capture: true });
+    return () => window.removeEventListener('keydown', handleResetZoomKeyDown, { capture: true });
+  }, [resetZoom]);
+
   return (
     <div className="app-shell app-shell-panel-closed">
       <EdgeOverlayProvider target={edgeOverlayElement}>

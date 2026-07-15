@@ -58,7 +58,7 @@ export function ShaderEdge(props: EdgeProps<ShaderFlowEdge>) {
     ? { stroke: 'var(--color-edge-underlay)', strokeWidth: 8 }
     : undefined;
   const selectedForegroundStyle = selected
-    ? { stroke: 'var(--color-accent)', strokeWidth: 3 }
+    ? { strokeWidth: 4 }
     : undefined;
 
   useEffect(() => {
