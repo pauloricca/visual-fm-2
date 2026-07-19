@@ -37,9 +37,11 @@ import {
   clampCustomWaveNodeSize,
   clampImageNodeSize,
   clampKeysNodeSize,
+  clampSequencerNodeSize,
   clampScopeNodeSize,
   DEFAULT_CUSTOM_WAVE_NODE_SIZE,
   DEFAULT_KEYS_NODE_SIZE,
+  DEFAULT_SEQUENCER_NODE_SIZE,
   DEFAULT_SCOPE_NODE_SIZE,
   editorStateToFlowEdges,
   editorStateToFlowNodes,
@@ -1102,13 +1104,19 @@ function NodeEditorInner() {
         relatedNode.data.patchNode.type !== 'Image' &&
         relatedNode.data.patchNode.type !== 'Slider' &&
         relatedNode.data.patchNode.type !== 'Button' &&
-        relatedNode.data.patchNode.type !== 'Keys'
+        relatedNode.data.patchNode.type !== 'Keys' &&
+        relatedNode.data.patchNode.type !== 'Sequencer'
       )
     ) {
       return;
     }
 
-    const nextSize = relatedNode.data.patchNode.type === 'Image'
+    const nextSize = relatedNode.data.patchNode.type === 'Sequencer'
+      ? (() => {
+          const shape = sequencerShape(relatedNode.data.patchNode.params);
+          return clampSequencerNodeSize(size, shape.steps, shape.rows);
+        })()
+      : relatedNode.data.patchNode.type === 'Image'
       ? clampImageNodeSize(size, size.width / Math.max(1, size.height))
       : relatedNode.data.patchNode.type === 'CustomWave' || relatedNode.data.patchNode.type === 'SamplePlayer'
       ? clampCustomWaveNodeSize(size)
@@ -1130,7 +1138,13 @@ function NodeEditorInner() {
       if (node.id !== nodeId) return node;
 
       const currentSize = node.data.patchNode.scopeSize ?? (
-        node.data.patchNode.type === 'Keys'
+        node.data.patchNode.type === 'Sequencer'
+          ? clampSequencerNodeSize(
+              DEFAULT_SEQUENCER_NODE_SIZE,
+              sequencerShape(node.data.patchNode.params).steps,
+              sequencerShape(node.data.patchNode.params).rows,
+            )
+        : node.data.patchNode.type === 'Keys'
           ? DEFAULT_KEYS_NODE_SIZE
         : node.data.patchNode.type === 'CustomWave' || node.data.patchNode.type === 'SamplePlayer' || node.data.patchNode.type === 'Image'
           ? DEFAULT_CUSTOM_WAVE_NODE_SIZE
@@ -5014,9 +5028,14 @@ function viewportNodeSize(node: ShaderFlowNode): { width: number; height: number
 
   if (patchNode.type === 'Sequencer') {
     const shape = sequencerShape(patchNode.params);
+    const size = clampSequencerNodeSize(
+      patchNode.scopeSize ?? DEFAULT_SEQUENCER_NODE_SIZE,
+      shape.steps,
+      shape.rows,
+    );
     return {
-      width: Math.max(168, shape.steps * 26 + 18),
-      height: NODE_HEADER_HEIGHT + shape.rows * 26 + 92,
+      width: size.width,
+      height: NODE_HEADER_HEIGHT + size.height + 92,
     };
   }
 

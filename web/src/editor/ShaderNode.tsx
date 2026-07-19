@@ -43,6 +43,7 @@ import {
   clampCustomWaveNodeSize,
   clampImageNodeSize,
   clampKeysNodeSize,
+  clampSequencerNodeSize,
   clampScopeNodeSize,
   DEFAULT_IMAGE_ASPECT_RATIO,
   DEFAULT_CUSTOM_WAVE_NODE_SIZE,
@@ -66,6 +67,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     corner: 'bottom-left' | 'bottom-right';
     startPointer: { x: number; y: number };
     startSize: ScopeNodeSize;
+    minWidth?: number;
   } | null>(null);
   const customWaveEditorRef = useRef<SVGSVGElement | null>(null);
   const customWaveDragRef = useRef<{ pointerId: number; index: number } | null>(null);
@@ -106,7 +108,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const showTopGraphic = showMeterDisplay || showScopeDisplay || showSliderDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay;
   const imageX = centeredCoordinateToUnit(data.audioImagePosition?.x ?? node.params.x ?? 0);
   const imageY = centeredCoordinateToUnit(data.audioImagePosition?.y ?? node.params.y ?? 0);
-  const showResizableDisplay = showMeterDisplay || showScopeDisplay || showSliderDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay;
+  const showResizableDisplay = showMeterDisplay || showScopeDisplay || showSliderDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay || showSequencerDisplay;
   const customWave = showCustomWaveEditor ? normalizeCustomWave(node.customWave, node.params) : null;
   const customWavePlayhead = clamp(data.audioPlayheads?.[0] ?? normalizeUnitInterval(node.params.phase ?? 0), 0, 1);
   const sequencer = showSequencerDisplay ? sequencerShape(node.params) : null;
@@ -134,7 +136,16 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     : showCustomWaveEditor || showSampleUpload
       ? clampCustomWaveNodeSize(node.scopeSize ?? DEFAULT_CUSTOM_WAVE_NODE_SIZE)
       : DEFAULT_CUSTOM_WAVE_NODE_SIZE;
-  const displaySize = showCustomWaveEditor || showSampleUpload || showImageDisplay ? waveformDisplaySize : scopeSize;
+  const sequencerDisplaySize = sequencer
+    ? clampSequencerNodeSize(
+        node.scopeSize ?? { width: sequencer.steps * 26, height: sequencer.rows * 26 },
+        sequencer.steps,
+        sequencer.rows,
+      )
+    : DEFAULT_SCOPE_NODE_SIZE;
+  const displaySize = showSequencerDisplay
+    ? sequencerDisplaySize
+    : showCustomWaveEditor || showSampleUpload || showImageDisplay ? waveformDisplaySize : scopeSize;
   const meterScaleTicks = showMeterDisplay ? amplitudeScaleTicks(amplitudeRange, displaySize.width, meterMode) : [];
   const meterGridTicks = showMeterDisplay ? meterGridTicksForWidth(displaySize.width) : [];
   const meterGridRows = showMeterDisplay ? meterGridRowsForHeight(displaySize.height) : [];
@@ -145,6 +156,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
         '--node-display-width': `${displaySize.width}px`,
         '--node-display-height': `${displaySize.height}px`,
         ...(showImageDisplay ? { '--image-aspect-ratio': String(imageAspectRatio) } : {}),
+        ...(sequencer ? { '--sequencer-steps': String(sequencer.steps), '--sequencer-rows': String(sequencer.rows) } : {}),
       } as CSSProperties)
     : undefined;
   const dspErrors = data.dspErrors ?? [];
@@ -342,8 +354,11 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
       const rawWidth = resize.corner === 'bottom-left'
         ? resize.startSize.width - deltaX
         : resize.startSize.width + deltaX;
-      const rawNextSize = { width: rawWidth, height: resize.startSize.height + deltaY };
-      const nextSize = showImageDisplay
+      const constrainedWidth = resize.minWidth === undefined ? rawWidth : Math.max(resize.minWidth, rawWidth);
+      const rawNextSize = { width: constrainedWidth, height: resize.startSize.height + deltaY };
+      const nextSize = showSequencerDisplay && sequencer
+        ? clampSequencerNodeSize({ width: constrainedWidth, height: constrainedWidth * sequencer.rows / sequencer.steps }, sequencer.steps, sequencer.rows)
+        : showImageDisplay
         ? clampImageNodeSize({ width: rawWidth, height: rawWidth / imageAspectRatio }, imageAspectRatio)
         : showCustomWaveEditor || showSampleUpload
         ? clampCustomWaveNodeSize(rawNextSize)
@@ -379,7 +394,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('pointercancel', handlePointerCancel);
     };
-  }, [data, imageAspectRatio, node.id, reactFlow, showCustomWaveEditor, showSampleUpload, showImageDisplay, showSliderDisplay, showButtonDisplay, showKeysDisplay]);
+  }, [data, imageAspectRatio, node.id, reactFlow, sequencer, showCustomWaveEditor, showSampleUpload, showImageDisplay, showSequencerDisplay, showSliderDisplay, showButtonDisplay, showKeysDisplay]);
 
   useEffect(() => {
     setImageAspectRatio(DEFAULT_IMAGE_ASPECT_RATIO);
@@ -466,11 +481,26 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
+    const sequencerPanel = showSequencerDisplay
+      ? event.currentTarget.closest('.shader-node-sequencer')?.querySelector<HTMLElement>('.sequencer-node-panel')
+      : null;
+    const sequencerBody = event.currentTarget.closest('.shader-node-sequencer')?.querySelector<HTMLElement>('.shader-node-body-sequencer');
+    const sequencerInputs = sequencerBody?.querySelector<HTMLElement>('.shader-inputs');
+    const sequencerOutputs = sequencerBody?.querySelector<HTMLElement>('.shader-outputs');
+    const sequencerPanelRect = sequencerPanel?.getBoundingClientRect();
+    const hasVisibleSequencerInputs = sequencerInputs?.querySelector('.shader-port') !== null;
+    const hasVisibleSequencerOutputs = sequencerOutputs?.querySelector('.shader-port') !== null;
+    const sequencerMinWidth = hasVisibleSequencerInputs && hasVisibleSequencerOutputs
+      ? Math.ceil((sequencerInputs?.getBoundingClientRect().width ?? 0) + (sequencerOutputs?.getBoundingClientRect().width ?? 0) + 10)
+      : undefined;
     scopeResizeRef.current = {
       pointerId: event.pointerId,
       corner,
       startPointer: { x: event.clientX, y: event.clientY },
-      startSize: displaySize,
+      startSize: sequencerPanelRect
+        ? { width: sequencerPanelRect.width, height: sequencerPanelRect.height }
+        : displaySize,
+      minWidth: sequencerMinWidth,
     };
     setScopeResizeCorner(corner);
   }
@@ -1436,7 +1466,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   'audio-node-scope-resize-handle audio-node-scope-resize-handle-left nodrag nopan',
                   scopeResizeCorner === 'bottom-left' ? 'audio-node-scope-resize-handle-active' : '',
                 ].filter(Boolean).join(' ')}
-                title={showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showImageDisplay ? 'Resize image' : showKeysDisplay ? 'Resize keys' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : 'Resize scope'}
+                title={showSequencerDisplay ? 'Resize sequencer' : showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showImageDisplay ? 'Resize image' : showKeysDisplay ? 'Resize keys' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : 'Resize scope'}
                 onPointerDown={(event) => handleScopeResizePointerDown(event, 'bottom-left')}
                 onClick={handleScopeResizeClick}
                 onDoubleClick={(event) => event.stopPropagation()}
@@ -1446,7 +1476,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   'audio-node-scope-resize-handle audio-node-scope-resize-handle-right nodrag nopan',
                   scopeResizeCorner === 'bottom-right' ? 'audio-node-scope-resize-handle-active' : '',
                 ].filter(Boolean).join(' ')}
-                title={showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showImageDisplay ? 'Resize image' : showKeysDisplay ? 'Resize keys' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : 'Resize scope'}
+                title={showSequencerDisplay ? 'Resize sequencer' : showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showImageDisplay ? 'Resize image' : showKeysDisplay ? 'Resize keys' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : 'Resize scope'}
                 onPointerDown={(event) => handleScopeResizePointerDown(event, 'bottom-right')}
                 onClick={handleScopeResizeClick}
                 onDoubleClick={(event) => event.stopPropagation()}

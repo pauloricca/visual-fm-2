@@ -13,6 +13,7 @@ export interface ScopeNodeSize {
 export const DEFAULT_SCOPE_NODE_SIZE: ScopeNodeSize = { width: 224, height: 48 };
 export const DEFAULT_KEYS_NODE_SIZE: ScopeNodeSize = { width: 372, height: 120 };
 export const DEFAULT_CUSTOM_WAVE_NODE_SIZE: ScopeNodeSize = { width: 372, height: 128 };
+export const DEFAULT_SEQUENCER_NODE_SIZE: ScopeNodeSize = { width: 416, height: 104 };
 export const DEFAULT_IMAGE_ASPECT_RATIO = 16 / 9;
 
 export type EditorPatchNode = Omit<PatchNode, 'type'> & {
@@ -311,6 +312,13 @@ export function clampImageNodeSize(size: ScopeNodeSize, aspectRatio: number): Sc
   const aspect = Number.isFinite(aspectRatio) && aspectRatio > 0 ? aspectRatio : DEFAULT_IMAGE_ASPECT_RATIO;
   const width = normalizeNodeDimension(size.width);
   return { width, height: normalizeNodeDimension(width / aspect) };
+}
+
+export function clampSequencerNodeSize(size: ScopeNodeSize, steps: number, rows: number): ScopeNodeSize {
+  const safeSteps = Number.isFinite(steps) && steps > 0 ? steps : 1;
+  const safeRows = Number.isFinite(rows) && rows > 0 ? rows : 1;
+  const cellSize = Math.max(1, Math.round(normalizeNodeDimension(size.width) / safeSteps));
+  return { width: cellSize * safeSteps, height: cellSize * safeRows };
 }
 
 function normalizeNodeSize(size: ScopeNodeSize): ScopeNodeSize {
