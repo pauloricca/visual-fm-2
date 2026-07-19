@@ -543,13 +543,21 @@ button:hover {
   background: var(--color-surface);
 }
 
+.shader-node-keys {
+  width: var(--node-display-width, 372px);
+  min-width: 180px;
+  background: var(--color-surface);
+}
+
 .shader-node-accumulator {
+  --accumulator-control-width: 96px;
   min-width: 116px;
   background: var(--color-surface);
 }
 
 .shader-node-slider:has(.shader-inputs:not(:empty)),
-.shader-node-button:has(.shader-inputs:not(:empty)) {
+.shader-node-button:has(.shader-inputs:not(:empty)),
+.shader-node-keys:has(.shader-inputs:not(:empty)) {
   min-width: max(72px, calc(var(--input-label-width, 0ch) + 90px));
 }
 
@@ -836,6 +844,104 @@ button:hover {
 .shader-node-body-no-outputs {
   grid-template-columns: minmax(0, 1fr);
   justify-content: start;
+}
+
+/* Every node with a visual editor uses the same two-row layout: graphic first,
+   then a shared input/output port grid. */
+.shader-node-body-graphic {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  width: 100%;
+  min-height: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.shader-node-content-graphic {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+  min-width: 0;
+}
+
+.shader-node-content-graphic-empty {
+  display: contents;
+}
+
+.shader-node-content-graphic > .audio-node-meter-display,
+.shader-node-content-graphic > .audio-node-scope-display,
+.shader-node-content-graphic > .audio-node-slider-display,
+.shader-node-content-graphic > .audio-node-button-display,
+.shader-node-content-graphic > .keys-node-keyboard {
+  min-width: 0;
+}
+
+.shader-node-content-graphic > .audio-node-meter-display,
+.shader-node-content-graphic > .audio-node-scope-display {
+  border: 0;
+}
+
+.shader-node-content-graphic > .sample-upload-row {
+  width: 100%;
+  min-width: 0;
+  padding: var(--node-content-padding);
+  padding-bottom: 0;
+}
+
+.shader-node-content-ports {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  column-gap: 10px;
+  width: 100%;
+  min-width: 0;
+}
+
+.shader-node-content-ports-empty {
+  display: contents;
+}
+
+.shader-node-content-ports-no-outputs {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.shader-node-content-ports .shader-inputs,
+.shader-node-content-ports .shader-outputs {
+  width: 100%;
+  min-width: 0;
+  padding: var(--node-content-padding);
+}
+
+.shader-node-content-ports .shader-inputs {
+  grid-column: 1;
+}
+
+.shader-node-content-ports .shader-outputs {
+  grid-column: 2;
+  width: max-content;
+}
+
+.shader-node-content-ports .shader-port {
+  width: 100%;
+  min-width: 0;
+}
+
+.shader-node-content-ports .shader-port-input {
+  grid-template-columns: minmax(0, var(--input-label-width, max-content)) minmax(0, 68px);
+}
+
+.shader-node-content-ports .shader-port-input:has(.display-mode-select) {
+  grid-template-columns: minmax(0, var(--input-label-width, max-content)) minmax(0, 84px);
+}
+
+.shader-node-content-ports .shader-port-input span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shader-node-content-ports .shader-port-output {
+  width: max-content;
 }
 
 .shader-node-body-expression {
@@ -1198,47 +1304,11 @@ button:hover {
   opacity: 0.5;
 }
 
-.shader-node-body-custom-wave {
-  grid-template-columns: minmax(188px, 1fr);
-  gap: 0;
-  width: 100%;
-  min-width: 220px;
-  padding: 0;
-}
-
-.shader-node-body-sampleplayer {
-  grid-template-columns: minmax(188px, 1fr);
-  gap: 0;
-  width: 100%;
-  min-width: 220px;
-  padding: 0;
-}
-
-.shader-node-body-full-width-display {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  width: 100%;
-}
-
-.shader-node-body-full-width-display .shader-ports {
-  min-width: 0;
-}
-
 .shader-node-full-width-display {
   grid-column: 1 / -1;
   width: 100%;
   max-width: 100%;
   min-width: 0;
-}
-
-.shader-node-body-sampleplayer .sample-upload-row,
-.shader-node-body-sampleplayer .shader-inputs {
-  width: 100%;
-  min-width: 0;
-  padding: var(--node-content-padding);
-}
-
-.shader-node-body-sampleplayer .sample-upload-row {
-  padding-bottom: 0;
 }
 
 .custom-wave-node-editor {
@@ -1416,29 +1486,6 @@ button:hover {
   row-gap: 6px;
 }
 
-.shader-node-body-scope {
-  position: relative;
-  display: grid;
-  grid-template-columns: minmax(156px, 1fr);
-  gap: 0;
-  width: 100%;
-  min-height: 0;
-  padding: 0;
-  background: transparent;
-}
-
-.shader-node-body-slider,
-.shader-node-body-button {
-  position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 0;
-  width: 100%;
-  min-height: 0;
-  padding: 0;
-  background: transparent;
-}
-
 .shader-node-body-sequencer {
   grid-template-columns: max-content max-content;
   gap: 10px;
@@ -1455,15 +1502,6 @@ button:hover {
   border: 0;
   background: transparent;
   pointer-events: none;
-}
-
-.shader-node-body-meter {
-  position: relative;
-  display: block;
-  width: 100%;
-  min-height: 48px;
-  padding: 0;
-  background: transparent;
 }
 
 .meter-label {
@@ -1585,7 +1623,7 @@ button:hover {
   display: grid;
   grid-column: 1 / -1;
   gap: 0;
-  width: max-content;
+  width: 100%;
   min-width: 0;
   padding: 0;
   background: transparent;
@@ -1594,16 +1632,59 @@ button:hover {
 .sequencer-row {
   position: relative;
   display: grid;
-  grid-template-columns: max-content 0;
+  grid-template-columns: minmax(0, 1fr) 0;
   height: 26px;
   min-width: 0;
 }
 
 .sequencer-cells {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(var(--sequencer-steps), 26px);
   gap: 0;
+  overflow: hidden;
+  justify-self: end;
 }
+
+.sequencer-gate,
+.sequencer-trigger {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  min-width: 2px;
+  border: 0;
+  border-radius: 0;
+  background: var(--color-accent);
+  box-shadow: none;
+  cursor: grab;
+  touch-action: none;
+}
+
+.sequencer-gate:active,
+.sequencer-trigger:active {
+  cursor: grabbing;
+}
+
+.sequencer-trigger {
+  z-index: 3;
+}
+
+.sequencer-step-create-preview {
+  pointer-events: none;
+}
+
+.sequencer-gate-handle {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  cursor: ew-resize;
+}
+
+.sequencer-gate-handle-left { left: 0; }
+.sequencer-gate-handle-right { right: 0; }
 
 .sequencer-cell {
   width: 26px;
@@ -1721,7 +1802,8 @@ button:hover {
 .audio-node-meter-display,
 .audio-node-scope-display,
 .audio-node-slider-display,
-.audio-node-button-display {
+.audio-node-button-display,
+.keys-node-keyboard {
   grid-column: 1 / -1;
   width: 100%;
   min-width: 156px;
@@ -1735,16 +1817,11 @@ button:hover {
   overflow: hidden;
 }
 
-.shader-node-body-meter .audio-node-meter-display {
-  min-width: 0;
-  border: 0;
-}
-
 .audio-node-meter-scale,
 .audio-node-scope-scale {
   position: absolute;
   color: var(--color-foreground-76);
-  font-size: 9px;
+  font-size: inherit;
   font-variant-numeric: tabular-nums;
   line-height: 1;
   pointer-events: none;
@@ -1752,14 +1829,14 @@ button:hover {
 }
 
 .audio-node-meter-scale {
-  inset: auto 4px 4px;
+  inset: auto 4px 3px;
   z-index: 4;
-  height: 9px;
+  height: 13px;
 }
 
 .audio-node-meter-scale-label {
   position: absolute;
-  max-width: 38px;
+  max-width: 56px;
   overflow: hidden;
   transform: translateX(-50%);
   text-overflow: clip;
@@ -1871,44 +1948,51 @@ button:hover {
   position: relative;
   height: var(--node-display-height, 48px);
   border: 1px solid var(--color-foreground);
-  background:
-    linear-gradient(var(--color-foreground-18) 1px, transparent 1px),
-    linear-gradient(90deg, var(--color-foreground-18) 1px, transparent 1px),
-    transparent;
-  background-size: 16px 16px;
-}
-
-.shader-node-body-scope .audio-node-scope-display {
-  min-width: 0;
-  border: 0;
 }
 
 .audio-node-scope-scale {
   z-index: 1;
-  left: 4px;
+  inset: 0 auto 0 4px;
+  width: 56px;
 }
 
-.audio-node-scope-scale-top {
-  top: 3px;
-}
-
-.audio-node-scope-scale-mid {
-  top: 50%;
+.audio-node-scope-scale-label {
+  position: absolute;
+  max-width: 100%;
+  overflow: hidden;
   transform: translateY(-50%);
+  text-overflow: clip;
+  white-space: nowrap;
 }
 
-.audio-node-scope-scale-bottom {
-  bottom: 3px;
+.audio-node-scope-scale-label-top {
+  transform: none;
 }
 
-.audio-node-scope-display svg {
+.audio-node-scope-scale-label-bottom {
+  transform: translateY(-100%);
+}
+
+.audio-node-scope-grid,
+.audio-node-scope-waveform {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
   height: 100%;
+}
+
+.audio-node-scope-grid {
+  z-index: 0;
+  pointer-events: none;
+}
+
+.audio-node-scope-waveform {
+  z-index: 1;
   overflow: visible;
 }
 
-.audio-node-scope-display path {
+.audio-node-scope-waveform path {
   fill: none;
   stroke: var(--color-accent);
   stroke-width: 2;
@@ -1921,10 +2005,6 @@ button:hover {
   background: transparent;
   overflow: hidden;
   touch-action: none;
-}
-
-.shader-node-body-slider .audio-node-slider-display {
-  min-width: 0;
 }
 
 .audio-node-button-display {
@@ -1954,16 +2034,65 @@ button:hover {
   color: var(--color-background);
 }
 
-.shader-node-body-slider .shader-inputs,
-.shader-node-body-button .shader-inputs,
-.shader-node-body-accumulator .shader-inputs,
-.shader-node-body-scope .shader-inputs,
-.shader-node-body-meter .shader-inputs,
-.shader-node-body-custom-wave .shader-inputs,
-.shader-node-body-sampleplayer .shader-inputs {
+.keys-node-keyboard {
+  position: relative;
+  height: var(--node-display-height, 120px);
+  min-width: 0;
+  overflow: hidden;
+  background: var(--color-background);
+  touch-action: none;
+  user-select: none;
+}
+
+.keys-node-key {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 0;
+  border: 1px solid var(--color-background);
+  border-radius: 0;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.keys-node-key-white {
+  z-index: 1;
+  background: var(--color-surface);
+  border-color: var(--color-foreground);
+}
+
+.keys-node-key-black {
+  z-index: 2;
+  height: 62%;
+  background: var(--color-foreground);
+}
+
+.keys-node-key:hover,
+.keys-node-key:focus-visible {
+  outline: none;
+}
+
+.keys-node-key-white:hover,
+.keys-node-key-white:focus-visible {
+  background: var(--color-foreground);
+}
+
+.keys-node-key-black:hover,
+.keys-node-key-black:focus-visible {
+  background: var(--color-background);
+  border-color: var(--color-foreground);
+}
+
+.keys-node-key.keys-node-key-active {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  box-shadow: none;
+}
+
+.shader-node-body-accumulator .shader-inputs {
   width: 100%;
   min-width: 0;
-  padding: var(--node-content-padding);
   background: transparent;
 }
 
@@ -1972,23 +2101,17 @@ button:hover {
   padding: var(--node-content-padding);
 }
 
-.shader-node-body-slider .shader-port,
-.shader-node-body-button .shader-port,
 .shader-node-body-accumulator .shader-port {
   width: 100%;
   min-width: 0;
 }
 
-.shader-node-body-slider .shader-port-input,
-.shader-node-body-button .shader-port-input,
 .shader-node-body-accumulator .shader-port-input {
-  grid-template-columns: minmax(0, var(--input-label-width, max-content)) minmax(0, 68px);
+  grid-template-columns: minmax(0, var(--input-label-width, max-content)) var(--accumulator-control-width);
   width: 100%;
   min-width: 0;
 }
 
-.shader-node-body-slider .shader-port-input span,
-.shader-node-body-button .shader-port-input span,
 .shader-node-body-accumulator .shader-port-input span {
   min-width: 0;
   overflow: hidden;
@@ -2007,14 +2130,9 @@ button:hover {
   white-space: nowrap;
 }
 
-.shader-node-compact .shader-node-body-slider .shader-inputs:empty,
-.shader-node-compact .shader-node-body-scope .shader-inputs:empty,
-.shader-node-compact .shader-node-body-button .shader-inputs:empty,
 .shader-node-compact .shader-node-body-accumulator .shader-inputs:empty,
 .shader-node-compact .shader-node-body-sequencer .shader-inputs:empty,
-.shader-node-compact .shader-node-body-meter .shader-inputs:empty,
-.shader-node-compact .shader-node-body-custom-wave .shader-inputs:empty,
-.shader-node-compact .shader-node-body-sampleplayer .shader-inputs:empty {
+.shader-node-compact .shader-node-content-ports .shader-inputs:empty {
   display: none;
   padding: 0;
 }
@@ -2030,18 +2148,23 @@ button:hover {
   max-width: 68px;
 }
 
+.shader-node-body-accumulator .numeric-scrubber {
+  width: var(--accumulator-control-width);
+  max-width: var(--accumulator-control-width);
+}
+
 .shader-node-scope .numeric-scrubber {
   width: 100%;
   min-width: 68px;
   max-width: none;
 }
 
-.shader-node-body-custom-wave .numeric-scrubber {
+.shader-node-custom-wave .numeric-scrubber {
   width: 100%;
   max-width: none;
 }
 
-.shader-node-body-sampleplayer .numeric-scrubber {
+.shader-node-sampleplayer .numeric-scrubber {
   width: 100%;
   max-width: none;
 }
@@ -2076,8 +2199,11 @@ button:hover {
 }
 
 .slider-direction-select,
+.sequencer-mode-select,
 .button-mode-select,
-.sample-mode-select {
+.accumulator-mode-select,
+.sample-mode-select,
+.display-mode-select {
   width: 68px;
   min-width: 0;
   height: 22px;
@@ -2087,6 +2213,14 @@ button:hover {
   color: var(--color-foreground);
   font: inherit;
   line-height: 20px;
+}
+
+.display-mode-select {
+  width: 84px;
+}
+
+.accumulator-mode-select {
+  width: var(--accumulator-control-width);
 }
 
 .audio-node-scope-resize-handle {

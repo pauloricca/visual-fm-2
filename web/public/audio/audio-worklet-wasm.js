@@ -3,6 +3,7 @@ const TWO_PI = Math.PI * 2;
 const LEFT_OFFSET = 0;
 const RIGHT_OFFSET = 8192;
 const MAX_ACTIVE_VOICES = 16;
+const MAX_SAMPLE_PLAYER_VOICES = 16;
 const DEFAULT_TEMPO = 120;
 const TEMPO_MIN = 20;
 const TEMPO_MAX = 300;
@@ -149,6 +150,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.linksById = new Map();
     this.dspProgram = null;
     this.sampleDataByNodeId = new Map();
+    this.sampleDataByStorageKey = new Map();
+    this.sampleSlotByStorageKey = new Map();
     this.imageDataByNodeId = new Map();
     this.graphUpdateCrossfade = this.normalizeGraphUpdateCrossfade(options.processorOptions?.audioConfig?.graphUpdateCrossfade);
     this.graphUpdateTransition = null;
@@ -172,6 +175,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.zeroVoicePhasesOnStart = false;
     this.wasmBytes = null;
     this.wasm = null;
+    this.wasmMemoryBuffer = null;
+    this.wasmMemoryBytes = 0;
     this.leftBuffer = null;
     this.rightBuffer = null;
     this.inputBuffer = null;
@@ -361,38 +366,76 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       const { instance } = await WebAssembly.instantiate(bytes, {});
       this.wasmBytes = bytes;
       this.wasm = instance.exports;
-      const leftOffset = typeof this.wasm.leftPtr === "function" ? this.wasm.leftPtr() : LEFT_OFFSET;
-      const rightOffset = typeof this.wasm.rightPtr === "function" ? this.wasm.rightPtr() : RIGHT_OFFSET;
-      this.leftBuffer = new Float32Array(this.wasm.memory.buffer, leftOffset, MAX_WASM_FRAMES);
-      this.rightBuffer = new Float32Array(this.wasm.memory.buffer, rightOffset, MAX_WASM_FRAMES);
-      if (typeof this.wasm.inputPtr === "function") {
-        this.inputBuffer = new Float32Array(this.wasm.memory.buffer, this.wasm.inputPtr(), MAX_WASM_FRAMES);
-      }
-      if (
-        typeof this.wasm.linkMeterInputPtr === "function"
-        && typeof this.wasm.linkMeterOutputPtr === "function"
-        && typeof this.wasm.linkMeterEnvelopePtr === "function"
-        && typeof this.wasm.linkMeterCountPtr === "function"
-      ) {
-        this.linkMeterInputSums = new Float64Array(this.wasm.memory.buffer, this.wasm.linkMeterInputPtr(), 1024);
-        this.linkMeterOutputSums = new Float64Array(this.wasm.memory.buffer, this.wasm.linkMeterOutputPtr(), 1024);
-        this.linkMeterEnvelopeSums = new Float64Array(this.wasm.memory.buffer, this.wasm.linkMeterEnvelopePtr(), 1024);
-        this.linkMeterCounts = new Uint32Array(this.wasm.memory.buffer, this.wasm.linkMeterCountPtr(), 1024);
-      }
-      if (typeof this.wasm.linkScopePtr === "function") {
-        this.linkScopeSamples = new Float32Array(this.wasm.memory.buffer, this.wasm.linkScopePtr(), 512);
-      }
+      this.refreshWasmViews(false);
       this.wasm.resetPhases();
       this.ready = true;
       this.syncDspProgram();
+      this.refreshWasmViews(true);
       this.configureDspScopes();
       this.configureDspMeters();
-      this.port.postMessage({ type: "backendStatus", payload: { backend: "wasm", ready: true } });
+      this.port.postMessage({
+        type: "backendStatus",
+        payload: {
+          backend: "wasm",
+          ready: true,
+          memoryBytes: this.wasm.memory.buffer.byteLength,
+          lazyBufferBytes: Number(this.wasm.lazyBufferBytes?.()) || 0,
+        },
+      });
     } catch (error) {
       this.port.postMessage({
         type: "backendStatus",
         payload: { backend: "wasm", ready: false, error: error?.message || "WASM failed to load." },
       });
+    }
+  }
+
+  refreshWasmViews(reportGrowth = true) {
+    const buffer = this.wasm?.memory?.buffer;
+    if (!buffer || buffer === this.wasmMemoryBuffer) return false;
+    const previousBytes = this.wasmMemoryBytes;
+    this.wasmMemoryBuffer = buffer;
+    this.wasmMemoryBytes = buffer.byteLength;
+    const leftOffset = typeof this.wasm.leftPtr === "function" ? this.wasm.leftPtr() : LEFT_OFFSET;
+    const rightOffset = typeof this.wasm.rightPtr === "function" ? this.wasm.rightPtr() : RIGHT_OFFSET;
+    this.leftBuffer = new Float32Array(buffer, leftOffset, MAX_WASM_FRAMES);
+    this.rightBuffer = new Float32Array(buffer, rightOffset, MAX_WASM_FRAMES);
+    this.inputBuffer = typeof this.wasm.inputPtr === "function"
+      ? new Float32Array(buffer, this.wasm.inputPtr(), MAX_WASM_FRAMES)
+      : null;
+    if (
+      typeof this.wasm.linkMeterInputPtr === "function"
+      && typeof this.wasm.linkMeterOutputPtr === "function"
+      && typeof this.wasm.linkMeterEnvelopePtr === "function"
+      && typeof this.wasm.linkMeterCountPtr === "function"
+    ) {
+      this.linkMeterInputSums = new Float64Array(buffer, this.wasm.linkMeterInputPtr(), 1024);
+      this.linkMeterOutputSums = new Float64Array(buffer, this.wasm.linkMeterOutputPtr(), 1024);
+      this.linkMeterEnvelopeSums = new Float64Array(buffer, this.wasm.linkMeterEnvelopePtr(), 1024);
+      this.linkMeterCounts = new Uint32Array(buffer, this.wasm.linkMeterCountPtr(), 1024);
+    }
+    this.linkScopeSamples = typeof this.wasm.linkScopePtr === "function"
+      ? new Float32Array(buffer, this.wasm.linkScopePtr(), 512)
+      : null;
+    this.refreshDspScopeViews(buffer);
+    if (reportGrowth) {
+      this.port.postMessage({
+        type: "wasmMemory",
+        payload: {
+          previousBytes,
+          memoryBytes: buffer.byteLength,
+          lazyBufferBytes: Number(this.wasm.lazyBufferBytes?.()) || 0,
+        },
+      });
+    }
+    return true;
+  }
+
+  refreshDspScopeViews(buffer = this.wasm?.memory?.buffer) {
+    if (!buffer || !this.wasm?.dspScopePtr) return;
+    for (const state of this.dspScopeStates.values()) {
+      const ptr = this.wasm.dspScopePtr(state.slot);
+      state.samples = ptr ? new Float32Array(buffer, ptr, 512) : null;
     }
   }
 
@@ -409,6 +452,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.linksById = new Map();
     this.monitorScopeStates.clear();
     this.syncDspProgram(preservedState);
+    this.refreshWasmViews(true);
     this.configureDspScopes();
     this.configureDspMeters();
   }
@@ -451,8 +495,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
 
     for (let index = 0; index < values.length; index += 1) {
       if (values[index] === this.dspProgram.values[index]) continue;
-      this.dspProgram.values[index] = values[index];
-      this.wasm.setDspValue(index, values[index]);
+      this.setDspValueAt(index, values[index]);
     }
   }
 
@@ -464,7 +507,11 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     const nextValue = Number.isFinite(normalized) ? normalized : 0;
     if (this.dspProgram.values[valueIndex] === nextValue) return;
     this.dspProgram.values[valueIndex] = nextValue;
-    this.wasm.setDspValue(valueIndex, nextValue);
+    const isImmediate = this.dspProgram.immediateValueIndexes?.has(valueIndex);
+    const setValue = isImmediate && this.wasm.setDspValueImmediate
+      ? this.wasm.setDspValueImmediate.bind(this.wasm)
+      : this.wasm.setDspValue.bind(this.wasm);
+    setValue(valueIndex, nextValue);
   }
 
   normalizeDspProgram(program = {}) {
@@ -490,6 +537,12 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     const errors = Array.isArray(program.errors)
       ? program.errors.map(String).filter(Boolean)
       : [];
+    const immediateValueIndexes = new Set(
+      ops
+        .filter((op) => op.opcode === 0 && op.value >= 1)
+        .map((op) => op.a)
+        .filter((valueIndex) => valueIndex >= 0 && valueIndex < values.length),
+    );
     const stateBindings = Array.isArray(program.stateBindings)
       ? program.stateBindings.map((binding) => ({
         id: String(binding?.id || ""),
@@ -565,12 +618,16 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       version: 1,
       ops,
       values,
+      immediateValueIndexes,
       midiControlBindings,
       tempoBindings,
       stateBindings,
       registerCount: Math.max(0, Math.trunc(Number(program.registerCount) || 0)),
       stateCount: Math.max(0, Math.trunc(Number(program.stateCount) || 0)),
       monitorIds,
+      signedMeterIds: Array.isArray(program.signedMeterIds)
+        ? program.signedMeterIds.map(String)
+        : [],
       sampleBindings,
       imageBindings,
       customWaveBindings,
@@ -1031,15 +1088,34 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
 
   setSampleData(payload = {}) {
     if (!payload.nodeId) return;
+    const storageKey = payload.storageKey || payload.nodeId;
+    const hasData = payload.data instanceof Float32Array || Array.isArray(payload.data);
+    if (!hasData) {
+      const entry = this.sampleDataByStorageKey.get(storageKey);
+      if (!entry) return;
+      this.sampleDataByNodeId.set(payload.nodeId, entry);
+      const node = this.nodesById.get(payload.nodeId);
+      if (node) this.copySampleDataToWasm(node);
+      return;
+    }
     const data = payload.data instanceof Float32Array
       ? payload.data
       : Float32Array.from(Array.isArray(payload.data) ? payload.data : []);
-    this.sampleDataByNodeId.set(payload.nodeId, {
+    if (!data.length) {
+      this.sampleDataByNodeId.delete(payload.nodeId);
+      return;
+    }
+    const entry = {
       data,
       sampleRate: Number.isFinite(Number(payload.sampleRate)) ? Math.max(1, Number(payload.sampleRate)) : sampleRate,
       name: payload.name || "",
-      storageKey: payload.storageKey || "",
-    });
+      storageKey,
+    };
+    // A fresh upload may replace data at the same logical key. Make its owner
+    // perform the update before later players bind to the resulting slot.
+    this.sampleSlotByStorageKey.delete(storageKey);
+    this.sampleDataByStorageKey.set(storageKey, entry);
+    this.sampleDataByNodeId.set(payload.nodeId, entry);
     const node = this.nodesById.get(payload.nodeId);
     if (node) this.copySampleDataToWasm(node);
     if (this.linkScopeRequests.length > 0) {
@@ -1074,6 +1150,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     const ptr = this.wasm.imageDataPtr(slot);
     if (!ptr) return;
     new Uint8Array(this.wasm.memory.buffer, ptr, length).set(entry.data.subarray(0, length));
+    this.refreshWasmViews(true);
   }
 
   copySampleDataToWasm(node) {
@@ -1081,13 +1158,31 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     const entry = this.sampleDataByNodeId.get(node.id);
     if (!entry?.data?.length || typeof this.wasm.setSampleData !== "function" || typeof this.wasm.sampleDataPtr !== "function") return;
     const maxFrames = typeof this.wasm.maxSampleFrames === "function" ? this.wasm.maxSampleFrames() : entry.data.length;
-    const length = Math.min(entry.data.length, Math.max(0, maxFrames || 0));
-    if (!length) return;
-    const slot = this.wasm.setSampleData(node.wasmIndex, entry.sampleRate || sampleRate, length);
-    if (slot < 0) return;
+    if (entry.data.length > Math.max(0, maxFrames || 0)) {
+      this.reportSampleLoadError(node.id, entry, maxFrames, "sample-too-long");
+      return;
+    }
+    const length = entry.data.length;
+    let slot;
+    try {
+      const sharedSlot = this.sampleSlotByStorageKey.get(entry.storageKey);
+      slot = Number.isInteger(sharedSlot) && typeof this.wasm.bindSampleData === "function"
+        ? this.wasm.bindSampleData(node.wasmIndex, sharedSlot)
+        : this.wasm.setSampleData(node.wasmIndex, entry.sampleRate || sampleRate, length);
+    } catch {
+      this.reportSampleLoadError(node.id, entry, maxFrames, "sample-allocation-failed");
+      return;
+    }
+    if (slot < 0) {
+      this.reportSampleLoadError(node.id, entry, maxFrames, slot === -3 ? "sample-memory-limit" : "sample-allocation-failed");
+      return;
+    }
+    if (slot === this.sampleSlotByStorageKey.get(entry.storageKey)) return;
     const ptr = this.wasm.sampleDataPtr(slot);
     if (!ptr) return;
     new Float32Array(this.wasm.memory.buffer, ptr, length).set(entry.data.subarray(0, length));
+    this.sampleSlotByStorageKey.set(entry.storageKey, slot);
+    this.refreshWasmViews(true);
   }
 
   normalizeEffects(effects = {}) {
@@ -1652,6 +1747,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
 
     const wasm = instance.exports;
     const nodeIndices = new Map();
+    const sampleSlotsByStorageKey = new Map();
     wasm.clearGraph?.();
     wasm.clearLinkMeters?.();
     wasm.setTempo?.(this.tempo);
@@ -1688,7 +1784,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
           wasm.addCustomWavePoint(nodeIndex, point.x, point.y);
         }
       }
-      this.copySampleDataToWasmInstance(wasm, node, nodeIndex);
+      this.copySampleDataToWasmInstance(wasm, node, nodeIndex, sampleSlotsByStorageKey);
     }
 
     const linkIndices = new Map();
@@ -1760,20 +1856,55 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       : null;
     state.ready = true;
     state.loading = false;
+    this.port.postMessage({
+      type: "wasmScopeMemory",
+      payload: {
+        linkId: state.request.linkId,
+        memoryBytes: wasm.memory.buffer.byteLength,
+        lazyBufferBytes: Number(wasm.lazyBufferBytes?.()) || 0,
+        scopeCount: this.monitorScopeStates.size,
+      },
+    });
   }
 
-  copySampleDataToWasmInstance(wasm, node, nodeIndex) {
+  copySampleDataToWasmInstance(wasm, node, nodeIndex, sampleSlotsByStorageKey = new Map()) {
     if (!wasm || node?.wave !== "sample" || nodeIndex < 0) return;
     const entry = this.sampleDataByNodeId.get(node.id);
     if (!entry?.data?.length || typeof wasm.setSampleData !== "function" || typeof wasm.sampleDataPtr !== "function") return;
     const maxFrames = typeof wasm.maxSampleFrames === "function" ? wasm.maxSampleFrames() : entry.data.length;
-    const length = Math.min(entry.data.length, Math.max(0, maxFrames || 0));
-    if (!length) return;
-    const slot = wasm.setSampleData(nodeIndex, entry.sampleRate || sampleRate, length);
+    if (entry.data.length > Math.max(0, maxFrames || 0)) return;
+    const length = entry.data.length;
+    const sharedSlot = sampleSlotsByStorageKey.get(entry.storageKey);
+    const slot = Number.isInteger(sharedSlot) && typeof wasm.bindSampleData === "function"
+      ? wasm.bindSampleData(nodeIndex, sharedSlot)
+      : wasm.setSampleData(nodeIndex, entry.sampleRate || sampleRate, length);
     if (slot < 0) return;
+    if (slot === sharedSlot) return;
     const ptr = wasm.sampleDataPtr(slot);
     if (!ptr) return;
     new Float32Array(wasm.memory.buffer, ptr, length).set(entry.data.subarray(0, length));
+    sampleSlotsByStorageKey.set(entry.storageKey, slot);
+  }
+
+  reportSampleLoadError(nodeId, entry, maxFrames, reason) {
+    const sampleRateValue = Math.max(1, Number(entry?.sampleRate) || sampleRate);
+    const maxSeconds = Math.max(0, Number(maxFrames) || 0) / sampleRateValue;
+    const durationSeconds = (entry?.data?.length || 0) / sampleRateValue;
+    const message = reason === "sample-too-long"
+      ? `Sample "${entry?.name || nodeId}" is ${this.formatDuration(durationSeconds)}, exceeding the ${this.formatDuration(maxSeconds)} decoded-audio safety limit.`
+      : reason === "sample-memory-limit"
+        ? `Sample "${entry?.name || nodeId}" could not load because the patch's decoded sample memory limit was reached.`
+        : `Sample "${entry?.name || nodeId}" could not be allocated in the audio engine.`;
+    this.port.postMessage({
+      type: "sampleLoadError",
+      payload: { nodeId, name: entry?.name || "", reason, message, durationSeconds, maxSeconds },
+    });
+  }
+
+  formatDuration(seconds) {
+    const totalSeconds = Math.max(0, Math.round(Number(seconds) || 0));
+    const minutes = Math.floor(totalSeconds / 60);
+    return `${minutes}:${String(totalSeconds % 60).padStart(2, "0")}`;
   }
 
   renderMonitorScopes(frames) {
@@ -1848,6 +1979,11 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
 
   dspScopeFrameSamples(state) {
     if (!state?.samples || !this.wasm) return [];
+    if (state.samples.buffer !== this.wasm.memory.buffer) {
+      const ptr = this.wasm.dspScopePtr?.(state.slot);
+      state.samples = ptr ? new Float32Array(this.wasm.memory.buffer, ptr, 512) : null;
+      if (!state.samples) return [];
+    }
     const count = this.clamp(Math.round(this.wasm.dspScopeCount?.(state.slot) || 0), 0, state.request.points);
     const mode = state.request.mode;
     const displayPoints = state.request.displayPoints || state.request.points;
@@ -1907,10 +2043,16 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     }
     for (const state of this.dspMeterStates.values()) {
       const isImageCoordinate = state.id.endsWith(":image-x") || state.id.endsWith(":image-y");
-      const readLevel = isImageCoordinate ? this.wasm?.dspMeterSignedLevel : this.wasm?.dspMeterLevel;
-      const level = Number(readLevel?.(state.slot)) || 0;
-      const displayedLevel = isImageCoordinate ? level : Math.max(0, level);
-      levels.push([state.id, displayedLevel, displayedLevel, displayedLevel]);
+      const isSignedMeter = this.dspProgram?.signedMeterIds?.includes(state.id);
+      const signedLevel = Number(this.wasm?.dspMeterSignedLevel?.(state.slot)) || 0;
+      const absoluteLevel = Math.max(0, Number(this.wasm?.dspMeterLevel?.(state.slot)) || 0);
+      const displayedLevel = isImageCoordinate ? signedLevel : absoluteLevel;
+      levels.push([
+        state.id,
+        isImageCoordinate || isSignedMeter ? signedLevel : displayedLevel,
+        displayedLevel,
+        displayedLevel,
+      ]);
     }
     for (const binding of this.dspProgram?.stateBindings || []) {
       if (binding.kind !== "selector") continue;
@@ -1933,35 +2075,34 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     }
     for (let slot = 0; slot < (this.dspProgram?.sampleBindings?.length || 0); slot += 1) {
       const nodeId = this.dspProgram.sampleBindings[slot]?.nodeId;
-      const playhead = Number(this.wasm?.dspSamplePlayhead?.(slot));
-      if (nodeId && Number.isFinite(playhead) && playhead >= 0) playheads.push([nodeId, this.clamp(playhead, 0, 1)]);
+      for (let voice = 0; voice < MAX_SAMPLE_PLAYER_VOICES; voice += 1) {
+        const playhead = Number(this.wasm?.dspSamplePlayheadVoice?.(slot, voice));
+        if (nodeId && Number.isFinite(playhead) && playhead >= 0) playheads.push([nodeId, this.clamp(playhead, 0, 1)]);
+      }
     }
     this.lastOutputPeak = 0;
     this.wasm?.clearLinkMeters?.();
     this.wasm?.resetDspMeterLevels?.();
-    this.port.postMessage({ type: "linkMeters", payload: { levels } });
-    this.port.postMessage({ type: "playheads", payload: { values: playheads } });
+    const scopes = [];
     for (const state of this.monitorScopeStates.values()) {
       if (!state.ready) continue;
-      this.port.postMessage({
-        type: "linkScope",
-        payload: {
-          id: state.request.linkId,
-          mode: state.request.mode,
-          samples: this.monitorScopeFrameSamples(state),
-        },
+      scopes.push({
+        id: state.request.linkId,
+        mode: state.request.mode,
+        samples: this.monitorScopeFrameSamples(state),
       });
     }
     for (const state of this.dspScopeStates.values()) {
-      this.port.postMessage({
-        type: "linkScope",
-        payload: {
-          id: state.request.linkId,
-          mode: state.request.mode,
-          samples: this.dspScopeFrameSamples(state),
-        },
+      scopes.push({
+        id: state.request.linkId,
+        mode: state.request.mode,
+        samples: this.dspScopeFrameSamples(state),
       });
     }
+    this.port.postMessage({
+      type: "visualizationFrame",
+      payload: { levels, playheads, scopes },
+    });
   }
 
   fillSilence(outputs) {
@@ -2114,6 +2255,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
   }
 
   processUnsafe(inputs, outputs) {
+    this.refreshWasmViews(true);
     const output = outputs[0];
     const left = output?.[0];
     const right = output?.[1] || left;

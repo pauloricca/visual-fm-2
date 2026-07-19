@@ -5,9 +5,13 @@ import {
   SEQUENCER_DEFAULT_STEPS,
   SEQUENCER_INDEX_OUTPUT,
   getNodeDefinition,
+  sequencerGatesForRow,
   sequencerOutputIndex,
   sequencerPatternValue,
   sequencerShape,
+  sequencerTriggerPositionParamName,
+  sequencerTriggersForRow,
+  sequencerUsesGateMode,
 } from '../graph/nodeTypes';
 import type { CustomWaveSettings, LinkMode, NodeType, Patch, PatchLink, PatchNode } from '../graph/types';
 
@@ -50,6 +54,7 @@ export const DSP_OP = {
   Sequencer: 35,
   Image: 36,
   Time: 37,
+  Compress: 38,
 } as const;
 
 export interface DspProgram {
@@ -64,6 +69,7 @@ export interface DspProgram {
   stateCount: number;
   feedbackLinkIds: string[];
   monitorIds: Record<string, number>;
+  signedMeterIds: string[];
   sampleBindings: DspSampleBinding[];
   imageBindings: DspImageBinding[];
   customWaveBindings: DspCustomWaveBinding[];
@@ -166,6 +172,7 @@ interface CompileContext {
   errors: string[];
   feedbackLinkIds: string[];
   monitorIds: Record<string, number>;
+  signedMeterIds: string[];
   sampleBindings: DspSampleBinding[];
   imageBindings: DspImageBinding[];
   imageBindingIndexByNodeId: Map<string, number>;
@@ -231,6 +238,7 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
   const sliderMonitorNodes = expandedPatch.nodes.filter((node) => node.type === 'Slider');
   const sequencerMonitorNodes = expandedPatch.nodes.filter((node) => node.type === 'Sequencer');
   const imagePreviewNodes = expandedPatch.nodes.filter((node) => node.type === 'Image');
+  const samplePreviewNodes = expandedPatch.nodes.filter((node) => node.type === 'SamplePlayer');
 
   validatePatchLinks(context);
 
@@ -262,6 +270,12 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
     context.monitorIds[`${node.id}:image-y`] = resolveInput(node, 'y', 0.5, context);
   }
 
+  // Compile sample players even when their audio output is not routed yet so
+  // linked region and envelope controls can still drive the node preview.
+  for (const node of samplePreviewNodes) {
+    resolveOutput(node, 'signal', context);
+  }
+
   if (context.errors.length > 0) {
     return {
       version: 1,
@@ -275,6 +289,7 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
       stateCount: context.stateCount,
       feedbackLinkIds: context.feedbackLinkIds,
       monitorIds: context.monitorIds,
+      signedMeterIds: context.signedMeterIds,
       sampleBindings: context.sampleBindings,
       imageBindings: context.imageBindings,
       customWaveBindings: context.customWaveBindings,
@@ -297,6 +312,7 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
     stateCount: context.stateCount,
     feedbackLinkIds: context.feedbackLinkIds,
     monitorIds: context.monitorIds,
+    signedMeterIds: context.signedMeterIds,
     sampleBindings: context.sampleBindings,
     imageBindings: context.imageBindings,
     customWaveBindings: context.customWaveBindings,
@@ -340,6 +356,7 @@ function createContext(patch: Patch): CompileContext {
     errors: [],
     feedbackLinkIds: [],
     monitorIds: {},
+    signedMeterIds: [],
     sampleBindings: [],
     imageBindings: [],
     imageBindingIndexByNodeId: new Map(),
@@ -421,9 +438,10 @@ function resolveInput(
   port: string,
   fallback: number,
   context: CompileContext,
+  valueMode: 'smoothed' | 'immediate' = 'smoothed',
 ): number {
   const links = context.incomingByInput.get(inputKey(node.id, port)) ?? [];
-  if (links.length === 0) return valueRegisterForNodeParam(node, port, fallback, context);
+  if (links.length === 0) return valueRegisterForNodeParam(node, port, fallback, context, valueMode);
 
   const setRegisters: number[] = [];
   const addRegisters: number[] = [];
@@ -448,7 +466,7 @@ function resolveInput(
 
   let result = setRegisters.length > 0
     ? averageRegisters(setRegisters, context)
-    : valueRegisterForNodeParam(node, port, fallback, context);
+    : valueRegisterForNodeParam(node, port, fallback, context, valueMode);
 
   for (const register of addRegisters) {
     result = emitBinary(DSP_OP.Add, result, register, context);
@@ -598,6 +616,11 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     return output;
   }
 
+  if (node.type === 'Keys') {
+    const valueIndex = valueIndexForNodeParam(node, port === 'frequency' ? 'frequency' : 'note', 0, context);
+    return emitValue(valueIndex, context, 'immediate');
+  }
+
   if (node.type === 'Expression') {
     return compileExpression(node, context);
   }
@@ -633,7 +656,7 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
   if (node.type === 'Noise') {
     const output = nextRegister(context);
     context.ops.push({ opcode: DSP_OP.Osc, out: output, a: 6, b: constantRegister(0, context) });
-    return output;
+    return mapBipolarOscillatorAmplitude(output, node, context);
   }
 
   const wave = OSC_WAVES[node.type];
@@ -703,7 +726,7 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       nodeId: node.id,
     });
     context.ops.push({ opcode: DSP_OP.Osc, out: output, a: 7, b: speed, state });
-    return output;
+    return mapBipolarOscillatorAmplitude(output, node, context);
   }
 
   if (node.type === 'AudioInput') {
@@ -733,7 +756,13 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
         image: { name: node.image?.name ?? '', url: node.image?.url ?? '' },
       });
     }
-    const channel = port === 'brightness' ? 0 : port === 'r' ? 1 : port === 'g' ? 2 : port === 'b' ? 3 : -1;
+    const channel = port === 'brightness' ? 0
+      : port === 'r' ? 1
+        : port === 'g' ? 2
+          : port === 'b' ? 3
+            : port === 'hue' ? 4
+              : port === 'saturation' ? 5
+                : -1;
     if (channel < 0) {
       context.errors.push(`Node "${node.id}" does not have supported output "${port}".`);
       return null;
@@ -936,6 +965,32 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     return compileReverb(node, port, context);
   }
 
+  if (node.type === 'Compress') {
+    const output = nextRegister(context);
+    const state = nextState(context, 1);
+    const knee = resolveInput(node, 'knee', 6, context);
+    const makeup = resolveInput(node, 'makeup', 0, context);
+    context.stateBindings.push({
+      id: `${node.id}:compressor`,
+      state,
+      count: 1,
+      kind: 'effect',
+      nodeId: node.id,
+    });
+    context.ops.push({
+      opcode: DSP_OP.Compress,
+      out: output,
+      a: resolveInput(node, 'signal', 0, context),
+      b: resolveInput(node, 'threshold', -24, context),
+      c: resolveInput(node, 'ratio', 4, context),
+      d: resolveInput(node, 'attack', 0.01, context),
+      e: resolveInput(node, 'release', 0.1, context),
+      state,
+      value: packRegisterPair(knee, makeup),
+    });
+    return output;
+  }
+
   if (node.type === 'Abs') {
     const output = nextRegister(context);
     context.ops.push({ opcode: DSP_OP.Abs, out: output, a: resolveInput(node, 'signal', 0, context) });
@@ -990,8 +1045,10 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       a: resolveInput(node, 'trigger', 0, context),
       b: resolveInput(node, 'min', 0, context),
       c: resolveInput(node, 'max', 1, context),
+      d: resolveInput(node, 'increment', 1, context),
       e: resolveInput(node, 'reset', 0, context),
       state,
+      value: Math.round(node.params.mode ?? 0) === 1 ? 1 : 0,
     });
     return output;
   }
@@ -1093,6 +1150,9 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
   if (node.type === 'Meter' || node.type === 'Scope') {
     const signal = resolveInput(node, 'signal', 0, context);
     context.monitorIds[node.id] = signal;
+    if (node.type === 'Meter' && !context.signedMeterIds.includes(node.id)) {
+      context.signedMeterIds.push(node.id);
+    }
     return signal;
   }
 
@@ -1219,12 +1279,21 @@ function compileSamplePlayer(node: PatchNode, context: CompileContext): number {
     [8, null, 440, originalFrequency],
   ];
   for (const [kind, port, fallback, register] of sampleParams) {
+    const inputRegister = register ?? resolveInput(node, port ?? '', fallback, context);
     context.ops.push({
       opcode: DSP_OP.SampleParam,
       a: sampleIndex,
       b: kind,
-      c: register ?? resolveInput(node, port ?? '', fallback, context),
+      c: inputRegister,
     });
+    if (
+      (port === 'start' || port === 'end' || port === 'attack' || port === 'release')
+      && hasInput(node, port, context)
+    ) {
+      const monitorId = `${node.id}:sample-${port}`;
+      context.monitorIds[monitorId] = inputRegister;
+      context.signedMeterIds.push(monitorId);
+    }
   }
 
   const output = nextRegister(context);
@@ -1234,9 +1303,11 @@ function compileSamplePlayer(node: PatchNode, context: CompileContext): number {
     a: sampleIndex,
     b: resolveInput(node, 'frequency', 220, context),
     c: resolveInput(node, 'trigger', 0, context),
+    d: resolveInput(node, 'voices', 1, context),
+    e: resolveInput(node, 'level', 0.7, context),
     state,
   });
-  return emitBinary(DSP_OP.Mul, output, resolveInput(node, 'level', 0.7, context), context);
+  return output;
 }
 
 function resolveSampleOriginalFrequency(node: PatchNode, context: CompileContext): number {
@@ -1263,7 +1334,9 @@ function compileSelector(node: PatchNode, context: CompileContext): number {
     .sort((left, right) => Number(left.name) - Number(right.name));
   if (valueInputs.length === 0) return constantRegister(0, context);
 
-  const select = resolveInput(node, 'select', 0, context);
+  // A selector index is categorical. Updating it must not pass through the
+  // intervening numeric indices, because they can refer to unrelated values.
+  const select = resolveInput(node, 'select', 0, context, 'immediate');
   const slide = resolveInput(node, 'slide', 0, context);
   const output = nextRegister(context);
   const state = nextState(context, 4);
@@ -1331,9 +1404,34 @@ function compileSequencerIndex(node: PatchNode, context: CompileContext): number
 }
 
 function compileSequencerRow(node: PatchNode, rowIndex: number, context: CompileContext): number {
-  const output = nextRegister(context);
   const shape = sequencerShape(node.params);
   const state = ensureSequencerStepRegister(node, context).state;
+  if (sequencerUsesGateMode(node.params)) {
+    const gates = sequencerGatesForRow(node.params, rowIndex, shape.steps);
+    const outputs = gates.map((gate) => {
+      const output = nextRegister(context);
+      context.ops.push({
+        opcode: DSP_OP.Sequencer,
+        out: output,
+        a: resolveInput(node, 'signal', 0, context),
+        b: resolveInput(node, 'steps', SEQUENCER_DEFAULT_STEPS, context),
+        c: constantRegister(-2, context),
+        d: resolveInput(node, 'rows', SEQUENCER_DEFAULT_ROWS, context),
+        e: resolveInput(node, 'reset', 0, context),
+        state,
+        value: gate.start,
+        value2: gate.end,
+      });
+      return output;
+    });
+    const sum = sumRegisters(outputs, context);
+    if (outputs.length <= 1) return sum;
+    const output = nextRegister(context);
+    context.ops.push({ opcode: DSP_OP.HardClip, out: output, a: sum, b: constantRegister(1, context) });
+    return output;
+  }
+
+  const output = nextRegister(context);
   const pattern = sequencerPatternValue(node.params, rowIndex, shape.steps);
   context.ops.push({
     opcode: DSP_OP.Sequencer,
@@ -1349,7 +1447,28 @@ function compileSequencerRow(node: PatchNode, rowIndex: number, context: Compile
     value3: pattern[2],
     value4: pattern[3],
   });
-  return output;
+  const positionedOutputs = sequencerTriggersForRow(node.params, rowIndex, shape.steps)
+    .filter((trigger) => node.params[sequencerTriggerPositionParamName(rowIndex, trigger.slot)] !== undefined)
+    .map((trigger) => {
+      const triggerOutput = nextRegister(context);
+      context.ops.push({
+        opcode: DSP_OP.Sequencer,
+        out: triggerOutput,
+        a: resolveInput(node, 'signal', 0, context),
+        b: resolveInput(node, 'steps', SEQUENCER_DEFAULT_STEPS, context),
+        c: constantRegister(-3, context),
+        d: resolveInput(node, 'rows', SEQUENCER_DEFAULT_ROWS, context),
+        e: resolveInput(node, 'reset', 0, context),
+        state,
+        value: trigger.position,
+      });
+      return triggerOutput;
+    });
+  if (positionedOutputs.length === 0) return output;
+  const sum = sumRegisters([output, ...positionedOutputs], context);
+  const clipped = nextRegister(context);
+  context.ops.push({ opcode: DSP_OP.HardClip, out: clipped, a: sum, b: constantRegister(1, context) });
+  return clipped;
 }
 
 function registerSequencerMonitor(node: PatchNode, context: CompileContext): void {
@@ -1359,12 +1478,12 @@ function registerSequencerMonitor(node: PatchNode, context: CompileContext): voi
 function ensureSequencerStepRegister(node: PatchNode, context: CompileContext): { state: number; register: number } {
   let state = context.sequencerStateByNodeId.get(node.id);
   if (state === undefined) {
-    state = nextState(context, 6);
+    state = nextState(context, 8);
     context.sequencerStateByNodeId.set(node.id, state);
     context.stateBindings.push({
       id: `${node.id}:sequencer`,
       state,
-      count: 6,
+      count: 8,
       kind: 'sequencer',
       nodeId: node.id,
     });
@@ -1384,7 +1503,7 @@ function ensureSequencerStepRegister(node: PatchNode, context: CompileContext): 
       d: resolveInput(node, 'rows', SEQUENCER_DEFAULT_ROWS, context),
       e: resolveInput(node, 'reset', 0, context),
       state,
-      value: 0,
+      value: sequencerUsesGateMode(node.params) ? 1 : 0,
     });
   }
 
@@ -1748,8 +1867,9 @@ function valueRegisterForNodeParam(
   port: string,
   fallback: number,
   context: CompileContext,
+  mode: 'smoothed' | 'immediate' = 'smoothed',
 ): number {
-  return emitValue(valueIndexForNodeParam(node, port, fallback, context), context);
+  return emitValue(valueIndexForNodeParam(node, port, fallback, context), context, mode);
 }
 
 function valueIndexForNodeParam(
@@ -1813,9 +1933,18 @@ function valueIndex(
   return valueIndex;
 }
 
-function emitValue(valueIndex: number, context: CompileContext): number {
+function emitValue(
+  valueIndex: number,
+  context: CompileContext,
+  mode: 'smoothed' | 'immediate' = 'smoothed',
+): number {
   const out = nextRegister(context);
-  context.ops.push({ opcode: DSP_OP.Value, out, a: valueIndex });
+  context.ops.push({
+    opcode: DSP_OP.Value,
+    out,
+    a: valueIndex,
+    value: mode === 'immediate' ? 1 : 0,
+  });
   return out;
 }
 

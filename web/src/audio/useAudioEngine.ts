@@ -78,7 +78,7 @@ interface AudioEngineState {
   peak: number;
   linkMeters: Record<string, LinkMeterReading>;
   linkScopes: Record<string, LinkScopeReading>;
-  playheads: Record<string, number>;
+  playheads: Record<string, number[]>;
   recording: RecordingState;
   audioInput: AudioInputState;
   midiInput: MidiInputState;
@@ -152,14 +152,18 @@ interface ImageDataRequest {
 // Keep this in step with public/audio/visual-fm-kernel.wasm.  AudioWorklet
 // modules and WASM are aggressively cached, and an older kernel has no image
 // upload/sampling exports, which otherwise looks exactly like a black image.
-const AUDIO_ENGINE_ASSET_VERSION = '2026-07-15-image-bipolar-coordinates';
+const AUDIO_ENGINE_ASSET_VERSION = '2026-07-17-shared-sample-buffers-1';
 const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const METER_UPDATE_INTERVAL_MS = 80;
 const RECORDING_CHUNK_FRAMES = 16384;
 const RECORDING_CHANNEL_COUNT = 2;
-const SCOPE_CAPTURE_POINTS = 512;
 const SCOPE_DISPLAY_POINTS = 160;
+// Keep the capture grid identical to the display grid. Capturing more points and
+// resampling the rolling window made every displayed point choose a different
+// pair of source samples on each update, which caused the waveform to shimmer.
+// With a single grid, old points simply move left as new points enter the ring.
+const SCOPE_CAPTURE_POINTS = SCOPE_DISPLAY_POINTS;
 const SCOPE_MODE = 'continuous';
 const AUDIO_OUTPUT_FADE_SECONDS = 0.02;
 const AUDIO_OUTPUT_STOP_DELAY_MS = Math.ceil(AUDIO_OUTPUT_FADE_SECONDS * 1000) + 24;
@@ -168,7 +172,7 @@ const AUDIO_UNEXPECTED_SILENCE_MS = 5000;
 const AUDIO_SILENCE_REPORT_INTERVAL_MS = 15000;
 const AUDIO_HEALTH_REPORT_INTERVAL_MS = 5000;
 
-function closeAudioContext(
+async function closeAudioContext(
   contextRef: { current: AudioContext | null },
   nodeRef: { current: AudioWorkletNode | null },
   analyserRef: { current: AnalyserNode | null },
@@ -176,30 +180,58 @@ function closeAudioContext(
   inputSourceRef: { current: MediaStreamAudioSourceNode | null },
   inputStreamRef: { current: MediaStream | null },
   stopTimeoutRef?: { current: number | null },
-): void {
+  generation = 0,
+  reason = 'unknown',
+): Promise<void> {
   if (stopTimeoutRef && stopTimeoutRef.current !== null) {
     window.clearTimeout(stopTimeoutRef.current);
     stopTimeoutRef.current = null;
   }
-  nodeRef.current?.port.postMessage({ type: 'panic' });
-  inputSourceRef.current?.disconnect();
-  inputStreamRef.current?.getTracks().forEach((track) => track.stop());
-  if (nodeRef.current) {
-    nodeRef.current.port.onmessage = null;
+  const context = contextRef.current;
+  const node = nodeRef.current;
+  const analyser = analyserRef.current;
+  const outputGain = outputGainRef.current;
+  const inputSource = inputSourceRef.current;
+  const inputStream = inputStreamRef.current;
+
+  logDiagnosticEvent('audio-context-close-requested', {
+    details: {
+      generation,
+      reason,
+      state: context?.state ?? 'none',
+    },
+  });
+  node?.port.postMessage({ type: 'panic' });
+  inputSource?.disconnect();
+  inputStream?.getTracks().forEach((track) => track.stop());
+  if (node) {
+    node.port.onmessage = null;
+    node.port.close();
   }
-  if (contextRef.current) {
-    contextRef.current.onstatechange = null;
+  if (context) {
+    context.onstatechange = null;
   }
-  nodeRef.current?.disconnect();
-  analyserRef.current?.disconnect();
-  outputGainRef.current?.disconnect();
-  void contextRef.current?.close();
-  inputSourceRef.current = null;
-  inputStreamRef.current = null;
-  nodeRef.current = null;
-  analyserRef.current = null;
-  outputGainRef.current = null;
-  contextRef.current = null;
+  node?.disconnect();
+  analyser?.disconnect();
+  outputGain?.disconnect();
+  if (inputSourceRef.current === inputSource) inputSourceRef.current = null;
+  if (inputStreamRef.current === inputStream) inputStreamRef.current = null;
+  if (nodeRef.current === node) nodeRef.current = null;
+  if (analyserRef.current === analyser) analyserRef.current = null;
+  if (outputGainRef.current === outputGain) outputGainRef.current = null;
+  if (contextRef.current === context) contextRef.current = null;
+
+  try {
+    if (context && context.state !== 'closed') await context.close();
+    logDiagnosticEvent('audio-context-close-completed', {
+      details: { generation, reason, state: context?.state ?? 'none' },
+    });
+  } catch (error) {
+    logDiagnosticEvent('audio-context-close-error', {
+      level: 'error',
+      details: { generation, reason, error: serializeError(error) },
+    });
+  }
 }
 
 function parkAudioContext(
@@ -258,7 +290,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   const [peak, setPeak] = useState(0);
   const [linkMeters, setLinkMeters] = useState<Record<string, LinkMeterReading>>({});
   const [linkScopes, setLinkScopeReadings] = useState<Record<string, LinkScopeReading>>({});
-  const [playheads, setPlayheads] = useState<Record<string, number>>({});
+  const [playheads, setPlayheads] = useState<Record<string, number[]>>({});
   const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>('idle');
   const [recordingMessage, setRecordingMessage] = useState('recording stopped');
   const [recordingFileName, setRecordingFileName] = useState<string | null>(null);
@@ -292,6 +324,8 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   const lastAudioHealthReportAtRef = useRef(0);
   const graphRef = useRef<DspProgram | null>(null);
   const audioEngineRequestRef = useRef<Promise<void> | null>(null);
+  const audioEngineCloseRef = useRef<Promise<void> | null>(null);
+  const audioEngineGenerationRef = useRef(0);
   const audioActivationRequestedRef = useRef(false);
   const backendReadyRef = useRef(false);
   const lastSentProgramStructureRef = useRef<string | null>(null);
@@ -322,6 +356,32 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     setPeak(0);
   }, []);
 
+  const closeAudioEngine = useCallback((reason: string): Promise<void> => {
+    if (audioEngineCloseRef.current) return audioEngineCloseRef.current;
+
+    backendReadyRef.current = false;
+    lastSentProgramStructureRef.current = null;
+    lastSentValuesRef.current = null;
+    const closePromise = closeAudioContext(
+      contextRef,
+      nodeRef,
+      analyserRef,
+      outputGainRef,
+      inputSourceRef,
+      inputStreamRef,
+      stopTimeoutRef,
+      audioEngineGenerationRef.current,
+      reason,
+    );
+    audioEngineCloseRef.current = closePromise;
+    void closePromise.finally(() => {
+      if (audioEngineCloseRef.current === closePromise) {
+        audioEngineCloseRef.current = null;
+      }
+    });
+    return closePromise;
+  }, []);
+
   const startMeter = useCallback(() => {
     stopMeter();
     const analyser = analyserRef.current;
@@ -344,6 +404,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
           lastAudioHealthReportAtRef.current = timestamp;
           logDiagnosticEvent('audio-health', {
             details: {
+              generation: audioEngineGenerationRef.current,
               contextState: contextRef.current.state,
               contextTime: contextRef.current.currentTime,
               sampleRate: contextRef.current.sampleRate,
@@ -363,6 +424,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
           logDiagnosticEvent('audio-output-silent-after-signal', {
             level: 'warn',
             details: {
+              generation: audioEngineGenerationRef.current,
               contextState: contextRef.current.state,
               mutedByUi: !audioActivationRequestedRef.current,
               lastAudibleAgoMs: Math.round(timestamp - lastAudibleAtRef.current),
@@ -800,31 +862,53 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
 
   const syncGraphSamples = useCallback((graph: DspProgram, context: AudioContext, node: AudioWorkletNode) => {
     const nextKeys: Record<string, string> = {};
+    const bindingsBySampleKey = new Map<string, typeof graph.sampleBindings>();
 
     for (const binding of graph.sampleBindings) {
       const sampleUrl = binding.sample.url.trim();
       if (!sampleUrl) continue;
 
       const sampleName = binding.sample.name;
-      const sampleKey = `${sampleUrl}\n${sampleName}`;
+      // The URL identifies the actual audio resource; a display-name change
+      // must not cause another fetch, decode, transfer, or WASM allocation.
+      const sampleKey = sampleUrl;
       nextKeys[binding.nodeId] = sampleKey;
-      if (sampleDataKeysRef.current[binding.nodeId] === sampleKey) continue;
+      const bindings = bindingsBySampleKey.get(sampleKey) ?? [];
+      bindings.push(binding);
+      bindingsBySampleKey.set(sampleKey, bindings);
+    }
 
-      sampleDataKeysRef.current[binding.nodeId] = sampleKey;
+    for (const [sampleKey, bindings] of bindingsBySampleKey) {
+      const [owner, ...aliases] = bindings;
+      if (!owner) continue;
+      const sampleUrl = owner.sample.url.trim();
+      const sampleName = owner.sample.name;
+      const needsUpload = bindings.some((binding) => sampleDataKeysRef.current[binding.nodeId] !== sampleKey);
+      if (!needsUpload) continue;
+
+      for (const binding of bindings) sampleDataKeysRef.current[binding.nodeId] = sampleKey;
       void loadAndPostSampleData(
         context,
         node,
-        binding.nodeId,
+        owner.nodeId,
         sampleUrl,
         sampleName,
         sampleKey,
         sampleDataKeysRef,
         sampleDataCacheRef,
         sampleDataRequestRef,
-      )
+      ).then((entry) => {
+        if (!entry) return;
+        for (const binding of aliases) {
+          if (sampleDataKeysRef.current[binding.nodeId] !== sampleKey) continue;
+          postSampleReference(node, binding.nodeId, entry);
+        }
+      })
         .catch(() => {
-          if (sampleDataKeysRef.current[binding.nodeId] === sampleKey) {
-            delete sampleDataKeysRef.current[binding.nodeId];
+          for (const binding of bindings) {
+            if (sampleDataKeysRef.current[binding.nodeId] === sampleKey) {
+              delete sampleDataKeysRef.current[binding.nodeId];
+            }
           }
         });
     }
@@ -844,7 +928,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
       if (!sampleUrl) continue;
 
       const sampleName = binding.sample.name;
-      const sampleKey = `${sampleUrl}\n${sampleName}`;
+      const sampleKey = sampleUrl;
       nextKeys[binding.nodeId] = sampleKey;
       void loadCachedSampleData(
         binding.nodeId,
@@ -856,13 +940,14 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
       ).catch(() => undefined);
     }
 
-    for (const nodeId of Object.keys(sampleDataCacheRef.current)) {
-      if (nextKeys[nodeId] === sampleDataCacheRef.current[nodeId]?.key) continue;
-      delete sampleDataCacheRef.current[nodeId];
+    const activeSampleKeys = new Set(Object.values(nextKeys));
+    for (const sampleKey of Object.keys(sampleDataCacheRef.current)) {
+      if (activeSampleKeys.has(sampleKey)) continue;
+      delete sampleDataCacheRef.current[sampleKey];
     }
-    for (const nodeId of Object.keys(sampleDataRequestRef.current)) {
-      if (nextKeys[nodeId] === sampleDataRequestRef.current[nodeId]?.key) continue;
-      delete sampleDataRequestRef.current[nodeId];
+    for (const sampleKey of Object.keys(sampleDataRequestRef.current)) {
+      if (activeSampleKeys.has(sampleKey)) continue;
+      delete sampleDataRequestRef.current[sampleKey];
     }
   }, []);
 
@@ -961,6 +1046,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     audioActivationRequestedRef.current = true;
     logDiagnosticEvent('audio-activation-requested', {
       details: {
+        generation: audioEngineGenerationRef.current,
         contextState: context.state,
         graph: dspProgramDiagnosticSnapshot(graphRef.current),
       },
@@ -981,6 +1067,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     if (context.state === 'running') {
       logDiagnosticEvent('audio-context-running', {
         details: {
+          generation: audioEngineGenerationRef.current,
           sampleRate: context.sampleRate,
           baseLatency: context.baseLatency,
           outputLatency: audioContextOutputLatency(context),
@@ -1006,6 +1093,10 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
       setMessage(backendReadyRef.current ? 'starting audio' : 'preparing audio');
     }
 
+    if (audioEngineCloseRef.current) {
+      await audioEngineCloseRef.current;
+    }
+
     if (nodeRef.current && contextRef.current) {
       if (activate) {
         await activateAudioEngine();
@@ -1022,8 +1113,12 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
 
           backendReadyRef.current = false;
           const context = new AudioContext();
+          const generation = audioEngineGenerationRef.current + 1;
+          audioEngineGenerationRef.current = generation;
+          contextRef.current = context;
           logDiagnosticEvent('audio-context-created', {
             details: {
+              generation,
               sampleRate: context.sampleRate,
               baseLatency: context.baseLatency,
               outputLatency: audioContextOutputLatency(context),
@@ -1051,10 +1146,12 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
             logDiagnosticEvent('audio-worklet-processor-error', {
               level: 'error',
               details: {
+                generation,
                 contextState: context.state,
                 graph: dspProgramDiagnosticSnapshot(graphRef.current),
               },
             });
+            void closeAudioEngine('processor-error');
           });
 
           node.port.onmessage = (event) => {
@@ -1064,6 +1161,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
               logDiagnosticEvent('audio-backend-status', {
                 level: payload?.ready ? 'info' : 'error',
                 details: {
+                  generation,
                   payload,
                   contextState: context.state,
                   graph: dspProgramDiagnosticSnapshot(graphRef.current),
@@ -1084,10 +1182,48 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
               }
               return;
             }
+            if (type === 'wasmMemory') {
+              logDiagnosticEvent('audio-wasm-memory-change', {
+                details: {
+                  generation,
+                  payload,
+                  contextState: context.state,
+                  graph: dspProgramDiagnosticSnapshot(graphRef.current),
+                },
+              });
+              return;
+            }
+            if (type === 'wasmScopeMemory') {
+              logDiagnosticEvent('audio-wasm-scope-memory', {
+                details: {
+                  generation,
+                  payload,
+                  contextState: context.state,
+                  graph: dspProgramDiagnosticSnapshot(graphRef.current),
+                },
+              });
+              return;
+            }
             if (type === 'processorError') {
               logDiagnosticEvent('audio-worklet-runtime-error', {
                 level: 'error',
                 details: {
+                  payload,
+                  contextState: context.state,
+                  graph: dspProgramDiagnosticSnapshot(graphRef.current),
+                },
+              });
+              return;
+            }
+            if (type === 'sampleLoadError') {
+              const sampleMessage = typeof payload?.message === 'string'
+                ? payload.message
+                : 'Sample could not be loaded by the audio engine.';
+              setMessage(sampleMessage);
+              logDiagnosticEvent('audio-sample-load-error', {
+                level: 'error',
+                details: {
+                  generation,
                   payload,
                   contextState: context.state,
                   graph: dspProgramDiagnosticSnapshot(graphRef.current),
@@ -1115,6 +1251,12 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
               }
               return;
             }
+            if (type === 'visualizationFrame') {
+              setLinkMeters(linkMetersFromPayload(payload));
+              setPlayheads(playheadsFromPayload({ values: payload?.playheads }));
+              setLinkScopeReadings(linkScopesFromPayload(payload));
+              return;
+            }
             if (type === 'linkMeters') {
               setLinkMeters(linkMetersFromPayload(payload));
               return;
@@ -1140,6 +1282,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
             logDiagnosticEvent('audio-context-state-change', {
               level: contextState === 'interrupted' || contextState === 'closed' ? 'warn' : 'info',
               details: {
+                generation,
                 state: contextState,
                 sampleRate: context.sampleRate,
                 baseLatency: context.baseLatency,
@@ -1156,7 +1299,6 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
           analyser.connect(outputGain);
           outputGain.connect(context.destination);
           node.port.postMessage({ type: 'setMuted', payload: { muted: true } });
-          contextRef.current = context;
           nodeRef.current = node;
           analyserRef.current = analyser;
           outputGainRef.current = outputGain;
@@ -1190,8 +1332,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
           } else {
             setMessage('audio stopped');
           }
-          closeAudioContext(contextRef, nodeRef, analyserRef, outputGainRef, inputSourceRef, inputStreamRef, stopTimeoutRef);
-          backendReadyRef.current = false;
+          await closeAudioEngine('engine-start-error');
           throw error;
         } finally {
           audioEngineRequestRef.current = null;
@@ -1209,7 +1350,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     if (activate) {
       await activateAudioEngine();
     }
-  }, [activateAudioEngine, appendRecordingChunk, beginRecordingCapture, completeRecordingCapture, syncGraphImages, syncGraphSamples]);
+  }, [activateAudioEngine, appendRecordingChunk, beginRecordingCapture, closeAudioEngine, completeRecordingCapture, syncGraphImages, syncGraphSamples]);
 
   const syncGraph = useCallback((graph: DspProgram) => {
     graphRef.current = graph;
@@ -1334,6 +1475,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   const stop = useCallback(() => {
     logDiagnosticEvent('audio-stop-clicked', {
       details: {
+        generation: audioEngineGenerationRef.current,
         contextState: contextRef.current?.state ?? 'none',
         graph: dspProgramDiagnosticSnapshot(graphRef.current),
       },
@@ -1348,15 +1490,24 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
         window.clearTimeout(stopTimeoutRef.current);
       }
       stopTimeoutRef.current = window.setTimeout(() => {
-        closeAudioContext(contextRef, nodeRef, analyserRef, outputGainRef, inputSourceRef, inputStreamRef, stopTimeoutRef);
-        backendReadyRef.current = false;
-        lastSentProgramStructureRef.current = null;
-        lastSentValuesRef.current = null;
+        parkAudioContext(nodeRef, outputGainRef, inputSourceRef, inputStreamRef, stopTimeoutRef);
+        logDiagnosticEvent('audio-context-parked', {
+          details: {
+            generation: audioEngineGenerationRef.current,
+            contextState: contextRef.current?.state ?? 'none',
+          },
+        });
         setLinkMeters({});
         setLinkScopeReadings({});
       }, AUDIO_OUTPUT_STOP_DELAY_MS);
     } else {
-      closeAudioContext(contextRef, nodeRef, analyserRef, outputGainRef, inputSourceRef, inputStreamRef, stopTimeoutRef);
+      parkAudioContext(nodeRef, outputGainRef, inputSourceRef, inputStreamRef, stopTimeoutRef);
+      logDiagnosticEvent('audio-context-parked', {
+        details: {
+          generation: audioEngineGenerationRef.current,
+          contextState: contextRef.current?.state ?? 'none',
+        },
+      });
       setLinkMeters({});
       setLinkScopeReadings({});
     }
@@ -1397,9 +1548,9 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     audioActivationRequestedRef.current = false;
     finishRecordingCapture();
     stopMeter();
-    closeAudioContext(contextRef, nodeRef, analyserRef, outputGainRef, inputSourceRef, inputStreamRef, stopTimeoutRef);
+    void closeAudioEngine('component-unmount');
     disconnectMidiInput();
-  }, [disconnectMidiInput, finishRecordingCapture, stopMeter]);
+  }, [closeAudioEngine, disconnectMidiInput, finishRecordingCapture, stopMeter]);
 
   useEffect(() => {
     void refreshAudioInputDevices();
@@ -1711,19 +1862,36 @@ function linkMetersFromPayload(payload: unknown): Record<string, LinkMeterReadin
   return readings;
 }
 
-function playheadsFromPayload(payload: unknown): Record<string, number> {
+function playheadsFromPayload(payload: unknown): Record<string, number[]> {
   const values = (payload as { values?: unknown })?.values;
   if (!Array.isArray(values)) return {};
 
-  const playheads: Record<string, number> = {};
+  const playheads: Record<string, number[]> = {};
   for (const entry of values) {
     if (!Array.isArray(entry)) continue;
     const [id, value] = entry;
     const playhead = Number(value);
     if (typeof id !== 'string' || !Number.isFinite(playhead)) continue;
-    playheads[id] = clampNumber(playhead, 0, 1);
+    (playheads[id] ??= []).push(clampNumber(playhead, 0, 1));
   }
   return playheads;
+}
+
+function linkScopesFromPayload(payload: unknown): Record<string, LinkScopeReading> {
+  const scopes = (payload as { scopes?: unknown })?.scopes;
+  if (!Array.isArray(scopes)) return {};
+
+  const readings: Record<string, LinkScopeReading> = {};
+  for (const entry of scopes) {
+    if (!entry || typeof entry !== 'object') continue;
+    const { id, mode, samples } = entry as { id?: unknown; mode?: unknown; samples?: unknown };
+    if (typeof id !== 'string' || !Array.isArray(samples)) continue;
+    readings[id] = {
+      mode: typeof mode === 'string' ? mode : 'continuous',
+      samples: samples.map(Number).filter(Number.isFinite),
+    };
+  }
+  return readings;
 }
 
 function finiteNumber(value: unknown): number {
@@ -1741,10 +1909,11 @@ async function loadAndPostSampleData(
   keysRef: { current: Record<string, string> },
   cacheRef: { current: Record<string, SampleDataCacheEntry> },
   requestRef: { current: Record<string, SampleDataRequest> },
-): Promise<void> {
+): Promise<SampleDataCacheEntry | null> {
   const entry = await loadCachedSampleData(nodeId, url, name, key, cacheRef, requestRef, context);
-  if (!entry || keysRef.current[nodeId] !== key) return;
+  if (!entry || keysRef.current[nodeId] !== key) return null;
   postSampleData(node, nodeId, entry);
+  return entry;
 }
 
 async function loadAndPostImageData(
@@ -1818,13 +1987,13 @@ async function loadCachedSampleData(
   requestRef: { current: Record<string, SampleDataRequest> },
   context?: BaseAudioContext,
 ): Promise<SampleDataCacheEntry | null> {
-  const cached = cacheRef.current[nodeId];
+  const cached = cacheRef.current[key];
   if (cached?.key === key) return cached;
 
-  const currentRequest = requestRef.current[nodeId];
+  const currentRequest = requestRef.current[key];
   if (currentRequest?.key === key) return currentRequest.promise;
 
-  delete cacheRef.current[nodeId];
+  delete cacheRef.current[key];
   const requestState: SampleDataRequest = {
     key,
     promise: Promise.resolve(null),
@@ -1844,9 +2013,9 @@ async function loadCachedSampleData(
         name,
         storageKey: url,
       };
-      if (requestRef.current[nodeId] === requestState) {
-        cacheRef.current[nodeId] = entry;
-        delete requestRef.current[nodeId];
+      if (requestRef.current[key] === requestState) {
+        cacheRef.current[key] = entry;
+        delete requestRef.current[key];
       }
       return entry;
     } catch (error) {
@@ -1859,14 +2028,14 @@ async function loadCachedSampleData(
           error: serializeError(error),
         },
       });
-      if (requestRef.current[nodeId] === requestState) {
-        delete requestRef.current[nodeId];
+      if (requestRef.current[key] === requestState) {
+        delete requestRef.current[key];
       }
       throw error;
     }
   })();
   requestState.promise = request;
-  requestRef.current[nodeId] = requestState;
+  requestRef.current[key] = requestState;
   return request;
 }
 
@@ -1895,9 +2064,16 @@ function postSampleData(node: AudioWorkletNode, nodeId: string, entry: SampleDat
       data,
       sampleRate: entry.sampleRate,
       name: entry.name,
-      storageKey: entry.storageKey,
+      storageKey: entry.key,
     },
   }, [data.buffer]);
+}
+
+function postSampleReference(node: AudioWorkletNode, nodeId: string, entry: SampleDataCacheEntry): void {
+  node.port.postMessage({
+    type: 'sampleData',
+    payload: { nodeId, sampleRate: entry.sampleRate, name: entry.name, storageKey: entry.key },
+  });
 }
 
 function audioBufferToMonoData(buffer: AudioBuffer): Float32Array {

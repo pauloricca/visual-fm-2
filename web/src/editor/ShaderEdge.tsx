@@ -10,10 +10,13 @@ import { createPortal } from 'react-dom';
 import type { LinkMode } from '../graph/types';
 import { useEdgeOverlayTarget } from './EdgeOverlayContext';
 import type { ShaderFlowEdge } from './flowPatch';
+import { formatNumericValue } from './numericDisplay';
 
 const LINK_CONTROLS_SHOW_DELAY_MS = 260;
 const FEEDBACK_CURVE_OFFSET = 142;
 const SAME_NODE_FEEDBACK_CURVE_OFFSET = 220;
+const SHORT_LINK_CONTROLS_DISTANCE = 144;
+const SHORT_LINK_CONTROLS_OFFSET = 52;
 
 export function ShaderEdge(props: EdgeProps<ShaderFlowEdge>) {
   const [linkControlsVisible, setLinkControlsVisible] = useState(false);
@@ -35,6 +38,9 @@ export function ShaderEdge(props: EdgeProps<ShaderFlowEdge>) {
   const hasDspErrors = dspErrors.length > 0;
   const selected = props.selected ?? false;
   const showLinkControls = selected && props.data?.showLinkControls === true;
+  const controlsLabelY = shouldRaiseLinkControls(props, isFeedback)
+    ? labelY - SHORT_LINK_CONTROLS_OFFSET
+    : labelY;
   const underlayClassName = [
     'shader-edge-path',
     'shader-edge-path-underlay',
@@ -94,7 +100,7 @@ export function ShaderEdge(props: EdgeProps<ShaderFlowEdge>) {
             className="edge-weight-label nodrag nopan"
             style={{
               left: screenPosition.x,
-              top: screenPosition.y,
+              top: reactFlow.flowToScreenPosition({ x: labelX, y: controlsLabelY }).y,
               transform: `translate(-50%, -50%) scale(${viewport.zoom})`,
             }}
           >
@@ -129,6 +135,13 @@ export function ShaderEdge(props: EdgeProps<ShaderFlowEdge>) {
       ) : null}
     </>
   );
+}
+
+function shouldRaiseLinkControls(props: EdgeProps<ShaderFlowEdge>, isFeedback: boolean): boolean {
+  if (isFeedback) return false;
+
+  return Math.hypot(props.targetX - props.sourceX, props.targetY - props.sourceY)
+    < SHORT_LINK_CONTROLS_DISTANCE;
 }
 
 function getFeedbackPath(
@@ -245,7 +258,7 @@ interface EdgeWeightScrubberProps {
 
 export function EdgeWeightScrubber({ value, onChange }: EdgeWeightScrubberProps) {
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(formatDisplayValue(value));
+  const [draft, setDraft] = useState(formatNumericValue(value));
   const inputRef = useRef<HTMLInputElement | null>(null);
   const dragRef = useRef<{
     pointerId: number;
@@ -258,14 +271,14 @@ export function EdgeWeightScrubber({ value, onChange }: EdgeWeightScrubberProps)
 
   useEffect(() => {
     if (!editing) {
-      setDraft(formatDisplayValue(value));
+      setDraft(formatNumericValue(value));
     }
   }, [editing, value]);
 
   useEffect(() => {
     if (!editing) return;
 
-    setDraft(formatDisplayValue(value));
+    setDraft(formatNumericValue(value));
     requestAnimationFrame(() => {
       inputRef.current?.focus();
       inputRef.current?.select();
@@ -328,13 +341,13 @@ export function EdgeWeightScrubber({ value, onChange }: EdgeWeightScrubberProps)
     if (Number.isFinite(nextValue)) {
       onChange(nextValue);
     } else {
-      setDraft(formatDisplayValue(value));
+      setDraft(formatNumericValue(value));
     }
     setEditing(false);
   }
 
   function cancelDraft() {
-    setDraft(formatDisplayValue(value));
+    setDraft(formatNumericValue(value));
     setEditing(false);
   }
 
@@ -386,7 +399,7 @@ export function EdgeWeightScrubber({ value, onChange }: EdgeWeightScrubberProps)
         }
       }}
     >
-      {formatDisplayValue(value)}
+      {formatNumericValue(value)}
     </div>
   );
 }
@@ -400,10 +413,4 @@ function scrubberStep(event: { metaKey: boolean; shiftKey: boolean }): number {
   if (event.metaKey) return 0.2;
   if (event.shiftKey) return 0.001;
   return 0.01;
-}
-
-function formatDisplayValue(value: number): string {
-  if (!Number.isFinite(value)) return '0';
-  const rounded = roundValue(value);
-  return Number.isInteger(rounded) ? rounded.toString() : rounded.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
 }

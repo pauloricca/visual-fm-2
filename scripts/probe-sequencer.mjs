@@ -58,8 +58,8 @@ assert(dspProgram.errors.length === 0, `DSP compile failed: ${dspProgram.errors.
 const state = dspProgram.stateBindings.find((binding) => binding.id === 'seq:sequencer')?.state;
 assert(Number.isInteger(state), 'Sequencer state binding was not emitted.');
 assert(
-  dspProgram.stateBindings.find((binding) => binding.id === 'seq:sequencer')?.count === 6,
-  'Sequencer state binding should include reset trigger memory.',
+  dspProgram.stateBindings.find((binding) => binding.id === 'seq:sequencer')?.count === 8,
+  'Sequencer state binding should include fractional gate timing memory.',
 );
 const gateValue = dspProgram.valueBindings.find((binding) => binding.id === 'gate.value')?.valueIndex;
 const resetValue = dspProgram.valueBindings.find((binding) => binding.id === 'reset.value')?.valueIndex;
@@ -91,6 +91,54 @@ assert(widePatternOp?.value === 5, `Wide sequencer lane 1 was not packed correct
 assert(widePatternOp?.value2 === 0, `Wide sequencer lane 2 should be empty: ${widePatternOp?.value2}`);
 assert(widePatternOp?.value3 === 1, `Wide sequencer lane 3 was not packed correctly: ${widePatternOp?.value3}`);
 assert(widePatternOp?.value4 === 2147483648, `Wide sequencer lane 4 was not packed correctly: ${widePatternOp?.value4}`);
+
+const gatePatch = {
+  nodes: [
+    node('clock', 'Constant', { value: 0 }),
+    node('seq', 'Sequencer', {
+      steps: 4,
+      rows: 1,
+      gateMode: 1,
+      'gate:initialized': 1,
+      'gate:active:0:0': 1,
+      'gate:start:0:0': 1.25,
+      'gate:end:0:0': 1.75,
+    }),
+    node('out', 'AudioOut', { level: 1 }),
+  ],
+  links: [
+    link('clock', 'signal', 'seq', 'signal'),
+    link('seq', '1', 'out', 'both'),
+  ],
+};
+const gateDspProgram = compilePatchToDspProgram(gatePatch);
+assert(gateDspProgram.errors.length === 0, `Gate DSP compile failed: ${gateDspProgram.errors.join('; ')}`);
+const gateOp = gateDspProgram.ops.find((op) => op.opcode === 35 && op.value === 1.25);
+assert(gateOp?.value2 === 1.75, 'Gate interval was not compiled with fractional start/end values.');
+
+const fractionalTriggerPatch = {
+  nodes: [
+    node('clock', 'Constant', { value: 0 }),
+    node('seq', 'Sequencer', {
+      steps: 4,
+      rows: 1,
+      mode: 0,
+      'cell:0:0': 1,
+      'trigger:position:0:0': 1.5,
+    }),
+    node('out', 'AudioOut', { level: 1 }),
+  ],
+  links: [
+    link('clock', 'signal', 'seq', 'signal'),
+    link('seq', '1', 'out', 'both'),
+  ],
+};
+const fractionalTriggerProgram = compilePatchToDspProgram(fractionalTriggerPatch);
+assert(fractionalTriggerProgram.errors.length === 0, `Fractional trigger compile failed: ${fractionalTriggerProgram.errors.join('; ')}`);
+assert(
+  fractionalTriggerProgram.ops.some((op) => op.opcode === 35 && op.value === 1.5),
+  'Fractional trigger position was not compiled.',
+);
 
 const wasmBytes = fs.readFileSync(path.join(repoRoot, 'web/public/audio/visual-fm-kernel.wasm'));
 const { instance } = await WebAssembly.instantiate(wasmBytes, {});
@@ -260,6 +308,102 @@ assert(
   indexOutputs.join(',') === '1,3',
   `Sequencer index should select the first triggered row: ${indexOutputs.join(',')}`,
 );
+
+wasm.clearDspProgram();
+wasm.resetDspRuntimeState();
+for (let index = 0; index < gateDspProgram.values.length; index += 1) {
+  wasm.setDspValue(index, gateDspProgram.values[index]);
+}
+for (const op of gateDspProgram.ops) {
+  wasm.addDspOp(
+    op.opcode ?? -1,
+    op.out ?? -1,
+    op.a ?? -1,
+    op.b ?? -1,
+    op.c ?? -1,
+    op.d ?? -1,
+    op.e ?? -1,
+    op.state ?? -1,
+    op.value ?? 0,
+    op.value2 ?? 0,
+    op.value3 ?? 0,
+    op.value4 ?? 0,
+  );
+}
+const fractionalGateClock = gateDspProgram.valueBindings.find((binding) => binding.id === 'clock.value')?.valueIndex;
+const fractionalGateState = gateDspProgram.stateBindings.find((binding) => binding.id === 'seq:sequencer')?.state;
+assert(Number.isInteger(fractionalGateClock), 'Fractional gate clock binding was not emitted.');
+function renderGateFrames(count) {
+  let last = 0;
+  for (let remaining = count; remaining > 0;) {
+    const blockSize = Math.min(100, remaining);
+    wasm.clear(blockSize);
+    wasm.beginDspRenderQuantum();
+    wasm.renderDspProgram(blockSize, 48000);
+    const output = new Float32Array(wasm.memory.buffer, wasm.leftPtr(), blockSize);
+    last = output[blockSize - 1];
+    remaining -= blockSize;
+  }
+  return last;
+}
+wasm.setDspValue(fractionalGateClock, 1);
+renderGateFrames(1000);
+wasm.setDspValue(fractionalGateClock, 0);
+renderGateFrames(1000);
+wasm.setDspValue(fractionalGateClock, 1);
+const insideGate = renderGateFrames(1000);
+assert(insideGate > 0.9, `Fractional gate should be high inside its interval (got ${insideGate}).`);
+renderGateFrames(800);
+const afterGate = renderGateFrames(300);
+assert(afterGate === 0, `Fractional gate should return to zero after its interval (got ${afterGate}; state ${Array.from({ length: 8 }, (_, offset) => wasm.getDspState(fractionalGateState + offset)).join(',')}).`);
+
+wasm.clearDspProgram();
+wasm.resetDspRuntimeState();
+for (let index = 0; index < fractionalTriggerProgram.values.length; index += 1) {
+  wasm.setDspValue(index, fractionalTriggerProgram.values[index]);
+}
+for (const op of fractionalTriggerProgram.ops) {
+  wasm.addDspOp(
+    op.opcode ?? -1,
+    op.out ?? -1,
+    op.a ?? -1,
+    op.b ?? -1,
+    op.c ?? -1,
+    op.d ?? -1,
+    op.e ?? -1,
+    op.state ?? -1,
+    op.value ?? 0,
+    op.value2 ?? 0,
+    op.value3 ?? 0,
+    op.value4 ?? 0,
+  );
+}
+const fractionalTriggerClock = fractionalTriggerProgram.valueBindings.find((binding) => binding.id === 'clock.value')?.valueIndex;
+assert(Number.isInteger(fractionalTriggerClock), 'Fractional trigger clock binding was not emitted.');
+function renderTriggerFrames(count) {
+  let peak = 0;
+  for (let remaining = count; remaining > 0;) {
+    const blockSize = Math.min(100, remaining);
+    wasm.clear(blockSize);
+    wasm.beginDspRenderQuantum();
+    wasm.renderDspProgram(blockSize, 48000);
+    peak = Math.max(peak, ...new Float32Array(wasm.memory.buffer, wasm.leftPtr(), blockSize));
+    remaining -= blockSize;
+  }
+  return peak;
+}
+wasm.setDspValue(fractionalTriggerClock, 1);
+renderTriggerFrames(1000);
+wasm.setDspValue(fractionalTriggerClock, 0);
+renderTriggerFrames(1000);
+wasm.setDspValue(fractionalTriggerClock, 1);
+renderTriggerFrames(1000);
+let fractionalTriggerPeak = 0;
+for (let block = 0; block < 10 && fractionalTriggerPeak === 0; block += 1) {
+  fractionalTriggerPeak = renderTriggerFrames(100);
+}
+assert(fractionalTriggerPeak > 0.9, 'Moved trigger did not emit when the fractional playhead crossed its position.');
+assert(renderTriggerFrames(100) === 0, 'Moved trigger should emit a single click, not a sustained gate.');
 
 console.log(`Sequencer probe passed: advance ${advanced.join(',')}; reset next step ${afterReset}; index ${indexOutputs.join(',')}`);
 

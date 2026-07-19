@@ -3,13 +3,20 @@ const MAX_NODES: usize = 512;
 const MAX_LINKS: usize = 1024;
 const MAX_VOICE_SLOTS: usize = 17;
 const DRONE_VOICE_SLOT: usize = MAX_VOICE_SLOTS - 1;
+const MAX_DSP_SAMPLE_PLAYER_VOICES: usize = 16;
+const DSP_SAMPLE_VOICE_SLOT_START: usize = MAX_VOICE_SLOTS;
+const MAX_SAMPLE_VOICE_SLOTS: usize = MAX_VOICE_SLOTS + MAX_DSP_SAMPLE_PLAYER_VOICES;
 const MAX_DELAY_SLOTS: usize = 96;
 const MAX_COMB_SLOTS: usize = 96;
 const MAX_DELAY_SAMPLES: usize = 8192;
 const MAX_FORMANT_BANDS: usize = 3;
 const MAX_CUSTOM_WAVE_POINTS: usize = 64;
 const MAX_SAMPLE_SLOTS: usize = 16;
-const MAX_SAMPLE_FRAMES: usize = 524_288;
+// Samples are decoded to mono f32 data before entering the kernel. 128 MiB per
+// sample is long enough for normal full-song playback while keeping a corrupt
+// or unexpectedly large decode from exhausting the AudioWorklet's WASM heap.
+const MAX_SAMPLE_FRAMES: usize = 32 * 1024 * 1024;
+const MAX_TOTAL_SAMPLE_FRAMES: usize = 128 * 1024 * 1024;
 const MAX_DSP_OPS: usize = 4096;
 const MAX_DSP_REGS: usize = 2048;
 const MAX_DSP_VALUES: usize = 2048;
@@ -35,6 +42,7 @@ const VOICE_STEAL_FADE_SECONDS: f64 = 0.03;
 const PHASE_RESET_FADE_SECONDS: f64 = 0.008;
 const DSP_VALUE_SMOOTH_SECONDS: f64 = 0.012;
 const DSP_VALUE_SETTLE_EPSILON: f64 = 0.0000001;
+const DSP_VALUE_MODE_IMMEDIATE: f64 = 1.0;
 const CUSTOM_MODE_LOOP: i32 = 0;
 const CUSTOM_MODE_ONCE: i32 = 1;
 const CUSTOM_MODE_PING_PONG: i32 = 2;
@@ -118,6 +126,7 @@ const DSP_OP_BUFFER: i32 = 34;
 const DSP_OP_SEQUENCER: i32 = 35;
 const DSP_OP_IMAGE: i32 = 36;
 const DSP_OP_TIME: i32 = 37;
+const DSP_OP_COMPRESS: i32 = 38;
 const MIN_ENVELOPE_ATTACK_SECONDS: f64 = 0.001;
 const MAX_DSP_TEMPO_SOURCES: usize = 129;
 const TEMPO_OUTPUT_COUNT: i32 = 10;
@@ -202,6 +211,13 @@ struct DspOp {
     value4: f64,
 }
 
+#[derive(Copy, Clone)]
+struct DspSampleVoiceSettings {
+    node: Node,
+    frequency: f64,
+    level: f64,
+}
+
 const EMPTY_NODE: Node = Node {
     wave: 0,
     frequency_mode: 0,
@@ -226,6 +242,12 @@ const EMPTY_NODE: Node = Node {
     sample_cycle_length: 4096.0,
     sample_overlap_ratio: 0.09,
     sample_original_frequency: 440.0,
+};
+
+const EMPTY_DSP_SAMPLE_VOICE_SETTINGS: DspSampleVoiceSettings = DspSampleVoiceSettings {
+    node: EMPTY_NODE,
+    frequency: 220.0,
+    level: 0.7,
 };
 
 const EMPTY_LINK: Link = Link {
@@ -419,11 +441,10 @@ static mut CUSTOM_WAVE_DIRECTIONS: [[f64; MAX_NODES]; MAX_VOICE_SLOTS] =
 static mut CUSTOM_WAVE_TRIGGERED: [[bool; MAX_NODES]; MAX_VOICE_SLOTS] =
     [[false; MAX_NODES]; MAX_VOICE_SLOTS];
 static mut SAMPLE_SLOT_FOR_NODE: [i32; MAX_NODES] = [-1; MAX_NODES];
-static mut SAMPLE_DATA: [[f32; MAX_SAMPLE_FRAMES]; MAX_SAMPLE_SLOTS] =
-    [[0.0; MAX_SAMPLE_FRAMES]; MAX_SAMPLE_SLOTS];
+static mut SAMPLE_DATA: [Option<Box<[f32]>>; MAX_SAMPLE_SLOTS] = [const { None }; MAX_SAMPLE_SLOTS];
 static mut SAMPLE_LENGTHS: [usize; MAX_SAMPLE_SLOTS] = [0; MAX_SAMPLE_SLOTS];
 static mut SAMPLE_RATES: [f64; MAX_SAMPLE_SLOTS] = [44_100.0; MAX_SAMPLE_SLOTS];
-static mut IMAGE_DATA: [[u8; MAX_IMAGE_BYTES]; MAX_IMAGE_SLOTS] = [[0; MAX_IMAGE_BYTES]; MAX_IMAGE_SLOTS];
+static mut IMAGE_DATA: [Option<Box<[u8]>>; MAX_IMAGE_SLOTS] = [const { None }; MAX_IMAGE_SLOTS];
 static mut IMAGE_WIDTHS: [usize; MAX_IMAGE_SLOTS] = [0; MAX_IMAGE_SLOTS];
 static mut IMAGE_HEIGHTS: [usize; MAX_IMAGE_SLOTS] = [0; MAX_IMAGE_SLOTS];
 static mut DSP_OPS: [DspOp; MAX_DSP_OPS] = [EMPTY_DSP_OP; MAX_DSP_OPS];
@@ -469,30 +490,43 @@ static mut DSP_METER_REGS: [i32; MAX_DSP_METERS] = [-1; MAX_DSP_METERS];
 static mut DSP_METER_SUMS: [f64; MAX_DSP_METERS] = [0.0; MAX_DSP_METERS];
 static mut DSP_METER_SIGNED_SUMS: [f64; MAX_DSP_METERS] = [0.0; MAX_DSP_METERS];
 static mut DSP_METER_COUNTS: [u32; MAX_DSP_METERS] = [0; MAX_DSP_METERS];
-static mut DSP_EFFECT_BUFFERS: [[f32; MAX_DSP_DELAY_SAMPLES]; MAX_DSP_EFFECT_SLOTS] =
-    [[0.0; MAX_DSP_DELAY_SAMPLES]; MAX_DSP_EFFECT_SLOTS];
+static mut DSP_EFFECT_BUFFERS: [Option<Box<[f32]>>; MAX_DSP_EFFECT_SLOTS] =
+    [const { None }; MAX_DSP_EFFECT_SLOTS];
 static mut DSP_EFFECT_INDICES: [usize; MAX_DSP_EFFECT_SLOTS] = [0; MAX_DSP_EFFECT_SLOTS];
-static mut DSP_BUFFER_BUFFERS: [[f32; MAX_DSP_BUFFER_SAMPLES]; MAX_DSP_BUFFER_SLOTS] =
-    [[0.0; MAX_DSP_BUFFER_SAMPLES]; MAX_DSP_BUFFER_SLOTS];
+static mut DSP_BUFFER_BUFFERS: [Option<Box<[f32]>>; MAX_DSP_BUFFER_SLOTS] =
+    [const { None }; MAX_DSP_BUFFER_SLOTS];
 static mut DSP_BUFFER_STATE_SLOTS: [i32; MAX_DSP_STATE] = [-1; MAX_DSP_STATE];
 static mut DSP_BUFFER_SLOT_STATES: [i32; MAX_DSP_BUFFER_SLOTS] = [-1; MAX_DSP_BUFFER_SLOTS];
 static mut DSP_SAMPLE_NODE_INDICES: [i32; MAX_DSP_SAMPLE_NODES] = [-1; MAX_DSP_SAMPLE_NODES];
-static mut SAMPLE_PLAYING: [[bool; MAX_NODES]; MAX_VOICE_SLOTS] =
-    [[false; MAX_NODES]; MAX_VOICE_SLOTS];
-static mut SAMPLE_POSITIONS: [[f64; MAX_NODES]; MAX_VOICE_SLOTS] =
-    [[0.0; MAX_NODES]; MAX_VOICE_SLOTS];
-static mut SAMPLE_DIRECTIONS: [[f64; MAX_NODES]; MAX_VOICE_SLOTS] =
-    [[1.0; MAX_NODES]; MAX_VOICE_SLOTS];
-static mut SAMPLE_PLAYBACK_AGES: [[f64; MAX_NODES]; MAX_VOICE_SLOTS] =
-    [[0.0; MAX_NODES]; MAX_VOICE_SLOTS];
-static mut SAMPLE_RELEASE_AGES: [[f64; MAX_NODES]; MAX_VOICE_SLOTS] =
-    [[-1.0; MAX_NODES]; MAX_VOICE_SLOTS];
-static mut SAMPLE_START_VALUES: [[f64; MAX_NODES]; MAX_VOICE_SLOTS] =
-    [[0.0; MAX_NODES]; MAX_VOICE_SLOTS];
-static mut SAMPLE_STRETCH_PHASES: [[f64; MAX_NODES]; MAX_VOICE_SLOTS] =
-    [[0.0; MAX_NODES]; MAX_VOICE_SLOTS];
-static mut SAMPLE_STRETCH_ANCHORS: [[f64; MAX_NODES]; MAX_VOICE_SLOTS] =
-    [[0.0; MAX_NODES]; MAX_VOICE_SLOTS];
+static mut DSP_SAMPLE_VOICE_SETTINGS: [[DspSampleVoiceSettings; MAX_DSP_SAMPLE_PLAYER_VOICES]; MAX_DSP_SAMPLE_NODES] =
+    [[EMPTY_DSP_SAMPLE_VOICE_SETTINGS; MAX_DSP_SAMPLE_PLAYER_VOICES]; MAX_DSP_SAMPLE_NODES];
+static mut SAMPLE_PLAYING: [[bool; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS] =
+    [[false; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS];
+static mut SAMPLE_POSITIONS: [[f64; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS] =
+    [[0.0; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS];
+static mut SAMPLE_DIRECTIONS: [[f64; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS] =
+    [[1.0; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS];
+static mut SAMPLE_PLAYBACK_AGES: [[f64; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS] =
+    [[0.0; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS];
+static mut SAMPLE_RELEASE_AGES: [[f64; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS] =
+    [[-1.0; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS];
+static mut SAMPLE_START_VALUES: [[f64; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS] =
+    [[0.0; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS];
+// A sample retrigger changes playback position as well as gain. Retain the
+// last rendered value briefly, so the restarted waveform can fade in without
+// creating an output discontinuity.
+static mut SAMPLE_LAST_OUTPUTS: [[f64; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS] =
+    [[0.0; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS];
+static mut SAMPLE_RETRIGGER_OUTPUTS: [[f64; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS] =
+    [[0.0; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS];
+static mut SAMPLE_RETRIGGER_FADE_AGES: [[f64; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS] =
+    [[-1.0; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS];
+static mut SAMPLE_RETRIGGER_FADE_DURATIONS: [[f64; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS] =
+    [[0.0; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS];
+static mut SAMPLE_STRETCH_PHASES: [[f64; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS] =
+    [[0.0; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS];
+static mut SAMPLE_STRETCH_ANCHORS: [[f64; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS] =
+    [[0.0; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS];
 static mut SAMPLE_STRETCH_MODS: [f64; MAX_NODES] = [0.0; MAX_NODES];
 static mut LINK_DELAY_SLOTS: [i32; MAX_LINKS] = [-1; MAX_LINKS];
 static mut LINK_DELAY_SLOT_COUNT: usize = 0;
@@ -501,14 +535,14 @@ static mut LINK_COMB_SLOT_COUNT: usize = 0;
 static mut LINK_FIRST_MODULATOR: [i32; MAX_LINKS] = [-1; MAX_LINKS];
 static mut LINK_NEXT_MODULATOR: [i32; MAX_LINKS] = [-1; MAX_LINKS];
 static mut LINK_HAS_ENVELOPE_TRIGGER: [bool; MAX_LINKS] = [false; MAX_LINKS];
-static mut LINK_DELAY_BUFFERS: [[[f32; MAX_DELAY_SAMPLES]; MAX_DELAY_SLOTS]; MAX_VOICE_SLOTS] =
-    [[[0.0; MAX_DELAY_SAMPLES]; MAX_DELAY_SLOTS]; MAX_VOICE_SLOTS];
+static mut LINK_DELAY_BUFFERS: [Option<Box<[f32]>>; MAX_VOICE_SLOTS * MAX_DELAY_SLOTS] =
+    [const { None }; MAX_VOICE_SLOTS * MAX_DELAY_SLOTS];
 static mut LINK_DELAY_INDICES: [[usize; MAX_DELAY_SLOTS]; MAX_VOICE_SLOTS] =
     [[0; MAX_DELAY_SLOTS]; MAX_VOICE_SLOTS];
 static mut LINK_DELAY_READY: [[bool; MAX_DELAY_SLOTS]; MAX_VOICE_SLOTS] =
     [[false; MAX_DELAY_SLOTS]; MAX_VOICE_SLOTS];
-static mut LINK_COMB_BUFFERS: [[[f32; MAX_DELAY_SAMPLES]; MAX_COMB_SLOTS]; MAX_VOICE_SLOTS] =
-    [[[0.0; MAX_DELAY_SAMPLES]; MAX_COMB_SLOTS]; MAX_VOICE_SLOTS];
+static mut LINK_COMB_BUFFERS: [Option<Box<[f32]>>; MAX_VOICE_SLOTS * MAX_COMB_SLOTS] =
+    [const { None }; MAX_VOICE_SLOTS * MAX_COMB_SLOTS];
 static mut LINK_COMB_INDICES: [[usize; MAX_COMB_SLOTS]; MAX_VOICE_SLOTS] =
     [[0; MAX_COMB_SLOTS]; MAX_VOICE_SLOTS];
 static mut LINK_COMB_READY: [[bool; MAX_COMB_SLOTS]; MAX_VOICE_SLOTS] =
@@ -622,13 +656,109 @@ pub extern "C" fn maxSampleFrames() -> u32 {
     MAX_SAMPLE_FRAMES as u32
 }
 
+fn zeroed_f32_buffer(length: usize) -> Box<[f32]> {
+    vec![0.0; length].into_boxed_slice()
+}
+
+fn try_zeroed_f32_buffer(length: usize) -> Option<Box<[f32]>> {
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(length).ok()?;
+    buffer.resize(length, 0.0);
+    Some(buffer.into_boxed_slice())
+}
+
+#[no_mangle]
+pub extern "C" fn lazyBufferBytes() -> f64 {
+    unsafe {
+        let mut bytes = 0usize;
+        for index in 0..MAX_SAMPLE_SLOTS {
+            bytes = bytes.saturating_add(
+                SAMPLE_DATA[index].as_ref().map_or(0, |buffer| buffer.len())
+                    * core::mem::size_of::<f32>(),
+            );
+        }
+        for index in 0..MAX_IMAGE_SLOTS {
+            bytes = bytes.saturating_add(IMAGE_DATA[index].as_ref().map_or(0, |buffer| buffer.len()));
+        }
+        for index in 0..MAX_DSP_EFFECT_SLOTS {
+            bytes = bytes.saturating_add(
+                DSP_EFFECT_BUFFERS[index]
+                    .as_ref()
+                    .map_or(0, |buffer| buffer.len())
+                    * core::mem::size_of::<f32>(),
+            );
+        }
+        for index in 0..MAX_DSP_BUFFER_SLOTS {
+            bytes = bytes.saturating_add(
+                DSP_BUFFER_BUFFERS[index]
+                    .as_ref()
+                    .map_or(0, |buffer| buffer.len())
+                    * core::mem::size_of::<f32>(),
+            );
+        }
+        for index in 0..(MAX_VOICE_SLOTS * MAX_DELAY_SLOTS) {
+            bytes = bytes.saturating_add(
+                LINK_DELAY_BUFFERS[index]
+                    .as_ref()
+                    .map_or(0, |buffer| buffer.len())
+                    * core::mem::size_of::<f32>(),
+            );
+        }
+        for index in 0..(MAX_VOICE_SLOTS * MAX_COMB_SLOTS) {
+            bytes = bytes.saturating_add(
+                LINK_COMB_BUFFERS[index]
+                    .as_ref()
+                    .map_or(0, |buffer| buffer.len())
+                    * core::mem::size_of::<f32>(),
+            );
+        }
+        bytes as f64
+    }
+}
+
+fn ensure_dsp_effect_buffer(slot: usize) {
+    unsafe {
+        if slot < MAX_DSP_EFFECT_SLOTS && DSP_EFFECT_BUFFERS[slot].is_none() {
+            DSP_EFFECT_BUFFERS[slot] = Some(zeroed_f32_buffer(MAX_DSP_DELAY_SAMPLES));
+        }
+    }
+}
+
+fn prepare_dsp_buffer_slot(state: i32) -> Option<usize> {
+    unsafe {
+        if state < 0 || state as usize >= MAX_DSP_STATE {
+            return None;
+        }
+        let state_index = state as usize;
+        let existing = DSP_BUFFER_STATE_SLOTS[state_index];
+        if existing >= 0 && (existing as usize) < MAX_DSP_BUFFER_SLOTS {
+            return Some(existing as usize);
+        }
+        for slot in 0..MAX_DSP_BUFFER_SLOTS {
+            if DSP_BUFFER_SLOT_STATES[slot] < 0 {
+                DSP_BUFFER_SLOT_STATES[slot] = state;
+                DSP_BUFFER_STATE_SLOTS[state_index] = slot as i32;
+                if DSP_BUFFER_BUFFERS[slot].is_none() {
+                    DSP_BUFFER_BUFFERS[slot] = Some(zeroed_f32_buffer(MAX_DSP_BUFFER_SAMPLES));
+                }
+                return Some(slot);
+            }
+        }
+        None
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn sampleDataPtr(slot: u32) -> *mut f32 {
     let slot = slot as usize;
     if slot >= MAX_SAMPLE_SLOTS {
         return core::ptr::null_mut();
     }
-    unsafe { core::ptr::addr_of_mut!(SAMPLE_DATA[slot]).cast::<f32>() }
+    unsafe {
+        SAMPLE_DATA[slot]
+            .as_mut()
+            .map_or(core::ptr::null_mut(), |data| data.as_mut_ptr())
+    }
 }
 
 #[no_mangle]
@@ -636,6 +766,10 @@ pub extern "C" fn setSampleData(node_index: i32, sample_rate: f64, length: u32) 
     unsafe {
         if node_index < 0 || node_index as usize >= NODE_COUNT {
             return -1;
+        }
+        let requested_length = length as usize;
+        if requested_length > MAX_SAMPLE_FRAMES {
+            return -2;
         }
         let node_index = node_index as usize;
         let existing = SAMPLE_SLOT_FOR_NODE[node_index];
@@ -660,12 +794,50 @@ pub extern "C" fn setSampleData(node_index: i32, sample_rate: f64, length: u32) 
                 None => return -1,
             }
         };
-        SAMPLE_LENGTHS[slot] = (length as usize).min(MAX_SAMPLE_FRAMES);
+        let mut total_without_existing = 0usize;
+        for sample_slot in 0..MAX_SAMPLE_SLOTS {
+            if sample_slot != slot {
+                total_without_existing = total_without_existing.saturating_add(
+                    SAMPLE_DATA[sample_slot]
+                        .as_ref()
+                        .map_or(0, |buffer| buffer.len()),
+                );
+            }
+        }
+        if total_without_existing.saturating_add(requested_length) > MAX_TOTAL_SAMPLE_FRAMES {
+            return -3;
+        }
+        let length = requested_length;
+        if SAMPLE_DATA[slot].as_ref().map_or(0, |data| data.len()) != length {
+            let Some(buffer) = try_zeroed_f32_buffer(length) else {
+                return -4;
+            };
+            SAMPLE_DATA[slot] = Some(buffer);
+        }
+        SAMPLE_LENGTHS[slot] = length;
         SAMPLE_RATES[slot] = if sample_rate.is_finite() && sample_rate > 0.0 {
             sample_rate
         } else {
             44_100.0
         };
+        slot as i32
+    }
+}
+
+// Point another sample player at an already-uploaded sample slot.  Sample data
+// is immutable after upload, so players can safely share its decoded buffer
+// while retaining independent playback state.
+#[no_mangle]
+pub extern "C" fn bindSampleData(node_index: i32, slot: i32) -> i32 {
+    unsafe {
+        if node_index < 0 || node_index as usize >= NODE_COUNT || slot < 0 {
+            return -1;
+        }
+        let slot = slot as usize;
+        if slot >= MAX_SAMPLE_SLOTS || SAMPLE_LENGTHS[slot] == 0 || SAMPLE_DATA[slot].is_none() {
+            return -1;
+        }
+        SAMPLE_SLOT_FOR_NODE[node_index as usize] = slot as i32;
         slot as i32
     }
 }
@@ -681,7 +853,11 @@ pub extern "C" fn imageDataPtr(slot: u32) -> *mut u8 {
     if slot >= MAX_IMAGE_SLOTS {
         return core::ptr::null_mut();
     }
-    unsafe { core::ptr::addr_of_mut!(IMAGE_DATA[slot]).cast::<u8>() }
+    unsafe {
+        IMAGE_DATA[slot]
+            .as_mut()
+            .map_or(core::ptr::null_mut(), |data| data.as_mut_ptr())
+    }
 }
 
 #[no_mangle]
@@ -695,8 +871,13 @@ pub extern "C" fn setImageData(slot: i32, width: u32, height: u32, length: u32) 
         return -1;
     }
     unsafe {
-        IMAGE_WIDTHS[slot as usize] = width;
-        IMAGE_HEIGHTS[slot as usize] = height;
+        let slot = slot as usize;
+        let length = width.saturating_mul(height).saturating_mul(4);
+        if IMAGE_DATA[slot].as_ref().map_or(0, |data| data.len()) != length {
+            IMAGE_DATA[slot] = Some(vec![0; length].into_boxed_slice());
+        }
+        IMAGE_WIDTHS[slot] = width;
+        IMAGE_HEIGHTS[slot] = height;
     }
     slot
 }
@@ -762,8 +943,8 @@ fn clear_dsp_buffers() {
         }
         for slot in 0..MAX_DSP_BUFFER_SLOTS {
             DSP_BUFFER_SLOT_STATES[slot] = -1;
-            for index in 0..MAX_DSP_BUFFER_SAMPLES {
-                DSP_BUFFER_BUFFERS[slot][index] = 0.0;
+            if let Some(buffer) = DSP_BUFFER_BUFFERS[slot].as_mut() {
+                buffer.fill(0.0);
             }
         }
     }
@@ -790,8 +971,8 @@ pub extern "C" fn clearDspProgram() {
         }
         for slot in 0..MAX_DSP_EFFECT_SLOTS {
             DSP_EFFECT_INDICES[slot] = 0;
-            for index in 0..MAX_DSP_DELAY_SAMPLES {
-                DSP_EFFECT_BUFFERS[slot][index] = 0.0;
+            if let Some(buffer) = DSP_EFFECT_BUFFERS[slot].as_mut() {
+                buffer.fill(0.0);
             }
         }
         clear_dsp_buffers();
@@ -830,8 +1011,8 @@ pub extern "C" fn resetDspRuntimeState() {
         }
         for slot in 0..MAX_DSP_EFFECT_SLOTS {
             DSP_EFFECT_INDICES[slot] = 0;
-            for index in 0..MAX_DSP_DELAY_SAMPLES {
-                DSP_EFFECT_BUFFERS[slot][index] = 0.0;
+            if let Some(buffer) = DSP_EFFECT_BUFFERS[slot].as_mut() {
+                buffer.fill(0.0);
             }
         }
         clear_dsp_buffers();
@@ -912,9 +1093,23 @@ pub extern "C" fn setDspSampleNode(slot: u32, node_index: i32) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn dspSamplePlayhead(slot: u32) -> f64 {
+    for voice in 0..MAX_DSP_SAMPLE_PLAYER_VOICES {
+        let playhead = dsp_sample_playhead_for_voice(slot as usize, voice);
+        if playhead >= 0.0 {
+            return playhead;
+        }
+    }
+    -1.0
+}
+
+#[no_mangle]
+pub extern "C" fn dspSamplePlayheadVoice(slot: u32, voice: u32) -> f64 {
+    dsp_sample_playhead_for_voice(slot as usize, voice as usize)
+}
+
+fn dsp_sample_playhead_for_voice(slot: usize, voice: usize) -> f64 {
     unsafe {
-        let slot = slot as usize;
-        if slot >= MAX_DSP_SAMPLE_NODES {
+        if slot >= MAX_DSP_SAMPLE_NODES || voice >= MAX_DSP_SAMPLE_PLAYER_VOICES {
             return -1.0;
         }
         let node_index = DSP_SAMPLE_NODE_INDICES[slot];
@@ -922,7 +1117,8 @@ pub extern "C" fn dspSamplePlayhead(slot: u32) -> f64 {
             return -1.0;
         }
         let node_index = node_index as usize;
-        if !SAMPLE_PLAYING[DRONE_VOICE_SLOT][node_index] {
+        let voice_slot = DSP_SAMPLE_VOICE_SLOT_START + voice;
+        if !SAMPLE_PLAYING[voice_slot][node_index] {
             return -1.0;
         }
         let Some(sample_slot) = sample_slot_for_node(node_index) else {
@@ -932,7 +1128,7 @@ pub extern "C" fn dspSamplePlayhead(slot: u32) -> f64 {
         if length <= 1 {
             return -1.0;
         }
-        (SAMPLE_POSITIONS[DRONE_VOICE_SLOT][node_index] / (length - 1) as f64).clamp(0.0, 1.0)
+        (SAMPLE_POSITIONS[voice_slot][node_index] / (length - 1) as f64).clamp(0.0, 1.0)
     }
 }
 
@@ -1132,6 +1328,20 @@ pub extern "C" fn setDspValue(index: u32, value: f64) {
 }
 
 #[no_mangle]
+pub extern "C" fn setDspValueImmediate(index: u32, value: f64) {
+    unsafe {
+        let index = index as usize;
+        if index < MAX_DSP_VALUES {
+            let value = if value.is_finite() { value } else { 0.0 };
+            DSP_VALUE_TARGETS[index] = value;
+            DSP_VALUES[index] = value;
+            DSP_VALUE_INITIALIZED[index] = true;
+            DSP_VALUE_ACTIVE_COUNT = DSP_VALUE_ACTIVE_COUNT.max(index + 1);
+        }
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn addDspOp(
     opcode: i32,
     out: i32,
@@ -1148,6 +1358,18 @@ pub extern "C" fn addDspOp(
 ) -> i32 {
     unsafe {
         if DSP_OP_COUNT >= MAX_DSP_OPS {
+            return -1;
+        }
+        if opcode == DSP_OP_DELAY
+            || opcode == DSP_OP_CHORUS
+            || opcode == DSP_OP_REVERB
+            || (opcode == DSP_OP_FILTER && (a == 5 || a == 6))
+        {
+            if let Some(slot) = dsp_effect_slot(state) {
+                ensure_dsp_effect_buffer(slot);
+            }
+        }
+        if opcode == DSP_OP_BUFFER && prepare_dsp_buffer_slot(state).is_none() {
             return -1;
         }
         let index = DSP_OP_COUNT;
@@ -1578,6 +1800,12 @@ pub extern "C" fn addLink(
             map_target_min,
             map_target_max,
         };
+        if delay > 0.0 {
+            prepare_delay_slot_for_link(index);
+        }
+        if filter_type == 5 || filter_type == 6 {
+            prepare_comb_slot_for_link(index);
+        }
         if let Some(target_index) = link_target_index(to) {
             if target_index < MAX_LINKS {
                 LINK_NEXT_MODULATOR[index] = LINK_FIRST_MODULATOR[target_index];
@@ -1675,6 +1903,9 @@ pub extern "C" fn setLinkDelay(index: u32, delay: f64) {
     unsafe {
         if (index as usize) < LINK_COUNT {
             LINKS[index as usize].delay = delay.clamp(0.0, 3.0);
+            if delay > 0.0 {
+                prepare_delay_slot_for_link(index as usize);
+            }
         }
     }
 }
@@ -1710,12 +1941,17 @@ pub extern "C" fn resetPhases() {
     let sample_positions = core::ptr::addr_of_mut!(SAMPLE_POSITIONS).cast::<f64>();
     let sample_directions = core::ptr::addr_of_mut!(SAMPLE_DIRECTIONS).cast::<f64>();
     let sample_start_values = core::ptr::addr_of_mut!(SAMPLE_START_VALUES).cast::<f64>();
+    let sample_last_outputs = core::ptr::addr_of_mut!(SAMPLE_LAST_OUTPUTS).cast::<f64>();
+    let sample_retrigger_outputs =
+        core::ptr::addr_of_mut!(SAMPLE_RETRIGGER_OUTPUTS).cast::<f64>();
+    let sample_retrigger_fade_ages =
+        core::ptr::addr_of_mut!(SAMPLE_RETRIGGER_FADE_AGES).cast::<f64>();
+    let sample_retrigger_fade_durations =
+        core::ptr::addr_of_mut!(SAMPLE_RETRIGGER_FADE_DURATIONS).cast::<f64>();
     let sample_playback_ages = core::ptr::addr_of_mut!(SAMPLE_PLAYBACK_AGES).cast::<f64>();
     let sample_release_ages = core::ptr::addr_of_mut!(SAMPLE_RELEASE_AGES).cast::<f64>();
-    let delay_buffers = core::ptr::addr_of_mut!(LINK_DELAY_BUFFERS).cast::<f32>();
     let delay_indices = core::ptr::addr_of_mut!(LINK_DELAY_INDICES).cast::<usize>();
     let delay_ready = core::ptr::addr_of_mut!(LINK_DELAY_READY).cast::<bool>();
-    let comb_buffers = core::ptr::addr_of_mut!(LINK_COMB_BUFFERS).cast::<f32>();
     let comb_indices = core::ptr::addr_of_mut!(LINK_COMB_INDICES).cast::<usize>();
     let comb_ready = core::ptr::addr_of_mut!(LINK_COMB_READY).cast::<bool>();
     let trigger_armed = core::ptr::addr_of_mut!(LINK_TRIGGER_ARMED).cast::<bool>();
@@ -1746,6 +1982,32 @@ pub extern "C" fn resetPhases() {
             *sample_positions.add(index) = 0.0;
             *sample_directions.add(index) = 1.0;
             *sample_start_values.add(index) = 0.0;
+            *sample_last_outputs.add(index) = 0.0;
+            *sample_retrigger_outputs.add(index) = 0.0;
+            *sample_retrigger_fade_ages.add(index) = -1.0;
+            *sample_retrigger_fade_durations.add(index) = 0.0;
+            *sample_playback_ages.add(index) = 0.0;
+            *sample_release_ages.add(index) = -1.0;
+            *core::ptr::addr_of_mut!(SAMPLE_STRETCH_PHASES)
+                .cast::<f64>()
+                .add(index) = 0.0;
+            *core::ptr::addr_of_mut!(SAMPLE_STRETCH_ANCHORS)
+                .cast::<f64>()
+                .add(index) = 0.0;
+        }
+    }
+    // Sample Player voices have their own playback slots in addition to the
+    // normal MIDI and drone slots. Reset the complete sample state pool.
+    for index in 0..(MAX_SAMPLE_VOICE_SLOTS * MAX_NODES) {
+        unsafe {
+            *sample_playing.add(index) = false;
+            *sample_positions.add(index) = 0.0;
+            *sample_directions.add(index) = 1.0;
+            *sample_start_values.add(index) = 0.0;
+            *sample_last_outputs.add(index) = 0.0;
+            *sample_retrigger_outputs.add(index) = 0.0;
+            *sample_retrigger_fade_ages.add(index) = -1.0;
+            *sample_retrigger_fade_durations.add(index) = 0.0;
             *sample_playback_ages.add(index) = 0.0;
             *sample_release_ages.add(index) = -1.0;
             *core::ptr::addr_of_mut!(SAMPLE_STRETCH_PHASES)
@@ -1776,9 +2038,11 @@ pub extern "C" fn resetPhases() {
             *delay_ready.add(index) = false;
         }
     }
-    for index in 0..(MAX_VOICE_SLOTS * MAX_DELAY_SLOTS * MAX_DELAY_SAMPLES) {
+    for index in 0..(MAX_VOICE_SLOTS * MAX_DELAY_SLOTS) {
         unsafe {
-            *delay_buffers.add(index) = 0.0;
+            if let Some(buffer) = LINK_DELAY_BUFFERS[index].as_mut() {
+                buffer.fill(0.0);
+            }
         }
     }
     for index in 0..(MAX_VOICE_SLOTS * MAX_COMB_SLOTS) {
@@ -1787,9 +2051,11 @@ pub extern "C" fn resetPhases() {
             *comb_ready.add(index) = false;
         }
     }
-    for index in 0..(MAX_VOICE_SLOTS * MAX_COMB_SLOTS * MAX_DELAY_SAMPLES) {
+    for index in 0..(MAX_VOICE_SLOTS * MAX_COMB_SLOTS) {
         unsafe {
-            *comb_buffers.add(index) = 0.0;
+            if let Some(buffer) = LINK_COMB_BUFFERS[index].as_mut() {
+                buffer.fill(0.0);
+            }
         }
     }
     for index in 0..MAX_LINKS {
@@ -1827,12 +2093,16 @@ pub extern "C" fn resetVoiceSlot(voice_slot: u32) {
             CUSTOM_WAVE_DIRECTIONS[voice_slot][node_index] = 1.0;
             CUSTOM_WAVE_TRIGGERED[voice_slot][node_index] = false;
             SAMPLE_PLAYING[voice_slot][node_index] =
-                node_index < NODE_COUNT && NODES[node_index].wave == 10;
+                false;
             SAMPLE_POSITIONS[voice_slot][node_index] = 0.0;
             SAMPLE_DIRECTIONS[voice_slot][node_index] = 1.0;
             SAMPLE_PLAYBACK_AGES[voice_slot][node_index] = 0.0;
             SAMPLE_RELEASE_AGES[voice_slot][node_index] = -1.0;
             SAMPLE_START_VALUES[voice_slot][node_index] = 0.0;
+            SAMPLE_LAST_OUTPUTS[voice_slot][node_index] = 0.0;
+            SAMPLE_RETRIGGER_OUTPUTS[voice_slot][node_index] = 0.0;
+            SAMPLE_RETRIGGER_FADE_AGES[voice_slot][node_index] = -1.0;
+            SAMPLE_RETRIGGER_FADE_DURATIONS[voice_slot][node_index] = 0.0;
             SAMPLE_STRETCH_PHASES[voice_slot][node_index] = 0.0;
             SAMPLE_STRETCH_ANCHORS[voice_slot][node_index] = 0.0;
             if node_index < NODE_COUNT && NODES[node_index].wave == 10 {
@@ -1852,15 +2122,15 @@ pub extern "C" fn resetVoiceSlot(voice_slot: u32) {
         for slot_index in 0..MAX_DELAY_SLOTS {
             LINK_DELAY_INDICES[voice_slot][slot_index] = 0;
             LINK_DELAY_READY[voice_slot][slot_index] = false;
-            for sample_index in 0..MAX_DELAY_SAMPLES {
-                LINK_DELAY_BUFFERS[voice_slot][slot_index][sample_index] = 0.0;
+            if let Some(buffer) = LINK_DELAY_BUFFERS[voice_slot * MAX_DELAY_SLOTS + slot_index].as_mut() {
+                buffer.fill(0.0);
             }
         }
         for slot_index in 0..MAX_COMB_SLOTS {
             LINK_COMB_INDICES[voice_slot][slot_index] = 0;
             LINK_COMB_READY[voice_slot][slot_index] = false;
-            for sample_index in 0..MAX_DELAY_SAMPLES {
-                LINK_COMB_BUFFERS[voice_slot][slot_index][sample_index] = 0.0;
+            if let Some(buffer) = LINK_COMB_BUFFERS[voice_slot * MAX_COMB_SLOTS + slot_index].as_mut() {
+                buffer.fill(0.0);
             }
         }
     }
@@ -2175,6 +2445,19 @@ fn start_sample_player(
     end_mod: f64,
 ) {
     unsafe {
+        let was_playing = SAMPLE_PLAYING[voice_slot][node_index];
+        if was_playing {
+            SAMPLE_RETRIGGER_OUTPUTS[voice_slot][node_index] =
+                SAMPLE_LAST_OUTPUTS[voice_slot][node_index];
+            SAMPLE_RETRIGGER_FADE_AGES[voice_slot][node_index] = 0.0;
+            SAMPLE_RETRIGGER_FADE_DURATIONS[voice_slot][node_index] =
+                node.sample_attack.max(SAMPLE_EDGE_FADE_SECONDS);
+        } else {
+            SAMPLE_RETRIGGER_OUTPUTS[voice_slot][node_index] = 0.0;
+            SAMPLE_RETRIGGER_FADE_AGES[voice_slot][node_index] = -1.0;
+            SAMPLE_RETRIGGER_FADE_DURATIONS[voice_slot][node_index] = 0.0;
+            SAMPLE_LAST_OUTPUTS[voice_slot][node_index] = 0.0;
+        }
         let Some((start_frame, _, _, _, direction, _)) =
             sample_range(node_index, node, start_mod, end_mod)
         else {
@@ -2192,9 +2475,31 @@ fn start_sample_player(
         SAMPLE_DIRECTIONS[voice_slot][node_index] = direction;
         SAMPLE_PLAYBACK_AGES[voice_slot][node_index] = 0.0;
         SAMPLE_RELEASE_AGES[voice_slot][node_index] = -1.0;
-        SAMPLE_START_VALUES[voice_slot][node_index] = SAMPLE_DATA[slot][start_index] as f64;
+        let Some(sample_data) = SAMPLE_DATA[slot].as_ref() else {
+            SAMPLE_PLAYING[voice_slot][node_index] = false;
+            return;
+        };
+        SAMPLE_START_VALUES[voice_slot][node_index] =
+            sample_data.get(start_index).copied().unwrap_or(0.0) as f64;
         SAMPLE_STRETCH_PHASES[voice_slot][node_index] = 0.0;
         SAMPLE_STRETCH_ANCHORS[voice_slot][node_index] = start_frame;
+    }
+}
+
+fn advance_sample_retrigger_fade(node_index: usize, voice_slot: usize, sample_rate: f64) {
+    unsafe {
+        let age = SAMPLE_RETRIGGER_FADE_AGES[voice_slot][node_index];
+        if age < 0.0 {
+            return;
+        }
+        let duration = SAMPLE_RETRIGGER_FADE_DURATIONS[voice_slot][node_index]
+            .max(SAMPLE_EDGE_FADE_SECONDS);
+        let next_age = age + 1.0 / sample_rate.max(1.0);
+        SAMPLE_RETRIGGER_FADE_AGES[voice_slot][node_index] = if next_age >= duration {
+            -1.0
+        } else {
+            next_age
+        };
     }
 }
 
@@ -2295,6 +2600,10 @@ fn sample_value(
             SAMPLE_PLAYING[voice_slot][node_index] = false;
             return 0.0;
         };
+        let Some(sample_data) = SAMPLE_DATA[slot].as_ref() else {
+            SAMPLE_PLAYING[voice_slot][node_index] = false;
+            return 0.0;
+        };
         let Some((start_frame, end_frame, first_frame, last_frame, direction, length)) =
             sample_range(node_index, node, start_mod, end_mod)
         else {
@@ -2374,8 +2683,8 @@ fn sample_value(
                 .min(SAMPLE_LENGTHS[slot].saturating_sub(1))
                 .min(read_last_frame as usize);
             let frac = read_position - lower as f64;
-            let a = SAMPLE_DATA[slot][lower] as f64;
-            let b = SAMPLE_DATA[slot][upper] as f64;
+            let a = sample_data[lower] as f64;
+            let b = sample_data[upper] as f64;
             a + (b - a) * frac
         };
         let blended = if mix > 0.0 {
@@ -2406,7 +2715,19 @@ fn sample_value(
         } else {
             1.0
         };
-        sanitize_sample((blended - correction) * edge * attack * release, 4.0)
+        let restarted = sanitize_sample((blended - correction) * edge * attack * release, 4.0);
+        let fade_age = SAMPLE_RETRIGGER_FADE_AGES[voice_slot][node_index];
+        let output = if fade_age >= 0.0 {
+            let duration = SAMPLE_RETRIGGER_FADE_DURATIONS[voice_slot][node_index]
+                .max(SAMPLE_EDGE_FADE_SECONDS);
+            let fade = smooth_step(fade_age / duration);
+            SAMPLE_RETRIGGER_OUTPUTS[voice_slot][node_index] * (1.0 - fade) + restarted * fade
+        } else {
+            restarted
+        };
+        let output = sanitize_sample(output, 4.0);
+        SAMPLE_LAST_OUTPUTS[voice_slot][node_index] = output;
+        output
     }
 }
 
@@ -2969,15 +3290,27 @@ fn comb_slot_for_link(link_index: usize) -> Option<usize> {
             return None;
         }
         let existing = LINK_COMB_SLOTS[link_index];
-        if existing >= 0 {
-            return Some(existing as usize);
+        (existing >= 0).then_some(existing as usize)
+    }
+}
+
+fn prepare_comb_slot_for_link(link_index: usize) -> Option<usize> {
+    unsafe {
+        if let Some(slot) = comb_slot_for_link(link_index) {
+            return Some(slot);
         }
-        if LINK_COMB_SLOT_COUNT >= MAX_COMB_SLOTS {
+        if link_index >= MAX_LINKS || LINK_COMB_SLOT_COUNT >= MAX_COMB_SLOTS {
             return None;
         }
         let slot = LINK_COMB_SLOT_COUNT;
         LINK_COMB_SLOT_COUNT += 1;
         LINK_COMB_SLOTS[link_index] = slot as i32;
+        for voice_slot in 0..MAX_VOICE_SLOTS {
+            let buffer_index = voice_slot * MAX_COMB_SLOTS + slot;
+            if LINK_COMB_BUFFERS[buffer_index].is_none() {
+                LINK_COMB_BUFFERS[buffer_index] = Some(zeroed_f32_buffer(MAX_DELAY_SAMPLES));
+            }
+        }
         Some(slot)
     }
 }
@@ -3001,19 +3334,19 @@ fn apply_comb_filter(
     let feedback = link.filter_resonance.clamp(-0.98, 0.98);
 
     unsafe {
+        let buffer_index = voice_slot * MAX_COMB_SLOTS + slot;
+        let Some(buffer) = LINK_COMB_BUFFERS[buffer_index].as_mut() else {
+            return clean_sample;
+        };
         if !LINK_COMB_READY[voice_slot][slot] {
-            LINK_COMB_BUFFERS[voice_slot][slot].fill(0.0);
+            buffer.fill(0.0);
             LINK_COMB_INDICES[voice_slot][slot] = 0;
             LINK_COMB_READY[voice_slot][slot] = true;
         }
         let write_index = LINK_COMB_INDICES[voice_slot][slot];
-        let delayed = read_delay(
-            &LINK_COMB_BUFFERS[voice_slot][slot],
-            write_index,
-            delay_samples,
-        );
+        let delayed = read_delay(buffer, write_index, delay_samples);
         let write_value = sanitize_sample(clean_sample + delayed * feedback, 4.0);
-        LINK_COMB_BUFFERS[voice_slot][slot][write_index] = write_value as f32;
+        buffer[write_index] = write_value as f32;
         LINK_COMB_INDICES[voice_slot][slot] = (write_index + 1) % MAX_DELAY_SAMPLES;
         if link.filter_type == 6 {
             sanitize_sample(clean_sample - delayed * feedback.abs().max(0.45), 4.0)
@@ -3080,21 +3413,33 @@ fn delay_slot_for_link(link_index: usize) -> Option<usize> {
             return None;
         }
         let existing = LINK_DELAY_SLOTS[link_index];
-        if existing >= 0 {
-            return Some(existing as usize);
+        (existing >= 0).then_some(existing as usize)
+    }
+}
+
+fn prepare_delay_slot_for_link(link_index: usize) -> Option<usize> {
+    unsafe {
+        if let Some(slot) = delay_slot_for_link(link_index) {
+            return Some(slot);
         }
-        if LINK_DELAY_SLOT_COUNT >= MAX_DELAY_SLOTS {
+        if link_index >= MAX_LINKS || LINK_DELAY_SLOT_COUNT >= MAX_DELAY_SLOTS {
             return None;
         }
         let slot = LINK_DELAY_SLOT_COUNT;
         LINK_DELAY_SLOT_COUNT += 1;
         LINK_DELAY_SLOTS[link_index] = slot as i32;
+        for voice_slot in 0..MAX_VOICE_SLOTS {
+            let buffer_index = voice_slot * MAX_DELAY_SLOTS + slot;
+            if LINK_DELAY_BUFFERS[buffer_index].is_none() {
+                LINK_DELAY_BUFFERS[buffer_index] = Some(zeroed_f32_buffer(MAX_DELAY_SAMPLES));
+            }
+        }
         Some(slot)
     }
 }
 
-fn read_delay(buffer: &[f32; MAX_DELAY_SAMPLES], write_index: usize, delay_samples: f64) -> f64 {
-    let length = MAX_DELAY_SAMPLES as f64;
+fn read_delay(buffer: &[f32], write_index: usize, delay_samples: f64) -> f64 {
+    let length = buffer.len() as f64;
     let mut index = write_index as f64 - delay_samples;
     while index < 0.0 {
         index += length;
@@ -3125,18 +3470,18 @@ fn apply_link_delay(
     let delay_samples = (link.delay * sample_rate).clamp(1.0, max_delay_samples);
 
     unsafe {
+        let buffer_index = voice_slot * MAX_DELAY_SLOTS + slot;
+        let Some(buffer) = LINK_DELAY_BUFFERS[buffer_index].as_mut() else {
+            return clean_sample;
+        };
         if !LINK_DELAY_READY[voice_slot][slot] {
-            LINK_DELAY_BUFFERS[voice_slot][slot].fill(clean_sample as f32);
+            buffer.fill(clean_sample as f32);
             LINK_DELAY_INDICES[voice_slot][slot] = 0;
             LINK_DELAY_READY[voice_slot][slot] = true;
         }
         let write_index = LINK_DELAY_INDICES[voice_slot][slot];
-        let delayed = read_delay(
-            &LINK_DELAY_BUFFERS[voice_slot][slot],
-            write_index,
-            delay_samples,
-        );
-        LINK_DELAY_BUFFERS[voice_slot][slot][write_index] = clean_sample as f32;
+        let delayed = read_delay(buffer, write_index, delay_samples);
+        buffer[write_index] = clean_sample as f32;
         LINK_DELAY_INDICES[voice_slot][slot] = (write_index + 1) % MAX_DELAY_SAMPLES;
         sanitize_sample(delayed, 4.0)
     }
@@ -3803,6 +4148,7 @@ fn advance_phases(voice_slot: usize, sample_rate: f64, note_frequency: f64, rele
             }
             if node.wave == 10 {
                 if SAMPLE_PLAYING[voice_slot][node_index] {
+                    advance_sample_retrigger_fade(node_index, voice_slot, sample_rate);
                     let sample_step = sample_playback_step(
                         node_index,
                         node,
@@ -4047,7 +4393,7 @@ fn render_dsp_comb_filter(op: DspOp, sample_rate: f64) -> f64 {
         let index = DSP_EFFECT_INDICES[slot];
         let delayed = sanitize_sample(read_dsp_effect_delay(slot, index, delay_samples), 4.0);
 
-        DSP_EFFECT_BUFFERS[slot][index] = sanitize_sample(sample + delayed * feedback, 4.0) as f32;
+        write_dsp_effect_buffer(slot, index, sanitize_sample(sample + delayed * feedback, 4.0));
         DSP_EFFECT_INDICES[slot] = (index + 1) % MAX_DSP_DELAY_SAMPLES;
 
         if op.a == 6 {
@@ -4158,22 +4504,16 @@ fn dsp_buffer_slot(state: i32) -> Option<usize> {
         if existing >= 0 && (existing as usize) < MAX_DSP_BUFFER_SLOTS {
             return Some(existing as usize);
         }
-
-        for slot in 0..MAX_DSP_BUFFER_SLOTS {
-            if DSP_BUFFER_SLOT_STATES[slot] < 0 {
-                DSP_BUFFER_SLOT_STATES[slot] = state;
-                DSP_BUFFER_STATE_SLOTS[state_index] = slot as i32;
-                return Some(slot);
-            }
-        }
-
         None
     }
 }
 
 fn read_dsp_effect_delay(slot: usize, write_index: usize, delay_samples: f64) -> f64 {
     unsafe {
-        let length = MAX_DSP_DELAY_SAMPLES;
+        let Some(buffer) = DSP_EFFECT_BUFFERS[slot].as_ref() else {
+            return 0.0;
+        };
+        let length = buffer.len();
         let delay_samples = delay_samples.clamp(1.0, (length - 1) as f64);
         let mut index = write_index as f64 - delay_samples;
         while index < 0.0 {
@@ -4182,29 +4522,41 @@ fn read_dsp_effect_delay(slot: usize, write_index: usize, delay_samples: f64) ->
         let index_a = index.floor() as usize % length;
         let index_b = (index_a + 1) % length;
         let fraction = index - index.floor();
-        DSP_EFFECT_BUFFERS[slot][index_a] as f64 * (1.0 - fraction)
-            + DSP_EFFECT_BUFFERS[slot][index_b] as f64 * fraction
+        buffer[index_a] as f64 * (1.0 - fraction) + buffer[index_b] as f64 * fraction
+    }
+}
+
+fn write_dsp_effect_buffer(slot: usize, index: usize, sample: f64) {
+    unsafe {
+        if let Some(buffer) = DSP_EFFECT_BUFFERS[slot].as_mut() {
+            buffer[index] = sample as f32;
+        }
     }
 }
 
 fn read_dsp_buffer(slot: usize, length: usize, head: f64) -> f64 {
     unsafe {
+        let Some(buffer) = DSP_BUFFER_BUFFERS[slot].as_ref() else {
+            return 0.0;
+        };
         let length = length.clamp(2, MAX_DSP_BUFFER_SAMPLES);
         let position = normalize_phase(head) * length as f64;
         let index_a = position.floor() as usize % length;
         let index_b = (index_a + 1) % length;
         let fraction = position - position.floor();
-        DSP_BUFFER_BUFFERS[slot][index_a] as f64 * (1.0 - fraction)
-            + DSP_BUFFER_BUFFERS[slot][index_b] as f64 * fraction
+        buffer[index_a] as f64 * (1.0 - fraction) + buffer[index_b] as f64 * fraction
     }
 }
 
 fn write_dsp_buffer(slot: usize, length: usize, head: f64, sample: f64) {
     unsafe {
+        let Some(buffer) = DSP_BUFFER_BUFFERS[slot].as_mut() else {
+            return;
+        };
         let length = length.clamp(2, MAX_DSP_BUFFER_SAMPLES);
         let position = normalize_phase(head) * length as f64;
         let index = position.floor() as usize % length;
-        DSP_BUFFER_BUFFERS[slot][index] = sanitize_sample(sample, 8.0) as f32;
+        buffer[index] = sanitize_sample(sample, 8.0) as f32;
     }
 }
 
@@ -4263,7 +4615,7 @@ fn render_dsp_delay(op: DspOp, sample_rate: f64) -> f64 {
             read_dsp_effect_delay(slot, index, time * sample_rate.max(1.0)),
             8.0,
         );
-        DSP_EFFECT_BUFFERS[slot][index] = sanitize_sample(sample + delayed * feedback, 8.0) as f32;
+        write_dsp_effect_buffer(slot, index, sanitize_sample(sample + delayed * feedback, 8.0));
         DSP_EFFECT_INDICES[slot] = (index + 1) % MAX_DSP_DELAY_SAMPLES;
         sanitize_sample(sample * (1.0 - mix) + delayed * mix, 8.0)
     }
@@ -4288,7 +4640,7 @@ fn render_dsp_chorus(op: DspOp, sample_rate: f64) -> f64 {
         let lfo = 0.5 + 0.5 * phase.sin();
         let delay_samples = (0.012 + depth * lfo) * sample_rate.max(1.0);
         let delayed = sanitize_sample(read_dsp_effect_delay(slot, index, delay_samples), 8.0);
-        DSP_EFFECT_BUFFERS[slot][index] = sample as f32;
+        write_dsp_effect_buffer(slot, index, sample);
         DSP_EFFECT_INDICES[slot] = (index + 1) % MAX_DSP_DELAY_SAMPLES;
         if phase_index < MAX_DSP_STATE {
             DSP_STATE[phase_index] = (phase + (TWO_PI * rate) / sample_rate.max(1.0)) % TWO_PI;
@@ -4313,7 +4665,7 @@ fn render_dsp_reverb(op: DspOp, sample_rate: f64) -> f64 {
             + read_dsp_effect_delay(slot, index, 0.041 * scale * sample_rate.max(1.0))
             + read_dsp_effect_delay(slot, index, 0.053 * scale * sample_rate.max(1.0)))
             * 0.25;
-        DSP_EFFECT_BUFFERS[slot][index] = sanitize_sample(sample + wet * decay, 8.0) as f32;
+        write_dsp_effect_buffer(slot, index, sanitize_sample(sample + wet * decay, 8.0));
         DSP_EFFECT_INDICES[slot] = (index + 1) % MAX_DSP_DELAY_SAMPLES;
         sanitize_sample(sample * (1.0 - mix) + wet * mix, 8.0)
     }
@@ -4488,6 +4840,51 @@ fn render_dsp_follower(op: DspOp, sample_rate: f64) -> f64 {
     }
 }
 
+fn render_dsp_compressor(op: DspOp, sample_rate: f64) -> f64 {
+    let sample = sanitize_sample(dsp_reg(op.a), 32.0);
+    if op.state < 0 || op.state as usize >= MAX_DSP_STATE {
+        return sample;
+    }
+
+    unsafe {
+        let state_index = op.state as usize;
+        let detector = sample.abs();
+        let current = DSP_STATE[state_index].max(0.0);
+        let attack = dsp_reg(op.d).clamp(0.0, 1.0);
+        let release = dsp_reg(op.e).clamp(0.0, 3.0);
+        let coefficient = if detector > current {
+            envelope_coefficient(attack, sample_rate)
+        } else {
+            envelope_coefficient(release, sample_rate)
+        };
+        let envelope = current + (detector - current) * coefficient;
+        DSP_STATE[state_index] = sanitize_control_value(envelope).max(0.0);
+
+        let threshold = dsp_reg(op.b).clamp(-80.0, 0.0);
+        let ratio = dsp_reg(op.c).clamp(1.0, 20.0);
+        let packed = op.value.round() as i32;
+        let knee_register = packed.rem_euclid(MAX_DSP_REGS as i32);
+        let makeup_register = packed.div_euclid(MAX_DSP_REGS as i32);
+        let knee = dsp_reg(knee_register).clamp(0.0, 40.0);
+        let makeup = dsp_reg(makeup_register).clamp(-24.0, 24.0);
+        let level_db = 20.0 * envelope.max(0.0000000001).log10();
+        let over = level_db - threshold;
+        let slope = 1.0 - 1.0 / ratio;
+        let reduction_db = if knee <= 0.0 {
+            over.max(0.0) * slope
+        } else if over <= -knee * 0.5 {
+            0.0
+        } else if over >= knee * 0.5 {
+            over * slope
+        } else {
+            let knee_position = over + knee * 0.5;
+            slope * knee_position * knee_position / (2.0 * knee)
+        };
+        let gain = 10.0_f64.powf((makeup - reduction_db) / 20.0);
+        sanitize_sample(sample * gain, 32.0)
+    }
+}
+
 fn render_dsp_distortion(op: DspOp) -> f64 {
     let distortion_type = dsp_reg(op.c).round() as i32;
     if distortion_type <= 0 {
@@ -4550,14 +4947,15 @@ fn render_dsp_sample_param(op: DspOp) {
 fn advance_dsp_sample_player(
     node_index: usize,
     node: Node,
+    voice_slot: usize,
     target_frequency: f64,
     sample_rate: f64,
 ) {
     unsafe {
-        let voice_slot = DRONE_VOICE_SLOT;
         if !SAMPLE_PLAYING[voice_slot][node_index] {
             return;
         }
+        advance_sample_retrigger_fade(node_index, voice_slot, sample_rate);
         let sample_step = sample_playback_step(
             node_index,
             node,
@@ -4605,6 +5003,63 @@ fn advance_dsp_sample_player(
     }
 }
 
+fn dsp_sample_voice_count(value: f64) -> usize {
+    if !value.is_finite() {
+        return 1;
+    }
+    (value.round() as i32).clamp(1, MAX_DSP_SAMPLE_PLAYER_VOICES as i32) as usize
+}
+
+fn select_dsp_sample_voice(node_index: usize, voice_count: usize) -> usize {
+    unsafe {
+        for voice in 0..voice_count {
+            let voice_slot = DSP_SAMPLE_VOICE_SLOT_START + voice;
+            if !SAMPLE_PLAYING[voice_slot][node_index] {
+                return voice_slot;
+            }
+        }
+
+        // With all voices active, steal the oldest voice. start_sample_player
+        // crossfades its last output into the replacement to keep this musical.
+        let mut selected_voice = DSP_SAMPLE_VOICE_SLOT_START;
+        let mut longest_age = f64::NEG_INFINITY;
+        for voice in 0..voice_count {
+            let voice_slot = DSP_SAMPLE_VOICE_SLOT_START + voice;
+            let age = SAMPLE_PLAYBACK_AGES[voice_slot][node_index];
+            if age > longest_age {
+                longest_age = age;
+                selected_voice = voice_slot;
+            }
+        }
+        selected_voice
+    }
+}
+
+fn snapshot_dsp_sample_voice(
+    sample_index: usize,
+    node_index: usize,
+    voice_slot: usize,
+    node: Node,
+    frequency: f64,
+    level: f64,
+) {
+    if sample_index >= MAX_DSP_SAMPLE_NODES || voice_slot < DSP_SAMPLE_VOICE_SLOT_START {
+        return;
+    }
+    let voice = voice_slot - DSP_SAMPLE_VOICE_SLOT_START;
+    if voice >= MAX_DSP_SAMPLE_PLAYER_VOICES {
+        return;
+    }
+    unsafe {
+        DSP_SAMPLE_VOICE_SETTINGS[sample_index][voice] = DspSampleVoiceSettings {
+            node,
+            frequency: if frequency.is_finite() { frequency.max(0.0001) } else { 220.0 },
+            level: if level.is_finite() { level } else { 0.0 },
+        };
+    }
+    start_sample_player(node_index, voice_slot, node, 0.0, 0.0);
+}
+
 fn render_dsp_sample(op: DspOp, sample_rate: f64) -> f64 {
     let Some(node_index) = dsp_sample_node_index(op.a) else {
         return 0.0;
@@ -4614,10 +5069,11 @@ fn render_dsp_sample(op: DspOp, sample_rate: f64) -> f64 {
             return 0.0;
         }
 
-        let voice_slot = DRONE_VOICE_SLOT;
+        let sample_index = op.a as usize;
         let trigger = dsp_reg(op.c) >= ENVELOPE_TRIGGER_THRESHOLD;
         let previous_trigger = DSP_STATE[op.state as usize] >= ENVELOPE_TRIGGER_THRESHOLD;
         let node = NODES[node_index];
+        let voice_count = dsp_sample_voice_count(dsp_reg(op.d));
         let has_sample = sample_slot_for_node(node_index).is_some();
 
         if !has_sample {
@@ -4626,13 +5082,49 @@ fn render_dsp_sample(op: DspOp, sample_rate: f64) -> f64 {
         }
 
         if trigger && !previous_trigger {
-            start_sample_player(node_index, voice_slot, node, 0.0, 0.0);
+            let voice_slot = select_dsp_sample_voice(node_index, voice_count);
+            // Older compiled programs applied level in a separate multiply and
+            // therefore have no Sample-op level register. Keep those graphs
+            // audible while newer programs snapshot the level per voice.
+            let level = if op.e >= 0 { dsp_reg(op.e) } else { 1.0 };
+            snapshot_dsp_sample_voice(
+                sample_index,
+                node_index,
+                voice_slot,
+                node,
+                dsp_reg(op.b),
+                level,
+            );
         }
         DSP_STATE[op.state as usize] = if trigger { 1.0 } else { 0.0 };
 
-        let value = sample_value(node_index, node, voice_slot, sample_rate, 0.0, 0.0, 0.0);
-        advance_dsp_sample_player(node_index, node, dsp_reg(op.b), sample_rate);
-        sanitize_sample(value, 4.0)
+        let mut output = 0.0;
+        // Existing voices are allowed to finish if the voices input is reduced;
+        // the current limit only controls allocation of new triggers.
+        for voice in 0..MAX_DSP_SAMPLE_PLAYER_VOICES {
+            let voice_slot = DSP_SAMPLE_VOICE_SLOT_START + voice;
+            if !SAMPLE_PLAYING[voice_slot][node_index] {
+                continue;
+            }
+            let voice_settings = DSP_SAMPLE_VOICE_SETTINGS[sample_index][voice];
+            output += sample_value(
+                node_index,
+                voice_settings.node,
+                voice_slot,
+                sample_rate,
+                0.0,
+                0.0,
+                0.0,
+            ) * voice_settings.level;
+            advance_dsp_sample_player(
+                node_index,
+                voice_settings.node,
+                voice_slot,
+                voice_settings.frequency,
+                sample_rate,
+            );
+        }
+        sanitize_sample(output, 4.0)
     }
 }
 
@@ -4648,6 +5140,9 @@ fn render_dsp_image(op: DspOp) -> f64 {
         if width == 0 || height == 0 {
             return 0.0;
         }
+        let Some(image_data) = IMAGE_DATA[slot].as_ref() else {
+            return 0.0;
+        };
         let x = ((dsp_reg(op.a).clamp(-1.0, 1.0) + 1.0) * 0.5)
             * (width.saturating_sub(1) as f64);
         let y = ((dsp_reg(op.b).clamp(-1.0, 1.0) + 1.0) * 0.5)
@@ -4658,28 +5153,46 @@ fn render_dsp_image(op: DspOp) -> f64 {
         let y1 = (y0 + 1).min(height - 1);
         let tx = x - x0 as f64;
         let ty = y - y0 as f64;
-        let channel = match op.c {
-            1 => 0,
-            2 => 1,
-            3 => 2,
-            _ => 3,
-        };
         let pixel = |pixel_x: usize, pixel_y: usize, component: usize| -> f64 {
             let index = (pixel_y * width + pixel_x) * 4 + component;
-            IMAGE_DATA[slot][index] as f64 / 255.0
+            image_data.get(index).copied().unwrap_or(0) as f64 / 255.0
         };
         let sample_component = |component: usize| {
             let top = pixel(x0, y0, component) + (pixel(x1, y0, component) - pixel(x0, y0, component)) * tx;
             let bottom = pixel(x0, y1, component) + (pixel(x1, y1, component) - pixel(x0, y1, component)) * tx;
             top + (bottom - top) * ty
         };
-        if op.c == 0 {
-            let red = sample_component(0);
-            let green = sample_component(1);
-            let blue = sample_component(2);
-            0.2126 * red + 0.7152 * green + 0.0722 * blue
-        } else {
-            sample_component(channel)
+        let red = sample_component(0);
+        let green = sample_component(1);
+        let blue = sample_component(2);
+        match op.c {
+            0 => 0.2126 * red + 0.7152 * green + 0.0722 * blue,
+            1 => red,
+            2 => green,
+            3 => blue,
+            4 => {
+                let max = red.max(green).max(blue);
+                let min = red.min(green).min(blue);
+                let delta = max - min;
+                if delta <= f64::EPSILON {
+                    0.0
+                } else {
+                    let hue = if max == red {
+                        ((green - blue) / delta).rem_euclid(6.0)
+                    } else if max == green {
+                        (blue - red) / delta + 2.0
+                    } else {
+                        (red - green) / delta + 4.0
+                    };
+                    hue / 6.0
+                }
+            }
+            5 => {
+                let max = red.max(green).max(blue);
+                let min = red.min(green).min(blue);
+                if max <= f64::EPSILON { 0.0 } else { (max - min) / max }
+            }
+            _ => 0.0,
         }
     }
 }
@@ -4920,6 +5433,29 @@ fn render_dsp_tempo(op: DspOp, frame: usize, sample_rate: f64) -> f64 {
     }
 }
 
+fn advance_accumulator(value: f64, increment: f64, low: f64, high: f64) -> f64 {
+    if high <= low {
+        return low;
+    }
+
+    let next = value + increment;
+    if next > high {
+        low
+    } else if next < low {
+        high
+    } else {
+        next
+    }
+}
+
+fn accumulator_should_advance(
+    continuous: bool,
+    trigger: bool,
+    previous_trigger: bool,
+) -> bool {
+    continuous || (trigger && !previous_trigger)
+}
+
 fn render_dsp_accumulator(op: DspOp) -> f64 {
     unsafe {
         if op.state < 0 || (op.state as usize + 2) >= MAX_DSP_STATE {
@@ -4933,9 +5469,10 @@ fn render_dsp_accumulator(op: DspOp) -> f64 {
         let previous_reset = DSP_STATE[state_index + 2] >= ENVELOPE_TRIGGER_THRESHOLD;
         let min = dsp_reg(op.b);
         let max = dsp_reg(op.c);
+        let increment = dsp_reg(op.d);
+        let continuous = op.value >= 0.5;
         let low = min.min(max);
         let high = min.max(max);
-        let span = (high - low).max(0.0);
         let mut value = DSP_STATE[state_index].clamp(low, high);
 
         if !DSP_STATE[state_index].is_finite() || (value == 0.0 && low > 0.0) {
@@ -4944,11 +5481,8 @@ fn render_dsp_accumulator(op: DspOp) -> f64 {
 
         if reset && !previous_reset {
             value = low;
-        } else if trigger && !previous_trigger {
-            value += 1.0;
-            if span <= 0.0 || value > high {
-                value = low;
-            }
+        } else if accumulator_should_advance(continuous, trigger, previous_trigger) {
+            value = advance_accumulator(value, increment, low, high);
         }
 
         DSP_STATE[state_index] = sanitize_control_value(value);
@@ -4958,9 +5492,35 @@ fn render_dsp_accumulator(op: DspOp) -> f64 {
     }
 }
 
+#[cfg(test)]
+mod accumulator_tests {
+    use super::{accumulator_should_advance, advance_accumulator};
+
+    #[test]
+    fn trigger_mode_advances_only_on_a_rising_edge() {
+        assert!(accumulator_should_advance(false, true, false));
+        assert!(!accumulator_should_advance(false, true, true));
+        assert!(!accumulator_should_advance(false, false, false));
+    }
+
+    #[test]
+    fn continuous_mode_advances_without_a_trigger() {
+        assert!(accumulator_should_advance(true, false, false));
+        assert!(accumulator_should_advance(true, true, true));
+    }
+
+    #[test]
+    fn floating_point_increments_and_range_wrapping_are_supported() {
+        assert_eq!(advance_accumulator(0.25, 0.125, 0.0, 1.0), 0.375);
+        assert_eq!(advance_accumulator(0.9, 0.2, 0.0, 1.0), 0.0);
+        assert_eq!(advance_accumulator(0.1, -0.2, 0.0, 1.0), 1.0);
+        assert_eq!(advance_accumulator(0.5, 1.0, 0.5, 0.5), 0.5);
+    }
+}
+
 fn render_dsp_sequencer(op: DspOp, frame: usize) -> f64 {
     unsafe {
-        if op.state < 0 || (op.state as usize + 5) >= MAX_DSP_STATE {
+        if op.state < 0 || (op.state as usize + 7) >= MAX_DSP_STATE {
             return 0.0;
         }
 
@@ -4984,9 +5544,17 @@ fn render_dsp_sequencer(op: DspOp, frame: usize) -> f64 {
             }
             if reset_pulse {
                 pulse_count = 0;
+                DSP_STATE[state_index + 6] = 0.0;
             }
             if pulse {
+                let elapsed_frames = DSP_STATE[state_index + 6];
+                if pulse_count > 0 && elapsed_frames >= 1.0 {
+                    DSP_STATE[state_index + 7] = elapsed_frames;
+                }
+                DSP_STATE[state_index + 6] = 0.0;
                 pulse_count += 1;
+            } else if pulse_count > 0 {
+                DSP_STATE[state_index + 6] += 1.0;
             }
             let initialized = pulse_count > 0;
             let step = if initialized {
@@ -5004,8 +5572,42 @@ fn render_dsp_sequencer(op: DspOp, frame: usize) -> f64 {
         }
 
         let step = DSP_STATE[state_index].round() as i32;
-        if row < 0 && DSP_STATE[state_index + 4] >= 1.0 {
-            return step.max(0) as f64;
+        let interval_frames = DSP_STATE[state_index + 7];
+        let fractional_step = if interval_frames >= 1.0 {
+            (DSP_STATE[state_index + 6] / interval_frames).clamp(0.0, 0.999_999)
+        } else {
+            0.0
+        };
+        let position = step.max(0) as f64 + fractional_step;
+        if row == -1 && DSP_STATE[state_index + 4] >= 1.0 {
+            return if op.value >= 0.5 { position } else { step.max(0) as f64 };
+        }
+
+        if row == -2 {
+            if DSP_STATE[state_index + 4] < 1.0 {
+                return 0.0;
+            }
+            return if position >= op.value && position < op.value2 { 1.0 } else { 0.0 };
+        }
+
+        if row == -3 {
+            if DSP_STATE[state_index + 4] < 1.0 {
+                return 0.0;
+            }
+            let target = op.value.clamp(0.0, steps as f64 - 0.000_001);
+            if step != target.floor() as i32 {
+                return 0.0;
+            }
+            let previous_position = if DSP_STATE[state_index + 2] >= 0.5 {
+                step as f64 - 0.000_001
+            } else if interval_frames >= 1.0 && DSP_STATE[state_index + 6] >= 1.0 {
+                step.max(0) as f64
+                    + ((DSP_STATE[state_index + 6] - 1.0) / interval_frames)
+                        .clamp(0.0, 0.999_999)
+            } else {
+                position
+            };
+            return if previous_position < target && position >= target { 1.0 } else { 0.0 };
         }
 
         if row >= rows {
@@ -5167,7 +5769,14 @@ fn render_dsp_op(
 ) {
     let _ = op.value;
     match op.opcode {
-        DSP_OP_VALUE => set_dsp_reg(op.out, dsp_value(op.a)),
+        DSP_OP_VALUE => {
+            let value = if op.value >= DSP_VALUE_MODE_IMMEDIATE {
+                dsp_value_target(op.a)
+            } else {
+                dsp_value(op.a)
+            };
+            set_dsp_reg(op.out, value);
+        }
         DSP_OP_ADD => set_dsp_reg(op.out, dsp_reg(op.a) + dsp_reg(op.b)),
         DSP_OP_MUL => set_dsp_reg(op.out, dsp_reg(op.a) * dsp_reg(op.b)),
         DSP_OP_SUB => set_dsp_reg(op.out, dsp_reg(op.a) - dsp_reg(op.b)),
@@ -5433,6 +6042,7 @@ fn render_dsp_op(
         DSP_OP_SLEW => set_dsp_reg(op.out, render_dsp_slew(op, sample_rate)),
         DSP_OP_PLAYHEAD => set_dsp_reg(op.out, render_dsp_playhead(op, sample_rate)),
         DSP_OP_TIME => set_dsp_reg(op.out, render_dsp_time(op, sample_rate)),
+        DSP_OP_COMPRESS => set_dsp_reg(op.out, render_dsp_compressor(op, sample_rate)),
         DSP_OP_BUFFER => set_dsp_reg(op.out, render_dsp_buffer(op, sample_rate)),
         DSP_OP_IMAGE => set_dsp_reg(op.out, render_dsp_image(op)),
         _ => {}

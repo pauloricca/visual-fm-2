@@ -7,14 +7,14 @@ services:
     environment:
       CHOKIDAR_USEPOLLING: "true"
       WATCHPACK_POLLING: "true"
-      VISUAL_VISUAL_HTTPS_KEY: "${VISUAL_VISUAL_HTTPS_KEY:-}"
-      VISUAL_VISUAL_HTTPS_CERT: "${VISUAL_VISUAL_HTTPS_CERT:-}"
+      VISUAL_VISUAL_HTTPS_KEY: "${VISUAL_VISUAL_HTTPS_KEY:-/app/.cert/visual-visual.key}"
+      VISUAL_VISUAL_HTTPS_CERT: "${VISUAL_VISUAL_HTTPS_CERT:-/app/.cert/visual-visual.crt}"
       VITE_VISUAL_VISUAL_PATCH_STORAGE: "${VITE_VISUAL_VISUAL_PATCH_STORAGE:-local}"
       VITE_VISUAL_FM_THEME: "${VITE_VISUAL_FM_THEME:-}"
     volumes:
       - .:/app
       - node_modules:/app/node_modules
-    command: npm run dev
+    command: npm start
 
 volumes:
   node_modules:

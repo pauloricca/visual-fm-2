@@ -11,16 +11,9 @@ export interface ScopeNodeSize {
 }
 
 export const DEFAULT_SCOPE_NODE_SIZE: ScopeNodeSize = { width: 224, height: 48 };
-export const MIN_SCOPE_NODE_SIZE: ScopeNodeSize = { width: 160, height: 48 };
-export const MAX_SCOPE_NODE_SIZE: ScopeNodeSize = { width: 720, height: 360 };
-export const MIN_CONTROL_NODE_SIZE: ScopeNodeSize = { width: 72, height: 24 };
+export const DEFAULT_KEYS_NODE_SIZE: ScopeNodeSize = { width: 372, height: 120 };
 export const DEFAULT_CUSTOM_WAVE_NODE_SIZE: ScopeNodeSize = { width: 372, height: 128 };
-export const MIN_CUSTOM_WAVE_NODE_SIZE: ScopeNodeSize = { width: 220, height: 96 };
-export const MAX_CUSTOM_WAVE_NODE_SIZE: ScopeNodeSize = { width: 720, height: 360 };
 export const DEFAULT_IMAGE_ASPECT_RATIO = 16 / 9;
-export const MIN_IMAGE_NODE_WIDTH = 160;
-export const MAX_IMAGE_NODE_WIDTH = 720;
-export const MAX_IMAGE_NODE_HEIGHT = 720;
 
 export type EditorPatchNode = Omit<PatchNode, 'type'> & {
   type: NodeType | null;
@@ -51,13 +44,20 @@ export interface ShaderNodeData extends Record<string, unknown> {
   audioAccumulatorValue?: number;
   audioSelectorIndex?: number;
   audioSequencerStep?: number;
-  audioPlayhead?: number;
+  audioPlayheads?: number[];
+  audioSampleParams?: Partial<{
+    start: number;
+    end: number;
+    attack: number;
+    release: number;
+  }>;
   midiSliderValue?: number;
   midiButtonPressed?: number;
   audioInput?: AudioInputState;
   midiInput?: MidiInputState;
   dspErrors?: string[];
   onParamChange: (nodeId: string, port: string, value: number) => void;
+  onParamsChange: (nodeId: string, values: Record<string, number>) => void;
   onAudioInputDeviceChange?: (deviceId: string) => void;
   onAudioInputRefresh?: () => void;
   onMidiInputRefresh?: () => void;
@@ -152,6 +152,7 @@ export interface PersistedEditorState {
 type NodeCallbacks = Pick<
   ShaderNodeData,
   | 'onParamChange'
+  | 'onParamsChange'
   | 'onCustomWaveChange'
   | 'onTypeChange'
   | 'onTypeEditStart'
@@ -291,37 +292,36 @@ export function flowToEditorState(
 }
 
 export function clampScopeNodeSize(size: ScopeNodeSize): ScopeNodeSize {
-  return {
-    width: clampNumber(size.width, MIN_SCOPE_NODE_SIZE.width, MAX_SCOPE_NODE_SIZE.width),
-    height: clampNumber(size.height, MIN_SCOPE_NODE_SIZE.height, MAX_SCOPE_NODE_SIZE.height),
-  };
+  return normalizeNodeSize(size);
 }
 
 export function clampControlNodeSize(size: ScopeNodeSize): ScopeNodeSize {
-  return {
-    width: clampNumber(size.width, MIN_CONTROL_NODE_SIZE.width, MAX_SCOPE_NODE_SIZE.width),
-    height: clampNumber(size.height, MIN_CONTROL_NODE_SIZE.height, MAX_SCOPE_NODE_SIZE.height),
-  };
+  return normalizeNodeSize(size);
+}
+
+export function clampKeysNodeSize(size: ScopeNodeSize): ScopeNodeSize {
+  return normalizeNodeSize(size);
 }
 
 export function clampCustomWaveNodeSize(size: ScopeNodeSize): ScopeNodeSize {
-  return {
-    width: clampNumber(size.width, MIN_CUSTOM_WAVE_NODE_SIZE.width, MAX_CUSTOM_WAVE_NODE_SIZE.width),
-    height: clampNumber(size.height, MIN_CUSTOM_WAVE_NODE_SIZE.height, MAX_CUSTOM_WAVE_NODE_SIZE.height),
-  };
+  return normalizeNodeSize(size);
 }
 
 export function clampImageNodeSize(size: ScopeNodeSize, aspectRatio: number): ScopeNodeSize {
   const aspect = Number.isFinite(aspectRatio) && aspectRatio > 0 ? aspectRatio : DEFAULT_IMAGE_ASPECT_RATIO;
-  const minWidth = Math.max(MIN_IMAGE_NODE_WIDTH, 72 * aspect);
-  const maxWidth = Math.min(MAX_IMAGE_NODE_WIDTH, MAX_IMAGE_NODE_HEIGHT * aspect);
-  const width = clampNumber(size.width, minWidth, Math.max(minWidth, maxWidth));
-  return { width, height: Math.round(width / aspect) };
+  const width = normalizeNodeDimension(size.width);
+  return { width, height: normalizeNodeDimension(width / aspect) };
 }
 
-function clampNumber(value: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) return min;
-  return Math.min(max, Math.max(min, Math.round(value)));
+function normalizeNodeSize(size: ScopeNodeSize): ScopeNodeSize {
+  return {
+    width: normalizeNodeDimension(size.width),
+    height: normalizeNodeDimension(size.height),
+  };
+}
+
+function normalizeNodeDimension(value: number): number {
+  return Number.isFinite(value) ? Math.max(1, Math.round(value)) : 1;
 }
 
 export function patchFromFlow(nodes: ShaderFlowNode[], edges: ShaderFlowEdge[]): Patch {

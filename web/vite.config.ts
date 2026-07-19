@@ -13,7 +13,7 @@ export default defineConfig({
     localSampleStoragePlugin(),
     localImageStoragePlugin(),
     localRecordingStoragePlugin(),
-    ...(process.env.VITE_VISUAL_VISUAL_PATCH_STORAGE === 'browser' ? [] : [localPatchStoragePlugin()]),
+    ...(patchStorageMode() === 'browser' ? [] : [localPatchStoragePlugin()]),
   ],
   server: {
     https: viteHttpsConfig(),
@@ -24,6 +24,11 @@ export default defineConfig({
     headers: crossOriginIsolationHeaders(),
   },
 });
+
+function patchStorageMode() {
+  return process.env.VITE_VISUAL_VISUAL_PATCH_STORAGE
+    ?? process.env.VITE_VISUAL_FM_PATCH_STORAGE;
+}
 
 function localDiagnosticsPlugin(): Plugin {
   const diagnosticsDir = resolve(dirname(fileURLToPath(import.meta.url)), 'diagnostics');
@@ -427,6 +432,9 @@ function localPatchStoragePlugin(): Plugin {
   return {
     name: 'visual-visual-local-patch-storage',
     configureServer(server) {
+      server.middlewares.use(middleware);
+    },
+    configurePreviewServer(server) {
       server.middlewares.use(middleware);
     },
   };

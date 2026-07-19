@@ -2,6 +2,8 @@ import type { Patch, PatchLink, PatchNode } from './types';
 import { normalizeCustomWave } from './customWave';
 
 const GROUP_DEFAULT_NODE_PREFIX = '__group_default';
+const GROUP_INPUT_PASS_NODE_PREFIX = '__group_input_pass';
+const GROUP_OUTPUT_PASS_NODE_PREFIX = '__group_output_pass';
 
 export function expandGroups(patch: Patch): Patch {
   const expanded = expandGroupNodes(patch, '');
@@ -33,6 +35,8 @@ function expandGroupNodes(patch: Patch, prefix: string): Patch {
 
     nodes.push(...groupPatch.nodes.filter((candidate) => !boundaryNodeIds.has(candidate.id)));
     nodes.push(...defaultNodesForUnconnectedGroupInputs(node, prefixedGroupId, inputLinks, innerLinksByInput, insNodes));
+    nodes.push(...passNodesForGroupBoundary(node, prefixedGroupId, innerLinksByInput, insNodes, 'input'));
+    nodes.push(...passNodesForGroupBoundary(node, prefixedGroupId, innerLinksByOutput, outsNodes, 'output'));
     links.push(...groupPatch.links.filter((link) => (
       !boundaryNodeIds.has(link.from.node) &&
       !boundaryNodeIds.has(link.to.node)
@@ -42,38 +46,59 @@ function expandGroupNodes(patch: Patch, prefix: string): Patch {
       const externalLinks = inputLinks.filter((link) => link.to.port === port);
       if (externalLinks.length === 0) {
         const defaultNodeId = defaultNodeIdForGroupInput(prefixedGroupId, port);
-        links.push(...innerLinks.map((innerLink) => ({
+        links.push({
           from: { node: defaultNodeId, port: 'signal' },
+          to: { node: passNodeIdForGroupBoundary(prefixedGroupId, port, 'input'), port: 'signal' },
+          weight: 1,
+          mode: 'set',
+        });
+        links.push(...innerLinks.map((innerLink) => ({
+          from: { node: passNodeIdForGroupBoundary(prefixedGroupId, port, 'input'), port: 'signal' },
           to: innerLink.to,
+          weight: innerLink.weight,
+          mode: innerLink.mode,
+          enabled: innerLink.enabled,
         })));
         continue;
       }
 
       for (const externalLink of externalLinks) {
-        for (const innerLink of innerLinks) {
-          links.push({
-            from: prefixEndpoint(externalLink.from, prefix),
-            to: innerLink.to,
-            weight: externalLink.weight,
-            mode: externalLink.mode,
-            enabled: externalLink.enabled !== false && innerLink.enabled !== false,
-          });
-        }
+        links.push({
+          from: prefixEndpoint(externalLink.from, prefix),
+          to: { node: passNodeIdForGroupBoundary(prefixedGroupId, port, 'input'), port: 'signal' },
+          weight: externalLink.weight,
+          mode: externalLink.mode,
+          enabled: externalLink.enabled,
+        });
       }
+      links.push(...innerLinks.map((innerLink) => ({
+        from: { node: passNodeIdForGroupBoundary(prefixedGroupId, port, 'input'), port: 'signal' },
+        to: innerLink.to,
+        weight: innerLink.weight,
+        mode: innerLink.mode,
+        enabled: innerLink.enabled,
+      })));
     }
 
     for (const [port, innerLinks] of innerLinksByOutput) {
       const externalLinks = outputLinks.filter((link) => link.from.port === port);
       for (const innerLink of innerLinks) {
-        for (const externalLink of externalLinks) {
-          links.push({
-            from: innerLink.from,
-            to: prefixEndpoint(externalLink.to, prefix),
-            weight: externalLink.weight,
-            mode: externalLink.mode,
-            enabled: externalLink.enabled !== false && innerLink.enabled !== false,
-          });
-        }
+        links.push({
+          from: innerLink.from,
+          to: { node: passNodeIdForGroupBoundary(prefixedGroupId, port, 'output'), port: 'signal' },
+          weight: innerLink.weight,
+          mode: innerLink.mode,
+          enabled: innerLink.enabled,
+        });
+      }
+      for (const externalLink of externalLinks) {
+        links.push({
+          from: { node: passNodeIdForGroupBoundary(prefixedGroupId, port, 'output'), port: 'signal' },
+          to: prefixEndpoint(externalLink.to, prefix),
+          weight: externalLink.weight,
+          mode: externalLink.mode,
+          enabled: externalLink.enabled,
+        });
       }
     }
   }
@@ -93,6 +118,33 @@ function expandGroupNodes(patch: Patch, prefix: string): Patch {
   }
 
   return { nodes, links };
+}
+
+function passNodesForGroupBoundary(
+  groupNode: PatchNode,
+  prefixedGroupId: string,
+  innerLinksByPort: Map<string, PatchLink[]>,
+  boundaryNodes: PatchNode[],
+  side: 'input' | 'output',
+): PatchNode[] {
+  return [...innerLinksByPort.keys()].map((port) => ({
+    id: passNodeIdForGroupBoundary(prefixedGroupId, port, side),
+    type: 'Pass',
+    params: {
+      signal: side === 'input'
+        ? groupNode.params[port] ?? boundaryPortDefaultValue(boundaryNodes, port)
+        : boundaryPortDefaultValue(boundaryNodes, port),
+    },
+    position: groupNode.position,
+  }));
+}
+
+function boundaryPortDefaultValue(boundaryNodes: PatchNode[], port: string): number {
+  for (const node of boundaryNodes) {
+    const definition = [...(node.inputs ?? []), ...(node.outputs ?? [])].find((candidate) => candidate.name === port);
+    if (definition) return node.params[port] ?? definition.defaultValue ?? 0;
+  }
+  return 0;
 }
 
 function defaultNodesForUnconnectedGroupInputs(
@@ -196,6 +248,11 @@ function prefixEndpoint(endpoint: PatchLink['from'], prefix: string): PatchLink[
 
 function defaultNodeIdForGroupInput(groupId: string, port: string): string {
   return `${GROUP_DEFAULT_NODE_PREFIX}_${groupId}_${port}`.replace(/[^A-Za-z0-9_-]/g, '_');
+}
+
+function passNodeIdForGroupBoundary(groupId: string, port: string, side: 'input' | 'output'): string {
+  const prefix = side === 'input' ? GROUP_INPUT_PASS_NODE_PREFIX : GROUP_OUTPUT_PASS_NODE_PREFIX;
+  return `${prefix}_${groupId}_${port}`.replace(/[^A-Za-z0-9_-]/g, '_');
 }
 
 function dedupePatchLinks(links: PatchLink[]): PatchLink[] {

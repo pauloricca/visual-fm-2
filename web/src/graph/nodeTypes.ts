@@ -58,12 +58,17 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     type: 'PerlinNoise',
     inputs: [
       { name: 'speed', defaultValue: 8 },
+      { name: 'rangeMin', defaultValue: -1 },
+      { name: 'rangeMax', defaultValue: 1 },
     ],
     outputs: [{ name: 'signal' }],
   },
   Noise: {
     type: 'Noise',
-    inputs: [],
+    inputs: [
+      { name: 'rangeMin', defaultValue: -1 },
+      { name: 'rangeMax', defaultValue: 1 },
+    ],
     outputs: [{ name: 'signal' }],
   },
   AudioInput: {
@@ -91,6 +96,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
       { name: 'frequency', defaultValue: 220 },
       { name: 'originalFrequency', defaultValue: 440, min: 0.0001 },
       { name: 'trigger', defaultValue: 0 },
+      { name: 'voices', defaultValue: 1, min: 1, max: 16, integer: true },
       { name: 'start', defaultValue: 0, min: 0, max: 1 },
       { name: 'end', defaultValue: 1, min: 0, max: 1 },
       { name: 'attack', defaultValue: 0, min: 0, step: 0.001 },
@@ -114,6 +120,8 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
       { name: 'r' },
       { name: 'g' },
       { name: 'b' },
+      { name: 'hue' },
+      { name: 'saturation' },
     ],
   },
   Buffer: {
@@ -172,12 +180,24 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     ],
     outputs: [{ name: 'signal' }],
   },
+  Keys: {
+    type: 'Keys',
+    inputs: [
+      { name: 'size', defaultValue: 12, min: 1, max: 128, integer: true },
+      { name: 'startNote', defaultValue: 60, min: 0, max: 127, integer: true },
+    ],
+    outputs: [
+      { name: 'midi note' },
+      { name: 'frequency' },
+    ],
+  },
   Sequencer: {
     type: 'Sequencer',
     inputs: [
       { name: 'steps', defaultValue: SEQUENCER_DEFAULT_STEPS, min: SEQUENCER_MIN_STEPS, max: SEQUENCER_MAX_STEPS, integer: true },
       { name: 'rows', defaultValue: SEQUENCER_DEFAULT_ROWS, min: SEQUENCER_MIN_ROWS, max: SEQUENCER_MAX_ROWS, integer: true },
       { name: 'beatLength', defaultValue: SEQUENCER_DEFAULT_BEAT_LENGTH, min: SEQUENCER_MIN_BEAT_LENGTH, max: SEQUENCER_MAX_STEPS, integer: true, connectable: false },
+      { name: 'mode', defaultValue: 0, min: 0, max: 1, integer: true, connectable: false, valueEditor: false },
       { name: 'signal', defaultValue: 0, valueEditor: false },
       { name: 'reset', defaultValue: 0, valueEditor: false },
     ],
@@ -248,8 +268,10 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   Accumulator: {
     type: 'Accumulator',
     inputs: [
+      { name: 'mode', defaultValue: 0, min: 0, max: 1, integer: true, connectable: false, valueEditor: false },
       { name: 'trigger', defaultValue: 0 },
       { name: 'reset', defaultValue: 0, valueEditor: false },
+      { name: 'increment', defaultValue: 1 },
       { name: 'min', defaultValue: 0 },
       { name: 'max', defaultValue: 1 },
     ],
@@ -306,6 +328,14 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
       { name: 'right' },
     ],
   },
+  Compress: processor('Compress', [
+    { name: 'threshold', defaultValue: -24, min: -80, max: 0, step: 0.1 },
+    { name: 'ratio', defaultValue: 4, min: 1, max: 20, step: 0.1 },
+    { name: 'attack', defaultValue: 0.01, min: 0, max: 1, step: 0.001 },
+    { name: 'release', defaultValue: 0.1, min: 0, max: 3, step: 0.001 },
+    { name: 'knee', defaultValue: 6, min: 0, max: 40, step: 0.1 },
+    { name: 'makeup', defaultValue: 0, min: -24, max: 24, step: 0.1 },
+  ]),
   Envelope: processor('Envelope', [
     { name: 'trigger', valueEditor: false },
     { name: 'gate', valueEditor: false },
@@ -328,9 +358,11 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   ]),
   Meter: processor('Meter', [
     { name: 'range', defaultValue: 1, min: 0.001 },
+    { name: 'mode', defaultValue: 0, min: 0, max: 1, integer: true, connectable: false, valueEditor: false },
   ]),
   Scope: processor('Scope', [
     { name: 'range', defaultValue: 1, min: 0.001 },
+    { name: 'mode', defaultValue: 1, min: 0, max: 1, integer: true, connectable: false, valueEditor: false },
     { name: 'length', defaultValue: 0.08, min: 0.01, max: 30, step: 0.01, connectable: false },
   ]),
   LowpassFilter: filter('LowpassFilter'),
@@ -387,6 +419,7 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   Pass: 'Pass',
   Slider: 'Slider',
   Button: 'Button',
+  Keys: 'Keys',
   Sequencer: 'Sequencer',
   Tempo: 'Tempo',
   MidiNote: 'MIDI Note',
@@ -402,6 +435,7 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   Delay: 'Delay',
   Chorus: 'Chorus',
   Reverb: 'Reverb',
+  Compress: 'Compress',
   Envelope: 'Envelope',
   Follower: 'Follower',
   RingMod: 'Ring Mod',
@@ -459,6 +493,25 @@ export function getNodeDefinition(node: PatchNode): NodeDefinition {
     };
   }
 
+  if (node.type === 'Accumulator') {
+    const definition = getDefinition(node.type);
+    const inputs = [...(node.inputs ?? definition.inputs)];
+    for (const [name, precedingName] of [['increment', 'reset'], ['mode', 'increment']] as const) {
+      if (inputs.some((input) => input.name === name)) continue;
+      const input = definition.inputs.find((candidate) => candidate.name === name);
+      if (!input) continue;
+      const precedingIndex = inputs.findIndex((candidate) => candidate.name === precedingName);
+      inputs.splice(precedingIndex >= 0 ? precedingIndex + 1 : inputs.length, 0, input);
+    }
+    const modeIndex = inputs.findIndex((input) => input.name === 'mode');
+    if (modeIndex > 0) inputs.unshift(...inputs.splice(modeIndex, 1));
+    return {
+      ...definition,
+      inputs,
+      outputs: node.outputs ?? definition.outputs,
+    };
+  }
+
   if (node.type === 'Sequencer') {
     return {
       ...getDefinition(node.type),
@@ -497,10 +550,88 @@ export function sequencerCellParamName(rowIndex: number, stepIndex: number): str
   return `cell:${rowIndex}:${stepIndex}`;
 }
 
+export const SEQUENCER_GATE_MODE_PARAM = 'mode';
+export const SEQUENCER_GATE_INITIALIZED_PARAM = 'gate:initialized';
+
+export interface SequencerGate {
+  slot: number;
+  start: number;
+  end: number;
+}
+
+export interface SequencerTrigger {
+  slot: number;
+  position: number;
+}
+
+export function sequencerUsesGateMode(params: Record<string, number>): boolean {
+  return (params[SEQUENCER_GATE_MODE_PARAM] ?? params.gateMode ?? 0) >= 0.5;
+}
+
+export function sequencerGateParamName(
+  rowIndex: number,
+  slot: number,
+  field: 'active' | 'start' | 'end',
+): string {
+  return `gate:${field}:${rowIndex}:${slot}`;
+}
+
+export function sequencerTriggerPositionParamName(rowIndex: number, slot: number): string {
+  return `trigger:position:${rowIndex}:${slot}`;
+}
+
+export function sequencerTriggersForRow(
+  params: Record<string, number>,
+  rowIndex: number,
+  steps: number,
+): SequencerTrigger[] {
+  const triggers: SequencerTrigger[] = [];
+  for (let slot = 0; slot < steps; slot += 1) {
+    if ((params[sequencerCellParamName(rowIndex, slot)] ?? 0) < 0.5) continue;
+    const position = params[sequencerTriggerPositionParamName(rowIndex, slot)] ?? slot;
+    // Keep triggers stored outside the current pattern length so they return if
+    // the sequence grows again, but do not render or compile them while hidden.
+    if (position < 0 || position >= steps) continue;
+    triggers.push({
+      slot,
+      position,
+    });
+  }
+  return triggers;
+}
+
+export function sequencerGatesForRow(
+  params: Record<string, number>,
+  rowIndex: number,
+  steps: number,
+): SequencerGate[] {
+  if ((params[SEQUENCER_GATE_INITIALIZED_PARAM] ?? 0) < 0.5) {
+    const legacy: SequencerGate[] = [];
+    for (let stepIndex = 0; stepIndex < steps; stepIndex += 1) {
+      if ((params[sequencerCellParamName(rowIndex, stepIndex)] ?? 0) >= 0.5) {
+        legacy.push({ slot: stepIndex, start: stepIndex, end: stepIndex + 1 });
+      }
+    }
+    return legacy;
+  }
+
+  const gates: SequencerGate[] = [];
+  for (let slot = 0; slot < steps; slot += 1) {
+    if ((params[sequencerGateParamName(rowIndex, slot, 'active')] ?? 0) < 0.5) continue;
+    const start = Math.max(0, Math.min(steps, params[sequencerGateParamName(rowIndex, slot, 'start')] ?? slot));
+    const end = Math.max(start, Math.min(steps, params[sequencerGateParamName(rowIndex, slot, 'end')] ?? start + 1));
+    if (end > start) gates.push({ slot, start, end });
+  }
+  return gates;
+}
+
 export function sequencerPatternValue(params: Record<string, number>, rowIndex: number, steps: number): [number, number, number, number] {
   const pattern: [number, number, number, number] = [0, 0, 0, 0];
   for (let stepIndex = 0; stepIndex < steps; stepIndex += 1) {
-    if ((params[sequencerCellParamName(rowIndex, stepIndex)] ?? 0) >= 0.5) {
+    if (
+      (params[sequencerCellParamName(rowIndex, stepIndex)] ?? 0) >= 0.5
+      && params[sequencerTriggerPositionParamName(rowIndex, stepIndex)] === undefined
+    ) {
       const laneIndex = Math.floor(stepIndex / 32);
       if (laneIndex < pattern.length) {
         pattern[laneIndex] += 2 ** (stepIndex % 32);

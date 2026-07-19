@@ -18,9 +18,9 @@ import {
   Viewport,
   type CoordinateExtent,
 } from '@xyflow/react';
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type FocusEvent as ReactFocusEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { compilePatchToDspProgram } from '../audio/dspProgram';
-import { useAudioEngine, type MidiControlChange, type MidiInputState } from '../audio/useAudioEngine';
+import { useAudioEngine, type LinkMeterReading, type MidiControlChange, type MidiInputState } from '../audio/useAudioEngine';
 import { normalizeCustomWave } from '../graph/customWave';
 import { demoPatch } from '../graph/demoPatch';
 import { extractExpressionInputs } from '../graph/expression';
@@ -29,14 +29,17 @@ import { normalizePatchCompatibility } from '../graph/patchCompatibility';
 import { patchToJson } from '../graph/serialize';
 import type { CustomWaveSettings, ImageAsset, LinkMode, NodeType, Patch, PatchLink, PatchNode, PortDefinition, SampleAsset } from '../graph/types';
 import { EdgeOverlayProvider } from './EdgeOverlayContext';
+import { scopedDspNodeId } from './dspNodeScope';
 import {
   edgeFromLink,
   edgeId,
   clampControlNodeSize,
   clampCustomWaveNodeSize,
   clampImageNodeSize,
+  clampKeysNodeSize,
   clampScopeNodeSize,
   DEFAULT_CUSTOM_WAVE_NODE_SIZE,
+  DEFAULT_KEYS_NODE_SIZE,
   DEFAULT_SCOPE_NODE_SIZE,
   editorStateToFlowEdges,
   editorStateToFlowNodes,
@@ -66,8 +69,9 @@ const SELECTED_EDGE_Z_INDEX = 10000;
 const DEFAULT_FIT_VIEW_PADDING = 0.2;
 const MIN_CANVAS_ZOOM = 0.05;
 const USER_ZOOM_BASELINE = 0.5;
-const ZOOM_SNAP_TARGET = USER_ZOOM_BASELINE;
-const ZOOM_SNAP_THRESHOLD = USER_ZOOM_BASELINE * 0.04;
+const ZOOM_RESET_TARGET = USER_ZOOM_BASELINE;
+const ZOOM_SETTLE_THRESHOLD = USER_ZOOM_BASELINE * 0.1;
+const ZOOM_CHANGE_EPSILON = 0.0001;
 const PASTE_OFFSET = { x: 36, y: 36 };
 const DRAFT_NODE_WIDTH = 168;
 const DRAFT_NODE_HANDLE_X_OFFSET = 13;
@@ -243,12 +247,14 @@ function NodeEditorInner() {
       ? editorStateToFlowNodes(initialState, callbacks, null)
       : toFlowNodes(demoPatch, callbacks, null);
   });
+  const [nodeStackOrder, setNodeStackOrder] = useState<string[]>(() => nodes.map((node) => node.id));
   const [edges, setEdges] = useState<ShaderFlowEdge[]>(() => {
     return initialState
       ? editorStateToFlowEdges(initialState, updateEdgeWeightPlaceholder, updateEdgeModePlaceholder, insertNodeOnEdgePlaceholder)
       : toFlowEdges(demoPatch, updateEdgeWeightPlaceholder, updateEdgeModePlaceholder, insertNodeOnEdgePlaceholder);
   });
   const [history, setHistory] = useState<HistoryState>({ past: [], future: [] });
+  const zoomInteractionRef = useRef({ zoomChanged: false, lastZoom: viewport.zoom });
   const nodesRef = useRef(nodes);
   const edgesRef = useRef(edges);
   const editorShellRef = useRef<HTMLElement | null>(null);
@@ -456,6 +462,23 @@ function NodeEditorInner() {
         return nextDefinition.outputs.some((output) => output.name === link.from.port) ? [edge] : [];
       })));
     }
+  }, [commitHistory]);
+
+  const updateNodeParams = useCallback((nodeId: string, values: Record<string, number>) => {
+    if (Object.keys(values).length === 0) return;
+    commitHistory(`params:${nodeId}`);
+    setNodes((current) => current.map((node) => node.id === nodeId
+      ? {
+          ...node,
+          data: {
+            ...node.data,
+            patchNode: {
+              ...node.data.patchNode,
+              params: { ...node.data.patchNode.params, ...values },
+            },
+          },
+        }
+      : node));
   }, [commitHistory]);
 
   const updateNodeCustomWave = useCallback((nodeId: string, customWave: CustomWaveSettings, historyKey?: string) => {
@@ -1078,7 +1101,8 @@ function NodeEditorInner() {
         relatedNode.data.patchNode.type !== 'SamplePlayer' &&
         relatedNode.data.patchNode.type !== 'Image' &&
         relatedNode.data.patchNode.type !== 'Slider' &&
-        relatedNode.data.patchNode.type !== 'Button'
+        relatedNode.data.patchNode.type !== 'Button' &&
+        relatedNode.data.patchNode.type !== 'Keys'
       )
     ) {
       return;
@@ -1088,6 +1112,8 @@ function NodeEditorInner() {
       ? clampImageNodeSize(size, size.width / Math.max(1, size.height))
       : relatedNode.data.patchNode.type === 'CustomWave' || relatedNode.data.patchNode.type === 'SamplePlayer'
       ? clampCustomWaveNodeSize(size)
+      : relatedNode.data.patchNode.type === 'Keys'
+        ? clampKeysNodeSize(size)
       : relatedNode.data.patchNode.type === 'Slider' || relatedNode.data.patchNode.type === 'Button'
         ? clampControlNodeSize(size)
         : clampScopeNodeSize(size);
@@ -1104,7 +1130,9 @@ function NodeEditorInner() {
       if (node.id !== nodeId) return node;
 
       const currentSize = node.data.patchNode.scopeSize ?? (
-        node.data.patchNode.type === 'CustomWave' || node.data.patchNode.type === 'SamplePlayer' || node.data.patchNode.type === 'Image'
+        node.data.patchNode.type === 'Keys'
+          ? DEFAULT_KEYS_NODE_SIZE
+        : node.data.patchNode.type === 'CustomWave' || node.data.patchNode.type === 'SamplePlayer' || node.data.patchNode.type === 'Image'
           ? DEFAULT_CUSTOM_WAVE_NODE_SIZE
           : DEFAULT_SCOPE_NODE_SIZE
       );
@@ -1692,16 +1720,35 @@ function NodeEditorInner() {
   }, [edges]);
 
   const selectedNodeCount = nodes.filter((node) => node.selected).length;
+  const nodeStackRanks = useMemo(() => {
+    const nodeIds = new Set(nodes.map((node) => node.id));
+    const orderedNodeIds = nodeStackOrder.filter((nodeId) => nodeIds.has(nodeId));
+    const rankedNodeIds = new Set(orderedNodeIds);
+
+    for (const node of nodes) {
+      if (rankedNodeIds.has(node.id)) continue;
+      orderedNodeIds.push(node.id);
+      rankedNodeIds.add(node.id);
+    }
+
+    return new Map(orderedNodeIds.map((nodeId, index) => [nodeId, index]));
+  }, [nodes, nodeStackOrder]);
 
   const nodesWithCallbacks = useMemo(() => nodes.map((node) => {
     const compactPorts = node.data.patchNode.compactPorts === true;
 
     return {
       ...node,
-      zIndex: nodeZIndex(node.selected === true, compactPorts),
+      zIndex: nodeZIndex(
+        node.selected === true,
+        compactPorts,
+        nodeStackRanks.get(node.id) ?? 0,
+        nodes.length,
+      ),
       data: {
         ...node.data,
         onParamChange: updateNodeParam,
+        onParamsChange: updateNodeParams,
         onCustomWaveChange: updateNodeCustomWave,
         onAudioInputDeviceChange: audio.setAudioInputDeviceId,
         onAudioInputRefresh: audio.refreshAudioInputDevices,
@@ -1759,6 +1806,7 @@ function NodeEditorInner() {
     openSampleLibrary,
     uploadDroppedSampleFiles,
     openImageLibrary,
+    nodeStackRanks,
     selectedBoundaryPort,
     selectedLinkPortsByNode,
     updateBoundaryPortName,
@@ -1778,6 +1826,7 @@ function NodeEditorInner() {
     updateNodeScopeSize,
     updateNodeId,
     updateNodeParam,
+    updateNodeParams,
     updateNodeType,
     selectedNodeCount,
   ]);
@@ -1837,32 +1886,37 @@ function NodeEditorInner() {
     }
     return linkIdsByNode;
   }, [audioGraph]);
+  const activeDspGroupIds = useMemo(() => editingStack.map((frame) => frame.groupId), [editingStack]);
 
   const renderedNodes = useMemo(() => nodesWithCallbacks.map((node) => {
-    const monitorLinkId = monitorLinkIdByNode.get(node.id);
-    const audioOutputLeft = audio.linkMeters[`${node.id}:left`]?.output ?? 0;
-    const audioOutputRight = audio.linkMeters[`${node.id}:right`]?.output ?? 0;
-    const dspErrors = dspDiagnostics.nodeErrors.get(node.id) ?? [];
+    const dspNodeId = scopedDspNodeId(node.id, activeDspGroupIds);
+    const monitorLinkId = monitorLinkIdByNode.get(dspNodeId);
+    const audioOutputLeft = audio.linkMeters[`${dspNodeId}:left`]?.output ?? 0;
+    const audioOutputRight = audio.linkMeters[`${dspNodeId}:right`]?.output ?? 0;
+    const dspErrors = dspDiagnostics.nodeErrors.get(dspNodeId) ?? [];
     const hasAudioMonitor = Boolean(monitorLinkId);
     const hasAudioOutputMeter = node.data.patchNode.type === 'AudioOut';
     const midiControlVisual = midiControlVisuals[node.id];
     const audioSelectorIndex = node.data.patchNode.type === 'Selector'
-      ? audio.linkMeters[`${node.id}:selector`]?.output
+      ? audio.linkMeters[`${dspNodeId}:selector`]?.output
       : undefined;
     const audioAccumulatorValue = node.data.patchNode.type === 'Accumulator'
-      ? audio.linkMeters[`${node.id}:accumulator`]?.output
+      ? audio.linkMeters[`${dspNodeId}:accumulator`]?.output
       : undefined;
     const audioImageX = node.data.patchNode.type === 'Image'
-      ? audio.linkMeters[`${node.id}:image-x`]?.output
+      ? audio.linkMeters[`${dspNodeId}:image-x`]?.output
       : undefined;
     const audioImageY = node.data.patchNode.type === 'Image'
-      ? audio.linkMeters[`${node.id}:image-y`]?.output
+      ? audio.linkMeters[`${dspNodeId}:image-y`]?.output
       : undefined;
     const audioImagePosition = typeof audioImageX === 'number' && typeof audioImageY === 'number'
       ? { x: audioImageX, y: audioImageY }
       : undefined;
     const showsPlaybackVisual = node.data.patchNode.type === 'CustomWave' || node.data.patchNode.type === 'SamplePlayer';
-    const audioPlayhead = showsPlaybackVisual ? audio.playheads[node.id] : undefined;
+    const audioPlayheads = showsPlaybackVisual ? audio.playheads[dspNodeId] : undefined;
+    const audioSampleParams = node.data.patchNode.type === 'SamplePlayer'
+      ? samplePlayerVisualizationParams(dspNodeId, audio.linkMeters)
+      : undefined;
     if (!hasAudioMonitor && !hasAudioOutputMeter && audioSelectorIndex === undefined && audioAccumulatorValue === undefined && !audioImagePosition && !midiControlVisual && dspErrors.length === 0 && !showsPlaybackVisual) return node;
 
     return {
@@ -1872,18 +1926,19 @@ function NodeEditorInner() {
         ...(dspErrors.length > 0 ? { dspErrors } : {}),
         ...(hasAudioOutputMeter ? { audioOutputMeter: { left: audioOutputLeft, right: audioOutputRight } } : {}),
         ...(monitorLinkId && node.data.patchNode.type === 'Meter' ? { audioMeter: audio.linkMeters[monitorLinkId] } : {}),
-        ...(monitorLinkId && node.data.patchNode.type === 'Scope' ? { audioScope: audio.linkScopes[node.id] } : {}),
+        ...(monitorLinkId && node.data.patchNode.type === 'Scope' ? { audioScope: audio.linkScopes[dspNodeId] } : {}),
         ...(monitorLinkId && node.data.patchNode.type === 'Slider' ? { audioSliderValue: audio.linkMeters[monitorLinkId]?.output } : {}),
         ...(audioSelectorIndex !== undefined ? { audioSelectorIndex } : {}),
         ...(audioAccumulatorValue !== undefined ? { audioAccumulatorValue } : {}),
         ...(audioImagePosition ? { audioImagePosition } : {}),
         ...(monitorLinkId && node.data.patchNode.type === 'Sequencer' ? { audioSequencerStep: audio.linkMeters[monitorLinkId]?.output } : {}),
-        ...(audioPlayhead !== undefined ? { audioPlayhead } : {}),
+        ...(audioPlayheads !== undefined ? { audioPlayheads } : {}),
+        ...(audioSampleParams ? { audioSampleParams } : {}),
         ...(midiControlVisual?.sliderValue !== undefined ? { midiSliderValue: midiControlVisual.sliderValue } : {}),
         ...(midiControlVisual?.buttonPressed !== undefined ? { midiButtonPressed: midiControlVisual.buttonPressed } : {}),
       },
     };
-  }), [audio.linkMeters, audio.linkScopes, audio.playheads, dspDiagnostics, midiControlVisuals, monitorLinkIdByNode, nodesWithCallbacks]);
+  }), [activeDspGroupIds, audio.linkMeters, audio.linkScopes, audio.playheads, dspDiagnostics, midiControlVisuals, monitorLinkIdByNode, nodesWithCallbacks]);
 
   const renderedEdges = useMemo(() => edgesWithCallbacks.map((edge) => {
     const dspErrors = dspDiagnostics.edgeErrors.get(edge.id) ?? [];
@@ -2935,21 +2990,41 @@ function NodeEditorInner() {
     }
   }, []);
 
+  const promoteNodeFromTarget = useCallback((eventTarget: EventTarget | null) => {
+    const target = eventTarget instanceof Element ? eventTarget : null;
+    const nodeElement = target?.closest<HTMLElement>('.react-flow__node[data-id]');
+    const nodeId = nodeElement?.dataset.id;
+    if (!nodeId) return;
+
+    setNodeStackOrder((current) => {
+      const currentNodeIds = new Set(nodesRef.current.map((node) => node.id));
+      const activeOrder = current.filter((entry) => entry !== nodeId && currentNodeIds.has(entry));
+      if (activeOrder.length === current.length - 1 && current.at(-1) === nodeId) return current;
+      return [...activeOrder, nodeId];
+    });
+  }, []);
+
+  const handleEditorFocusCapture = useCallback((event: ReactFocusEvent<HTMLElement>) => {
+    promoteNodeFromTarget(event.target);
+  }, [promoteNodeFromTarget]);
+
   const handleEditorPointerDownCapture = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    promoteNodeFromTarget(event.target);
+    const target = event.target instanceof Element ? event.target : null;
+    const nodeElement = target?.closest<HTMLElement>('.react-flow__node[data-id]');
+    const nodeId = nodeElement?.dataset.id;
+
     if (event.button !== 0) {
       pendingNodeDragSelectionRef.current = null;
       selectionDragStartRef.current = null;
       return;
     }
 
-    const target = event.target instanceof Element ? event.target : null;
     if (target?.classList.contains('react-flow__pane')) {
       selectionDragStartRef.current = { x: event.clientX, y: event.clientY };
     } else {
       selectionDragStartRef.current = null;
     }
-    const nodeElement = target?.closest<HTMLElement>('.react-flow__node[data-id]');
-    const nodeId = nodeElement?.dataset.id;
     if (!nodeId) {
       pendingNodeDragSelectionRef.current = null;
       return;
@@ -2967,7 +3042,7 @@ function NodeEditorInner() {
       nodeSelection: selectionById(nodesRef.current),
       edgeSelection: selectionById(edgesRef.current),
     };
-  }, []);
+  }, [promoteNodeFromTarget]);
 
   const clearPendingNodeDragSelection = useCallback(() => {
     if (!activeNodeDragSelectionRef.current) {
@@ -3005,24 +3080,30 @@ function NodeEditorInner() {
     selectionDragStartRef.current = null;
   }, [syncRectangleSelection]);
 
-  const handleMove = useCallback((_event: globalThis.MouseEvent | TouchEvent | null, nextViewport: Viewport) => {
-    const snappedViewport = snapViewportZoom(nextViewport);
-    if (snappedViewport === nextViewport || !reactFlow) return;
+  const handleMove = useCallback((event: globalThis.MouseEvent | TouchEvent | null, nextViewport: Viewport) => {
+    if (event !== null && Math.abs(nextViewport.zoom - zoomInteractionRef.current.lastZoom) > ZOOM_CHANGE_EPSILON) {
+      zoomInteractionRef.current.zoomChanged = true;
+    }
+    zoomInteractionRef.current.lastZoom = nextViewport.zoom;
+    setViewport(nextViewport);
+  }, []);
 
-    setViewport(snappedViewport);
-    void reactFlow.setViewport(snappedViewport);
-  }, [reactFlow]);
+  const handleMoveEnd = useCallback((event: globalThis.MouseEvent | TouchEvent | null, nextViewport: Viewport) => {
+    const zoomChanged = zoomInteractionRef.current.zoomChanged
+      || (event !== null && Math.abs(nextViewport.zoom - zoomInteractionRef.current.lastZoom) > ZOOM_CHANGE_EPSILON);
+    zoomInteractionRef.current = { zoomChanged: false, lastZoom: nextViewport.zoom };
+    setViewport(nextViewport);
 
-  const handleMoveEnd = useCallback((_event: globalThis.MouseEvent | TouchEvent | null, nextViewport: Viewport) => {
-    const snappedViewport = snapViewportZoom(nextViewport);
-    setViewport(snappedViewport);
-    if (snappedViewport !== nextViewport) {
-      void reactFlow?.setViewport(snappedViewport);
+    // React Flow reports programmatic viewport changes with a null event. Only
+    // settle direct pinch/zoom gestures; otherwise a reset animation can start
+    // another zoom transition and interrupt its own absolute 100% target.
+    if (event !== null && zoomChanged && shouldSettleZoomToBaseline(nextViewport.zoom)) {
+      void reactFlow?.zoomTo(ZOOM_RESET_TARGET, { duration: 120 });
     }
   }, [reactFlow]);
 
   const resetZoom = useCallback(() => {
-    void reactFlow?.zoomTo(ZOOM_SNAP_TARGET, { duration: 120 });
+    void reactFlow?.zoomTo(ZOOM_RESET_TARGET);
   }, [reactFlow]);
 
   useEffect(() => {
@@ -3047,6 +3128,7 @@ function NodeEditorInner() {
         <main
           ref={editorShellRef}
           className="editor-shell"
+          onFocusCapture={handleEditorFocusCapture}
           onPointerDownCapture={handleEditorPointerDownCapture}
           onPointerMove={handleRectangleSelectionMove}
           onPointerUpCapture={clearPendingNodeDragSelection}
@@ -3513,9 +3595,11 @@ function canUseLocalPatchStorage(): boolean {
     env?: {
       DEV?: boolean;
       VITE_VISUAL_FM_PATCH_STORAGE?: string;
+      VITE_VISUAL_VISUAL_PATCH_STORAGE?: string;
     };
   }).env;
-  const storageMode = viteEnv?.VITE_VISUAL_FM_PATCH_STORAGE;
+  const storageMode = viteEnv?.VITE_VISUAL_VISUAL_PATCH_STORAGE
+    ?? viteEnv?.VITE_VISUAL_FM_PATCH_STORAGE;
   if (storageMode === 'browser') return false;
   if (storageMode === 'local') return true;
   return viteEnv?.DEV === true;
@@ -4951,12 +5035,10 @@ function normalizedViewportZoom(zoom: number): number {
   return finitePositiveNumber(zoom) ?? USER_ZOOM_BASELINE;
 }
 
-function snapViewportZoom(viewport: Viewport): Viewport {
-  if (viewport.zoom === ZOOM_SNAP_TARGET || Math.abs(viewport.zoom - ZOOM_SNAP_TARGET) > ZOOM_SNAP_THRESHOLD) {
-    return viewport;
-  }
-
-  return { ...viewport, zoom: ZOOM_SNAP_TARGET };
+function shouldSettleZoomToBaseline(zoom: number): boolean {
+  const normalizedZoom = normalizedViewportZoom(zoom);
+  const distance = Math.abs(normalizedZoom - ZOOM_RESET_TARGET);
+  return distance > ZOOM_CHANGE_EPSILON && distance <= ZOOM_SETTLE_THRESHOLD;
 }
 
 function formatZoomPercentage(zoom: number): string {
@@ -5679,9 +5761,20 @@ function updateSelection<T extends { id: string; selected?: boolean }>(items: T[
   return changed ? nextItems : items;
 }
 
-function nodeZIndex(selected: boolean, compactPorts: boolean): number {
-  if (selected) return SELECTED_NODE_Z_INDEX;
-  return compactPorts ? COMPACT_NODE_Z_INDEX : EXPANDED_NODE_Z_INDEX;
+function nodeZIndex(
+  selected: boolean,
+  compactPorts: boolean,
+  stackRank = 0,
+  nodeCount = 1,
+): number {
+  const classificationZIndex = selected
+    ? SELECTED_NODE_Z_INDEX
+    : compactPorts
+      ? COMPACT_NODE_Z_INDEX
+      : EXPANDED_NODE_Z_INDEX;
+  // Reserve one integer slot per node so recency can never cross a classification boundary.
+  const classificationSize = Math.max(1, nodeCount);
+  return classificationZIndex * classificationSize + Math.max(0, stackRank);
 }
 
 function restoreNodeSelectionAfterDeselectedDrag(
@@ -5729,6 +5822,18 @@ function dedupeEdges(edges: ShaderFlowEdge[]): ShaderFlowEdge[] {
     deduped.push({ ...edge, id: key });
   }
   return deduped;
+}
+
+function samplePlayerVisualizationParams(
+  nodeId: string,
+  linkMeters: Record<string, LinkMeterReading>,
+): Partial<Record<'start' | 'end' | 'attack' | 'release', number>> | undefined {
+  const params: Partial<Record<'start' | 'end' | 'attack' | 'release', number>> = {};
+  for (const port of ['start', 'end', 'attack', 'release'] as const) {
+    const reading = linkMeters[`${nodeId}:sample-${port}`];
+    if (reading) params[port] = reading.input;
+  }
+  return Object.keys(params).length > 0 ? params : undefined;
 }
 
 function renameEdgeNode(edge: ShaderFlowEdge, fromNodeId: string, toNodeId: string): ShaderFlowEdge {
@@ -5810,6 +5915,7 @@ function midpointPosition(
 function nodeCallbacksPlaceholder() {
   return {
     onParamChange: updateParamPlaceholder,
+    onParamsChange: updateParamsPlaceholder,
     onTypeChange: updateTypePlaceholder,
     onTypeEditStart: updateTypeEditStartPlaceholder,
     onTypeEditEnd: updateTypeEditEndPlaceholder,
@@ -5824,6 +5930,7 @@ function nodeCallbacksPlaceholder() {
 }
 
 function updateParamPlaceholder() {}
+function updateParamsPlaceholder() {}
 function updateTypePlaceholder() {}
 function updateTypeEditStartPlaceholder() {}
 function updateTypeEditEndPlaceholder() {}

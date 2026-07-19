@@ -7,9 +7,12 @@
   ],
   "scripts": {
     "dev": "npm --workspace web run dev",
+    "start": "npm run build && node scripts/serve-production.mjs",
+    "preview": "npm --workspace web run preview",
     "build:wasm": "sh scripts/build-rust-wasm.sh",
     "build": "npm --workspace web run build",
     "typecheck": "npm --workspace web run typecheck",
-    "smoke:dsp-ports": "node scripts/smoke-dsp-port-links.mjs"
+    "smoke:dsp-ports": "node scripts/smoke-dsp-port-links.mjs",
+    "smoke:wasm-memory": "node scripts/smoke-wasm-memory.mjs"
   }
 }

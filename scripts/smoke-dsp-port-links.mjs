@@ -12,7 +12,10 @@ fs.rmSync(outputRoot, { recursive: true, force: true });
 fs.mkdirSync(outputRoot, { recursive: true });
 
 const program = ts.createProgram({
-  rootNames: [path.join(sourceRoot, 'audio/dspProgram.ts')],
+  rootNames: [
+    path.join(sourceRoot, 'audio/dspProgram.ts'),
+    path.join(sourceRoot, 'editor/dspNodeScope.ts'),
+  ],
   options: {
     target: ts.ScriptTarget.ES2022,
     module: ts.ModuleKind.CommonJS,
@@ -38,19 +41,28 @@ if (errors.length > 0) {
 
 const require = createRequire(import.meta.url);
 const { compilePatchToDspProgram } = require(path.join(outputRoot, 'audio/dspProgram.js'));
-const { getDefinition } = require(path.join(outputRoot, 'graph/nodeTypes.js'));
+const { getDefinition, getNodeDefinition } = require(path.join(outputRoot, 'graph/nodeTypes.js'));
+const { expandGroups } = require(path.join(outputRoot, 'graph/subpatch.js'));
+const { scopedDspNodeId } = require(path.join(outputRoot, 'editor/dspNodeScope.js'));
+
+assert(scopedDspNodeId('accumulator', []) === 'accumulator', 'Root DSP node IDs should remain local.');
+assert(
+  scopedDspNodeId('accumulator', ['outer', 'inner']) === 'outer__inner__accumulator',
+  'Nested subpatch DSP node IDs should include every containing group.',
+);
 
 const auditedPorts = {
   Delay: ['time', 'feedback', 'mix'],
   Chorus: ['rate', 'depth', 'mix'],
   Reverb: ['size', 'decay', 'mix'],
   LowpassFilter: ['cutoff', 'resonance'],
-  SamplePlayer: ['start', 'end', 'attack', 'release', 'stretch', 'cycleLength', 'overlapRatio', 'originalFrequency'],
+  SamplePlayer: ['start', 'end', 'attack', 'release', 'stretch', 'cycleLength', 'overlapRatio', 'originalFrequency', 'voices'],
   Buffer: ['signal', 'playhead', 'recordHead', 'length'],
   Playhead: ['start', 'speed'],
   Time: [],
   Slider: ['signal'],
   Button: ['signal'],
+  Accumulator: ['increment'],
   Clamp: ['min', 'max'],
   Pan: ['pan'],
   Pow: ['exponent'],
@@ -66,6 +78,33 @@ for (const [type, ports] of Object.entries(auditedPorts)) {
     assert(input.connectable !== false, `${type}.${port} should be connectable.`);
   }
 }
+
+const accumulatorIncrement = getDefinition('Accumulator').inputs.find((entry) => entry.name === 'increment');
+assert(accumulatorIncrement?.defaultValue === 1, 'Accumulator.increment should default to 1.');
+assert(accumulatorIncrement.integer !== true, 'Accumulator.increment should accept floating-point values.');
+const accumulatorMode = getDefinition('Accumulator').inputs.find((entry) => entry.name === 'mode');
+assert(accumulatorMode?.defaultValue === 0, 'Accumulator.mode should default to trigger mode.');
+assert(accumulatorMode.connectable === false, 'Accumulator.mode should be selected locally.');
+assert(
+  getNodeDefinition({
+    ...node('legacy_accumulator', 'Accumulator'),
+    inputs: [
+      { name: 'trigger', defaultValue: 0 },
+      { name: 'reset', defaultValue: 0, valueEditor: false },
+      { name: 'min', defaultValue: 0 },
+      { name: 'max', defaultValue: 1 },
+    ],
+  }).inputs.filter((entry) => entry.name === 'increment' || entry.name === 'mode').length === 2
+    && getNodeDefinition({
+      ...node('legacy_accumulator_order', 'Accumulator'),
+      inputs: [
+        { name: 'trigger', defaultValue: 0 },
+        { name: 'mode', defaultValue: 0 },
+        { name: 'reset', defaultValue: 0, valueEditor: false },
+      ],
+    }).inputs[0]?.name === 'mode',
+  'Accumulator.increment and mode should be normalized in saved custom input layouts.',
+);
 
 const patch = {
   nodes: [
@@ -96,6 +135,7 @@ const patch = {
     node('pow', 'Pow', { exponent: 0.5 }),
     node('pan', 'Pan', { pan: 0 }),
     node('button', 'Button', { mode: 1, pressed: 0, clicks: 0 }),
+    node('accumulator', 'Accumulator', { trigger: 0, reset: 0, increment: 0.25, mode: 1, min: 0, max: 1 }),
     node('meter', 'Meter', { range: 1 }),
     node('scope', 'Scope', { range: 1 }),
     node('out', 'AudioOut', { level: 0.75 }),
@@ -124,6 +164,7 @@ const patch = {
     link('buffer', 'signal', 'out', 'both'),
     link('slider', 'signal', 'out', 'both'),
     link('button', 'signal', 'out', 'both'),
+    link('accumulator', 'signal', 'out', 'both'),
     ...Object.entries(auditedPorts).flatMap(([type, ports]) => {
       const nodeId = type === 'LowpassFilter' ? 'filter' : type === 'SamplePlayer' ? 'sample' : type.toLowerCase();
       return ports.map((port) => link('control', 'signal', nodeId, port));
@@ -133,6 +174,10 @@ const patch = {
 
 const dspProgram = compilePatchToDspProgram(patch);
 assert(dspProgram.errors.length === 0, `DSP compile failed: ${dspProgram.errors.join('; ')}`);
+assert(
+  dspProgram.ops.some((op) => op.opcode === 29 && op.value === 1),
+  'Accumulator continuous mode should be encoded in the DSP operation.',
+);
 
 const timeProgram = compilePatchToDspProgram({
   nodes: [
@@ -177,6 +222,24 @@ for (const ignoredPort of ['min', 'max']) {
 
 assert(Object.hasOwn(dspProgram.monitorIds, 'meter'), 'Meter signal should be monitored.');
 assert(Object.hasOwn(dspProgram.monitorIds, 'scope'), 'Scope signal should be monitored.');
+for (const port of ['start', 'end', 'attack', 'release']) {
+  const monitorId = `sample:sample-${port}`;
+  assert(Object.hasOwn(dspProgram.monitorIds, monitorId), `SamplePlayer.${port} should expose its resolved input for visualization.`);
+  assert(dspProgram.signedMeterIds.includes(monitorId), `SamplePlayer.${port} visualization should preserve signed values before display clamping.`);
+}
+
+const unroutedSampleProgram = compilePatchToDspProgram({
+  nodes: [
+    node('control', 'Constant', { value: 0.25 }),
+    node('sample', 'SamplePlayer', { start: 0, end: 1, attack: 0, release: 0 }),
+    node('out', 'AudioOut', { level: 0.75 }),
+  ],
+  links: [link('control', 'signal', 'sample', 'start')],
+});
+assert(
+  Object.hasOwn(unroutedSampleProgram.monitorIds, 'sample:sample-start'),
+  'An unrouted SamplePlayer should still compile linked controls for its preview.',
+);
 assert(
   dspProgram.stateBindings.some((binding) => binding.id === 'button:button' && binding.count === 3),
   'Button should compile with click edge state.',
@@ -265,6 +328,83 @@ assert(
   terminalScopeProgram.ops.some((op) => op.opcode === 30),
   'Terminal Button -> Scope patch should compile the Button op.',
 );
+
+const keysProgram = compilePatchToDspProgram({
+  nodes: [
+    node('keys', 'Keys', { note: 0, frequency: 0, size: 12, startNote: 60 }),
+    node('note_meter', 'Meter', { range: 127 }),
+    node('frequency_meter', 'Meter', { range: 2000 }),
+  ],
+  links: [
+    link('keys', 'midi note', 'note_meter', 'signal'),
+    link('keys', 'frequency', 'frequency_meter', 'signal'),
+  ],
+});
+assert(keysProgram.errors.length === 0, `Keys compile failed: ${keysProgram.errors.join('; ')}`);
+for (const port of ['note', 'frequency']) {
+  const binding = keysProgram.valueBindings.find((entry) => (
+    entry.kind === 'node-param' && entry.nodeId === 'keys' && entry.port === port
+  ));
+  assert(binding, `Keys.${port} value binding is missing.`);
+  assert(
+    keysProgram.ops.some((op) => op.opcode === 0 && op.a === binding.valueIndex && op.value === 1),
+    `Keys.${port} should compile as an immediate value.`,
+  );
+}
+
+const boundaryPatch = {
+  nodes: [
+    node('external', 'Constant', { value: 2 }),
+    {
+      ...node('group', 'Group', { control: 5 }),
+      inputs: [{ name: 'control', defaultValue: 5 }],
+      outputs: [{ name: 'result' }],
+      subpatch: {
+        nodes: [
+          { ...node('ins', 'Ins', { control: 5 }), outputs: [{ name: 'control', defaultValue: 5 }] },
+          node('inner_control', 'Pass'),
+          { ...node('outs', 'Outs'), inputs: [{ name: 'result', defaultValue: 2 }] },
+        ],
+        links: [
+          { ...link('ins', 'control', 'inner_control', 'signal'), weight: 0.0001, mode: 'set' },
+          { ...link('inner_control', 'signal', 'outs', 'result'), weight: 0.25, mode: 'multiply' },
+        ],
+      },
+    },
+    node('meter', 'Meter', { range: 100 }),
+  ],
+  links: [
+    { ...link('external', 'signal', 'group', 'control'), weight: 3, mode: 'add' },
+    { ...link('group', 'result', 'meter', 'signal'), weight: 4, mode: 'multiply' },
+  ],
+};
+const expandedBoundaryPatch = expandGroups(boundaryPatch);
+const inputOuterLink = expandedBoundaryPatch.links.find((entry) => entry.from.node === 'external');
+const inputInnerLink = expandedBoundaryPatch.links.find((entry) => entry.to.node === 'group__inner_control');
+assert(inputOuterLink?.weight === 3 && inputOuterLink.mode === 'add', 'Group input edge should retain its outer weight and mode.');
+assert(
+  inputInnerLink?.from.node === inputOuterLink?.to.node
+    && inputInnerLink?.weight === 0.0001
+    && inputInnerLink.mode === 'set',
+  'Ins should expand to a pass stage followed by the independently weighted inner edge.',
+);
+const outputOuterLink = expandedBoundaryPatch.links.find((entry) => entry.to.node === 'meter');
+const outputInnerLink = expandedBoundaryPatch.links.find((entry) => entry.to.node === outputOuterLink?.from.node);
+assert(outputInnerLink?.weight === 0.25 && outputInnerLink.mode === 'multiply', 'Outs should retain the inner edge weight and mode.');
+assert(
+  outputOuterLink?.from.node === outputInnerLink?.to.node
+    && outputOuterLink?.weight === 4
+    && outputOuterLink.mode === 'multiply',
+  'Group output should expand from a pass stage onto the independently weighted outer edge.',
+);
+const boundaryProgram = compilePatchToDspProgram(boundaryPatch);
+assert(boundaryProgram.errors.length === 0, `Subpatch boundary compile failed: ${boundaryProgram.errors.join('; ')}`);
+for (const expectedWeight of [0.0001, 0.25, 3, 4]) {
+  assert(
+    boundaryProgram.valueBindings.some((binding) => binding.kind === 'link-weight' && boundaryProgram.values[binding.valueIndex] === expectedWeight),
+    `Subpatch boundary link weight ${expectedWeight} should survive DSP expansion.`,
+  );
+}
 
 const invalidExpressionProgram = compilePatchToDspProgram({
   nodes: [

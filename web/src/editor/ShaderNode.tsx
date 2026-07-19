@@ -1,6 +1,7 @@
 import { Handle, Position, useReactFlow, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import {
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -24,18 +25,28 @@ import {
   getNodeTypeLabel,
   NODE_TYPE_LIST,
   sequencerCellParamName,
+  sequencerGateParamName,
+  sequencerGatesForRow,
+  sequencerTriggerPositionParamName,
+  sequencerTriggersForRow,
+  sequencerUsesGateMode,
+  SEQUENCER_GATE_INITIALIZED_PARAM,
+  SEQUENCER_GATE_MODE_PARAM,
   SEQUENCER_INDEX_OUTPUT,
   sequencerOutputName,
   sequencerShape,
 } from '../graph/nodeTypes';
 import type { CustomWaveMode, CustomWavePoint, CustomWaveSettings, NodeDefinition, NodeType, PatchNode } from '../graph/types';
+import { formatNumericValue } from './numericDisplay';
 import {
   clampControlNodeSize,
   clampCustomWaveNodeSize,
   clampImageNodeSize,
+  clampKeysNodeSize,
   clampScopeNodeSize,
   DEFAULT_IMAGE_ASPECT_RATIO,
   DEFAULT_CUSTOM_WAVE_NODE_SIZE,
+  DEFAULT_KEYS_NODE_SIZE,
   DEFAULT_SCOPE_NODE_SIZE,
   type ScopeNodeSize,
   type ShaderFlowEdge,
@@ -45,6 +56,7 @@ import {
 
 export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNode>) {
   const node = data.patchNode;
+  const scopeGradientId = `scope-gradient-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const reactFlow = useReactFlow<ShaderFlowNode, ShaderFlowEdge>();
   const updateNodeInternals = useUpdateNodeInternals();
   const draggedPortRef = useRef<{ side: 'input' | 'output'; port: string; pointerId: number } | null>(null);
@@ -81,6 +93,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const showScopeDisplay = node.type === 'Scope';
   const showSliderDisplay = node.type === 'Slider';
   const showButtonDisplay = node.type === 'Button';
+  const showKeysDisplay = node.type === 'Keys';
   const showAccumulatorDisplay = node.type === 'Accumulator';
   const showSequencerDisplay = node.type === 'Sequencer';
   const showTempoDisplay = node.type === 'Tempo';
@@ -90,21 +103,28 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const showCustomWaveEditor = node.type === 'CustomWave';
   const showSampleUpload = node.type === 'SamplePlayer';
   const showImageDisplay = node.type === 'Image';
+  const showTopGraphic = showMeterDisplay || showScopeDisplay || showSliderDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay;
   const imageX = centeredCoordinateToUnit(data.audioImagePosition?.x ?? node.params.x ?? 0);
   const imageY = centeredCoordinateToUnit(data.audioImagePosition?.y ?? node.params.y ?? 0);
-  const showResizableDisplay = showMeterDisplay || showScopeDisplay || showSliderDisplay || showButtonDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay;
+  const showResizableDisplay = showMeterDisplay || showScopeDisplay || showSliderDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay;
   const customWave = showCustomWaveEditor ? normalizeCustomWave(node.customWave, node.params) : null;
-  const customWavePlayhead = clamp(data.audioPlayhead ?? normalizeUnitInterval(node.params.phase ?? 0), 0, 1);
+  const customWavePlayhead = clamp(data.audioPlayheads?.[0] ?? normalizeUnitInterval(node.params.phase ?? 0), 0, 1);
   const sequencer = showSequencerDisplay ? sequencerShape(node.params) : null;
   const amplitudeRange = displayAmplitudeRange(node.params.range);
-  const amplitudeRangeLabel = formatAmplitude(amplitudeRange);
-  const rawMeterLevel = data.audioMeter?.output ?? 0;
-  const meterLevel = Math.max(0, Math.min(1, rawMeterLevel / amplitudeRange));
-  const meterPeak = useRecentMaxLevel(meterLevel, showMeterDisplay);
+  const meterMode = monitorDisplayMode(node.params.mode, 'unipolar');
+  const scopeMode = monitorDisplayMode(node.params.mode, 'bipolar');
+  const signedMeterLevel = data.audioMeter?.input ?? 0;
+  const unipolarMeterLevel = Math.max(0, Math.min(1, (data.audioMeter?.output ?? 0) / amplitudeRange));
+  const bipolarMeterLevel = Math.max(-1, Math.min(1, signedMeterLevel / amplitudeRange));
+  const meterPeak = useRecentMaxLevel(unipolarMeterLevel, showMeterDisplay && meterMode === 'unipolar');
+  const bipolarMeterPeaks = useRecentBipolarLevels(bipolarMeterLevel, showMeterDisplay && meterMode === 'bipolar');
+  const meterLevel = meterMode === 'bipolar' ? bipolarMeterLevel : unipolarMeterLevel;
   const outputMeterLeft = Math.max(0, Math.min(1, data.audioOutputMeter?.left ?? 0));
   const outputMeterRight = Math.max(0, Math.min(1, data.audioOutputMeter?.right ?? 0));
-  const scopePath = showScopeDisplay ? samplesToScopePath(data.audioScope?.samples ?? [], amplitudeRange) : '';
-  const scopeSize = showSliderDisplay || showButtonDisplay
+  const scopePath = showScopeDisplay ? samplesToScopePath(data.audioScope?.samples ?? [], amplitudeRange, scopeMode) : '';
+  const scopeSize = showKeysDisplay
+    ? clampKeysNodeSize(node.scopeSize ?? DEFAULT_KEYS_NODE_SIZE)
+    : showSliderDisplay || showButtonDisplay
     ? clampControlNodeSize(node.scopeSize ?? DEFAULT_SCOPE_NODE_SIZE)
     : showMeterDisplay || showScopeDisplay
       ? clampScopeNodeSize(node.scopeSize ?? DEFAULT_SCOPE_NODE_SIZE)
@@ -115,9 +135,11 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
       ? clampCustomWaveNodeSize(node.scopeSize ?? DEFAULT_CUSTOM_WAVE_NODE_SIZE)
       : DEFAULT_CUSTOM_WAVE_NODE_SIZE;
   const displaySize = showCustomWaveEditor || showSampleUpload || showImageDisplay ? waveformDisplaySize : scopeSize;
-  const meterScaleTicks = showMeterDisplay ? meterScaleTicksForRange(amplitudeRange, displaySize.width) : [];
+  const meterScaleTicks = showMeterDisplay ? amplitudeScaleTicks(amplitudeRange, displaySize.width, meterMode) : [];
   const meterGridTicks = showMeterDisplay ? meterGridTicksForWidth(displaySize.width) : [];
   const meterGridRows = showMeterDisplay ? meterGridRowsForHeight(displaySize.height) : [];
+  const scopeScaleTicks = showScopeDisplay ? amplitudeScaleTicks(amplitudeRange, displaySize.height, scopeMode, 'vertical') : [];
+  const scopeGridTicks = showScopeDisplay ? meterGridTicksForWidth(displaySize.width) : [];
   const nodeSizeStyle = showResizableDisplay
     ? ({
         '--node-display-width': `${displaySize.width}px`,
@@ -139,7 +161,8 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const revealCompactPorts = data.isOnlySelected === true || (data.isConnecting === true && pointerOver);
   const showAllPorts = !compactPorts || revealCompactPorts;
   const showHeaderInput = Boolean(
-    definition?.inputs.some((input) => input.name === 'signal')
+    node.type !== 'Outs'
+    && definition?.inputs.some((input) => input.name === 'signal')
     && previewInputPort !== 'signal',
   );
   const headerInputPort = showHeaderInput ? 'signal' : null;
@@ -169,6 +192,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     showScopeDisplay ? 'shader-node-scope' : '',
     showSliderDisplay ? 'shader-node-slider' : '',
     showButtonDisplay ? 'shader-node-button' : '',
+    showKeysDisplay ? 'shader-node-keys' : '',
     showAccumulatorDisplay ? 'shader-node-accumulator' : '',
     showSequencerDisplay ? 'shader-node-sequencer' : '',
     showAudioOutputDisplay ? 'shader-node-audio-out' : '',
@@ -323,6 +347,8 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
         ? clampImageNodeSize({ width: rawWidth, height: rawWidth / imageAspectRatio }, imageAspectRatio)
         : showCustomWaveEditor || showSampleUpload
         ? clampCustomWaveNodeSize(rawNextSize)
+        : showKeysDisplay
+          ? clampKeysNodeSize(rawNextSize)
         : showSliderDisplay || showButtonDisplay
           ? clampControlNodeSize(rawNextSize)
           : clampScopeNodeSize(rawNextSize);
@@ -353,7 +379,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('pointercancel', handlePointerCancel);
     };
-  }, [data, imageAspectRatio, node.id, reactFlow, showCustomWaveEditor, showSampleUpload, showImageDisplay, showSliderDisplay, showButtonDisplay]);
+  }, [data, imageAspectRatio, node.id, reactFlow, showCustomWaveEditor, showSampleUpload, showImageDisplay, showSliderDisplay, showButtonDisplay, showKeysDisplay]);
 
   useEffect(() => {
     setImageAspectRatio(DEFAULT_IMAGE_ASPECT_RATIO);
@@ -685,6 +711,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             || showCustomWaveEditor
             || showSliderDisplay
             || showButtonDisplay
+            || showKeysDisplay
             || showAccumulatorDisplay
             || showAudioOutputDisplay
             || visibleInputPorts.length > 0
@@ -698,19 +725,12 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
         <div className={[
           'shader-node-body',
           isExpression ? 'shader-node-body-expression' : '',
-          showMeterDisplay ? 'shader-node-body-meter' : '',
-          showScopeDisplay ? 'shader-node-body-scope' : '',
-          showSliderDisplay ? 'shader-node-body-slider' : '',
-          showButtonDisplay ? 'shader-node-body-button' : '',
           showAccumulatorDisplay ? 'shader-node-body-accumulator' : '',
           showSequencerDisplay ? 'shader-node-body-sequencer' : '',
           showAudioOutputDisplay ? 'shader-node-body-audio-out' : '',
           showAudioInputDisplay ? 'shader-node-body-audio-input' : '',
           showMidiNoteDisplay ? 'shader-node-body-midi-note' : '',
-          showCustomWaveEditor ? 'shader-node-body-custom-wave' : '',
-          showSampleUpload ? 'shader-node-body-sampleplayer' : '',
-          showImageDisplay ? 'shader-node-body-image' : '',
-          showImageDisplay ? 'shader-node-body-full-width-display' : '',
+          showTopGraphic ? 'shader-node-body-graphic' : '',
           !showSequencerDisplay && (visibleOutputPorts.length === 0 || showHeaderOutputPort) ? 'shader-node-body-no-outputs' : '',
         ].filter(Boolean).join(' ')}>
           {isExpression ? (
@@ -741,14 +761,15 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               onPointerDown={(event) => event.stopPropagation()}
             />
           ) : null}
+          <div className={showTopGraphic ? 'shader-node-content-graphic' : 'shader-node-content-graphic-empty'}>
           {showSampleUpload ? (
             <SampleWaveformDisplay
               sampleUrl={node.sample?.url}
-              playhead={data.audioPlayhead}
-              start={node.params.start ?? 0}
-              end={node.params.end ?? 1}
-              attack={node.params.attack ?? 0}
-              release={node.params.release ?? 0}
+              playheads={data.audioPlayheads}
+              start={data.audioSampleParams?.start ?? node.params.start ?? 0}
+              end={data.audioSampleParams?.end ?? node.params.end ?? 1}
+              attack={data.audioSampleParams?.attack ?? node.params.attack ?? 0}
+              release={data.audioSampleParams?.release ?? node.params.release ?? 0}
               detail={Math.max(120, Math.round(displaySize.width))}
               onStartChange={(value) => data.onParamChange(node.id, 'start', value)}
               onEndChange={(value) => data.onParamChange(node.id, 'end', value)}
@@ -832,6 +853,92 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               onClickPulse={() => data.onParamChange(node.id, 'clicks', (node.params.clicks ?? 0) + 1)}
             />
           ) : null}
+          {showKeysDisplay ? (
+            <KeysDisplay
+              size={node.params.size ?? 12}
+              startNote={node.params.startNote ?? 60}
+              onNoteChange={(note) => {
+                data.onParamChange(node.id, 'note', note ?? 0);
+                data.onParamChange(node.id, 'frequency', note === null ? 0 : midiNoteToFrequency(note));
+              }}
+            />
+          ) : null}
+          {showMeterDisplay ? (
+            <div className="audio-node-meter-display" aria-hidden="true">
+              <svg className="audio-node-meter-grid" viewBox="0 0 100 48" preserveAspectRatio="none" focusable="false">
+                {meterGridRows.map((fraction) => (
+                  <line key={`row-${fraction}`} className="audio-node-meter-grid-line" x1="0" y1={fraction * 48} x2="100" y2={fraction * 48} />
+                ))}
+                {meterGridTicks.map((tick) => (
+                  <line key={tick.fraction} className={tick.major ? 'audio-node-meter-grid-line audio-node-meter-grid-line-major' : 'audio-node-meter-grid-line'} x1={tick.fraction * 100} y1="0" x2={tick.fraction * 100} y2="48" />
+                ))}
+              </svg>
+              <span
+                className="audio-node-meter-fill"
+                style={meterMode === 'bipolar'
+                  ? {
+                      left: `${(0.5 + Math.min(0, meterLevel) * 0.5) * 100}%`,
+                      width: `${Math.abs(meterLevel) * 50}%`,
+                    }
+                  : { width: `${meterLevel * 100}%` }}
+              />
+              {meterMode === 'bipolar' ? <>
+                <span className="audio-node-meter-peak" style={{ left: `${(0.5 + bipolarMeterPeaks.positive * 0.5) * 100}%` }} />
+                <span className="audio-node-meter-peak" style={{ left: `${(0.5 - bipolarMeterPeaks.negative * 0.5) * 100}%` }} />
+              </> : (
+                <span className="audio-node-meter-peak" style={{ left: `${meterPeak * 100}%` }} />
+              )}
+              <span className="audio-node-meter-scale">
+                {meterScaleTicks.map((tick) => (
+                  <span key={tick.fraction} className={[
+                    'audio-node-meter-scale-label',
+                    tick.fraction === 0 ? 'audio-node-meter-scale-label-min' : '',
+                    tick.fraction === 1 ? 'audio-node-meter-scale-label-max' : '',
+                  ].filter(Boolean).join(' ')} style={{ left: `${tick.fraction * 100}%` }}>
+                    {tick.label}
+                  </span>
+                ))}
+              </span>
+            </div>
+          ) : null}
+          {showScopeDisplay ? (
+            <div className="audio-node-scope-display" aria-hidden="true">
+              <svg className="audio-node-scope-grid" viewBox="0 0 160 48" preserveAspectRatio="none" focusable="false">
+                {scopeGridTicks.map((tick) => (
+                  <line key={`column-${tick.fraction}`} className={tick.major ? 'audio-node-meter-grid-line audio-node-meter-grid-line-major' : 'audio-node-meter-grid-line'} x1={tick.fraction * 160} y1="0" x2={tick.fraction * 160} y2="48" />
+                ))}
+                {scopeScaleTicks.map((tick) => (
+                  <line key={`row-${tick.fraction}`} className="audio-node-meter-grid-line audio-node-meter-grid-line-major" x1="0" y1={tick.fraction * 48} x2="160" y2={tick.fraction * 48} />
+                ))}
+              </svg>
+              <span className="audio-node-scope-scale">
+                {scopeScaleTicks.map((tick) => (
+                  <span
+                    key={tick.fraction}
+                    className={[
+                      'audio-node-scope-scale-label',
+                      tick.fraction === 0 ? 'audio-node-scope-scale-label-top' : '',
+                      tick.fraction === 1 ? 'audio-node-scope-scale-label-bottom' : '',
+                    ].filter(Boolean).join(' ')}
+                    style={{ top: `${tick.fraction * 100}%` }}
+                  >
+                    {tick.label}
+                  </span>
+                ))}
+              </span>
+              <svg className="audio-node-scope-waveform" viewBox="0 0 160 48" preserveAspectRatio="none">
+                <defs>
+                  <linearGradient id={scopeGradientId} gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="160" y2="0">
+                    <stop offset="0" stopColor="var(--color-accent)" stopOpacity="0.3" />
+                    <stop offset="0.65" stopColor="var(--color-accent)" stopOpacity="0.72" />
+                    <stop offset="1" stopColor="var(--color-accent)" stopOpacity="1" />
+                  </linearGradient>
+                </defs>
+                <path d={scopePath} style={{ stroke: `url(#${scopeGradientId})` }} />
+              </svg>
+            </div>
+          ) : null}
+          </div>
           {showAccumulatorDisplay ? (
             <div className="accumulator-value-label" aria-label="Accumulator current value">
               {formatAccumulatorValue(data.audioAccumulatorValue ?? node.params.min ?? 0)}
@@ -848,11 +955,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               setOutputRowRef={(port, element) => {
                 outputPortRowsRef.current[port] = element;
               }}
-              onCellToggle={(rowIndex, stepIndex) => {
-                const port = sequencerCellParamName(rowIndex, stepIndex);
-                const nextValue = (node.params[port] ?? 0) >= 0.5 ? 0 : 1;
-                data.onParamChange(node.id, port, nextValue);
-              }}
+              onParamsChange={(values) => data.onParamsChange(node.id, values)}
             />
           ) : null}
           {showAudioOutputDisplay ? (
@@ -861,6 +964,10 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               <AudioOutputMeterRow label="R" level={outputMeterRight} />
             </div>
           ) : null}
+          <div className={[
+            showTopGraphic ? 'shader-node-content-ports' : 'shader-node-content-ports-empty',
+            visibleOutputPorts.length === 0 || showHeaderOutputPort ? 'shader-node-content-ports-no-outputs' : '',
+          ].filter(Boolean).join(' ')}>
           <div className="shader-ports shader-inputs" style={inputStyle}>
             {visibleInputPorts.map((input) => (
             <div
@@ -938,6 +1045,94 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   >
                     <option value="0">horizontal</option>
                     <option value="1">vertical</option>
+                  </select>
+                </>
+              ) : showSequencerDisplay && input.name === 'mode' && !input.preview ? (
+                <>
+                  <PortNameLabel
+                    name={input.name}
+                    editable={false}
+                    draggable={false}
+                    preview={false}
+                    selected={data.selectedPort?.side === 'input' && data.selectedPort.name === input.name}
+                    activeDragTarget={false}
+                    activeDragSource={false}
+                    onChange={() => undefined}
+                  />
+                  <select
+                    className="sequencer-mode-select nodrag nopan"
+                    aria-label="Sequencer mode"
+                    value={sequencerUsesGateMode(node.params) ? '1' : '0'}
+                    onChange={(event) => {
+                      const gateMode = Number(event.currentTarget.value) >= 0.5;
+                      const values: Record<string, number> = {
+                        [SEQUENCER_GATE_MODE_PARAM]: gateMode ? 1 : 0,
+                      };
+                      if (gateMode) {
+                        values[SEQUENCER_GATE_INITIALIZED_PARAM] = 1;
+                        for (let rowIndex = 0; rowIndex < (sequencer?.rows ?? 0); rowIndex += 1) {
+                          const triggers = sequencerTriggersForRow(node.params, rowIndex, sequencer?.steps ?? 0);
+                          for (let stepIndex = 0; stepIndex < (sequencer?.steps ?? 0); stepIndex += 1) {
+                            values[sequencerGateParamName(rowIndex, stepIndex, 'active')] = 0;
+                          }
+                          for (const [slot, trigger] of triggers.entries()) {
+                            const start = Math.min(sequencer?.steps ?? 0, trigger.position);
+                            values[sequencerGateParamName(rowIndex, slot, 'active')] = 1;
+                            values[sequencerGateParamName(rowIndex, slot, 'start')] = start;
+                            values[sequencerGateParamName(rowIndex, slot, 'end')] = Math.min(sequencer?.steps ?? 0, start + 1);
+                          }
+                        }
+                      } else {
+                        for (let rowIndex = 0; rowIndex < (sequencer?.rows ?? 0); rowIndex += 1) {
+                          const gates = sequencerGatesForRow(node.params, rowIndex, sequencer?.steps ?? 0);
+                          for (let stepIndex = 0; stepIndex < (sequencer?.steps ?? 0); stepIndex += 1) {
+                            values[sequencerCellParamName(rowIndex, stepIndex)] = 0;
+                            values[sequencerGateParamName(rowIndex, stepIndex, 'active')] = 0;
+                          }
+                          for (const [slot, gate] of gates.entries()) {
+                            const position = Math.max(0, Math.min((sequencer?.steps ?? 1) - SEQUENCER_TRIGGER_GRAB_FRACTION, gate.start));
+                            values[sequencerCellParamName(rowIndex, slot)] = 1;
+                            values[sequencerTriggerPositionParamName(rowIndex, slot)] = position;
+                          }
+                        }
+                      }
+                      data.onParamsChange(node.id, values);
+                      event.currentTarget.blur();
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    <option value="0">trigger</option>
+                    <option value="1">gate</option>
+                  </select>
+                </>
+              ) : (showMeterDisplay || showScopeDisplay) && input.name === 'mode' && !input.preview ? (
+                <>
+                  <PortNameLabel
+                    name={input.name}
+                    editable={false}
+                    draggable={false}
+                    preview={false}
+                    selected={data.selectedPort?.side === 'input' && data.selectedPort.name === input.name}
+                    activeDragTarget={false}
+                    activeDragSource={false}
+                    onChange={() => undefined}
+                  />
+                  <select
+                    className="display-mode-select nodrag nopan"
+                    aria-label={`${showMeterDisplay ? 'Meter' : 'Scope'} mode`}
+                    value={String(Math.round(node.params.mode ?? input.defaultValue ?? 0))}
+                    onChange={(event) => {
+                      data.onParamChange(node.id, input.name, Number(event.currentTarget.value));
+                      event.currentTarget.blur();
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    <option value="0">unipolar</option>
+                    <option value="1">bipolar</option>
                   </select>
                 </>
               ) : showSampleUpload && input.name === 'mode' && !input.preview ? (
@@ -1085,6 +1280,34 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                     <option value="2">temporary</option>
                   </select>
                 </>
+              ) : showAccumulatorDisplay && input.name === 'mode' && !input.preview ? (
+                <>
+                  <PortNameLabel
+                    name={input.name}
+                    editable={false}
+                    draggable={false}
+                    preview={false}
+                    selected={data.selectedPort?.side === 'input' && data.selectedPort.name === input.name}
+                    activeDragTarget={false}
+                    activeDragSource={false}
+                    onChange={() => undefined}
+                  />
+                  <select
+                    className="accumulator-mode-select nodrag nopan"
+                    aria-label="Accumulator mode"
+                    value={String(Math.round(node.params.mode ?? input.defaultValue ?? 0))}
+                    onChange={(event) => {
+                      data.onParamChange(node.id, input.name, Number(event.currentTarget.value));
+                      event.currentTarget.blur();
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    <option value="0">trigger</option>
+                    <option value="1">continuous</option>
+                  </select>
+                </>
               ) : (
                 <PortNameLabel
                   name={input.name}
@@ -1102,7 +1325,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   onChange={(nextName) => data.onPortNameChange(node.id, 'input', input.name, nextName)}
                 />
               )}
-              {!input.preview && node.type !== 'Outs' && input.valueEditor !== false && input.defaultValue !== undefined && !(showSliderDisplay && input.name === 'direction') && !(showButtonDisplay && input.name === 'mode') && !(showSampleUpload && input.name === 'mode') && !(showMidiNoteDisplay && input.name === 'voices') && !(showTempoDisplay && (input.name === 'source' || input.name === 'midiSource')) ? (
+              {!input.preview && node.type !== 'Outs' && input.valueEditor !== false && input.defaultValue !== undefined && !(showSliderDisplay && input.name === 'direction') && !(showSequencerDisplay && input.name === 'mode') && !(showButtonDisplay && input.name === 'mode') && !(showAccumulatorDisplay && input.name === 'mode') && !(showSampleUpload && input.name === 'mode') && !(showMidiNoteDisplay && input.name === 'voices') && !(showTempoDisplay && (input.name === 'source' || input.name === 'midiSource')) ? (
                 <NumericScrubber
                   value={node.params[input.name] ?? input.defaultValue ?? 0}
                   min={input.min}
@@ -1205,59 +1428,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               ))}
             </div>
           ) : null}
-          {showMeterDisplay ? (
-            <div className="audio-node-meter-display" aria-hidden="true">
-              <svg className="audio-node-meter-grid" viewBox="0 0 100 48" preserveAspectRatio="none" focusable="false">
-                {meterGridRows.map((fraction) => (
-                  <line
-                    key={`row-${fraction}`}
-                    className="audio-node-meter-grid-line"
-                    x1="0"
-                    y1={fraction * 48}
-                    x2="100"
-                    y2={fraction * 48}
-                  />
-                ))}
-                {meterGridTicks.map((tick) => (
-                  <line
-                    key={tick.fraction}
-                    className={tick.major ? 'audio-node-meter-grid-line audio-node-meter-grid-line-major' : 'audio-node-meter-grid-line'}
-                    x1={tick.fraction * 100}
-                    y1="0"
-                    x2={tick.fraction * 100}
-                    y2="48"
-                  />
-                ))}
-              </svg>
-              <span className="audio-node-meter-fill" style={{ width: `${meterLevel * 100}%` }} />
-              <span className="audio-node-meter-peak" style={{ left: `${meterPeak * 100}%` }} />
-              <span className="audio-node-meter-scale">
-                {meterScaleTicks.map((tick) => (
-                  <span
-                    key={tick.fraction}
-                    className={[
-                      'audio-node-meter-scale-label',
-                      tick.fraction === 0 ? 'audio-node-meter-scale-label-min' : '',
-                      tick.fraction === 1 ? 'audio-node-meter-scale-label-max' : '',
-                    ].filter(Boolean).join(' ')}
-                    style={{ left: `${tick.fraction * 100}%` }}
-                  >
-                    {tick.label}
-                  </span>
-                ))}
-              </span>
-            </div>
-          ) : null}
-          {showScopeDisplay ? (
-            <div className="audio-node-scope-display" aria-hidden="true">
-              <span className="audio-node-scope-scale audio-node-scope-scale-top">+{amplitudeRangeLabel}</span>
-              <span className="audio-node-scope-scale audio-node-scope-scale-mid">0</span>
-              <span className="audio-node-scope-scale audio-node-scope-scale-bottom">-{amplitudeRangeLabel}</span>
-              <svg viewBox="0 0 160 48" preserveAspectRatio="none">
-                <path d={scopePath} />
-              </svg>
-            </div>
-          ) : null}
+          </div>
           {showResizableDisplay ? (
             <>
               <span
@@ -1265,7 +1436,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   'audio-node-scope-resize-handle audio-node-scope-resize-handle-left nodrag nopan',
                   scopeResizeCorner === 'bottom-left' ? 'audio-node-scope-resize-handle-active' : '',
                 ].filter(Boolean).join(' ')}
-                title={showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showImageDisplay ? 'Resize image' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : 'Resize scope'}
+                title={showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showImageDisplay ? 'Resize image' : showKeysDisplay ? 'Resize keys' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : 'Resize scope'}
                 onPointerDown={(event) => handleScopeResizePointerDown(event, 'bottom-left')}
                 onClick={handleScopeResizeClick}
                 onDoubleClick={(event) => event.stopPropagation()}
@@ -1275,7 +1446,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   'audio-node-scope-resize-handle audio-node-scope-resize-handle-right nodrag nopan',
                   scopeResizeCorner === 'bottom-right' ? 'audio-node-scope-resize-handle-active' : '',
                 ].filter(Boolean).join(' ')}
-                title={showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showImageDisplay ? 'Resize image' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : 'Resize scope'}
+                title={showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showImageDisplay ? 'Resize image' : showKeysDisplay ? 'Resize keys' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : 'Resize scope'}
                 onPointerDown={(event) => handleScopeResizePointerDown(event, 'bottom-right')}
                 onClick={handleScopeResizeClick}
                 onDoubleClick={(event) => event.stopPropagation()}
@@ -1327,7 +1498,7 @@ interface SampleWaveform {
 
 interface SampleWaveformDisplayProps {
   sampleUrl?: string;
-  playhead?: number;
+  playheads?: number[];
   start: number;
   end: number;
   attack: number;
@@ -1339,7 +1510,7 @@ interface SampleWaveformDisplayProps {
 
 function SampleWaveformDisplay({
   sampleUrl,
-  playhead,
+  playheads,
   start,
   end,
   attack,
@@ -1379,7 +1550,7 @@ function SampleWaveformDisplay({
       verticalPadding,
     )
     : '';
-  const playheadX = timelineX(clamp(playhead ?? safeStart, 0, 1) * sampleDuration);
+  const activePlayheads = playheads?.length ? playheads : [safeStart];
   const startX = timelineX(startSeconds);
   const endX = timelineX(endSeconds);
   const attackEndX = timelineX(attackEndSeconds);
@@ -1472,7 +1643,10 @@ function SampleWaveformDisplay({
           <rect className="sample-waveform-fade" x={rangeEndX} y={verticalPadding} width={width - horizontalPadding - rangeEndX} height={height - verticalPadding * 2} />
           {safeAttack > 0 ? <rect className="sample-waveform-phase is-attack" x={attackPhaseX} y={verticalPadding} width={attackPhaseWidth} height={height - verticalPadding * 2} /> : null}
           {safeRelease > 0 ? <rect className="sample-waveform-phase is-release" x={releasePhaseX} y={verticalPadding} width={releasePhaseWidth} height={height - verticalPadding * 2} /> : null}
-          <line className="wave-playhead-line" x1={playheadX} y1={verticalPadding} x2={playheadX} y2={height - verticalPadding} />
+          {activePlayheads.map((playhead, index) => {
+            const playheadX = timelineX(clamp(playhead, 0, 1) * sampleDuration);
+            return <line className="wave-playhead-line" key={`${index}:${playhead}`} x1={playheadX} y1={verticalPadding} x2={playheadX} y2={height - verticalPadding} />;
+          })}
           <line className="sample-waveform-boundary-line is-start" x1={startX} y1={verticalPadding} x2={startX} y2={height - verticalPadding} />
           <line className="sample-waveform-boundary-line is-end" x1={endX} y1={verticalPadding} x2={endX} y2={height - verticalPadding} />
           {safeAttack > 0 ? <line className="sample-waveform-phase-line is-attack" x1={startX} y1={verticalPadding} x2={attackEndX} y2={height - verticalPadding}><title>Attack phase</title></line> : null}
@@ -1653,6 +1827,56 @@ function useRecentMaxLevel(level: number, enabled: boolean): number {
   return recentMaxLevel;
 }
 
+function useRecentBipolarLevels(level: number, enabled: boolean): { positive: number; negative: number } {
+  const latestLevelRef = useRef(level);
+  const timeoutRef = useRef<number | null>(null);
+  const [recentLevels, setRecentLevels] = useState({ positive: 0, negative: 0 });
+
+  useEffect(() => {
+    latestLevelRef.current = level;
+  }, [level]);
+
+  useEffect(() => {
+    if (!enabled) {
+      if (timeoutRef.current !== null) {
+        window.clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+      setRecentLevels({ positive: 0, negative: 0 });
+      return;
+    }
+
+    setRecentLevels((current) => {
+      const next = {
+        positive: Math.max(current.positive, level, 0),
+        negative: Math.max(current.negative, -level, 0),
+      };
+      if (next.positive !== current.positive || next.negative !== current.negative) {
+        if (timeoutRef.current !== null) {
+          window.clearTimeout(timeoutRef.current);
+          timeoutRef.current = null;
+        }
+        return next;
+      }
+
+      if (timeoutRef.current === null) {
+        timeoutRef.current = window.setTimeout(() => {
+          timeoutRef.current = null;
+          const latest = latestLevelRef.current;
+          setRecentLevels({ positive: Math.max(0, latest), negative: Math.max(0, -latest) });
+        }, METER_RECENT_MAX_HOLD_MS);
+      }
+      return current;
+    });
+  }, [enabled, level]);
+
+  useEffect(() => () => {
+    if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
+  }, []);
+
+  return recentLevels;
+}
+
 function AudioOutputMeterRow({ label, level }: { label: string; level: number }) {
   const normalized = Math.max(0, Math.min(1, level));
 
@@ -1784,10 +2008,19 @@ interface SliderDisplayProps {
 }
 
 function SliderDisplay({ value, displayValue, direction, onChange }: SliderDisplayProps) {
+  const dragPointerRef = useRef<number | null>(null);
   const normalized = clamp(displayValue ?? value, 0, 1);
   const fillStyle = direction === 'vertical'
     ? { height: `${normalized * 100}%` }
     : { width: `${normalized * 100}%` };
+
+  function updateFromPointer(event: PointerEvent<HTMLInputElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const nextValue = direction === 'vertical'
+      ? 1 - ((event.clientY - bounds.top) / Math.max(1, bounds.height))
+      : (event.clientX - bounds.left) / Math.max(1, bounds.width);
+    onChange(clamp(nextValue, 0, 1));
+  }
 
   return (
     <div className={[
@@ -1810,16 +2043,40 @@ function SliderDisplay({ value, displayValue, direction, onChange }: SliderDispl
           event.currentTarget.blur();
         }}
         onFocus={(event) => event.currentTarget.blur()}
-        onPointerDown={(event) => event.stopPropagation()}
+        onPointerDown={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (!event.isPrimary || event.button !== 0) return;
+          dragPointerRef.current = event.pointerId;
+          event.currentTarget.setPointerCapture(event.pointerId);
+          updateFromPointer(event);
+        }}
+        onPointerMove={(event) => {
+          if (dragPointerRef.current !== event.pointerId) return;
+          event.preventDefault();
+          event.stopPropagation();
+          updateFromPointer(event);
+        }}
         onPointerUp={(event) => {
           event.stopPropagation();
+          if (dragPointerRef.current === event.pointerId) {
+            dragPointerRef.current = null;
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+              event.currentTarget.releasePointerCapture(event.pointerId);
+            }
+          }
           event.currentTarget.blur();
         }}
         onPointerCancel={(event) => {
           event.stopPropagation();
+          if (dragPointerRef.current === event.pointerId) dragPointerRef.current = null;
           event.currentTarget.blur();
         }}
+        onLostPointerCapture={(event) => {
+          if (dragPointerRef.current === event.pointerId) dragPointerRef.current = null;
+        }}
         onClick={(event) => {
+          event.preventDefault();
           event.stopPropagation();
           event.currentTarget.blur();
         }}
@@ -1928,6 +2185,118 @@ function ButtonDisplay({ mode, pressed, onPressedChange, onClickPulse }: ButtonD
   );
 }
 
+interface KeysDisplayProps {
+  size: number;
+  startNote: number;
+  onNoteChange: (note: number | null) => void;
+}
+
+function KeysDisplay({ size, startNote, onNoteChange }: KeysDisplayProps) {
+  const dragRef = useRef<{ pointerId: number; note: number } | null>(null);
+  const [activeNote, setActiveNote] = useState<number | null>(null);
+  const firstNote = clamp(Math.round(startNote), 0, 127);
+  const noteCount = clamp(Math.round(size), 1, 128 - firstNote);
+  const notes = Array.from({ length: noteCount }, (_, index) => firstNote + index);
+  const layouts = pianoKeyLayouts(notes);
+
+  function press(event: PointerEvent<HTMLButtonElement>, note: number) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragRef.current = { pointerId: event.pointerId, note };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setActiveNote(note);
+    onNoteChange(note);
+  }
+
+  function move(event: PointerEvent<HTMLButtonElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-midi-note]');
+    const note = Number(target?.dataset.midiNote);
+    if (!Number.isInteger(note) || note === drag.note) return;
+    drag.note = note;
+    setActiveNote(note);
+    onNoteChange(note);
+  }
+
+  function release(event: PointerEvent<HTMLButtonElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragRef.current = null;
+    setActiveNote(null);
+    onNoteChange(null);
+  }
+
+  return (
+    <div className="keys-node-keyboard nodrag nopan" aria-label={`Piano keys ${firstNote} to ${firstNote + noteCount - 1}`}>
+      {layouts.map(({ note, black, left, width }) => (
+        <button
+          className={[
+            'keys-node-key nodrag nopan',
+            black ? 'keys-node-key-black' : 'keys-node-key-white',
+            activeNote === note ? 'keys-node-key-active' : '',
+          ].filter(Boolean).join(' ')}
+          key={note}
+          type="button"
+          aria-label={`MIDI note ${note}`}
+          aria-pressed={activeNote === note}
+          data-midi-note={note}
+          style={{ left: `${left}%`, width: `${width}%` }}
+          onPointerDown={(event) => press(event, note)}
+          onPointerMove={move}
+          onPointerUp={release}
+          onPointerCancel={release}
+          onLostPointerCapture={(event) => {
+            if (dragRef.current?.pointerId === event.pointerId) {
+              dragRef.current = null;
+              setActiveNote(null);
+              onNoteChange(null);
+            }
+          }}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+          onDoubleClick={(event) => event.stopPropagation()}
+        />
+      ))}
+    </div>
+  );
+}
+
+function pianoKeyLayouts(notes: number[]): Array<{ note: number; black: boolean; left: number; width: number }> {
+  const raw = notes.map((note) => {
+    const pitchClass = note % 12;
+    const black = [1, 3, 6, 8, 10].includes(pitchClass);
+    const octave = Math.floor(note / 12);
+    const whiteInOctave = [0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6][pitchClass];
+    const whitePosition = octave * 7 + whiteInOctave;
+    return {
+      note,
+      black,
+      left: black ? whitePosition + 0.68 : whitePosition,
+      width: black ? 0.64 : 1,
+    };
+  });
+  const min = Math.min(...raw.map((key) => key.left));
+  const max = Math.max(...raw.map((key) => key.left + key.width));
+  const span = Math.max(0.001, max - min);
+  return raw.map((key) => ({
+    ...key,
+    left: ((key.left - min) / span) * 100,
+    width: (key.width / span) * 100,
+  }));
+}
+
+function midiNoteToFrequency(note: number): number {
+  return 440 * (2 ** ((note - 69) / 12));
+}
+
 interface SequencerGridProps {
   params: Record<string, number>;
   rows: number;
@@ -1936,8 +2305,10 @@ interface SequencerGridProps {
   currentStep?: number;
   selectedLinkOutputs: string[];
   setOutputRowRef: (port: string, element: HTMLDivElement | null) => void;
-  onCellToggle: (rowIndex: number, stepIndex: number) => void;
+  onParamsChange: (values: Record<string, number>) => void;
 }
+
+const SEQUENCER_TRIGGER_GRAB_FRACTION = 0.35;
 
 function SequencerGrid({
   params,
@@ -1947,77 +2318,290 @@ function SequencerGrid({
   currentStep,
   selectedLinkOutputs,
   setOutputRowRef,
-  onCellToggle,
+  onParamsChange,
 }: SequencerGridProps) {
-  const activeStep = Number.isFinite(currentStep) ? Math.round(currentStep ?? -1) : -1;
+  const gateMode = sequencerUsesGateMode(params);
+  const activeStep = Number.isFinite(currentStep) ? Math.floor(currentStep ?? -1) : -1;
   const dragRef = useRef<{
     pointerId: number;
     rowIndex: number;
-    visited: Set<string>;
+    slot?: number;
+    action?: 'move' | 'resize-left' | 'resize-right';
+    anchorX?: number;
+    anchorStart?: number;
+    anchorEnd?: number;
+    moved?: boolean;
   } | null>(null);
 
-  function toggleDragCell(rowIndex: number, stepIndex: number) {
-    const drag = dragRef.current;
-    if (!drag || drag.rowIndex !== rowIndex) return;
+  const triggerDragRef = useRef<{
+    pointerId: number;
+    rowIndex: number;
+    slot: number;
+    anchorX: number;
+    anchorPosition: number;
+    previewPosition: number;
+    moved: boolean;
+  } | null>(null);
+  const [triggerPreview, setTriggerPreview] = useState<{
+    rowIndex: number;
+    slot: number;
+    position: number;
+  } | null>(null);
 
-    const key = `${rowIndex}:${stepIndex}`;
-    if (drag.visited.has(key)) return;
+  useEffect(() => {
+    if (!triggerPreview) return;
+    const finish = (event: globalThis.PointerEvent) => finishTriggerDrag(event.pointerId);
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', finish);
+    return () => {
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+    };
+  }, [triggerPreview]);
 
-    drag.visited.add(key);
-    onCellToggle(rowIndex, stepIndex);
-  }
+  const triggerPaintRef = useRef<{
+    pointerId: number;
+    rowIndex: number;
+    visited: Set<number>;
+    lastStep: number;
+  } | null>(null);
+  const [triggerPaintPreview, setTriggerPaintPreview] = useState<{ rowIndex: number; positions: number[] } | null>(null);
 
-  function cellAtPoint(clientX: number, clientY: number): { rowIndex: number; stepIndex: number } | null {
-    const target = document.elementFromPoint(clientX, clientY);
-    if (!(target instanceof Element)) return null;
+  const gateCreateRef = useRef<{
+    pointerId: number;
+    rowIndex: number;
+    anchorX: number;
+    start: number;
+    end: number;
+    moved: boolean;
+  } | null>(null);
+  const [gateCreatePreview, setGateCreatePreview] = useState<{
+    rowIndex: number;
+    start: number;
+    end: number;
+  } | null>(null);
 
-    const cell = target.closest<HTMLButtonElement>('[data-sequencer-cell="true"]');
-    if (!cell) return null;
+  useEffect(() => {
+    if (!triggerPaintPreview && !gateCreatePreview) return;
+    const finish = (event: globalThis.PointerEvent) => {
+      finishTriggerPaint(event.pointerId);
+      finishGateCreate(event.pointerId);
+    };
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', finish);
+    return () => {
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+    };
+  }, [triggerPaintPreview, gateCreatePreview]);
 
-    const rowIndex = Number(cell.dataset.rowIndex);
-    const stepIndex = Number(cell.dataset.stepIndex);
-    if (!Number.isInteger(rowIndex) || !Number.isInteger(stepIndex)) return null;
-
-    return { rowIndex, stepIndex };
-  }
-
-  function beginDrag(event: PointerEvent<HTMLButtonElement>, rowIndex: number, stepIndex: number) {
+  function beginTriggerPaint(event: PointerEvent<HTMLButtonElement>, rowIndex: number, stepIndex: number) {
     if (event.button !== 0) return;
-
     event.preventDefault();
     event.stopPropagation();
+    triggerPaintRef.current = {
+      pointerId: event.pointerId,
+      rowIndex,
+      visited: new Set([stepIndex]),
+      lastStep: stepIndex,
+    };
+    setTriggerPaintPreview({ rowIndex, positions: [stepIndex] });
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
 
+  function updateTriggerPaint(event: PointerEvent<HTMLButtonElement>) {
+    const paint = triggerPaintRef.current;
+    if (!paint || paint.pointerId !== event.pointerId) return;
+    const row = event.currentTarget.closest('.sequencer-cells')?.getBoundingClientRect();
+    if (!row) return;
+    const nextStep = Math.max(0, Math.min(steps - 1, Math.floor(((event.clientX - row.left) / Math.max(1, row.width)) * steps)));
+    const direction = nextStep >= paint.lastStep ? 1 : -1;
+    for (let stepIndex = paint.lastStep; stepIndex !== nextStep + direction; stepIndex += direction) {
+      paint.visited.add(stepIndex);
+    }
+    paint.lastStep = nextStep;
+    setTriggerPaintPreview({ rowIndex: paint.rowIndex, positions: [...paint.visited] });
+  }
+
+  function finishTriggerPaint(pointerId: number) {
+    const paint = triggerPaintRef.current;
+    if (!paint || paint.pointerId !== pointerId) return;
+    const existing = sequencerTriggersForRow(params, paint.rowIndex, steps);
+    const usedSlots = new Set(existing.map((trigger) => trigger.slot));
+    const existingPositions = new Set(existing.map((trigger) => Math.round(trigger.position * 1000000)));
+    const values: Record<string, number> = {};
+    for (const position of paint.visited) {
+      if (existingPositions.has(Math.round(position * 1000000))) continue;
+      const slot = Array.from({ length: steps }, (_, index) => index).find((index) => !usedSlots.has(index));
+      if (slot === undefined) break;
+      usedSlots.add(slot);
+      values[sequencerCellParamName(paint.rowIndex, slot)] = 1;
+      values[sequencerTriggerPositionParamName(paint.rowIndex, slot)] = position;
+    }
+    onParamsChange(values);
+    triggerPaintRef.current = null;
+    setTriggerPaintPreview(null);
+  }
+
+  function positionInSequencerRow(event: PointerEvent<HTMLElement>): number {
+    const row = event.currentTarget.closest('.sequencer-cells')?.getBoundingClientRect();
+    if (!row) return 0;
+    return Math.max(0, Math.min(steps, ((event.clientX - row.left) / Math.max(1, row.width)) * steps));
+  }
+
+  function beginGateCreate(event: PointerEvent<HTMLButtonElement>, rowIndex: number) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const start = positionInSequencerRow(event);
+    const end = Math.min(steps, start + 1);
+    gateCreateRef.current = {
+      pointerId: event.pointerId,
+      rowIndex,
+      anchorX: event.clientX,
+      start,
+      end,
+      moved: false,
+    };
+    setGateCreatePreview({ rowIndex, start, end });
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function updateGateCreate(event: PointerEvent<HTMLButtonElement>) {
+    const create = gateCreateRef.current;
+    if (!create || create.pointerId !== event.pointerId) return;
+    if (Math.abs(event.clientX - create.anchorX) >= 3) create.moved = true;
+    if (!create.moved) return;
+    create.end = Math.max(create.start + 0.05, positionInSequencerRow(event));
+    create.end = Math.min(steps, create.end);
+    setGateCreatePreview({ rowIndex: create.rowIndex, start: create.start, end: create.end });
+  }
+
+  function finishGateCreate(pointerId: number) {
+    const create = gateCreateRef.current;
+    if (!create || create.pointerId !== pointerId) return;
+    const usedSlots = new Set(sequencerGatesForRow(params, create.rowIndex, steps).map((gate) => gate.slot));
+    const slot = Array.from({ length: steps }, (_, index) => index).find((index) => !usedSlots.has(index));
+    if (slot !== undefined) {
+      onParamsChange({
+        [SEQUENCER_GATE_INITIALIZED_PARAM]: 1,
+        [sequencerGateParamName(create.rowIndex, slot, 'active')]: 1,
+        [sequencerGateParamName(create.rowIndex, slot, 'start')]: create.start,
+        [sequencerGateParamName(create.rowIndex, slot, 'end')]: create.end,
+      });
+    }
+    gateCreateRef.current = null;
+    setGateCreatePreview(null);
+  }
+
+  function beginTriggerDrag(event: PointerEvent<HTMLDivElement>, rowIndex: number, slot: number, position: number) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    triggerDragRef.current = {
+      pointerId: event.pointerId,
+      rowIndex,
+      slot,
+      anchorX: event.clientX,
+      anchorPosition: position,
+      previewPosition: position,
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function updateTriggerDrag(event: PointerEvent<HTMLDivElement>) {
+    const drag = triggerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const rowWidth = event.currentTarget.closest('.sequencer-cells')?.getBoundingClientRect().width ?? steps * 26;
+    const delta = ((event.clientX - drag.anchorX) / Math.max(1, rowWidth)) * steps;
+    if (Math.abs(event.clientX - drag.anchorX) >= 3) drag.moved = true;
+    if (!drag.moved) return;
+    const position = Math.max(0, Math.min(steps - SEQUENCER_TRIGGER_GRAB_FRACTION, drag.anchorPosition + delta));
+    drag.previewPosition = position;
+    setTriggerPreview({ rowIndex: drag.rowIndex, slot: drag.slot, position });
+  }
+
+  function finishTriggerDrag(pointerId: number) {
+    const drag = triggerDragRef.current;
+    if (!drag || drag.pointerId !== pointerId) return;
+    if (!drag.moved) {
+      onParamsChange({ [sequencerCellParamName(drag.rowIndex, drag.slot)]: 0 });
+    } else {
+      onParamsChange({
+        [sequencerTriggerPositionParamName(drag.rowIndex, drag.slot)]: drag.previewPosition,
+      });
+    }
+    triggerDragRef.current = null;
+    setTriggerPreview(null);
+  }
+
+  function endTriggerDrag(event: PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    finishTriggerDrag(event.pointerId);
+  }
+
+  function beginGateDrag(
+    event: PointerEvent<HTMLElement>,
+    rowIndex: number,
+    slot: number,
+    start: number,
+    end: number,
+    action: 'move' | 'resize-left' | 'resize-right',
+  ) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
     dragRef.current = {
       pointerId: event.pointerId,
       rowIndex,
-      visited: new Set(),
+      slot,
+      action,
+      anchorX: event.clientX,
+      anchorStart: start,
+      anchorEnd: end,
+      moved: false,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
-    toggleDragCell(rowIndex, stepIndex);
   }
 
-  function updateDrag(event: PointerEvent<HTMLButtonElement>) {
+  function updateGateDrag(event: PointerEvent<HTMLDivElement>) {
     const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag || drag.pointerId !== event.pointerId || drag.slot === undefined || !drag.action) return;
+    const rowWidth = event.currentTarget.closest('.sequencer-cells')?.getBoundingClientRect().width ?? steps * 26;
+    const delta = ((event.clientX - (drag.anchorX ?? event.clientX)) / Math.max(1, rowWidth)) * steps;
+    if (Math.abs(event.clientX - (drag.anchorX ?? event.clientX)) >= 3) drag.moved = true;
+    if (!drag.moved) return;
 
-    event.preventDefault();
-    event.stopPropagation();
-
-    const cell = cellAtPoint(event.clientX, event.clientY);
-    if (!cell) return;
-
-    toggleDragCell(cell.rowIndex, cell.stepIndex);
-  }
-
-  function endDrag(event: PointerEvent<HTMLButtonElement>) {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
+    const minimumLength = 0.05;
+    let start = drag.anchorStart ?? 0;
+    let end = drag.anchorEnd ?? start + 1;
+    if (drag.action === 'move') {
+      const length = end - start;
+      start = Math.max(0, Math.min(steps - length, start + delta));
+      end = start + length;
+    } else if (drag.action === 'resize-left') {
+      start = Math.max(0, Math.min(end - minimumLength, start + delta));
+    } else {
+      end = Math.max(start + minimumLength, Math.min(steps, end + delta));
     }
+    onParamsChange({
+      [sequencerGateParamName(drag.rowIndex, drag.slot, 'start')]: start,
+      [sequencerGateParamName(drag.rowIndex, drag.slot, 'end')]: end,
+    });
+  }
+
+  function endGateDrag(event: PointerEvent<HTMLDivElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId || drag.slot === undefined) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!drag.moved) {
+      onParamsChange({ [sequencerGateParamName(drag.rowIndex, drag.slot, 'active')]: 0 });
+    }
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     dragRef.current = null;
   }
 
@@ -2029,6 +2613,8 @@ function SequencerGrid({
     >
       {Array.from({ length: rows }, (_, rowIndex) => {
         const outputName = sequencerOutputName(rowIndex);
+        const gates = gateMode ? sequencerGatesForRow(params, rowIndex, steps) : [];
+        const triggers = gateMode ? [] : sequencerTriggersForRow(params, rowIndex, steps);
         return (
           <div
             className="sequencer-row"
@@ -2037,7 +2623,6 @@ function SequencerGrid({
           >
             <div className="sequencer-cells" role="row">
               {Array.from({ length: steps }, (_, stepIndex) => {
-                const active = (params[sequencerCellParamName(rowIndex, stepIndex)] ?? 0) >= 0.5;
                 const highlightedBeat = Math.floor(stepIndex / beatLength) % 2 === 1;
                 return (
                   <button
@@ -2045,7 +2630,6 @@ function SequencerGrid({
                       'sequencer-cell',
                       highlightedBeat ? 'sequencer-cell-beat-highlight' : '',
                       activeStep === stepIndex ? 'sequencer-cell-current' : '',
-                      active ? 'sequencer-cell-active' : '',
                     ].filter(Boolean).join(' ')}
                     key={stepIndex}
                     type="button"
@@ -2054,14 +2638,32 @@ function SequencerGrid({
                     data-row-index={rowIndex}
                     data-step-index={stepIndex}
                     aria-label={`Row ${rowIndex + 1}, step ${stepIndex + 1}`}
-                    aria-pressed={active}
+                    aria-pressed={false}
                     title={`Row ${rowIndex + 1}, step ${stepIndex + 1}`}
-                    onPointerDown={(event) => beginDrag(event, rowIndex, stepIndex)}
-                    onPointerMove={updateDrag}
-                    onPointerUp={endDrag}
-                    onPointerCancel={endDrag}
-                    onLostPointerCapture={() => {
-                      dragRef.current = null;
+                    onPointerDown={(event) => {
+                      if (gateMode) beginGateCreate(event, rowIndex);
+                      else beginTriggerPaint(event, rowIndex, stepIndex);
+                    }}
+                    onPointerMove={(event) => {
+                      if (gateMode) updateGateCreate(event);
+                      else updateTriggerPaint(event);
+                    }}
+                    onPointerUp={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                        event.currentTarget.releasePointerCapture(event.pointerId);
+                      }
+                      if (gateMode) finishGateCreate(event.pointerId);
+                      else finishTriggerPaint(event.pointerId);
+                    }}
+                    onPointerCancel={(event) => {
+                      if (gateMode) finishGateCreate(event.pointerId);
+                      else finishTriggerPaint(event.pointerId);
+                    }}
+                    onLostPointerCapture={(event) => {
+                      if (gateMode) finishGateCreate(event.pointerId);
+                      else finishTriggerPaint(event.pointerId);
                     }}
                     onDoubleClick={(event) => event.stopPropagation()}
                     onClick={(event) => {
@@ -2071,6 +2673,79 @@ function SequencerGrid({
                   />
                 );
               })}
+              {!gateMode && triggerPaintPreview?.rowIndex === rowIndex
+                ? triggerPaintPreview.positions.map((position) => (
+                    <div
+                      key={`paint-${position}`}
+                      className="sequencer-trigger sequencer-step-create-preview"
+                      style={{ left: `${(position / steps) * 100}%`, width: `${(1 / steps) * 100}%` }}
+                    />
+                  ))
+                : null}
+              {gateMode && gateCreatePreview?.rowIndex === rowIndex ? (
+                <div
+                  className="sequencer-gate sequencer-step-create-preview"
+                  style={{
+                    left: `${(gateCreatePreview.start / steps) * 100}%`,
+                    width: `${((gateCreatePreview.end - gateCreatePreview.start) / steps) * 100}%`,
+                  }}
+                />
+              ) : null}
+              {triggers.map((trigger) => (
+                <div
+                  key={trigger.slot}
+                  className="sequencer-trigger"
+                  style={{
+                    left: `${(((triggerPreview?.rowIndex === rowIndex && triggerPreview.slot === trigger.slot)
+                      ? triggerPreview.position
+                      : trigger.position) / steps) * 100}%`,
+                    width: `${(1 / steps) * 100}%`,
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Row ${rowIndex + 1} trigger at ${trigger.position.toFixed(2)}`}
+                  title="Drag to move; click to delete"
+                  onPointerDown={(event) => beginTriggerDrag(event, rowIndex, trigger.slot, trigger.position)}
+                  onPointerMove={updateTriggerDrag}
+                  onPointerUp={endTriggerDrag}
+                  onPointerCancel={endTriggerDrag}
+                  onLostPointerCapture={(event) => finishTriggerDrag(event.pointerId)}
+                  onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}
+                />
+              ))}
+              {gates.map((gate) => (
+                <div
+                  key={gate.slot}
+                  className="sequencer-gate"
+                  style={{
+                    left: `${(gate.start / steps) * 100}%`,
+                    width: `${((gate.end - gate.start) / steps) * 100}%`,
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Row ${rowIndex + 1} gate from ${gate.start.toFixed(2)} to ${gate.end.toFixed(2)}`}
+                  title="Drag to move; drag either edge to resize; click to delete"
+                  onPointerDown={(event) => {
+                    if (event.target === event.currentTarget) {
+                      beginGateDrag(event, rowIndex, gate.slot, gate.start, gate.end, 'move');
+                    }
+                  }}
+                  onPointerMove={updateGateDrag}
+                  onPointerUp={endGateDrag}
+                  onPointerCancel={endGateDrag}
+                  onLostPointerCapture={() => { dragRef.current = null; }}
+                  onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}
+                >
+                  <span
+                    className="sequencer-gate-handle sequencer-gate-handle-left"
+                    onPointerDown={(event) => beginGateDrag(event, rowIndex, gate.slot, gate.start, gate.end, 'resize-left')}
+                  />
+                  <span
+                    className="sequencer-gate-handle sequencer-gate-handle-right"
+                    onPointerDown={(event) => beginGateDrag(event, rowIndex, gate.slot, gate.start, gate.end, 'resize-right')}
+                  />
+                </div>
+              ))}
             </div>
             <div className="sequencer-output-port">
               <Handle
@@ -2299,19 +2974,36 @@ function displayAmplitudeRange(value: number | undefined): number {
   return Number.isFinite(range) && range > 0 ? range : 1;
 }
 
-function meterScaleTicksForRange(range: number, width: number): Array<{ fraction: number; label: string }> {
-  const divisions = meterLabelDivisionsForWidth(width);
+function monitorDisplayMode(value: number | undefined, fallback: 'unipolar' | 'bipolar'): 'unipolar' | 'bipolar' {
+  if (value === undefined) return fallback;
+  return Math.round(value) === 1 ? 'bipolar' : 'unipolar';
+}
+
+function amplitudeScaleTicks(
+  range: number,
+  size: number,
+  mode: 'unipolar' | 'bipolar',
+  orientation: 'horizontal' | 'vertical' = 'horizontal',
+): Array<{ fraction: number; label: string }> {
+  const divisions = amplitudeLabelDivisions(size, orientation, mode);
   return Array.from({ length: divisions + 1 }, (_, index) => {
     const fraction = index / divisions;
+    const value = mode === 'bipolar'
+      ? orientation === 'horizontal'
+        ? -range + fraction * range * 2
+        : range - fraction * range * 2
+      : orientation === 'horizontal'
+        ? range * fraction
+        : range * (1 - fraction);
     return {
       fraction,
-      label: formatAmplitude(range * fraction),
+      label: formatAmplitude(value),
     };
   });
 }
 
 function meterGridTicksForWidth(width: number): Array<{ fraction: number; major: boolean }> {
-  const labelDivisions = meterLabelDivisionsForWidth(width);
+  const labelDivisions = amplitudeLabelDivisions(width, 'horizontal', 'unipolar');
   const divisions = width >= 560
     ? 64
     : width >= 400
@@ -2340,10 +3032,11 @@ function meterGridRowsForHeight(height: number): number[] {
   return Array.from({ length: rows }, (_, index) => (index + 1) / (rows + 1));
 }
 
-function meterLabelDivisionsForWidth(width: number): number {
-  if (width >= 560) return 16;
-  if (width >= 360) return 8;
-  return 4;
+function amplitudeLabelDivisions(size: number, orientation: 'horizontal' | 'vertical', mode: 'unipolar' | 'bipolar'): number {
+  const base = orientation === 'horizontal'
+    ? size >= 560 ? 8 : size >= 360 ? 4 : 2
+    : size >= 176 ? 8 : size >= 104 ? 4 : 2;
+  return mode === 'bipolar' ? Math.max(2, base) : base;
 }
 
 function shouldForceCompactPorts(definition: NodeDefinition): boolean {
@@ -2358,12 +3051,16 @@ function isSelectorValuePort(name: string): boolean {
   return /^[1-9][0-9]*$/.test(name);
 }
 
-function samplesToScopePath(samples: number[], range: number): string {
-  if (samples.length < 2) return 'M0 24 L160 24';
+function samplesToScopePath(samples: number[], range: number, mode: 'unipolar' | 'bipolar'): string {
+  const restingY = mode === 'bipolar' ? 24 : 46;
+  if (samples.length < 2) return `M0 ${restingY} L160 ${restingY}`;
 
   return samples.map((sample, index) => {
     const x = (index / (samples.length - 1)) * 160;
-    const y = 24 - Math.max(-1, Math.min(1, sample / range)) * 22;
+    const normalized = Math.max(-1, Math.min(1, sample / range));
+    const y = mode === 'bipolar'
+      ? 24 - normalized * 22
+      : 46 - Math.abs(normalized) * 44;
     return `${index === 0 ? 'M' : 'L'}${roundPathNumber(x)} ${roundPathNumber(y)}`;
   }).join(' ');
 }
@@ -2536,6 +3233,7 @@ function displayPortName(name: string): string {
   if (name === 'gateLength') return 'gate length';
   if (name === 'midiChannel') return 'midi channel';
   if (name === 'midiCc') return 'midi cc';
+  if (name === 'startNote') return 'start note';
   return name;
 }
 
@@ -2798,8 +3496,9 @@ function NumericScrubber({
   onEditStart,
   onMidiLearn,
 }: NumericScrubberProps) {
+  const dragStep = integer ? (baseStep ?? 0.01) * 3 : baseStep;
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(formatDisplayValue(value));
+  const [draft, setDraft] = useState(formatNumericValue(value));
   const inputRef = useRef<HTMLInputElement | null>(null);
   const lastMidiLearnIdRef = useRef<number | null>(null);
   const dragRef = useRef<{
@@ -2813,13 +3512,13 @@ function NumericScrubber({
 
   useEffect(() => {
     if (!editing) {
-      setDraft(formatDisplayValue(value));
+      setDraft(formatNumericValue(value));
     }
   }, [editing, value]);
 
   useEffect(() => {
     if (editing) {
-      setDraft(formatDisplayValue(value));
+      setDraft(formatNumericValue(value));
       requestAnimationFrame(() => {
         inputRef.current?.focus();
         inputRef.current?.select();
@@ -2833,7 +3532,7 @@ function NumericScrubber({
 
     lastMidiLearnIdRef.current = midiLearnEvent.id;
     const nextValue = constrainValue(midiLearnEvent.cc, min, max, integer);
-    setDraft(formatDisplayValue(nextValue));
+    setDraft(formatNumericValue(nextValue));
     onMidiLearn(midiLearnEvent);
   }, [editing, integer, max, midiLearnEvent, min, onMidiLearn]);
 
@@ -2850,7 +3549,7 @@ function NumericScrubber({
       anchorY: event.clientY,
       anchorValue: value,
       currentValue: value,
-      step: scrubberStep(event, baseStep),
+      step: scrubberStep(event, dragStep),
       dragging: false,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -2867,7 +3566,7 @@ function NumericScrubber({
     event.preventDefault();
     event.stopPropagation();
 
-    const step = scrubberStep(event, baseStep);
+    const step = scrubberStep(event, dragStep);
     if (step !== drag.step) {
       drag.anchorY = event.clientY;
       drag.anchorValue = drag.currentValue;
@@ -2911,13 +3610,13 @@ function NumericScrubber({
     if (Number.isFinite(nextValue)) {
       onChange(constrainValue(nextValue, min, max, integer));
     } else {
-      setDraft(formatDisplayValue(value));
+      setDraft(formatNumericValue(value));
     }
     setEditing(false);
   }
 
   function cancelDraft() {
-    setDraft(formatDisplayValue(value));
+    setDraft(formatNumericValue(value));
     setEditing(false);
   }
 
@@ -2944,6 +3643,7 @@ function NumericScrubber({
         onKeyDown={handleEditKeyDown}
         onPointerDown={(event) => event.stopPropagation()}
         onMouseDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
         onDoubleClick={(event) => event.stopPropagation()}
         spellCheck={false}
       />
@@ -2963,6 +3663,7 @@ function NumericScrubber({
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
       onMouseDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
       onDoubleClick={(event) => event.stopPropagation()}
       onKeyDown={(event) => {
         if (event.key === 'Enter') {
@@ -2971,7 +3672,7 @@ function NumericScrubber({
         }
       }}
     >
-      {formatDisplayValue(value)}
+      {formatNumericValue(value)}
     </div>
   );
 }
@@ -2990,12 +3691,6 @@ function scrubberStep(event: { metaKey: boolean; shiftKey: boolean }, baseStep =
 function constrainValue(value: number, min?: number, max?: number, integer = false): number {
   const rounded = integer ? Math.round(value) : value;
   return Math.min(Math.max(rounded, min ?? -Infinity), max ?? Infinity);
-}
-
-function formatDisplayValue(value: number): string {
-  if (!Number.isFinite(value)) return '0';
-  const rounded = roundValue(value);
-  return Number.isInteger(rounded) ? rounded.toString() : rounded.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
 }
 
 function hasDraggedFiles(event: DragEvent<HTMLElement>): boolean {

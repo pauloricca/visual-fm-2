@@ -8,10 +8,19 @@ interface DiagnosticEvent {
 
 const DIAGNOSTIC_ENDPOINT = '/api/diagnostics';
 const HEARTBEAT_INTERVAL_MS = 30_000;
+const PERFORMANCE_TIMELINE_MAINTENANCE_INTERVAL_MS = 1_000;
+const PERFORMANCE_TIMELINE_ENTRY_LIMIT = 1_000;
 const SESSION_STORAGE_KEY = 'visual-fm-2.diagnostics-session';
 
 const sessionId = getSessionId();
 let lastHeartbeatAt = 0;
+let lastPerformanceTimelineMaintenance = performanceTimelineSnapshot(false);
+
+const buildEnvironment = import.meta.env as ImportMetaEnv & {
+  MODE: string;
+  DEV: boolean;
+  PROD: boolean;
+};
 
 export function installDiagnostics(): void {
   const windowWithDiagnostics = window as Window & { __visualFmDiagnosticsInstalled?: boolean };
@@ -26,6 +35,11 @@ export function installDiagnostics(): void {
       crossOriginIsolated: window.crossOriginIsolated,
       hardwareConcurrency: navigator.hardwareConcurrency,
       deviceMemoryGb: navigatorDeviceMemory(),
+      build: {
+        mode: buildEnvironment.MODE,
+        development: buildEnvironment.DEV,
+        production: buildEnvironment.PROD,
+      },
       viewport: viewportSnapshot(),
       gpu: gpuSnapshot(),
     },
@@ -91,10 +105,15 @@ export function installDiagnostics(): void {
       details: {
         visibilityState: document.visibilityState,
         memory: memorySnapshot(),
+        performanceTimeline: lastPerformanceTimelineMaintenance,
         viewport: viewportSnapshot(),
       },
     });
   }, HEARTBEAT_INTERVAL_MS);
+
+  window.setInterval(() => {
+    lastPerformanceTimelineMaintenance = maintainPerformanceTimeline();
+  }, PERFORMANCE_TIMELINE_MAINTENANCE_INTERVAL_MS);
 }
 
 export function logDiagnosticEvent(
@@ -195,6 +214,26 @@ function memorySnapshot() {
     jsHeapSizeLimit: memory.jsHeapSizeLimit,
     totalJSHeapSize: memory.totalJSHeapSize,
     usedJSHeapSize: memory.usedJSHeapSize,
+  };
+}
+
+function maintainPerformanceTimeline() {
+  const snapshot = performanceTimelineSnapshot(false);
+  const shouldClear = snapshot.measures > PERFORMANCE_TIMELINE_ENTRY_LIMIT
+    || snapshot.marks > PERFORMANCE_TIMELINE_ENTRY_LIMIT;
+  if (shouldClear) {
+    performance.clearMeasures();
+    performance.clearMarks();
+  }
+  return { ...snapshot, cleared: shouldClear };
+}
+
+function performanceTimelineSnapshot(cleared: boolean) {
+  return {
+    measures: performance.getEntriesByType('measure').length,
+    marks: performance.getEntriesByType('mark').length,
+    resources: performance.getEntriesByType('resource').length,
+    cleared,
   };
 }
 
