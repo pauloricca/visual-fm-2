@@ -136,6 +136,7 @@ export interface PersistedEditorState {
     outputs?: PortDefinition[];
     subpatch?: Patch;
     compactPorts?: boolean;
+    scale?: number;
     scopeSize?: ScopeNodeSize;
   }>;
   edges: Array<{
@@ -217,6 +218,7 @@ export function editorStateToFlowNodes(
         customWave: node.customWave ? normalizeCustomWave(node.customWave, node.params) : undefined,
         params: node.params,
         position: node.position,
+        scale: node.scale,
         inputs: node.inputs,
         outputs: node.outputs,
         subpatch: node.subpatch,
@@ -273,6 +275,7 @@ export function flowToEditorState(
         : undefined,
       params: node.data.patchNode.params,
       position: node.position,
+      scale: node.data.patchNode.scale,
       inputs: node.data.patchNode.inputs,
       outputs: node.data.patchNode.outputs,
       subpatch: node.data.patchNode.subpatch,
@@ -356,6 +359,7 @@ export function patchFromFlow(nodes: ShaderFlowNode[], edges: ShaderFlowEdge[]):
       ...(patchNode.customWave ? { customWave: normalizeCustomWave(patchNode.customWave, patchNode.params) } : {}),
       params: patchNode.params,
       position: node.position,
+      ...(patchNode.scale !== undefined ? { scale: patchNode.scale } : {}),
       ...(patchNode.scopeSize ? { scopeSize: patchNode.scopeSize } : {}),
       ...(patchNode.inputs ? { inputs: patchNode.inputs } : {}),
       ...(patchNode.outputs ? { outputs: patchNode.outputs } : {}),
@@ -536,6 +540,7 @@ function normalizePersistedState(state: PersistedEditorState): PersistedEditorSt
       ...(node.customWave ? { customWave: normalizeCustomWave(node.customWave, normalizePersistedNodeParams(node)) } : {}),
       params: normalizePersistedNodeParams(node),
       position: node.position,
+      ...(node.scale !== undefined ? { scale: node.scale } : {}),
       ...(node.inputs ? { inputs: normalizePersistedInputDefinitions(node) } : {}),
       ...(node.outputs ? { outputs: normalizePersistedOutputDefinitions(node) } : {}),
       ...(node.subpatch ? { subpatch: normalizePatchCompatibility(node.subpatch) } : {}),
@@ -716,6 +721,7 @@ function persistedNodeFromPatchNode(
     customWave: node.customWave,
     params: node.params,
     position: node.position ?? original?.position ?? { x: 0, y: 0 },
+    scale: node.scale ?? original?.scale,
     inputs: node.inputs,
     outputs: node.outputs,
     subpatch: node.subpatch,

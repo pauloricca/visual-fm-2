@@ -509,6 +509,7 @@ button:hover {
 .shader-node {
   position: relative;
   width: max-content;
+  zoom: var(--node-scale, 1);
   --node-pin-size: 8px;
   --node-pin-half-size: calc(var(--node-pin-size) / 2);
   --node-content-padding: 8px;

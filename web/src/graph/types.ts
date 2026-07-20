@@ -80,6 +80,8 @@ export interface PatchNode {
   customWave?: CustomWaveSettings;
   params: Record<string, number>;
   position?: Vec2;
+  /** Visual priority multiplier used by the editor; 1 is the default size. */
+  scale?: number;
   scopeSize?: NodeDisplaySize;
   inputs?: PortDefinition[];
   outputs?: PortDefinition[];

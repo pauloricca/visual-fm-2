@@ -1524,6 +1524,54 @@ function NodeEditorInner() {
     return true;
   }, [commitHistory, updateEdgeMode, updateEdgeWeight]);
 
+  const scaleSelectedNodes = useCallback((factor: number) => {
+    const selectedNodes = nodesRef.current.filter((node) => node.selected);
+    if (selectedNodes.length === 0) return false;
+
+    const bounds = selectedNodes.map((node) => {
+      const width = node.measured?.width ?? node.width ?? DEFAULT_NODE_BOUNDS_SIZE.width;
+      const height = node.measured?.height ?? node.height ?? DEFAULT_NODE_BOUNDS_SIZE.height;
+      return { node, width, height };
+    });
+    const minX = Math.min(...bounds.map(({ node }) => node.position.x));
+    const minY = Math.min(...bounds.map(({ node }) => node.position.y));
+    const maxX = Math.max(...bounds.map(({ node, width }) => node.position.x + width));
+    const maxY = Math.max(...bounds.map(({ node, height }) => node.position.y + height));
+    const center = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+    const selectedById = new Map(bounds.map((entry) => [entry.node.id, entry]));
+
+    commitHistory();
+    setNodes((current) => current.map((node) => {
+      const entry = selectedById.get(node.id);
+      if (!entry) return node;
+
+      const nextWidth = entry.width * factor;
+      const nextHeight = entry.height * factor;
+      const currentCenter = {
+        x: node.position.x + entry.width / 2,
+        y: node.position.y + entry.height / 2,
+      };
+      const nextCenter = {
+        x: center.x + (currentCenter.x - center.x) * factor,
+        y: center.y + (currentCenter.y - center.y) * factor,
+      };
+      const position = { x: nextCenter.x - nextWidth / 2, y: nextCenter.y - nextHeight / 2 };
+      return {
+        ...node,
+        position,
+        data: {
+          ...node.data,
+          patchNode: {
+            ...node.data.patchNode,
+            position,
+            scale: (node.data.patchNode.scale ?? 1) * factor,
+          },
+        },
+      };
+    }));
+    return true;
+  }, [commitHistory]);
+
   const pasteCopiedNodes = useCallback(async () => {
     const clipboardGraph = await readCopiedGraphFromClipboard();
     const copiedGraph = clipboardGraph ?? copiedGraphRef.current;
@@ -1874,6 +1922,7 @@ function NodeEditorInner() {
     nodes.some((node) => node.selected) &&
     nodes.filter((node) => node.selected).every((node) => node.data.patchNode.type !== null)
   ), [nodes]);
+  const canScaleSelection = selectedNodeCount > 0;
   const patch = useMemo(() => ({
     ...patchFromFlow(materializedGraph.nodes, materializedGraph.edges),
     name: rootPatchName,
@@ -3284,8 +3333,10 @@ function NodeEditorInner() {
             {!isEditingSubpatch ? (
               <button className="viewport-button" type="button" onClick={groupSelectedNodes} disabled={!canGroupSelection} aria-label="Group to subpatch" title="Group to subpatch">GR</button>
             ) : null}
+            <button className="viewport-button" type="button" onClick={newPatch} aria-label="New patch" title="New patch">NW</button>
             <button className="viewport-button" type="button" onClick={() => void requestSubpatchImport()} aria-label="Import subpatch" title="Import subpatch">IM</button>
-            <button className="viewport-button" type="button" onClick={newPatch}>NW</button>
+            <button className="viewport-button" type="button" onClick={() => scaleSelectedNodes(2)} disabled={!canScaleSelection} aria-label="Increase selected node scale" title="Increase selected node scale">S+</button>
+            <button className="viewport-button" type="button" onClick={() => scaleSelectedNodes(0.5)} disabled={!canScaleSelection} aria-label="Decrease selected node scale" title="Decrease selected node scale">S-</button>
           </div>
           <input ref={fileInputRef} className="file-input" type="file" accept="application/json,.json" onChange={loadPatchFile} />
           <input ref={importFileInputRef} className="file-input" type="file" accept="application/json,.json" onChange={loadSubpatchImportFile} />
@@ -4071,6 +4122,9 @@ function parsePatchNode(value: unknown, index: number): PatchNode | null {
   if (value.compactPorts !== undefined && typeof value.compactPorts !== 'boolean') {
     throw new Error(`Node "${value.id}" compactPorts must be a boolean.`);
   }
+  if (value.scale !== undefined && (typeof value.scale !== 'number' || !Number.isFinite(value.scale) || value.scale <= 0)) {
+    throw new Error(`Node "${value.id}" scale must be a positive finite number.`);
+  }
 
   const position = value.position === undefined ? undefined : parsePosition(value.position, value.id);
   const scopeSize = value.scopeSize === undefined ? undefined : parseNodeDisplaySize(value.scopeSize, value.id, value.type);
@@ -4101,6 +4155,7 @@ function parsePatchNode(value: unknown, index: number): PatchNode | null {
     ...(customWave ? { customWave } : {}),
     params,
     ...(position ? { position } : {}),
+    ...(typeof value.scale === 'number' ? { scale: value.scale } : {}),
     ...(scopeSize ? { scopeSize } : {}),
     ...(inputs ? { inputs } : {}),
     ...(outputs ? { outputs } : {}),
@@ -4858,6 +4913,7 @@ function patchNodeFromFlowNode(node: ShaderFlowNode): PatchNode {
     ...(patchNode.customWave ? { customWave: normalizeCustomWave(patchNode.customWave, patchNode.params) } : {}),
     params: { ...patchNode.params },
     position: { ...node.position },
+    ...(patchNode.scale !== undefined ? { scale: patchNode.scale } : {}),
     ...(patchNode.scopeSize ? { scopeSize: { ...patchNode.scopeSize } } : {}),
     ...(patchNode.inputs ? { inputs: patchNode.inputs.map((port) => ({ ...port })) } : {}),
     ...(patchNode.outputs ? { outputs: patchNode.outputs.map((port) => ({ ...port })) } : {}),
@@ -4879,6 +4935,7 @@ function clonePatch(patch: ReturnType<typeof patchFromFlow>): ReturnType<typeof 
       ...(node.customWave ? { customWave: normalizeCustomWave(node.customWave, node.params) } : {}),
       params: { ...node.params },
       ...(node.position ? { position: { ...node.position } } : {}),
+      ...(node.scale !== undefined ? { scale: node.scale } : {}),
       ...(node.scopeSize ? { scopeSize: { ...node.scopeSize } } : {}),
       ...(node.inputs ? { inputs: node.inputs.map((port) => ({ ...port })) } : {}),
       ...(node.outputs ? { outputs: node.outputs.map((port) => ({ ...port })) } : {}),

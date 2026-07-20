@@ -54,6 +54,7 @@ import {
   type ShaderFlowNode,
   type ShaderNodeData,
 } from './flowPatch';
+import { getSampleWaveform, type SampleWaveform, type SampleWaveformBin } from '../audio/sampleWaveformCache';
 
 export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNode>) {
   const node = data.patchNode;
@@ -197,6 +198,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const nodeStyle = {
     ...(nodeSizeStyle ?? {}),
     '--input-label-width': inputLabelWidth,
+    '--node-scale': String(node.scale ?? 1),
   } as CSSProperties;
   const className = [
     'shader-node',
@@ -239,6 +241,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     showAllPorts,
     displaySize.height,
     displaySize.width,
+    node.scale,
     imageAspectRatio,
     customWave?.mode,
     customWave?.points,
@@ -1516,16 +1519,6 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   );
 }
 
-interface SampleWaveformBin {
-  min: number;
-  max: number;
-}
-
-interface SampleWaveform {
-  bins: SampleWaveformBin[];
-  duration: number;
-}
-
 interface SampleWaveformDisplayProps {
   sampleUrl?: string;
   playheads?: number[];
@@ -1632,7 +1625,7 @@ function SampleWaveformDisplay({
       cancelled = true;
     };
 
-    void loadSampleWaveform(sampleUrl).then((nextWaveform) => {
+    void getSampleWaveform(sampleUrl).then((nextWaveform) => {
       if (!cancelled) setWaveform(nextWaveform);
     });
     return () => {
@@ -1703,44 +1696,6 @@ function SampleWaveformDisplay({
       </svg>
     </div>
   );
-}
-
-async function loadSampleWaveform(url: string): Promise<SampleWaveform | null> {
-  try {
-    const response = await fetch(url);
-    if (!response.ok) return null;
-    const OfflineAudioContextConstructor = window.OfflineAudioContext
-      || (window as Window & { webkitOfflineAudioContext?: typeof OfflineAudioContext }).webkitOfflineAudioContext;
-    if (!OfflineAudioContextConstructor) return null;
-    const context = new OfflineAudioContextConstructor(1, 1, 44100);
-    const buffer = await context.decodeAudioData(await response.arrayBuffer());
-    return {
-      bins: sampleWaveformBins(buffer, 720),
-      duration: Math.max(0.001, buffer.duration),
-    };
-  } catch {
-    return null;
-  }
-}
-
-function sampleWaveformBins(buffer: AudioBuffer, count = 180): SampleWaveformBin[] {
-  const bins: SampleWaveformBin[] = [];
-  const framesPerBin = Math.max(1, Math.ceil(buffer.length / count));
-  for (let start = 0; start < buffer.length; start += framesPerBin) {
-    const end = Math.min(buffer.length, start + framesPerBin);
-    let min = 0;
-    let max = 0;
-    for (let frame = start; frame < end; frame += 1) {
-      let value = 0;
-      for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
-        value += buffer.getChannelData(channel)[frame] / buffer.numberOfChannels;
-      }
-      min = Math.min(min, value);
-      max = Math.max(max, value);
-    }
-    bins.push({ min, max });
-  }
-  return bins;
 }
 
 function sampleWaveformPath(

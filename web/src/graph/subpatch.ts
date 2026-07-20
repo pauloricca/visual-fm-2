@@ -218,6 +218,7 @@ function cloneNode(node: PatchNode): PatchNode {
     ...(node.customWave ? { customWave: normalizeCustomWave(node.customWave, node.params) } : {}),
     params: { ...node.params },
     ...(node.position ? { position: { ...node.position } } : {}),
+    ...(node.scale !== undefined ? { scale: node.scale } : {}),
     ...(node.scopeSize ? { scopeSize: { ...node.scopeSize } } : {}),
     ...(node.inputs ? { inputs: node.inputs.map((port) => ({ ...port })) } : {}),
     ...(node.outputs ? { outputs: node.outputs.map((port) => ({ ...port })) } : {}),
