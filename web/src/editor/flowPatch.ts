@@ -90,6 +90,7 @@ export interface ShaderNodeData extends Record<string, unknown> {
   isConnecting?: boolean;
   isTypePickerOpen: boolean;
   isEditingSubpatch?: boolean;
+  isAreaCollapsedPresentation?: boolean;
 }
 
 export type ShaderFlowNode = Node<ShaderNodeData, 'shaderNode'>;
@@ -106,12 +107,18 @@ export interface ShaderEdgeData extends Record<string, unknown> {
   isFeedback?: boolean;
   isControl?: boolean;
   dspErrors?: string[];
+  /** Canvas-only endpoints used when an area presents its contained nodes as collapsed. */
+  visualSource?: { x: number; y: number };
+  visualTarget?: { x: number; y: number };
+  isAreaCollapsedPresentation?: boolean;
 }
 
 export type ShaderFlowEdge = Edge<ShaderEdgeData, 'shaderEdge'>;
 
 export interface PersistedEditorState {
   version: 1;
+  /** Visual-only canvas groupings. They deliberately do not affect the patch graph. */
+  areas?: EditorArea[];
   ui?: {
     patchName?: string;
     viewport?: {
@@ -149,6 +156,17 @@ export interface PersistedEditorState {
     mode?: LinkMode;
     enabled?: boolean;
   }>;
+}
+
+export interface EditorArea {
+  id: string;
+  title: string;
+  position: { x: number; y: number };
+  size: { width: number; height: number };
+  collapsed?: boolean;
+  /** A locked area retains this snapshot instead of dynamically owning every node in its bounds. */
+  locked?: boolean;
+  nodeIds?: string[];
 }
 
 type NodeCallbacks = Pick<

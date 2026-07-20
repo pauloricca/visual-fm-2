@@ -15,6 +15,7 @@ import {
   ReactFlowInstance,
   ReactFlowProvider,
   SelectionMode,
+  ViewportPortal,
   Viewport,
   type CoordinateExtent,
 } from '@xyflow/react';
@@ -49,6 +50,7 @@ import {
   linkFromEdge,
   patchFromFlow,
   type PersistedEditorState,
+  type EditorArea,
   type ScopeNodeSize,
   type ShaderFlowEdge,
   type ShaderFlowNode,
@@ -92,7 +94,7 @@ const REACT_FLOW_PRO_OPTIONS = { hideAttribution: true };
 
 let subpatchCloneSequence = 0;
 
-type GraphSnapshot = Pick<PersistedEditorState, 'nodes' | 'edges'>;
+type GraphSnapshot = Pick<PersistedEditorState, 'nodes' | 'edges' | 'areas'>;
 type HistoryState = { past: GraphSnapshot[]; future: GraphSnapshot[] };
 
 interface DraftNodeConnection {
@@ -121,6 +123,28 @@ interface NodeDragSelectionSnapshot {
 interface ScreenPoint {
   x: number;
   y: number;
+}
+
+interface AreaDrawState {
+  start: ScreenPoint;
+  current: ScreenPoint;
+}
+
+interface AreaDragState {
+  areaId: string;
+  start: ScreenPoint;
+  areaPositions: Record<string, { x: number; y: number }>;
+  nodePositions: Record<string, { x: number; y: number }>;
+  historyCommitted: boolean;
+}
+
+interface AreaResizeState {
+  areaId: string;
+  start: ScreenPoint;
+  corner: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
+  originalPosition: { x: number; y: number };
+  originalSize: { width: number; height: number };
+  historyCommitted: boolean;
 }
 
 interface SubpatchEditFrame {
@@ -249,6 +273,7 @@ function NodeEditorInner() {
       ? editorStateToFlowNodes(initialState, callbacks, null)
       : toFlowNodes(demoPatch, callbacks, null);
   });
+  const [areas, setAreas] = useState<EditorArea[]>(() => initialState?.areas ?? []);
   const [nodeStackOrder, setNodeStackOrder] = useState<string[]>(() => nodes.map((node) => node.id));
   const [edges, setEdges] = useState<ShaderFlowEdge[]>(() => {
     return initialState
@@ -258,6 +283,7 @@ function NodeEditorInner() {
   const [history, setHistory] = useState<HistoryState>({ past: [], future: [] });
   const zoomInteractionRef = useRef({ zoomChanged: false, lastZoom: viewport.zoom });
   const nodesRef = useRef(nodes);
+  const areasRef = useRef(areas);
   const edgesRef = useRef(edges);
   const editorShellRef = useRef<HTMLElement | null>(null);
   const historyGroupRef = useRef<{ key: string; time: number } | null>(null);
@@ -267,6 +293,14 @@ function NodeEditorInner() {
   const pendingNodeDragSelectionRef = useRef<NodeDragSelectionSnapshot | null>(null);
   const activeNodeDragSelectionRef = useRef<NodeDragSelectionSnapshot | null>(null);
   const selectionDragStartRef = useRef<ScreenPoint | null>(null);
+  const canvasDragPointerRef = useRef<ScreenPoint | null>(null);
+  const canvasDragActiveRef = useRef(false);
+  const canvasDragPointerIdRef = useRef<number | null>(null);
+  const ignoreSyntheticSelectionPointerDownRef = useRef(false);
+  const ignoreSyntheticSelectionPointerUpRef = useRef(false);
+  const areaDrawRef = useRef<AreaDrawState | null>(null);
+  const areaDragRef = useRef<AreaDragState | null>(null);
+  const areaResizeRef = useRef<AreaResizeState | null>(null);
   const pendingBoundaryPortRef = useRef<BoundaryPortSelection | null>(null);
   const [draftNodeConnection, setDraftNodeConnection] = useState<DraftNodeConnection | null>(null);
   const [duplicateDrag, setDuplicateDrag] = useState<DuplicateDragState | null>(null);
@@ -308,6 +342,9 @@ function NodeEditorInner() {
     : 'RC';
   const localPatchStorageEnabled = useMemo(() => canUseLocalPatchStorage(), []);
   const [reconnectPreviewEdge, setReconnectPreviewEdge] = useState<ShaderFlowEdge | null>(null);
+  const [areaDraw, setAreaDraw] = useState<AreaDrawState | null>(null);
+  const [selectedAreaId, setSelectedAreaId] = useState<string | null>(null);
+  const [editingAreaId, setEditingAreaId] = useState<string | null>(null);
 
   const toggleAudioPlayback = useCallback(() => {
     if (audioPlaybackActive) {
@@ -367,6 +404,10 @@ function NodeEditorInner() {
   }, [nodes]);
 
   useEffect(() => {
+    areasRef.current = areas;
+  }, [areas]);
+
+  useEffect(() => {
     edgesRef.current = edges;
   }, [edges]);
 
@@ -418,7 +459,7 @@ function NodeEditorInner() {
       return;
     }
 
-    const snapshot = graphSnapshot(nodesRef.current, edgesRef.current);
+    const snapshot = graphSnapshot(nodesRef.current, edgesRef.current, areasRef.current);
     const snapshotKey = graphSnapshotKey(snapshot);
     setHistory((current) => {
       const lastSnapshot = current.past[current.past.length - 1];
@@ -1710,7 +1751,7 @@ function NodeEditorInner() {
 
     const subpatch = patchFromFlow(nodesRef.current, edgesRef.current);
     const parentGraph = applySubpatchToParent(frame, subpatch, patchName);
-    const previousParentSnapshot = graphSnapshot(frame.parentNodes, frame.parentEdges);
+    const previousParentSnapshot = graphSnapshot(frame.parentNodes, frame.parentEdges, areasRef.current);
 
     setEditingStack((current) => current.slice(0, -1));
     setNodes(parentGraph.nodes);
@@ -2016,6 +2057,46 @@ function NodeEditorInner() {
     };
   }), [dspDiagnostics, edgesWithCallbacks]);
 
+  const collapsedAreaByNode = useMemo(() => {
+    const collapsedAreas = areas.filter((area) => area.collapsed);
+    return new Map(renderedNodes.flatMap((node) => {
+      const area = collapsedAreaContainingNode(collapsedAreas, node);
+      return area ? [[node.id, area] as const] : [];
+    }));
+  }, [areas, renderedNodes]);
+
+  const collapsedRenderedNodes = useMemo(() => renderedNodes.map((node) => (
+    collapsedAreaByNode.has(node.id) ? {
+      ...node,
+      selected: false,
+      draggable: false,
+      selectable: false,
+      connectable: false,
+      data: { ...node.data, isAreaCollapsedPresentation: true },
+    } : node
+  )), [collapsedAreaByNode, renderedNodes]);
+
+  const collapsedRenderedEdges = useMemo(() => renderedEdges.flatMap((edge) => {
+    const sourceArea = collapsedAreaByNode.get(edge.source);
+    const targetArea = collapsedAreaByNode.get(edge.target);
+
+    // Links completely inside one collapsed area have no external presentation.
+    if (sourceArea && sourceArea.id === targetArea?.id) return [];
+
+    if (!sourceArea && !targetArea) return [edge];
+    return [{
+      ...edge,
+      reconnectable: false,
+      data: {
+        ...edge.data,
+        isAreaCollapsedPresentation: true,
+        showLinkControls: false,
+        ...(sourceArea ? { visualSource: collapsedAreaOutputPin(sourceArea) } : {}),
+        ...(targetArea ? { visualTarget: collapsedAreaInputPin(targetArea) } : {}),
+      },
+    }];
+  }), [collapsedAreaByNode, renderedEdges]);
+
   const duplicateDragPreview = useMemo(() => {
     if (!duplicateDrag?.duplicating) return null;
 
@@ -2120,17 +2201,17 @@ function NodeEditorInner() {
   }, [draftNodeConnection, reactFlow]);
 
   const displayNodes = useMemo(() => [
-    ...renderedNodes,
+    ...collapsedRenderedNodes,
     ...(duplicateDragPreview?.nodes ?? []),
     ...(draftNodePreview ? [draftNodePreview.node] : []),
-  ], [draftNodePreview, duplicateDragPreview, renderedNodes]);
+  ], [collapsedRenderedNodes, draftNodePreview, duplicateDragPreview]);
 
   const displayEdges = useMemo(() => [
-    ...renderedEdges,
+    ...collapsedRenderedEdges,
     ...(duplicateDragPreview?.edges ?? []),
     ...(reconnectPreviewEdge ? [reconnectPreviewEdge] : []),
     ...(draftNodePreview ? [draftNodePreview.edge] : []),
-  ], [draftNodePreview, duplicateDragPreview, reconnectPreviewEdge, renderedEdges]);
+  ], [collapsedRenderedEdges, draftNodePreview, duplicateDragPreview, reconnectPreviewEdge]);
 
   const panTranslateExtent = useMemo(
     () => translateExtentForVisibleContent(renderedNodes, viewport, editorSize),
@@ -2170,8 +2251,9 @@ function NodeEditorInner() {
         ? { midiInput: { selectedDeviceIds: selectedMidiInputDeviceIds } }
         : {}),
     });
+    state.areas = areas;
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }, [materializedGraph, rootPatchName, selectedMidiInputDeviceIds, viewport]);
+  }, [areas, materializedGraph, rootPatchName, selectedMidiInputDeviceIds, viewport]);
 
   const onNodesChange = useCallback((changes: NodeChange<ShaderFlowNode>[]) => {
     const duplicateState = duplicateDragRef.current;
@@ -2842,8 +2924,10 @@ function NodeEditorInner() {
     setHistory((current) => {
       const previous = current.past[current.past.length - 1];
       if (!previous) return current;
-      const now = graphSnapshot(nodesRef.current, edgesRef.current);
-      restoreGraphSnapshot(previous, setNodes, setEdges);
+      const now = graphSnapshot(nodesRef.current, edgesRef.current, areasRef.current);
+      restoreGraphSnapshot(previous, setNodes, setEdges, setAreas);
+      setSelectedAreaId(null);
+      setEditingAreaId(null);
       return {
         past: current.past.slice(0, -1),
         future: [now, ...current.future].slice(0, HISTORY_LIMIT),
@@ -2855,8 +2939,10 @@ function NodeEditorInner() {
     setHistory((current) => {
       const next = current.future[0];
       if (!next) return current;
-      const now = graphSnapshot(nodesRef.current, edgesRef.current);
-      restoreGraphSnapshot(next, setNodes, setEdges);
+      const now = graphSnapshot(nodesRef.current, edgesRef.current, areasRef.current);
+      restoreGraphSnapshot(next, setNodes, setEdges, setAreas);
+      setSelectedAreaId(null);
+      setEditingAreaId(null);
       return {
         past: [...current.past, now].slice(-HISTORY_LIMIT),
         future: current.future.slice(1),
@@ -3072,6 +3158,10 @@ function NodeEditorInner() {
   }, [promoteNodeFromTarget]);
 
   const handleEditorPointerDownCapture = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    if (!event.nativeEvent.isTrusted && ignoreSyntheticSelectionPointerDownRef.current) {
+      ignoreSyntheticSelectionPointerDownRef.current = false;
+      return;
+    }
     promoteNodeFromTarget(event.target);
     const target = event.target instanceof Element ? event.target : null;
     const nodeElement = target?.closest<HTMLElement>('.react-flow__node[data-id]');
@@ -3083,7 +3173,26 @@ function NodeEditorInner() {
       return;
     }
 
-    if (target?.classList.contains('react-flow__pane')) {
+    if (!target?.closest('.canvas-area')) setSelectedAreaId(null);
+
+    const isCanvasPointerDown = target?.classList.contains('react-flow__pane') === true;
+    canvasDragActiveRef.current = isCanvasPointerDown;
+    canvasDragPointerRef.current = isCanvasPointerDown ? { x: event.clientX, y: event.clientY } : null;
+    canvasDragPointerIdRef.current = isCanvasPointerDown ? event.pointerId : null;
+
+    // Cmd/Ctrl-drag reserves the canvas gesture for a visual area rather than
+    // React Flow's normal selection rectangle.
+    if ((event.metaKey || event.ctrlKey) && isCanvasPointerDown) {
+      event.preventDefault();
+      event.stopPropagation();
+      const draw = { start: { x: event.clientX, y: event.clientY }, current: { x: event.clientX, y: event.clientY } };
+      areaDrawRef.current = draw;
+      setAreaDraw(draw);
+      selectionDragStartRef.current = null;
+      return;
+    }
+
+    if (isCanvasPointerDown) {
       selectionDragStartRef.current = { x: event.clientX, y: event.clientY };
     } else {
       selectionDragStartRef.current = null;
@@ -3106,6 +3215,237 @@ function NodeEditorInner() {
       edgeSelection: selectionById(edgesRef.current),
     };
   }, [promoteNodeFromTarget]);
+
+  const screenToFlow = useCallback((point: ScreenPoint) => {
+    const rect = editorShellRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    return { x: (point.x - rect.left - viewport.x) / viewport.zoom, y: (point.y - rect.top - viewport.y) / viewport.zoom };
+  }, [viewport]);
+
+  const endNativeSelection = useCallback(() => {
+    const pane = editorShellRef.current?.querySelector<HTMLElement>('.react-flow__pane');
+    const point = canvasDragPointerRef.current;
+    const pointerId = canvasDragPointerIdRef.current;
+    if (!pane || !point || pointerId === null) return;
+    ignoreSyntheticSelectionPointerUpRef.current = true;
+    pane.dispatchEvent(new PointerEvent('pointerup', {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      clientX: point.x,
+      clientY: point.y,
+      pointerId,
+      isPrimary: true,
+    }));
+  }, []);
+
+  const startNativeSelection = useCallback((start: ScreenPoint) => {
+    const pane = editorShellRef.current?.querySelector<HTMLElement>('.react-flow__pane');
+    const pointerId = canvasDragPointerIdRef.current;
+    if (!pane || pointerId === null) return;
+    ignoreSyntheticSelectionPointerDownRef.current = true;
+    pane.dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      buttons: 1,
+      clientX: start.x,
+      clientY: start.y,
+      pointerId,
+      isPrimary: true,
+    }));
+  }, []);
+
+  const updateAreaDraw = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    const current = areaDrawRef.current;
+    if (!current) return false;
+    // Releasing Cmd/Ctrl during the gesture returns to the ordinary selection
+    // rectangle, retaining the original pointer-down point.
+    if (!event.metaKey && !event.ctrlKey) {
+      areaDrawRef.current = null;
+      selectionDragStartRef.current = current.start;
+      setAreaDraw(null);
+      startNativeSelection(current.start);
+      return false;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const next = { ...current, current: { x: event.clientX, y: event.clientY } };
+    areaDrawRef.current = next;
+    setAreaDraw(next);
+    return true;
+  }, [startNativeSelection]);
+
+  const finishAreaDraw = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    const draw = areaDrawRef.current;
+    if (!draw) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    const end = { x: event.clientX, y: event.clientY };
+    const start = screenToFlow(draw.start);
+    const finish = screenToFlow(end);
+    const width = Math.abs(finish.x - start.x);
+    const height = Math.abs(finish.y - start.y);
+    if (width >= 24 && height >= 24) {
+      commitHistory();
+      const id = `area-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+      setAreas((current) => [...current, {
+        id,
+        title: 'Area',
+        position: { x: Math.min(start.x, finish.x), y: Math.min(start.y, finish.y) },
+        size: { width, height },
+      }]);
+      setSelectedAreaId(id);
+    }
+    areaDrawRef.current = null;
+    setAreaDraw(null);
+    return true;
+  }, [commitHistory, screenToFlow]);
+
+  const startAreaDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>, area: EditorArea) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectedAreaId(area.id);
+    const movedAreaIds = connectedAreaIds(areas, area.id);
+    const movedAreas = areas.filter((candidate) => movedAreaIds.has(candidate.id));
+    const areaPositions = Object.fromEntries(movedAreas.map((candidate) => [candidate.id, { ...candidate.position }]));
+    const nodePositions = Object.fromEntries(nodesRef.current
+      .filter((node) => movedAreas.some((candidate) => areaContainsNode(candidate, node)))
+      .map((node) => [node.id, { ...node.position }]));
+    areaDragRef.current = {
+      areaId: area.id,
+      start: { x: event.clientX, y: event.clientY },
+      areaPositions,
+      nodePositions,
+      historyCommitted: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }, [areas]);
+
+  const dragArea = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = areaDragRef.current;
+    if (!drag) return;
+    event.preventDefault();
+    const delta = { x: (event.clientX - drag.start.x) / viewport.zoom, y: (event.clientY - drag.start.y) / viewport.zoom };
+    if (!drag.historyCommitted && (delta.x !== 0 || delta.y !== 0)) {
+      commitHistory();
+      drag.historyCommitted = true;
+    }
+    setAreas((current) => current.map((area) => {
+      const original = drag.areaPositions[area.id];
+      return original ? { ...area, position: { x: original.x + delta.x, y: original.y + delta.y } } : area;
+    }));
+    setNodes((current) => current.map((node) => {
+      const original = drag.nodePositions[node.id];
+      return original ? { ...node, position: { x: original.x + delta.x, y: original.y + delta.y } } : node;
+    }));
+  }, [commitHistory, viewport.zoom]);
+
+  const stopAreaDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!areaDragRef.current) return;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    areaDragRef.current = null;
+  }, []);
+
+  const startAreaResize = useCallback((
+    event: ReactPointerEvent<HTMLDivElement>,
+    area: EditorArea,
+    corner: AreaResizeState['corner'],
+  ) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectedAreaId(area.id);
+    areaResizeRef.current = {
+      areaId: area.id,
+      start: { x: event.clientX, y: event.clientY },
+      corner,
+      originalPosition: area.position,
+      originalSize: area.size,
+      historyCommitted: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }, []);
+
+  const resizeArea = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = areaResizeRef.current;
+    if (!resize) return;
+    event.preventDefault();
+    const delta = { x: (event.clientX - resize.start.x) / viewport.zoom, y: (event.clientY - resize.start.y) / viewport.zoom };
+    if (!resize.historyCommitted && (delta.x !== 0 || delta.y !== 0)) {
+      commitHistory();
+      resize.historyCommitted = true;
+    }
+    const width = Math.max(48, resize.originalSize.width + (resize.corner.includes('left') ? -delta.x : delta.x));
+    const height = Math.max(48, resize.originalSize.height + (resize.corner.includes('top') ? -delta.y : delta.y));
+    setAreas((current) => current.map((area) => area.id === resize.areaId ? {
+      ...area,
+      position: {
+        x: resize.corner.includes('left') ? resize.originalPosition.x + resize.originalSize.width - width : resize.originalPosition.x,
+        y: resize.corner.includes('top') ? resize.originalPosition.y + resize.originalSize.height - height : resize.originalPosition.y,
+      },
+      size: { width, height },
+    } : area));
+  }, [commitHistory, viewport.zoom]);
+
+  const stopAreaResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!areaResizeRef.current) return;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    areaResizeRef.current = null;
+  }, []);
+
+  const renameArea = useCallback((areaId: string, title: string) => {
+    commitHistory(`area-title:${areaId}`);
+    setAreas((current) => current.map((area) => area.id === areaId ? { ...area, title: title || 'Area' } : area));
+  }, [commitHistory]);
+
+  const toggleAreaCollapsed = useCallback((areaId: string) => {
+    commitHistory(`area-collapse:${areaId}`);
+    setEditingAreaId(null);
+    setAreas((current) => current.map((area) => {
+      if (area.id !== areaId) return area;
+      if (area.collapsed || area.locked) return { ...area, collapsed: !area.collapsed };
+      return {
+        ...area,
+        collapsed: true,
+        locked: true,
+        nodeIds: nodesRef.current
+          .filter((node) => areaContainsPoint(area, node.position))
+          .map((node) => node.id),
+      };
+    }));
+  }, [commitHistory]);
+
+  const toggleAreaLocked = useCallback((areaId: string) => {
+    const area = areasRef.current.find((candidate) => candidate.id === areaId);
+    if (!area) return;
+
+    commitHistory(`area-lock:${areaId}`);
+    setAreas((current) => current.map((candidate) => {
+      if (candidate.id !== areaId) return candidate;
+      if (candidate.locked) return { ...candidate, locked: false };
+      return {
+        ...candidate,
+        locked: true,
+        nodeIds: nodesRef.current
+          .filter((node) => areaContainsPoint(candidate, node.position))
+          .map((node) => node.id),
+      };
+    }));
+  }, [commitHistory]);
+
+  const areaDrawBounds = useMemo(() => {
+    if (!areaDraw) return null;
+    const start = screenToFlow(areaDraw.start);
+    const end = screenToFlow(areaDraw.current);
+    return {
+      x: Math.min(start.x, end.x),
+      y: Math.min(start.y, end.y),
+      width: Math.abs(end.x - start.x),
+      height: Math.abs(end.y - start.y),
+    };
+  }, [areaDraw, screenToFlow]);
 
   const clearPendingNodeDragSelection = useCallback(() => {
     if (!activeNodeDragSelectionRef.current) {
@@ -3135,13 +3475,65 @@ function NodeEditorInner() {
 
   const handleRectangleSelectionMove = useCallback((event: ReactPointerEvent<HTMLElement>) => {
     if (event.buttons !== 1 || !selectionDragStartRef.current) return;
+    if (event.metaKey || event.ctrlKey) {
+      const draw = { start: selectionDragStartRef.current, current: { x: event.clientX, y: event.clientY } };
+      event.preventDefault();
+      event.stopPropagation();
+      areaDrawRef.current = draw;
+      selectionDragStartRef.current = null;
+      setAreaDraw(draw);
+      endNativeSelection();
+      setNodes((current) => updateSelection(current, new Set()));
+      setEdges((current) => updateSelection(current, new Set()));
+      return;
+    }
     syncRectangleSelection({ x: event.clientX, y: event.clientY });
-  }, [syncRectangleSelection]);
+  }, [endNativeSelection, syncRectangleSelection]);
 
   const validateRectangleSelection = useCallback((event: ReactMouseEvent) => {
     syncRectangleSelection({ x: event.clientX, y: event.clientY });
     selectionDragStartRef.current = null;
   }, [syncRectangleSelection]);
+
+  useEffect(() => {
+    const updateModeForModifier = (modifierActive: boolean) => {
+      if (!canvasDragActiveRef.current || !canvasDragPointerRef.current) return;
+
+      if (modifierActive && !areaDrawRef.current && selectionDragStartRef.current) {
+        const draw = { start: selectionDragStartRef.current, current: canvasDragPointerRef.current };
+        areaDrawRef.current = draw;
+        selectionDragStartRef.current = null;
+        setAreaDraw(draw);
+        endNativeSelection();
+        setNodes((current) => updateSelection(current, new Set()));
+        setEdges((current) => updateSelection(current, new Set()));
+        return;
+      }
+
+      if (!modifierActive && areaDrawRef.current) {
+        const draw = areaDrawRef.current;
+        areaDrawRef.current = null;
+        selectionDragStartRef.current = draw.start;
+        setAreaDraw(null);
+        startNativeSelection(draw.start);
+        syncRectangleSelection(canvasDragPointerRef.current);
+      }
+    };
+
+    const handleModifierKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Meta' || event.key === 'Control') updateModeForModifier(true);
+    };
+    const handleModifierKeyUp = (event: KeyboardEvent) => {
+      if (event.key === 'Meta' || event.key === 'Control') updateModeForModifier(false);
+    };
+
+    window.addEventListener('keydown', handleModifierKeyDown, { capture: true });
+    window.addEventListener('keyup', handleModifierKeyUp, { capture: true });
+    return () => {
+      window.removeEventListener('keydown', handleModifierKeyDown, { capture: true });
+      window.removeEventListener('keyup', handleModifierKeyUp, { capture: true });
+    };
+  }, [endNativeSelection, startNativeSelection, syncRectangleSelection]);
 
   const handleMove = useCallback((event: globalThis.MouseEvent | TouchEvent | null, nextViewport: Viewport) => {
     if (event !== null && Math.abs(nextViewport.zoom - zoomInteractionRef.current.lastZoom) > ZOOM_CHANGE_EPSILON) {
@@ -3185,17 +3577,51 @@ function NodeEditorInner() {
     return () => window.removeEventListener('keydown', handleResetZoomKeyDown, { capture: true });
   }, [resetZoom]);
 
+  useEffect(() => {
+    const deleteSelectedArea = (event: KeyboardEvent) => {
+      if ((event.key !== 'Backspace' && event.key !== 'Delete') || isEditableEventTarget(event.target)) return;
+      if (!selectedAreaId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      commitHistory();
+      setAreas((current) => current.filter((area) => area.id !== selectedAreaId));
+      setSelectedAreaId(null);
+    };
+
+    window.addEventListener('keydown', deleteSelectedArea, { capture: true });
+    return () => window.removeEventListener('keydown', deleteSelectedArea, { capture: true });
+  }, [commitHistory, selectedAreaId]);
+
   return (
     <div className="app-shell app-shell-panel-closed">
       <EdgeOverlayProvider target={edgeOverlayElement}>
         <main
           ref={editorShellRef}
-          className="editor-shell"
+          className={`editor-shell${areaDraw ? ' editor-shell-area-drawing' : ''}`}
           onFocusCapture={handleEditorFocusCapture}
           onPointerDownCapture={handleEditorPointerDownCapture}
-          onPointerMove={handleRectangleSelectionMove}
-          onPointerUpCapture={clearPendingNodeDragSelection}
-          onPointerCancelCapture={clearPendingNodeDragSelection}
+          onPointerMove={(event) => {
+            if (canvasDragActiveRef.current && event.buttons === 1) {
+              canvasDragPointerRef.current = { x: event.clientX, y: event.clientY };
+            }
+            if (!updateAreaDraw(event)) handleRectangleSelectionMove(event);
+          }}
+          onPointerUpCapture={(event) => {
+            if (!event.nativeEvent.isTrusted && ignoreSyntheticSelectionPointerUpRef.current) {
+              ignoreSyntheticSelectionPointerUpRef.current = false;
+              return;
+            }
+            if (!finishAreaDraw(event)) clearPendingNodeDragSelection();
+            canvasDragActiveRef.current = false;
+            canvasDragPointerRef.current = null;
+            canvasDragPointerIdRef.current = null;
+          }}
+          onPointerCancelCapture={() => {
+            clearPendingNodeDragSelection();
+            canvasDragActiveRef.current = false;
+            canvasDragPointerRef.current = null;
+            canvasDragPointerIdRef.current = null;
+          }}
           onDoubleClick={(event) => {
             const target = event.target as HTMLElement;
             if (!target.classList.contains('react-flow__pane')) return;
@@ -3233,6 +3659,7 @@ function NodeEditorInner() {
             onEdgeDoubleClick={(event, edge) => {
               event.preventDefault();
               event.stopPropagation();
+              if (edge.data?.isAreaCollapsedPresentation) return;
               insertNodeOnEdge(edge.id);
             }}
             onMove={handleMove}
@@ -3243,7 +3670,7 @@ function NodeEditorInner() {
             zoomOnScroll={false}
             zoomOnPinch
             zoomOnDoubleClick={false}
-            selectionOnDrag
+            selectionOnDrag={!areaDraw}
             selectionMode={SelectionMode.Partial}
             selectionKeyCode={null}
             panActivationKeyCode={null}
@@ -3258,6 +3685,115 @@ function NodeEditorInner() {
             snapToGrid={false}
             proOptions={REACT_FLOW_PRO_OPTIONS}
           >
+            <ViewportPortal>
+              <div className="area-layer">
+                {areaDrawBounds && (
+                  <div
+                    className="canvas-area canvas-area-drawing"
+                    style={{ left: areaDrawBounds.x, top: areaDrawBounds.y, width: areaDrawBounds.width, height: areaDrawBounds.height }}
+                  />
+                )}
+                {areas.map((area) => (
+                  <div
+                    key={area.id}
+                    className={`canvas-area${area.collapsed ? ' canvas-area-collapsed' : ''}${selectedAreaId === area.id ? ' canvas-area-selected' : ''}`}
+                    style={{ left: area.position.x, top: area.position.y, width: area.size.width, height: area.collapsed ? 32 : area.size.height }}
+                  >
+                    <div
+                      className="canvas-area-header nodrag nopan"
+                      onPointerDown={(event) => startAreaDrag(event, area)}
+                      onPointerMove={dragArea}
+                      onPointerUp={stopAreaDrag}
+                      onPointerCancel={stopAreaDrag}
+                      onDoubleClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        toggleAreaCollapsed(area.id);
+                      }}
+                    >
+                      {editingAreaId === area.id ? (
+                        <input
+                          className="canvas-area-title-input"
+                          autoFocus
+                          value={area.title}
+                          aria-label="Area name"
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onBlur={() => setEditingAreaId(null)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === 'Escape') {
+                              event.preventDefault();
+                              event.currentTarget.blur();
+                            }
+                          }}
+                          onChange={(event) => renameArea(area.id, event.target.value)}
+                        />
+                      ) : (
+                        <button
+                          className="canvas-area-title nodrag nopan"
+                          type="button"
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setSelectedAreaId(area.id);
+                            setEditingAreaId(area.id);
+                          }}
+                        >
+                          {area.title}
+                        </button>
+                      )}
+                      {!area.collapsed ? (
+                        <button
+                          className={`area-lock-toggle nodrag nopan${area.locked ? ' area-lock-toggle-locked' : ''}`}
+                          type="button"
+                          aria-label={area.locked ? 'Unlock area membership' : 'Lock area membership'}
+                          title={area.locked ? 'Unlock area membership' : 'Lock area membership'}
+                          aria-pressed={area.locked === true}
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onDoubleClick={(event) => event.stopPropagation()}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            toggleAreaLocked(area.id);
+                          }}
+                        >
+                          <span className="area-lock-icon" aria-hidden="true" />
+                        </button>
+                      ) : null}
+                      <button
+                        className="area-compact-toggle nodrag nopan"
+                        type="button"
+                        aria-label={area.collapsed ? 'Expand area' : 'Collapse area'}
+                        title={area.collapsed ? 'Expand area' : 'Collapse area'}
+                        aria-pressed={area.collapsed === true}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onDoubleClick={(event) => event.stopPropagation()}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          toggleAreaCollapsed(area.id);
+                        }}
+                      >
+                        <span
+                          className={`node-compact-icon ${area.collapsed ? 'node-compact-icon-compact' : 'node-compact-icon-expanded'}`}
+                          aria-hidden="true"
+                        />
+                      </button>
+                    </div>
+                    {!area.collapsed && (['top-left', 'top-right', 'bottom-left', 'bottom-right'] as const).map((corner) => (
+                      <div
+                        key={corner}
+                        className={`canvas-area-resize-handle canvas-area-resize-${corner} nodrag nopan`}
+                        aria-label={`Resize area from ${corner}`}
+                        onPointerDown={(event) => startAreaResize(event, area, corner)}
+                        onPointerMove={resizeArea}
+                        onPointerUp={stopAreaResize}
+                        onPointerCancel={stopAreaResize}
+                      />
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </ViewportPortal>
             <Background color="var(--color-foreground-08)" gap={28} size={1} />
             <Controls showInteractive={false}>
               <ControlButton
@@ -4503,11 +5039,12 @@ function clampInteger(value: number, min: number, max: number): number {
   return Math.round(clampNumber(Number.isFinite(value) ? value : min, min, max));
 }
 
-function graphSnapshot(nodes: ShaderFlowNode[], edges: ShaderFlowEdge[]): GraphSnapshot {
+function graphSnapshot(nodes: ShaderFlowNode[], edges: ShaderFlowEdge[], areas: EditorArea[] = []): GraphSnapshot {
   const state = flowToEditorState(nodes, edges);
   return {
     nodes: state.nodes,
     edges: state.edges,
+    areas: structuredClone(areas),
   };
 }
 
@@ -4549,11 +5086,13 @@ function restoreGraphSnapshot(
   snapshot: GraphSnapshot,
   setNodes: (value: ShaderFlowNode[]) => void,
   setEdges: (value: ShaderFlowEdge[]) => void,
+  setAreas: (value: EditorArea[]) => void,
 ): void {
-  const state: PersistedEditorState = { version: 1, nodes: snapshot.nodes, edges: snapshot.edges };
+  const state: PersistedEditorState = { version: 1, nodes: snapshot.nodes, edges: snapshot.edges, areas: snapshot.areas };
   const callbacks = nodeCallbacksPlaceholder();
   setNodes(editorStateToFlowNodes(state, callbacks, null));
   setEdges(editorStateToFlowEdges(state, updateEdgeWeightPlaceholder, updateEdgeModePlaceholder, insertNodeOnEdgePlaceholder));
+  setAreas(snapshot.areas ? structuredClone(snapshot.areas) : []);
 }
 
 function linkFromConnection(connection: Connection): PatchLink | null {
@@ -5147,6 +5686,58 @@ function nodeBounds(nodes: ShaderFlowNode[]): { x: number; y: number; width: num
     width: maxX - minX,
     height: maxY - minY,
   };
+}
+
+function connectedAreaIds(areas: EditorArea[], rootId: string): Set<string> {
+  const root = areas.find((area) => area.id === rootId);
+  if (!root) return new Set();
+
+  const connected = new Set([rootId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const candidate of areas) {
+      if (connected.has(candidate.id)) continue;
+      if (!areas.some((area) => connected.has(area.id) && areasOverlap(area, candidate))) continue;
+      connected.add(candidate.id);
+      changed = true;
+    }
+  }
+  return connected;
+}
+
+function areasOverlap(left: EditorArea, right: EditorArea): boolean {
+  return left.position.x < right.position.x + right.size.width
+    && left.position.x + left.size.width > right.position.x
+    && left.position.y < right.position.y + right.size.height
+    && left.position.y + left.size.height > right.position.y;
+}
+
+function areaContainsPoint(area: EditorArea, point: { x: number; y: number }): boolean {
+  return point.x >= area.position.x
+    && point.x <= area.position.x + area.size.width
+    && point.y >= area.position.y
+    && point.y <= area.position.y + area.size.height;
+}
+
+function collapsedAreaContainingNode(areas: EditorArea[], node: ShaderFlowNode): EditorArea | undefined {
+  return areas
+    .filter((area) => areaContainsNode(area, node))
+    .sort((left, right) => (left.size.width * left.size.height) - (right.size.width * right.size.height))[0];
+}
+
+function areaContainsNode(area: EditorArea, node: ShaderFlowNode): boolean {
+  return area.locked
+    ? area.nodeIds?.includes(node.id) === true
+    : areaContainsPoint(area, node.position);
+}
+
+function collapsedAreaInputPin(area: EditorArea): { x: number; y: number } {
+  return { x: area.position.x, y: area.position.y + NODE_HEADER_HEIGHT / 2 };
+}
+
+function collapsedAreaOutputPin(area: EditorArea): { x: number; y: number } {
+  return { x: area.position.x + area.size.width, y: area.position.y + NODE_HEADER_HEIGHT / 2 };
 }
 
 function endpointKey(endpoint: PatchLink['from']): string {

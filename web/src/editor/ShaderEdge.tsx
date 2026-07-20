@@ -1,6 +1,7 @@
 import {
   BaseEdge,
   getBezierPath,
+  Position,
   type EdgeProps,
   useReactFlow,
   useViewport,
@@ -23,9 +24,18 @@ export function ShaderEdge(props: EdgeProps<ShaderFlowEdge>) {
   const isSameNodeFeedback = props.source === props.target;
   const isFeedback = props.data?.isFeedback === true || isSameNodeFeedback;
   const isControl = props.data?.isControl === true;
-  const [defaultEdgePath, defaultLabelX, defaultLabelY] = getBezierPath(props);
+  const visualProps = {
+    ...props,
+    sourceX: props.data?.visualSource?.x ?? props.sourceX,
+    sourceY: props.data?.visualSource?.y ?? props.sourceY,
+    targetX: props.data?.visualTarget?.x ?? props.targetX,
+    targetY: props.data?.visualTarget?.y ?? props.targetY,
+    sourcePosition: props.data?.visualSource ? Position.Right : props.sourcePosition,
+    targetPosition: props.data?.visualTarget ? Position.Left : props.targetPosition,
+  };
+  const [defaultEdgePath, defaultLabelX, defaultLabelY] = getBezierPath(visualProps);
   const [edgePath, labelX, labelY] = isFeedback
-    ? getFeedbackPath(props, isSameNodeFeedback ? SAME_NODE_FEEDBACK_CURVE_OFFSET : FEEDBACK_CURVE_OFFSET)
+    ? getFeedbackPath(visualProps, isSameNodeFeedback ? SAME_NODE_FEEDBACK_CURVE_OFFSET : FEEDBACK_CURVE_OFFSET)
     : [defaultEdgePath, defaultLabelX, defaultLabelY];
   const overlayTarget = useEdgeOverlayTarget();
   const reactFlow = useReactFlow();
@@ -38,7 +48,7 @@ export function ShaderEdge(props: EdgeProps<ShaderFlowEdge>) {
   const hasDspErrors = dspErrors.length > 0;
   const selected = props.selected ?? false;
   const showLinkControls = selected && props.data?.showLinkControls === true;
-  const controlsLabelY = shouldRaiseLinkControls(props, isFeedback)
+  const controlsLabelY = shouldRaiseLinkControls(visualProps, isFeedback)
     ? labelY - SHORT_LINK_CONTROLS_OFFSET
     : labelY;
   const underlayClassName = [

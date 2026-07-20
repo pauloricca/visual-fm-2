@@ -86,6 +86,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const definition = node.type ? getNodeDefinition(node as PatchNode) : null;
   const isExpression = node.type === 'Expression';
   const isGroup = node.type === 'Group';
+  const isAreaCollapsedPresentation = data.isAreaCollapsedPresentation === true;
   const isSelector = node.type === 'Selector';
   const canRenameInputs = node.type === 'Outs';
   const canRenameOutputs = node.type === 'Ins';
@@ -221,6 +222,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     selected ? 'shader-node-selected' : '',
     dragging ? 'shader-node-dragging' : '',
     compactPorts ? 'shader-node-compact' : '',
+    isAreaCollapsedPresentation ? 'shader-node-area-hidden' : '',
   ].filter(Boolean).join(' ');
 
   useLayoutEffect(() => {

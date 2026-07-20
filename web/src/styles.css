@@ -474,10 +474,184 @@ button:hover {
 }
 
 .react-flow__selection {
+  border: 1px dashed var(--color-foreground);
+  background: transparent;
+  pointer-events: none;
+}
+
+.editor-shell-area-drawing .react-flow__selection {
+  display: none;
+}
+
+
+.area-layer {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.canvas-area {
+  position: absolute;
+  box-sizing: border-box;
   border: 1px solid var(--color-foreground);
   background: var(--color-foreground-12);
   pointer-events: none;
 }
+
+.canvas-area-drawing {
+  opacity: 0.8;
+}
+
+.canvas-area-selected {
+  outline: 1px dashed var(--color-foreground);
+  outline-offset: 3px;
+}
+
+.canvas-area-header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--color-foreground-28);
+  cursor: grab;
+  pointer-events: auto;
+}
+
+.canvas-area-collapsed {
+  background: var(--color-foreground-12);
+}
+
+.area-compact-toggle {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: currentColor;
+  cursor: pointer;
+}
+
+.area-lock-toggle {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: currentColor;
+  cursor: pointer;
+}
+
+.area-lock-toggle:hover,
+.area-lock-toggle:focus-visible {
+  background: var(--color-background);
+  color: var(--color-foreground);
+  outline: 0;
+}
+
+.canvas-area-header .area-lock-toggle + .area-compact-toggle {
+  margin-left: 6px;
+}
+
+.area-lock-icon {
+  position: relative;
+  display: block;
+  width: 10px;
+  height: 8px;
+  box-sizing: border-box;
+  border: 1px solid currentColor;
+}
+
+.area-lock-icon::before {
+  position: absolute;
+  bottom: 7px;
+  left: 1px;
+  width: 6px;
+  height: 6px;
+  box-sizing: border-box;
+  border: 1px solid currentColor;
+  border-bottom: 0;
+  border-radius: 5px 5px 0 0;
+  content: '';
+}
+
+.area-lock-toggle:not(.area-lock-toggle-locked) .area-lock-icon::before {
+  left: 6px;
+}
+
+.area-lock-toggle-locked .area-lock-icon {
+  background: currentColor;
+}
+
+.shader-node-area-hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.area-compact-toggle:hover,
+.area-compact-toggle:focus-visible {
+  background: var(--color-background);
+  color: var(--color-foreground);
+  outline: 0;
+}
+
+.canvas-area-header:active {
+  cursor: grabbing;
+}
+
+.canvas-area-title,
+.canvas-area-title-input {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--color-foreground);
+  font: inherit;
+  font-weight: 700;
+}
+
+.canvas-area-title {
+  max-width: 100%;
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: text;
+}
+
+.canvas-area-title-input {
+  width: auto;
+  min-width: 4ch;
+  max-width: 100%;
+}
+
+.canvas-area-resize-handle {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  background: transparent;
+  pointer-events: auto;
+}
+
+.canvas-area-resize-top-left { top: -8px; left: -8px; cursor: nwse-resize; }
+.canvas-area-resize-top-right { top: -8px; right: -8px; cursor: nesw-resize; }
+.canvas-area-resize-bottom-left { bottom: -8px; left: -8px; cursor: nesw-resize; }
+.canvas-area-resize-bottom-right { right: -8px; bottom: -8px; cursor: nwse-resize; }
 
 .react-flow__nodesselection-rect {
   border: 0 !important;
