@@ -66,6 +66,7 @@ export interface ShaderNodeData extends Record<string, unknown> {
   onExpressionChange?: (nodeId: string, expression: string) => void;
   onExpressionCommit?: (nodeId: string, expression: string) => void;
   onTypeChange: (nodeId: string, type: NodeType) => void;
+  onCustomLabelChange?: (nodeId: string, label: string) => void;
   onSubpatchNameChange?: (nodeId: string, nextName: string) => void;
   onSampleSelect?: (nodeId: string) => void;
   onSampleDrop?: (nodeId: string, files: FileList) => void;
@@ -131,6 +132,7 @@ export interface PersistedEditorState {
   nodes: Array<{
     id: string;
     type: NodeType | null;
+    customLabel?: string;
     subpatchName?: string;
     subpatchCloneId?: string;
     expression?: string;
@@ -228,6 +230,7 @@ export function editorStateToFlowNodes(
       patchNode: {
         id: node.id,
         type: node.type,
+        customLabel: node.customLabel,
         subpatchName: node.subpatchName,
         subpatchCloneId: node.subpatchCloneId,
         expression: node.expression,
@@ -283,6 +286,7 @@ export function flowToEditorState(
     nodes: nodes.map((node) => ({
       id: node.id,
       type: node.data.patchNode.type,
+      customLabel: node.data.patchNode.customLabel,
       subpatchName: node.data.patchNode.subpatchName,
       subpatchCloneId: node.data.patchNode.subpatchCloneId,
       expression: node.data.patchNode.expression,
@@ -369,6 +373,7 @@ export function patchFromFlow(nodes: ShaderFlowNode[], edges: ShaderFlowEdge[]):
     patchNodes.push({
       id: patchNode.id,
       type: patchNode.type,
+      ...(patchNode.customLabel ? { customLabel: patchNode.customLabel } : {}),
       ...(patchNode.subpatchName ? { subpatchName: patchNode.subpatchName } : {}),
       ...(patchNode.subpatchCloneId ? { subpatchCloneId: patchNode.subpatchCloneId } : {}),
       ...(patchNode.expression !== undefined ? { expression: patchNode.expression } : {}),
@@ -550,6 +555,7 @@ function normalizePersistedState(state: PersistedEditorState): PersistedEditorSt
     .map((node) => ({
       id: node.id,
       type: node.type,
+      ...(node.customLabel ? { customLabel: node.customLabel } : {}),
       ...(node.subpatchName ? { subpatchName: node.subpatchName } : {}),
       ...(node.subpatchCloneId ? { subpatchCloneId: node.subpatchCloneId } : {}),
       ...(node.expression !== undefined ? { expression: node.expression } : {}),
@@ -731,6 +737,7 @@ function persistedNodeFromPatchNode(
   return {
     id: node.id,
     type: node.type,
+    customLabel: node.customLabel,
     subpatchName: node.subpatchName,
     subpatchCloneId: node.subpatchCloneId,
     expression: node.expression,

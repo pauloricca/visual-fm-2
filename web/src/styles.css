@@ -821,6 +821,37 @@ button:hover {
   border-bottom: 0;
 }
 
+.collapsed-node-label,
+.collapsed-node-label-editor {
+  box-sizing: border-box;
+  height: 22px;
+  max-width: 100%;
+  min-width: 0;
+  flex: 0 1 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  line-height: 22px;
+  text-align: left;
+}
+
+.collapsed-node-label {
+  appearance: none;
+  width: fit-content;
+  overflow: hidden;
+  cursor: text;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collapsed-node-label-editor {
+  outline: 1px solid currentColor;
+  outline-offset: 2px;
+}
+
 .shader-node-group .shader-node-title {
   background: var(--color-accent);
   color: var(--color-background);

@@ -210,6 +210,7 @@ function cloneNode(node: PatchNode): PatchNode {
   return {
     id: node.id,
     type: node.type,
+    ...(node.customLabel ? { customLabel: node.customLabel } : {}),
     ...(node.subpatchName ? { subpatchName: node.subpatchName } : {}),
     ...(node.subpatchCloneId ? { subpatchCloneId: node.subpatchCloneId } : {}),
     ...(node.expression !== undefined ? { expression: node.expression } : {}),

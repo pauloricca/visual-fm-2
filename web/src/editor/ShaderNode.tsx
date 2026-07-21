@@ -650,17 +650,25 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             }}
           />
         ) : null}
-        <NodeTypePicker
-          nodeType={node.type}
-          displayLabel={isGroup ? node.subpatchName ?? node.id : undefined}
-          isEditingSubpatch={data.isEditingSubpatch === true}
-          open={data.isTypePickerOpen}
-          onOpen={() => data.onTypeEditStart(node.id)}
-          onClose={data.onTypeEditEnd}
-          onCancel={() => data.onTypeEditCancel(node.id)}
-          onChange={(type) => data.onTypeChange(node.id, type)}
-          onCustomLabelCommit={isGroup ? (label) => data.onSubpatchNameChange?.(node.id, label) : undefined}
-        />
+        {compactPorts && !revealCompactPorts ? (
+          <CollapsedNodeLabel
+            nodeType={node.type}
+            customLabel={node.customLabel}
+            onChange={(label) => data.onCustomLabelChange?.(node.id, label)}
+          />
+        ) : (
+          <NodeTypePicker
+            nodeType={node.type}
+            displayLabel={isGroup ? node.subpatchName ?? node.id : undefined}
+            isEditingSubpatch={data.isEditingSubpatch === true}
+            open={data.isTypePickerOpen}
+            onOpen={() => data.onTypeEditStart(node.id)}
+            onClose={data.onTypeEditEnd}
+            onCancel={() => data.onTypeEditCancel(node.id)}
+            onChange={(type) => data.onTypeChange(node.id, type)}
+            onCustomLabelCommit={isGroup ? (label) => data.onSubpatchNameChange?.(node.id, label) : undefined}
+          />
+        )}
         {!forceCompactPorts ? (
           <button
             className="node-compact-toggle nodrag nopan"
@@ -3100,6 +3108,82 @@ interface NodeTypePickerProps {
   onCancel: () => void;
   onChange: (type: NodeType) => void;
   onCustomLabelCommit?: (label: string) => void;
+}
+
+interface CollapsedNodeLabelProps {
+  nodeType: NodeType | null;
+  customLabel?: string;
+  onChange: (label: string) => void;
+}
+
+function CollapsedNodeLabel({ nodeType, customLabel, onChange }: CollapsedNodeLabelProps) {
+  const defaultLabel = nodeType ? getNodeTypeLabel(nodeType) : 'type';
+  const displayLabel = customLabel || defaultLabel;
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(displayLabel);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!editing) setDraft(displayLabel);
+  }, [displayLabel, editing]);
+
+  useEffect(() => {
+    if (!editing) return;
+    const animationFrame = requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
+    return () => cancelAnimationFrame(animationFrame);
+  }, [editing]);
+
+  function commit() {
+    onChange(draft);
+    setEditing(false);
+  }
+
+  function cancel() {
+    setDraft(displayLabel);
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        className="collapsed-node-label-editor nodrag nopan"
+        size={Math.max(1, draft.length)}
+        value={draft}
+        aria-label="Collapsed node label"
+        onChange={(event) => setDraft(event.currentTarget.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          event.stopPropagation();
+          if (event.key === 'Enter') commit();
+          if (event.key === 'Escape') cancel();
+        }}
+        onPointerDown={(event) => event.stopPropagation()}
+        onDoubleClick={(event) => event.stopPropagation()}
+        spellCheck={false}
+      />
+    );
+  }
+
+  return (
+    <button
+      className="collapsed-node-label nodrag nopan"
+      type="button"
+      title="Click to name this collapsed node"
+      onPointerDown={(event) => event.stopPropagation()}
+      onDoubleClick={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setEditing(true);
+      }}
+    >
+      {displayLabel}
+    </button>
+  );
 }
 
 interface PortNameLabelProps {

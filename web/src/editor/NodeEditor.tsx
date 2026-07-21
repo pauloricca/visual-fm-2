@@ -1025,6 +1025,7 @@ function NodeEditorInner() {
             patchNode: {
               id: nextId,
               type,
+              ...(node.data.patchNode.customLabel ? { customLabel: node.data.patchNode.customLabel } : {}),
               ...(type === 'Group' ? {
                 subpatchName: node.data.patchNode.subpatchName ?? nextId,
                 subpatchCloneId: node.data.patchNode.subpatchCloneId ?? makeSubpatchCloneId(nextId),
@@ -1050,6 +1051,29 @@ function NodeEditorInner() {
       return remapped ? [remapped] : [];
     })));
     setEditingTypeNodeId((current) => current === nodeId ? nextId : current);
+  }, [commitHistory]);
+
+  const updateNodeCustomLabel = useCallback((nodeId: string, requestedLabel: string) => {
+    const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
+    if (!relatedNode) return;
+
+    const customLabel = requestedLabel.trim();
+    if ((relatedNode.data.patchNode.customLabel ?? '') === customLabel) return;
+
+    commitHistory(`label:${nodeId}`);
+    setNodes((current) => current.map((node) => node.id === nodeId
+      ? {
+          ...node,
+          data: {
+            ...node.data,
+            patchNode: {
+              ...node.data.patchNode,
+              ...(customLabel ? { customLabel } : { customLabel: undefined }),
+            },
+          },
+        }
+      : node,
+    ));
   }, [commitHistory]);
 
   const updateBoundaryPortName = useCallback((nodeId: string, side: 'input' | 'output', port: string, requestedPort: string) => {
@@ -1857,6 +1881,7 @@ function NodeEditorInner() {
         onAudioInputRefresh: audio.refreshAudioInputDevices,
         onMidiInputRefresh: audio.refreshMidiInputDevices,
         onTypeChange: updateNodeType,
+        onCustomLabelChange: updateNodeCustomLabel,
         onExpressionCommit: updateExpression,
         onTypeEditStart: setEditingTypeNodeId,
         onTypeEditEnd: () => setEditingTypeNodeId(null),
@@ -1930,6 +1955,7 @@ function NodeEditorInner() {
     updateNodeId,
     updateNodeParam,
     updateNodeParams,
+    updateNodeCustomLabel,
     updateNodeType,
     selectedNodeCount,
   ]);
@@ -4646,6 +4672,9 @@ function parsePatchNode(value: unknown, index: number): PatchNode | null {
   if (value.subpatchName !== undefined && typeof value.subpatchName !== 'string') {
     throw new Error(`Node "${value.id}" subpatchName must be a string.`);
   }
+  if (value.customLabel !== undefined && typeof value.customLabel !== 'string') {
+    throw new Error(`Node "${value.id}" customLabel must be a string.`);
+  }
   if (value.subpatchCloneId !== undefined && typeof value.subpatchCloneId !== 'string') {
     throw new Error(`Node "${value.id}" subpatchCloneId must be a string.`);
   }
@@ -4683,6 +4712,7 @@ function parsePatchNode(value: unknown, index: number): PatchNode | null {
   return {
     id: value.id,
     type: value.type,
+    ...(typeof value.customLabel === 'string' && value.customLabel.trim() ? { customLabel: value.customLabel.trim() } : {}),
     ...(value.subpatchName ? { subpatchName: value.subpatchName } : {}),
     ...(value.subpatchCloneId ? { subpatchCloneId: value.subpatchCloneId } : {}),
     ...(expression !== undefined ? { expression } : {}),
@@ -5444,6 +5474,7 @@ function patchNodeFromFlowNode(node: ShaderFlowNode): PatchNode {
   return {
     id: patchNode.id,
     type: patchNode.type,
+    ...(patchNode.customLabel ? { customLabel: patchNode.customLabel } : {}),
     ...(patchNode.subpatchName ? { subpatchName: patchNode.subpatchName } : {}),
     ...(patchNode.subpatchCloneId ? { subpatchCloneId: patchNode.subpatchCloneId } : {}),
     ...(patchNode.expression !== undefined ? { expression: patchNode.expression } : {}),
@@ -5466,6 +5497,7 @@ function clonePatch(patch: ReturnType<typeof patchFromFlow>): ReturnType<typeof 
     nodes: patch.nodes.map((node) => ({
       id: node.id,
       type: node.type,
+      ...(node.customLabel ? { customLabel: node.customLabel } : {}),
       ...(node.subpatchName ? { subpatchName: node.subpatchName } : {}),
       ...(node.subpatchCloneId ? { subpatchCloneId: node.subpatchCloneId } : {}),
       ...(node.expression !== undefined ? { expression: node.expression } : {}),

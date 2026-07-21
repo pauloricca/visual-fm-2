@@ -72,6 +72,8 @@ export interface NodeDisplaySize {
 export interface PatchNode {
   id: string;
   type: NodeType;
+  /** Optional editor label displayed instead of the type while the node is collapsed. */
+  customLabel?: string;
   subpatchName?: string;
   subpatchCloneId?: string;
   expression?: string;
