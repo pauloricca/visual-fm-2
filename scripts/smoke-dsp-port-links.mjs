@@ -85,6 +85,10 @@ assert(accumulatorIncrement.integer !== true, 'Accumulator.increment should acce
 const accumulatorMode = getDefinition('Accumulator').inputs.find((entry) => entry.name === 'mode');
 assert(accumulatorMode?.defaultValue === 0, 'Accumulator.mode should default to trigger mode.');
 assert(accumulatorMode.connectable === false, 'Accumulator.mode should be selected locally.');
+const compressorSidechain = getDefinition('Compress').inputs.find((entry) => entry.name === 'sidechain');
+assert(compressorSidechain, 'Compress.sidechain is missing from node metadata.');
+assert(compressorSidechain.connectable !== false, 'Compress.sidechain should be connectable.');
+assert(compressorSidechain.valueEditor === false, 'Compress.sidechain should only accept a linked signal.');
 assert(
   getNodeDefinition({
     ...node('legacy_accumulator', 'Accumulator'),
@@ -187,6 +191,47 @@ const timeProgram = compilePatchToDspProgram({
   links: [link('time', 'seconds', 'out', 'both')],
 });
 assert(timeProgram.errors.length === 0, `Time DSP compile failed: ${timeProgram.errors.join('; ')}`);
+
+const sidechainProgram = compilePatchToDspProgram({
+  nodes: [
+    node('main_signal', 'Constant', { value: 0.25 }),
+    node('kick', 'Constant', { value: 1 }),
+    node('compressor', 'Compress', {
+      threshold: -24,
+      ratio: 4,
+      attack: 0.01,
+      release: 0.1,
+      knee: 6,
+      makeup: 0,
+    }),
+    node('out', 'AudioOut', { level: 1 }),
+  ],
+  links: [
+    link('main_signal', 'signal', 'compressor', 'signal'),
+    link('kick', 'signal', 'compressor', 'sidechain'),
+    link('compressor', 'signal', 'out', 'both'),
+  ],
+});
+assert(sidechainProgram.errors.length === 0, `Compressor sidechain DSP compile failed: ${sidechainProgram.errors.join('; ')}`);
+const compressorOp = sidechainProgram.ops.find((op) => op.opcode === 38);
+assert(compressorOp, 'Linked compressor should emit a Compress DSP operation.');
+assert(
+  Number.isInteger(compressorOp.value2) && compressorOp.value2 >= 0,
+  'Linked compressor should pass its sidechain detector register to the WASM operation.',
+);
+const compressorOpIndex = sidechainProgram.ops.indexOf(compressorOp);
+assert(
+  sidechainProgram.ops.slice(0, compressorOpIndex).some((op) => op.out === compressorOp.value2),
+  'The sidechain detector register should be populated before the compressor runs.',
+);
+assert(
+  !sidechainProgram.valueBindings.some((binding) => (
+    binding.kind === 'node-param'
+    && binding.nodeId === 'compressor'
+    && binding.port === 'sidechain'
+  )),
+  'A linked compressor sidechain should not compile as a static parameter.',
+);
 
 for (const [type, ports] of Object.entries(auditedPorts)) {
   const nodeId = type === 'LowpassFilter' ? 'filter' : type === 'SamplePlayer' ? 'sample' : type.toLowerCase();

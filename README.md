@@ -109,9 +109,15 @@ So:
 - `add` adds to the local value or to the averaged `set` value.
 - `multiply` multiplies the result after `set` and `add`.
 
+While dragging a new link, press `a` to create it in `add` mode, `m` for `multiply` mode, or `s` for `set` mode (the default).
+
 This order matters. A frequency input with a local value of `80`, an `add` link carrying `1`, and no other links resolves to roughly `81`. A `set` link carrying a slow oscillator around `-1..1` sets the input near those values, rather than multiplying the local `80`.
 
 Static values from nodes like `Constant` and static `Expression` outputs are folded by the compiler. Audio-rate values are lowered onto the `visual-fm` WASM modulation lanes, preserving the engine's smoothing and click-free behavior.
+
+## Areas
+
+Create a visual area by Cmd/Ctrl-dragging on the canvas. Drag the lower edge of an expanded area header to make a dashed UI section for user-facing controls such as sliders and sequencers. When the area is collapsed, that UI section remains visible and usable, while the lower functional section is hidden. UI nodes become display-only: their pins, node editing, moving, and resizing are disabled, and their external cables are presented at the area header instead.
 
 ## Compiler And Engine Boundary
 

@@ -103,6 +103,7 @@ interface DraftNodeConnection {
   originHandleType: HandleType;
   pointer: { x: number; y: number };
   modifierActive: boolean;
+  mode: LinkMode;
 }
 
 interface DuplicateDragState {
@@ -2456,7 +2457,7 @@ function NodeEditorInner() {
       }
     }
 
-    const link = linkFromConnection(connection);
+    const link = linkFromConnection(connection, draftNodeConnectionRef.current?.mode);
     if (!link) {
       setPendingBoundaryPort(null);
       return;
@@ -2520,6 +2521,7 @@ function NodeEditorInner() {
       originHandleType: params.handleType,
       pointer,
       modifierActive: isCommandModifierPressed(event),
+      mode: 'set',
     });
   }, [editingStack.length, updateDraftNodeConnection]);
 
@@ -3077,7 +3079,13 @@ function NodeEditorInner() {
         m: 'multiply',
       };
       const mode = modeByKey[event.key.toLowerCase()];
-      if (!mode || !setSelectedEdgesMode(mode)) return;
+      if (!mode) return;
+
+      if (draftNodeConnectionRef.current) {
+        updateDraftNodeConnection((current) => current ? { ...current, mode } : null);
+      } else if (!setSelectedEdgesMode(mode)) {
+        return;
+      }
 
       event.preventDefault();
       event.stopPropagation();
@@ -3085,7 +3093,7 @@ function NodeEditorInner() {
 
     window.addEventListener('keydown', handleSelectedEdgeModeKeyDown, { capture: true });
     return () => window.removeEventListener('keydown', handleSelectedEdgeModeKeyDown, { capture: true });
-  }, [setSelectedEdgesMode]);
+  }, [setSelectedEdgesMode, updateDraftNodeConnection]);
 
   useEffect(() => {
     const handleToggleSelectedEdgesKeyDown = (event: KeyboardEvent) => {
@@ -5201,7 +5209,7 @@ function restoreGraphSnapshot(
   setAreas(snapshot.areas ? structuredClone(snapshot.areas) : []);
 }
 
-function linkFromConnection(connection: Connection): PatchLink | null {
+function linkFromConnection(connection: Connection, mode: LinkMode = 'set'): PatchLink | null {
   if (!connection.source || !connection.target || !connection.sourceHandle || !connection.targetHandle) return null;
   const edge = {
     id: '',
@@ -5209,6 +5217,7 @@ function linkFromConnection(connection: Connection): PatchLink | null {
     sourceHandle: connection.sourceHandle,
     target: connection.target,
     targetHandle: connection.targetHandle,
+    data: { mode },
   };
   return linkFromEdge(edge);
 }
@@ -5222,7 +5231,7 @@ function linkForDraftNodeConnection(connection: DraftNodeConnection, nodeId: str
       from: { node: connection.originNodeId, port: originPort.port },
       to: { node: nodeId, port: 'value' },
       weight: 1,
-      mode: 'set',
+      mode: connection.mode,
     };
   }
 
@@ -5230,7 +5239,7 @@ function linkForDraftNodeConnection(connection: DraftNodeConnection, nodeId: str
     from: { node: nodeId, port: 'value' },
     to: { node: connection.originNodeId, port: originPort.port },
     weight: 1,
-    mode: 'set',
+    mode: connection.mode,
   };
 }
 

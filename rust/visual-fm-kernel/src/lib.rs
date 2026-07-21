@@ -4960,6 +4960,50 @@ fn render_dsp_compressor(op: DspOp, sample_rate: f64) -> f64 {
     }
 }
 
+#[cfg(test)]
+mod compressor_tests {
+    use super::{render_dsp_compressor, DspOp, DSP_REGS, DSP_STATE, MAX_DSP_REGS};
+
+    #[test]
+    fn linked_sidechain_drives_gain_reduction_instead_of_main_signal() {
+        let mut op = DspOp {
+            opcode: 0,
+            out: -1,
+            a: 0,
+            b: 2,
+            c: 3,
+            d: 4,
+            e: 5,
+            state: 0,
+            value: (6 + 7 * MAX_DSP_REGS) as f64,
+            value2: 1.0,
+            value3: 0.0,
+            value4: 0.0,
+        };
+
+        unsafe {
+            DSP_REGS[0] = 0.25;
+            DSP_REGS[1] = 1.0;
+            DSP_REGS[2] = -24.0;
+            DSP_REGS[3] = 4.0;
+            DSP_REGS[4] = 0.0;
+            DSP_REGS[5] = 0.1;
+            DSP_REGS[6] = 0.0;
+            DSP_REGS[7] = 0.0;
+            DSP_STATE[0] = 0.0;
+        }
+        let sidechained = render_dsp_compressor(op, 48_000.0);
+
+        op.value2 = -1.0;
+        unsafe {
+            DSP_STATE[0] = 0.0;
+        }
+        let self_detected = render_dsp_compressor(op, 48_000.0);
+
+        assert!(sidechained < self_detected * 0.5);
+    }
+}
+
 fn render_dsp_distortion(op: DspOp) -> f64 {
     let distortion_type = dsp_reg(op.c).round() as i32;
     if distortion_type <= 0 {
