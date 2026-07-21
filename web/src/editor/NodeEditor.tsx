@@ -3007,6 +3007,9 @@ function NodeEditorInner() {
     setMidiControlVisuals({});
     setNodes(toFlowNodes(demoPatch, callbacks, null));
     setEdges(toFlowEdges(demoPatch, updateEdgeWeight, updateEdgeMode, insertNodeOnEdge));
+    setAreas([]);
+    setSelectedAreaId(null);
+    setEditingAreaId(null);
     setEditingTypeNodeId(null);
   }, [commitHistory, insertNodeOnEdge, updateEdgeMode, updateEdgeWeight]);
 

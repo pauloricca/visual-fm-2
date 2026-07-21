@@ -329,6 +329,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     ],
   },
   Compress: processor('Compress', [
+    { name: 'sidechain', valueEditor: false },
     { name: 'threshold', defaultValue: -24, min: -80, max: 0, step: 0.1 },
     { name: 'ratio', defaultValue: 4, min: 1, max: 20, step: 0.1 },
     { name: 'attack', defaultValue: 0.01, min: 0, max: 1, step: 0.001 },

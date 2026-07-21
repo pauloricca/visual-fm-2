@@ -4917,7 +4917,13 @@ fn render_dsp_compressor(op: DspOp, sample_rate: f64) -> f64 {
 
     unsafe {
         let state_index = op.state as usize;
-        let detector = sample.abs();
+        let sidechain_register = op.value2.round() as i32;
+        let detector_sample = if sidechain_register >= 0 && sidechain_register < MAX_DSP_REGS as i32 {
+            sanitize_sample(dsp_reg(sidechain_register), 32.0)
+        } else {
+            sample
+        };
+        let detector = detector_sample.abs();
         let current = DSP_STATE[state_index].max(0.0);
         let attack = dsp_reg(op.d).clamp(0.0, 1.0);
         let release = dsp_reg(op.e).clamp(0.0, 3.0);

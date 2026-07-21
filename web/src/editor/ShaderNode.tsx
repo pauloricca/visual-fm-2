@@ -1323,7 +1323,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                     onDoubleClick={(event) => event.stopPropagation()}
                   >
                     <option value="0">toggle</option>
-                    <option value="1">click</option>
+                    <option value="1">trigger</option>
                     <option value="2">temporary</option>
                   </select>
                 </>
@@ -2085,7 +2085,7 @@ function SliderDisplay({ value, displayValue, direction, onChange }: SliderDispl
   );
 }
 
-type ButtonMode = 'toggle' | 'click' | 'temporary';
+type ButtonMode = 'toggle' | 'trigger' | 'temporary';
 const BUTTON_CLICK_FLASH_MS = 120;
 
 interface ButtonDisplayProps {
@@ -2101,7 +2101,7 @@ function ButtonDisplay({ mode, pressed, onPressedChange, onClickPulse }: ButtonD
   const clickFlashTimeoutRef = useRef<number | null>(null);
   const previousPressedRef = useRef(false);
   const isPressed = pressed >= 0.5;
-  const isLit = mode === 'click'
+  const isLit = mode === 'trigger'
     ? clickFlashActive
     : mode === 'temporary'
       ? pointerActive || isPressed
@@ -2119,7 +2119,7 @@ function ButtonDisplay({ mode, pressed, onPressedChange, onClickPulse }: ButtonD
   }
 
   useEffect(() => {
-    if (mode === 'click' && isPressed && !previousPressedRef.current) {
+    if (mode === 'trigger' && isPressed && !previousPressedRef.current) {
       flashClick();
     }
     previousPressedRef.current = isPressed;
@@ -2154,7 +2154,7 @@ function ButtonDisplay({ mode, pressed, onPressedChange, onClickPulse }: ButtonD
         if (mode === 'temporary') {
           setPointerActive(true);
           onPressedChange(1);
-        } else if (mode === 'click') {
+        } else if (mode === 'trigger') {
           flashClick();
           onClickPulse();
         }
@@ -3092,7 +3092,7 @@ function formatUnitValue(value: number): string {
 
 function buttonModeFromValue(value: number): ButtonMode {
   const mode = Math.round(value);
-  if (mode === 1) return 'click';
+  if (mode === 1) return 'trigger';
   if (mode === 2) return 'temporary';
   return 'toggle';
 }

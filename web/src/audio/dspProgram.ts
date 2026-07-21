@@ -968,6 +968,10 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
   if (node.type === 'Compress') {
     const output = nextRegister(context);
     const state = nextState(context, 1);
+    const signal = resolveInput(node, 'signal', 0, context);
+    const sidechain = hasInput(node, 'sidechain', context)
+      ? resolveInput(node, 'sidechain', 0, context)
+      : -1;
     const knee = resolveInput(node, 'knee', 6, context);
     const makeup = resolveInput(node, 'makeup', 0, context);
     context.stateBindings.push({
@@ -980,13 +984,14 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     context.ops.push({
       opcode: DSP_OP.Compress,
       out: output,
-      a: resolveInput(node, 'signal', 0, context),
+      a: signal,
       b: resolveInput(node, 'threshold', -24, context),
       c: resolveInput(node, 'ratio', 4, context),
       d: resolveInput(node, 'attack', 0.01, context),
       e: resolveInput(node, 'release', 0.1, context),
       state,
       value: packRegisterPair(knee, makeup),
+      value2: sidechain,
     });
     return output;
   }
