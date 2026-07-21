@@ -548,7 +548,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         id: String(binding?.id || ""),
         state: Math.trunc(Number(binding?.state ?? -1)),
         count: Math.max(0, Math.trunc(Number(binding?.count ?? 0))),
-        kind: ["filter", "feedback", "selector", "effect"].includes(binding?.kind) ? binding.kind : "oscillator",
+        kind: ["filter", "feedback", "selector", "effect", "sequencer"].includes(binding?.kind) ? binding.kind : "oscillator",
         nodeId: String(binding?.nodeId || ""),
       })).filter((binding) => binding.id && binding.state >= 0 && binding.count > 0)
       : [];
@@ -650,7 +650,49 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       }
       states.set(binding.id, values);
     }
+    this.captureDspMemoryState(program, states);
     return states;
+  }
+
+  captureDspMemoryState(program, states) {
+    if (!program || !states || !this.wasm?.memory) return;
+
+    const effectLength = Math.trunc(Number(this.wasm.dspEffectBufferLength?.()) || 0);
+    if (effectLength > 0 && this.wasm.dspEffectBufferPtr) {
+      const effectOpsByState = new Map();
+      for (const op of program.ops || []) {
+        if (
+          op.opcode === 12
+          || op.opcode === 13
+          || op.opcode === 14
+          || (op.opcode === 4 && (op.a === 5 || op.a === 6))
+        ) {
+          effectOpsByState.set(op.state, true);
+        }
+      }
+
+      for (const binding of program.stateBindings || []) {
+        if (!effectOpsByState.has(binding.state)) continue;
+        const slot = binding.state % 64;
+        const ptr = this.wasm.dspEffectBufferPtr(slot);
+        if (!ptr) continue;
+        states.set(`${binding.id}:effect-memory`, {
+          index: Math.trunc(Number(this.wasm.getDspEffectIndex?.(slot)) || 0),
+          samples: new Float32Array(this.wasm.memory.buffer, ptr, effectLength).slice(),
+        });
+      }
+    }
+
+    const bufferLength = Math.trunc(Number(this.wasm.dspBufferLength?.()) || 0);
+    if (bufferLength > 0 && this.wasm.dspBufferPtr) {
+      for (const binding of program.stateBindings || []) {
+        if (binding.id.endsWith(":buffer")) {
+          const ptr = this.wasm.dspBufferPtr(binding.state);
+          if (!ptr) continue;
+          states.set(`${binding.id}:buffer-memory`, new Float32Array(this.wasm.memory.buffer, ptr, bufferLength).slice());
+        }
+      }
+    }
   }
 
   restoreDspState(preservedState) {
@@ -662,6 +704,49 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       const count = Math.min(binding.count, values.length);
       for (let offset = 0; offset < count; offset += 1) {
         this.wasm.setDspState(binding.state + offset, values[offset]);
+      }
+    }
+    this.restoreDspMemoryState(preservedState);
+  }
+
+  restoreDspMemoryState(preservedState) {
+    if (!preservedState || !this.dspProgram || !this.wasm?.memory) return;
+
+    const effectLength = Math.trunc(Number(this.wasm.dspEffectBufferLength?.()) || 0);
+    if (effectLength > 0 && this.wasm.dspEffectBufferPtr) {
+      const effectOpsByState = new Map();
+      for (const op of this.dspProgram.ops || []) {
+        if (
+          op.opcode === 12
+          || op.opcode === 13
+          || op.opcode === 14
+          || (op.opcode === 4 && (op.a === 5 || op.a === 6))
+        ) {
+          effectOpsByState.set(op.state, true);
+        }
+      }
+
+      for (const binding of this.dspProgram.stateBindings || []) {
+        if (!effectOpsByState.has(binding.state)) continue;
+        const memoryState = preservedState.get(`${binding.id}:effect-memory`);
+        if (!memoryState?.samples) continue;
+        const slot = binding.state % 64;
+        const ptr = this.wasm.dspEffectBufferPtr(slot);
+        if (!ptr) continue;
+        new Float32Array(this.wasm.memory.buffer, ptr, effectLength).set(memoryState.samples.subarray(0, effectLength));
+        this.wasm.setDspEffectIndex?.(slot, memoryState.index || 0);
+      }
+    }
+
+    const bufferLength = Math.trunc(Number(this.wasm.dspBufferLength?.()) || 0);
+    if (bufferLength > 0 && this.wasm.dspBufferPtr) {
+      for (const binding of this.dspProgram.stateBindings || []) {
+        if (!binding.id.endsWith(":buffer")) continue;
+        const samples = preservedState.get(`${binding.id}:buffer-memory`);
+        if (!samples) continue;
+        const ptr = this.wasm.dspBufferPtr(binding.state);
+        if (!ptr) continue;
+        new Float32Array(this.wasm.memory.buffer, ptr, bufferLength).set(samples.subarray(0, bufferLength));
       }
     }
   }
