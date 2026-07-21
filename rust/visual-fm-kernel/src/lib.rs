@@ -749,6 +749,62 @@ fn prepare_dsp_buffer_slot(state: i32) -> Option<usize> {
 }
 
 #[no_mangle]
+pub extern "C" fn dspEffectBufferPtr(slot: u32) -> *mut f32 {
+    let slot = slot as usize;
+    if slot >= MAX_DSP_EFFECT_SLOTS {
+        return core::ptr::null_mut();
+    }
+    ensure_dsp_effect_buffer(slot);
+    unsafe {
+        DSP_EFFECT_BUFFERS[slot]
+            .as_mut()
+            .map_or(core::ptr::null_mut(), |buffer| buffer.as_mut_ptr())
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn dspEffectBufferLength() -> u32 {
+    MAX_DSP_DELAY_SAMPLES as u32
+}
+
+#[no_mangle]
+pub extern "C" fn getDspEffectIndex(slot: u32) -> u32 {
+    let slot = slot as usize;
+    if slot >= MAX_DSP_EFFECT_SLOTS {
+        return 0;
+    }
+    unsafe { DSP_EFFECT_INDICES[slot] as u32 }
+}
+
+#[no_mangle]
+pub extern "C" fn setDspEffectIndex(slot: u32, index: u32) {
+    let slot = slot as usize;
+    if slot >= MAX_DSP_EFFECT_SLOTS {
+        return;
+    }
+    unsafe {
+        DSP_EFFECT_INDICES[slot] = (index as usize) % MAX_DSP_DELAY_SAMPLES;
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn dspBufferPtr(state: u32) -> *mut f32 {
+    let Some(slot) = prepare_dsp_buffer_slot(state as i32) else {
+        return core::ptr::null_mut();
+    };
+    unsafe {
+        DSP_BUFFER_BUFFERS[slot]
+            .as_mut()
+            .map_or(core::ptr::null_mut(), |buffer| buffer.as_mut_ptr())
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn dspBufferLength() -> u32 {
+    MAX_DSP_BUFFER_SAMPLES as u32
+}
+
+#[no_mangle]
 pub extern "C" fn sampleDataPtr(slot: u32) -> *mut f32 {
     let slot = slot as usize;
     if slot >= MAX_SAMPLE_SLOTS {
