@@ -1717,6 +1717,11 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     if (this.wasm) this.wasm.resetPhases();
     this.wasm?.resetDspRuntimeState?.();
     this.wasm?.clearLinkMeters?.();
+    // Retaining scope history is only for live DSP hot-swaps. A transport
+    // stop/panic must begin the next run with fresh visualization buffers.
+    this.dspScopeStates.clear();
+    this.wasm?.clearDspScopes?.();
+    if (this.dspProgram) this.configureDspScopes();
   }
 
   setMuted(muted) {

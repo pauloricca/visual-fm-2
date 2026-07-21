@@ -87,6 +87,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const isExpression = node.type === 'Expression';
   const isGroup = node.type === 'Group';
   const isAreaCollapsedPresentation = data.isAreaCollapsedPresentation === true;
+  const isAreaUiCollapsedPresentation = data.isAreaUiCollapsedPresentation === true;
   const isSelector = node.type === 'Selector';
   const canRenameInputs = node.type === 'Outs';
   const canRenameOutputs = node.type === 'Ins';
@@ -223,6 +224,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     dragging ? 'shader-node-dragging' : '',
     compactPorts ? 'shader-node-compact' : '',
     isAreaCollapsedPresentation ? 'shader-node-area-hidden' : '',
+    isAreaUiCollapsedPresentation ? 'shader-node-area-ui-collapsed' : '',
   ].filter(Boolean).join(' ');
 
   useLayoutEffect(() => {
@@ -230,6 +232,8 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     return () => cancelAnimationFrame(animationFrame);
   }, [
     compactPorts,
+    isAreaCollapsedPresentation,
+    isAreaUiCollapsedPresentation,
     connectedInputPorts,
     connectedOutputPorts,
     headerInputPort,
@@ -481,7 +485,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     event: PointerEvent<HTMLSpanElement>,
     corner: 'bottom-left' | 'bottom-right',
   ) {
-    if (event.button !== 0) return;
+    if (isAreaUiCollapsedPresentation || event.button !== 0) return;
 
     event.preventDefault();
     event.stopPropagation();
@@ -669,7 +673,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             onCustomLabelCommit={isGroup ? (label) => data.onSubpatchNameChange?.(node.id, label) : undefined}
           />
         )}
-        {!forceCompactPorts ? (
+        {!forceCompactPorts && !isAreaUiCollapsedPresentation ? (
           <button
             className="node-compact-toggle nodrag nopan"
             type="button"
@@ -1472,7 +1476,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             </div>
           ) : null}
           </div>
-          {showResizableDisplay ? (
+          {showResizableDisplay && !isAreaUiCollapsedPresentation ? (
             <>
               <span
                 className={[

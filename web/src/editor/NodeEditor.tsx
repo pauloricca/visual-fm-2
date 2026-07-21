@@ -147,6 +147,13 @@ interface AreaResizeState {
   historyCommitted: boolean;
 }
 
+interface AreaUiResizeState {
+  areaId: string;
+  start: ScreenPoint;
+  originalUiHeight: number;
+  historyCommitted: boolean;
+}
+
 interface SubpatchEditFrame {
   groupId: string;
   parentNodes: ShaderFlowNode[];
@@ -301,6 +308,7 @@ function NodeEditorInner() {
   const areaDrawRef = useRef<AreaDrawState | null>(null);
   const areaDragRef = useRef<AreaDragState | null>(null);
   const areaResizeRef = useRef<AreaResizeState | null>(null);
+  const areaUiResizeRef = useRef<AreaUiResizeState | null>(null);
   const pendingBoundaryPortRef = useRef<BoundaryPortSelection | null>(null);
   const [draftNodeConnection, setDraftNodeConnection] = useState<DraftNodeConnection | null>(null);
   const [duplicateDrag, setDuplicateDrag] = useState<DuplicateDragState | null>(null);
@@ -2091,16 +2099,28 @@ function NodeEditorInner() {
     }));
   }, [areas, renderedNodes]);
 
+  const collapsedUiAreaByNode = useMemo(() => new Map(renderedNodes.flatMap((node) => {
+    const area = collapsedAreaByNode.get(node.id);
+    return area && nodeIsInAreaUiSection(area, node) ? [[node.id, area] as const] : [];
+  })), [collapsedAreaByNode, renderedNodes]);
+
   const collapsedRenderedNodes = useMemo(() => renderedNodes.map((node) => (
-    collapsedAreaByNode.has(node.id) ? {
+    collapsedAreaByNode.has(node.id) && !collapsedUiAreaByNode.has(node.id) ? {
       ...node,
       selected: false,
       draggable: false,
       selectable: false,
       connectable: false,
       data: { ...node.data, isAreaCollapsedPresentation: true },
+    } : collapsedUiAreaByNode.has(node.id) ? {
+      ...node,
+      selected: false,
+      draggable: false,
+      selectable: false,
+      connectable: false,
+      data: { ...node.data, isAreaUiCollapsedPresentation: true },
     } : node
-  )), [collapsedAreaByNode, renderedNodes]);
+  )), [collapsedAreaByNode, collapsedUiAreaByNode, renderedNodes]);
 
   const collapsedRenderedEdges = useMemo(() => renderedEdges.flatMap((edge) => {
     const sourceArea = collapsedAreaByNode.get(edge.source);
@@ -3412,6 +3432,7 @@ function NodeEditorInner() {
         y: resize.corner.includes('top') ? resize.originalPosition.y + resize.originalSize.height - height : resize.originalPosition.y,
       },
       size: { width, height },
+      ...(area.uiHeight === undefined ? {} : { uiHeight: Math.min(area.uiHeight, Math.max(0, height - NODE_HEADER_HEIGHT)) }),
     } : area));
   }, [commitHistory, viewport.zoom]);
 
@@ -3419,6 +3440,42 @@ function NodeEditorInner() {
     if (!areaResizeRef.current) return;
     event.currentTarget.releasePointerCapture(event.pointerId);
     areaResizeRef.current = null;
+  }, []);
+
+  const startAreaUiResize = useCallback((event: ReactPointerEvent<HTMLDivElement>, area: EditorArea) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectedAreaId(area.id);
+    areaUiResizeRef.current = {
+      areaId: area.id,
+      start: { x: event.clientX, y: event.clientY },
+      originalUiHeight: area.uiHeight ?? 0,
+      historyCommitted: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }, []);
+
+  const resizeAreaUi = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = areaUiResizeRef.current;
+    if (!resize) return;
+    event.preventDefault();
+    const delta = (event.clientY - resize.start.y) / viewport.zoom;
+    const nextUiHeight = Math.max(0, resize.originalUiHeight + delta);
+    if (!resize.historyCommitted && nextUiHeight !== resize.originalUiHeight) {
+      commitHistory();
+      resize.historyCommitted = true;
+    }
+    setAreas((current) => current.map((area) => area.id === resize.areaId ? {
+      ...area,
+      uiHeight: Math.min(Math.max(0, area.size.height - NODE_HEADER_HEIGHT), nextUiHeight),
+    } : area));
+  }, [commitHistory, viewport.zoom]);
+
+  const stopAreaUiResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!areaUiResizeRef.current) return;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    areaUiResizeRef.current = null;
   }, []);
 
   const renameArea = useCallback((areaId: string, title: string) => {
@@ -3429,6 +3486,7 @@ function NodeEditorInner() {
   const toggleAreaCollapsed = useCallback((areaId: string) => {
     commitHistory(`area-collapse:${areaId}`);
     setEditingAreaId(null);
+    setEditingTypeNodeId(null);
     setAreas((current) => current.map((area) => {
       if (area.id !== areaId) return area;
       if (area.collapsed || area.locked) return { ...area, collapsed: !area.collapsed };
@@ -3723,7 +3781,7 @@ function NodeEditorInner() {
                   <div
                     key={area.id}
                     className={`canvas-area${area.collapsed ? ' canvas-area-collapsed' : ''}${selectedAreaId === area.id ? ' canvas-area-selected' : ''}`}
-                    style={{ left: area.position.x, top: area.position.y, width: area.size.width, height: area.collapsed ? 32 : area.size.height }}
+                    style={{ left: area.position.x, top: area.position.y, width: area.size.width, height: area.collapsed ? NODE_HEADER_HEIGHT + (area.uiHeight ?? 0) : area.size.height }}
                   >
                     <div
                       className="canvas-area-header nodrag nopan"
@@ -3805,6 +3863,21 @@ function NodeEditorInner() {
                         />
                       </button>
                     </div>
+                    {!area.collapsed && (
+                      <div
+                        className="canvas-area-ui-resize-handle nodrag nopan"
+                        aria-label="Resize area UI section"
+                        title="Drag to create or resize the user-facing section"
+                        style={{ top: area.uiHeight && area.uiHeight > 0 ? NODE_HEADER_HEIGHT + area.uiHeight - 4 : 28 }}
+                        onPointerDown={(event) => startAreaUiResize(event, area)}
+                        onPointerMove={resizeAreaUi}
+                        onPointerUp={stopAreaUiResize}
+                        onPointerCancel={stopAreaUiResize}
+                      />
+                    )}
+                    {area.uiHeight !== undefined && area.uiHeight > 0 && (
+                      <div className="canvas-area-ui-divider" style={{ top: NODE_HEADER_HEIGHT + area.uiHeight }} />
+                    )}
                     {!area.collapsed && (['top-left', 'top-right', 'bottom-left', 'bottom-right'] as const).map((corner) => (
                       <div
                         key={corner}
@@ -5754,7 +5827,10 @@ function areaContainsPoint(area: EditorArea, point: { x: number; y: number }): b
 
 function collapsedAreaContainingNode(areas: EditorArea[], node: ShaderFlowNode): EditorArea | undefined {
   return areas
-    .filter((area) => areaContainsNode(area, node))
+    // UI controls are intentionally position-owned: older saved areas can have a
+    // stale locked-node snapshot, but a control in their UI section must still
+    // receive the collapsed presentation.
+    .filter((area) => areaContainsNode(area, node) || nodeIsInAreaUiSection(area, node))
     .sort((left, right) => (left.size.width * left.size.height) - (right.size.width * right.size.height))[0];
 }
 
@@ -5762,6 +5838,14 @@ function areaContainsNode(area: EditorArea, node: ShaderFlowNode): boolean {
   return area.locked
     ? area.nodeIds?.includes(node.id) === true
     : areaContainsPoint(area, node.position);
+}
+
+function nodeIsInAreaUiSection(area: EditorArea, node: ShaderFlowNode): boolean {
+  return area.uiHeight !== undefined
+    && node.position.x >= area.position.x
+    && node.position.x <= area.position.x + area.size.width
+    && node.position.y >= area.position.y + NODE_HEADER_HEIGHT
+    && node.position.y < area.position.y + NODE_HEADER_HEIGHT + area.uiHeight;
 }
 
 function collapsedAreaInputPin(area: EditorArea): { x: number; y: number } {

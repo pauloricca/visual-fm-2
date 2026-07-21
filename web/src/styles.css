@@ -525,6 +525,7 @@ button:hover {
 
 .canvas-area-collapsed {
   background: var(--color-foreground-12);
+  overflow: hidden;
 }
 
 .area-compact-toggle {
@@ -603,6 +604,18 @@ button:hover {
   pointer-events: none;
 }
 
+.shader-node-area-ui-collapsed .react-flow__handle,
+.shader-node-area-ui-collapsed .shader-handle,
+.shader-node-area-ui-collapsed .audio-node-scope-resize-handle,
+.shader-node-area-ui-collapsed .node-compact-toggle {
+  display: none;
+}
+
+/* The visible UI is for operating the control; node editing resumes on expand. */
+.shader-node-area-ui-collapsed .shader-node-title {
+  pointer-events: none;
+}
+
 .area-compact-toggle:hover,
 .area-compact-toggle:focus-visible {
   background: var(--color-background);
@@ -646,6 +659,26 @@ button:hover {
   height: 16px;
   background: transparent;
   pointer-events: auto;
+}
+
+.canvas-area-ui-resize-handle {
+  position: absolute;
+  top: 28px;
+  right: 0;
+  left: 0;
+  z-index: 1;
+  height: 9px;
+  cursor: ns-resize;
+  pointer-events: auto;
+}
+
+.canvas-area-ui-divider {
+  position: absolute;
+  right: 0;
+  left: 0;
+  z-index: 1;
+  border-top: 1px dashed var(--color-foreground);
+  pointer-events: none;
 }
 
 .canvas-area-resize-top-left { top: -8px; left: -8px; cursor: nwse-resize; }

@@ -92,6 +92,8 @@ export interface ShaderNodeData extends Record<string, unknown> {
   isTypePickerOpen: boolean;
   isEditingSubpatch?: boolean;
   isAreaCollapsedPresentation?: boolean;
+  /** This node remains visible in the UI portion of a collapsed area, but has no pins. */
+  isAreaUiCollapsedPresentation?: boolean;
 }
 
 export type ShaderFlowNode = Node<ShaderNodeData, 'shaderNode'>;
@@ -165,6 +167,8 @@ export interface EditorArea {
   title: string;
   position: { x: number; y: number };
   size: { width: number; height: number };
+  /** Height of the user-facing section below the area header. Omit for a conventional area. */
+  uiHeight?: number;
   collapsed?: boolean;
   /** A locked area retains this snapshot instead of dynamically owning every node in its bounds. */
   locked?: boolean;
