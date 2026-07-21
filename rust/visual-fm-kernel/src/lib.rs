@@ -1300,6 +1300,19 @@ pub extern "C" fn dspScopeWriteIndex(slot: u32) -> u32 {
 }
 
 #[no_mangle]
+pub extern "C" fn restoreDspScopeHistory(slot: u32, count: u32, write_index: u32) {
+    unsafe {
+        let slot = slot as usize;
+        if slot >= MAX_DSP_SCOPES {
+            return;
+        }
+        let points = DSP_SCOPE_POINTS_ACTIVE[slot].clamp(1, LINK_SCOPE_POINTS);
+        DSP_SCOPE_COUNTS[slot] = (count as usize).min(points) as u32;
+        DSP_SCOPE_WRITE_INDICES[slot] = (write_index as usize % points) as u32;
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn clearDspMeters() {
     unsafe {
         for slot in 0..MAX_DSP_METERS {

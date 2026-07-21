@@ -965,6 +965,22 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       });
     if (scopeConfigurationIsUnchanged) return;
 
+    // A new DSP program can move monitor registers even when the user has not
+    // changed a scope. Preserve the ring buffer so the trace can continue
+    // advancing immediately on the newly compiled signal.
+    const previousStateById = new Map();
+    for (const [linkId, state] of this.dspScopeStates) {
+      if (state.samples?.buffer !== this.wasm.memory.buffer) {
+        const ptr = this.wasm.dspScopePtr?.(state.slot);
+        state.samples = ptr ? new Float32Array(this.wasm.memory.buffer, ptr, 512) : null;
+      }
+      if (!state.samples || !sameScopeRequest(state.request, nextScopes.find((scope) => scope.request.linkId === linkId)?.request)) continue;
+      previousStateById.set(linkId, {
+        samples: state.samples.slice(0, state.request.points),
+        count: this.clamp(Math.round(this.wasm.dspScopeCount?.(state.slot) || 0), 0, state.request.points),
+        writeIndex: this.clamp(Math.round(this.wasm.dspScopeWriteIndex?.(state.slot) || 0), 0, state.request.points - 1),
+      });
+    }
     this.dspScopeStates.clear();
     this.wasm.clearDspScopes?.();
     for (const { request, register, slot } of nextScopes) {
@@ -972,11 +988,17 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       if (scopeSlot < 0) continue;
       const ptr = this.wasm.dspScopePtr(slot);
       if (!ptr) continue;
+      const samples = new Float32Array(this.wasm.memory.buffer, ptr, 512);
+      const previous = previousStateById.get(request.linkId);
+      if (previous) {
+        samples.set(previous.samples.subarray(0, request.points));
+        this.wasm.restoreDspScopeHistory?.(slot, previous.count, previous.writeIndex);
+      }
       this.dspScopeStates.set(request.linkId, {
         request,
         slot,
         register,
-        samples: new Float32Array(this.wasm.memory.buffer, ptr, 512),
+        samples,
       });
     }
   }
