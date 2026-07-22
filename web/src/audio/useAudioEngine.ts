@@ -75,6 +75,7 @@ export interface RecordingState {
 interface AudioEngineState {
   status: AudioStatus;
   message: string;
+  cpuLoad: number;
   peak: number;
   linkMeters: Record<string, LinkMeterReading>;
   linkScopes: Record<string, LinkScopeReading>;
@@ -152,7 +153,7 @@ interface ImageDataRequest {
 // Keep this in step with public/audio/visual-fm-kernel.wasm. AudioWorklet
 // modules and WASM are aggressively cached, so an older kernel can silently
 // omit newer DSP behavior or exports while the current UI is running.
-const AUDIO_ENGINE_ASSET_VERSION = '2026-07-22-custom-wave-morph-1';
+const AUDIO_ENGINE_ASSET_VERSION = '2026-07-22-custom-wave-morph-1-cpu-meter-2';
 const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const METER_UPDATE_INTERVAL_MS = 80;
@@ -287,6 +288,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   const midiInputEnabled = selectedMidiInputDeviceIds.length > 0;
   const [status, setStatus] = useState<AudioStatus>('idle');
   const [message, setMessage] = useState('audio stopped');
+  const [cpuLoad, setCpuLoad] = useState(0);
   const [peak, setPeak] = useState(0);
   const [linkMeters, setLinkMeters] = useState<Record<string, LinkMeterReading>>({});
   const [linkScopes, setLinkScopeReadings] = useState<Record<string, LinkScopeReading>>({});
@@ -355,6 +357,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     lastSilenceReportAtRef.current = 0;
     lastAudioHealthReportAtRef.current = 0;
     setPeak(0);
+    setCpuLoad(0);
   }, []);
 
   const closeAudioEngine = useCallback((reason: string): Promise<void> => {
@@ -1199,6 +1202,11 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
               });
               return;
             }
+            if (type === 'cpuLoad') {
+              const load = Number(payload?.load);
+              if (Number.isFinite(load)) setCpuLoad(Math.max(0, load));
+              return;
+            }
             if (type === 'wasmScopeMemory') {
               logDiagnosticEvent('audio-wasm-scope-memory', {
                 details: {
@@ -1609,6 +1617,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   return {
     status,
     message,
+    cpuLoad,
     peak,
     linkMeters,
     linkScopes,

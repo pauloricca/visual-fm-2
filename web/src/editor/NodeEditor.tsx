@@ -384,6 +384,8 @@ function NodeEditorInner() {
   const audio = useAudioEngine({ selectedMidiInputDeviceIds, recordingPatchName: rootPatchName });
   const selectedMidiInputDeviceKey = useMemo(() => selectedMidiInputDeviceIds.join('\n'), [selectedMidiInputDeviceIds]);
   const audioPlaybackActive = audio.status === 'running' || audio.status === 'starting';
+  const cpuLoad = audio.status === 'running' ? Math.min(1, audio.cpuLoad) : 0;
+  const cpuPercentage = Math.round(cpuLoad * 100);
   const audioRecordingActive = audio.recording.status === 'waiting' || audio.recording.status === 'recording';
   const recordingButtonLabel = audioRecordingActive
     ? formatRecordingTimestamp(audio.recording.elapsedSeconds)
@@ -4099,6 +4101,19 @@ function NodeEditorInner() {
               >
                 {formatZoomPercentage(viewport.zoom)}
               </ControlButton>
+              <div
+                className={`react-flow__controls-cpu-meter${audio.status === 'running' ? ' is-running' : ''}`}
+                style={{ '--cpu-load': cpuLoad } as CSSProperties}
+                role="meter"
+                aria-label={audio.status === 'running' ? `CPU usage ${cpuPercentage}%` : 'CPU usage, audio stopped'}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={audio.status === 'running' ? cpuPercentage : 0}
+                title={audio.status === 'running' ? `Audio CPU: ${cpuPercentage}%` : 'Audio CPU: stopped'}
+              >
+                <span className="cpu-meter-label">CPU</span>
+                <span className="cpu-meter-percentage" aria-hidden="true">{cpuPercentage}%</span>
+              </div>
             </Controls>
           </ReactFlow>
           <div ref={setEdgeOverlayElement} className="edge-overlay-layer" />

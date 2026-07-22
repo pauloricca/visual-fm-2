@@ -135,7 +135,7 @@ function chartLabelDivisions(size: number, orientation: 'horizontal' | 'vertical
     : size >= 352 ? 16 : size >= 176 ? 8 : size >= 104 ? 4 : 2;
 }
 
-function formatChartValue(value: number): string {
+export function formatChartValue(value: number): string {
   if (!Number.isFinite(value)) return '0';
   const absoluteValue = Math.abs(value);
   const formatted = absoluteValue >= 100

@@ -58,7 +58,7 @@ import {
 } from './flowPatch';
 import { getSampleWaveform, type SampleWaveform, type SampleWaveformBin } from '../audio/sampleWaveformCache';
 import { graphDetailScreenEmphasis, graphDetailZoomScale } from './canvasZoom';
-import { ChartGrid, chartGridColumns, chartGridRows, chartScaleTicks } from './chartGrid';
+import { ChartGrid, chartGridColumns, chartGridRows, chartScaleTicks, formatChartValue } from './chartGrid';
 
 const CUSTOM_WAVE_DRAG_UPDATE_INTERVAL_MS = 50;
 
@@ -93,6 +93,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const [dragSource, setDragSource] = useState<{ side: 'input' | 'output'; port: string } | null>(null);
   const [dragTarget, setDragTarget] = useState<{ side: 'input' | 'output'; port: string } | null>(null);
   const [scopeResizeCorner, setScopeResizeCorner] = useState<'bottom-left' | 'bottom-right' | null>(null);
+  const [customWaveDragPointIndex, setCustomWaveDragPointIndex] = useState<number | null>(null);
   const [expressionDraft, setExpressionDraft] = useState(node.expression ?? '');
   const [imageAspectRatio, setImageAspectRatio] = useState(DEFAULT_IMAGE_ASPECT_RATIO);
   const [pointerOver, setPointerOver] = useState(false);
@@ -221,6 +222,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     '--input-label-width': inputLabelWidth,
     '--node-scale': String(node.scale ?? 1),
     '--graph-screen-scale': String(graphScreenEmphasis / graphZoomScale),
+    '--graph-stroke-scale': String(1 / graphZoomScale),
   } as CSSProperties;
   const className = [
     'shader-node',
@@ -474,6 +476,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
 
       flushCustomWaveDragCommit();
       customWaveDragRef.current = null;
+      setCustomWaveDragPointIndex(null);
     }
 
     function handlePointerUp(event: globalThis.PointerEvent) {
@@ -624,6 +627,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
 
     const nextPoints = customWave.points.filter((_, pointIndex) => pointIndex !== index);
     customWaveDragRef.current = null;
+    setCustomWaveDragPointIndex(null);
     commitCustomWave({ ...customWave, points: nextPoints }, `custom-wave-point:${node.id}`);
     return true;
   }
@@ -656,6 +660,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
       customWaveClickRef.current = { index: targetIndex, time: now };
       if (targetIndex === null || targetIndex <= 0 || targetIndex >= lastIndex) return;
       customWaveDragRef.current = { pointerId: event.pointerId, index: targetIndex };
+      setCustomWaveDragPointIndex(targetIndex);
       event.currentTarget.setPointerCapture(event.pointerId);
       return;
     }
@@ -673,6 +678,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     }, 0);
     commitCustomWave({ ...customWave, points: nextPoints }, `custom-wave-point:${node.id}`);
     customWaveDragRef.current = { pointerId: event.pointerId, index: nextIndex };
+    setCustomWaveDragPointIndex(nextIndex);
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
@@ -930,6 +936,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               displaySize={displaySize}
               graphZoomScale={graphZoomScale}
               graphScreenEmphasis={graphScreenEmphasis}
+              activePointIndex={customWaveDragPointIndex}
               editorRef={customWaveEditorRef}
               onPointerDown={handleCustomWavePointerDown}
               onDoubleClick={handleCustomWaveDoubleClick}
@@ -1806,6 +1813,7 @@ interface CustomWaveEditorProps {
   displaySize: ScopeNodeSize;
   graphZoomScale: number;
   graphScreenEmphasis: number;
+  activePointIndex: number | null;
   editorRef: RefObject<SVGSVGElement | null>;
   onPointerDown: (event: PointerEvent<SVGSVGElement>) => void;
   onDoubleClick: (event: MouseEvent<SVGSVGElement>) => void;
@@ -2821,6 +2829,7 @@ function CustomWaveEditor({
   displaySize,
   graphZoomScale,
   graphScreenEmphasis,
+  activePointIndex,
   editorRef,
   onPointerDown,
   onDoubleClick,
@@ -2828,6 +2837,7 @@ function CustomWaveEditor({
   onSustainStartChange,
   onSustainEndChange,
 }: CustomWaveEditorProps) {
+  const [hoveredPointIndex, setHoveredPointIndex] = useState<number | null>(null);
   const width = 300;
   const height = 128;
   const padding = 12;
@@ -2849,6 +2859,11 @@ function CustomWaveEditor({
   const hitRadius = screenCircleRadius(15 * graphScreenEmphasis, width, height, graphDetailSize);
   const endpointRadius = screenCircleRadius(5 * graphScreenEmphasis, width, height, graphDetailSize);
   const handleRadius = screenCircleRadius(6 * graphScreenEmphasis, width, height, graphDetailSize);
+  const valueLabelIndex = activePointIndex ?? hoveredPointIndex;
+  const valueLabelPoint = valueLabelIndex === null ? null : points[valueLabelIndex] ?? null;
+  const valueLabelScreen = valueLabelPoint
+    ? customWavePointToScreen(valueLabelPoint, width, height, padding)
+    : null;
 
   return (
     <div className="custom-wave-node-editor nodrag nopan">
@@ -2885,7 +2900,11 @@ function CustomWaveEditor({
           const screen = customWavePointToScreen(point, width, height, padding);
           const locked = index === 0 || index === points.length - 1;
           return (
-            <g key={`${point.x}:${point.y}:${index}`}>
+            <g
+              key={`${point.x}:${point.y}:${index}`}
+              onPointerEnter={() => setHoveredPointIndex(index)}
+              onPointerLeave={() => setHoveredPointIndex((current) => current === index ? null : current)}
+            >
               <ellipse
                 className={[
                   'custom-wave-hit-target',
@@ -2912,6 +2931,22 @@ function CustomWaveEditor({
           );
         })}
         </svg>
+        {valueLabelPoint && valueLabelScreen ? (
+          <span
+            className={[
+              'custom-wave-node-value-label',
+              valueLabelPoint.x > 0.72 ? 'is-left' : '',
+              valueLabelPoint.y > 0.72 ? 'is-below' : '',
+            ].filter(Boolean).join(' ')}
+            style={{
+              left: `${(valueLabelScreen.x / width) * 100}%`,
+              top: `${(valueLabelScreen.y / height) * 100}%`,
+            }}
+            aria-hidden="true"
+          >
+            {formatChartValue(customWaveOutputValue(valueLabelPoint.y, rangeMin, rangeMax))}
+          </span>
+        ) : null}
       </div>
       {!compact ? (
       <div className="custom-wave-node-controls">
@@ -3033,6 +3068,12 @@ function customWavePointToScreen(point: CustomWavePoint, width: number, height: 
     x: padding + point.x * (width - padding * 2),
     y: padding + (1 - ((point.y + 1) / 2)) * (height - padding * 2),
   };
+}
+
+function customWaveOutputValue(normalizedValue: number, rangeMin: number, rangeMax: number): number {
+  const min = Number.isFinite(rangeMin) ? rangeMin : -1;
+  const max = Number.isFinite(rangeMax) ? rangeMax : 1;
+  return min + ((normalizedValue + 1) / 2) * (max - min);
 }
 
 function screenCircleRadius(

@@ -170,6 +170,10 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.lastGraphRightSample = 0;
     this.lastProcessFrames = 128;
     this.lastProcessorErrorAt = -Infinity;
+    this.cpuLoad = null;
+    this.cpuElapsedMs = 0;
+    this.cpuDeadlineMs = 0;
+    this.nextCpuLoadPostTime = 0;
     this.outputLifecycleGain = 0;
     this.ready = false;
     this.muted = false;
@@ -1811,6 +1815,10 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
 
   setMuted(muted) {
     this.muted = muted;
+    this.cpuLoad = null;
+    this.cpuElapsedMs = 0;
+    this.cpuDeadlineMs = 0;
+    this.nextCpuLoadPostTime = 0;
     this.zeroVoicePhasesOnStart = !muted;
     this.resetRuntimeState();
   }
@@ -2476,13 +2484,45 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
   }
 
   process(inputs, outputs) {
+    const startedAt = this.cpuClockNow();
     try {
       return this.processUnsafe(inputs, outputs);
     } catch (error) {
       this.reportProcessorError(error);
       this.fillSilence(outputs);
       return true;
+    } finally {
+      this.updateCpuLoad(
+        this.cpuClockNow() - startedAt,
+        outputs[0]?.[0]?.length || this.lastProcessFrames,
+      );
     }
+  }
+
+  cpuClockNow() {
+    return globalThis.performance?.now?.() ?? Date.now();
+  }
+
+  updateCpuLoad(elapsedMs, frames) {
+    const deadlineMs = frames / sampleRate * 1000;
+    if (!(deadlineMs > 0) || !Number.isFinite(elapsedMs)) return;
+
+    this.cpuElapsedMs += Math.max(0, elapsedMs);
+    this.cpuDeadlineMs += deadlineMs;
+    if (currentTime < this.nextCpuLoadPostTime) return;
+
+    const intervalLoad = this.cpuElapsedMs / this.cpuDeadlineMs;
+    this.cpuLoad = this.cpuLoad === null
+      ? intervalLoad
+      : this.cpuLoad + (intervalLoad - this.cpuLoad) * 0.35;
+    this.cpuElapsedMs = 0;
+    this.cpuDeadlineMs = 0;
+
+    this.nextCpuLoadPostTime = currentTime + 0.1;
+    this.port.postMessage({
+      type: "cpuLoad",
+      payload: { load: this.cpuLoad },
+    });
   }
 }
 
