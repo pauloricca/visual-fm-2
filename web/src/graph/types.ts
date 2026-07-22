@@ -40,6 +40,7 @@ export type NodeType =
   | 'Chorus'
   | 'Reverb'
   | 'Compress'
+  | 'Limiter'
   | 'Envelope'
   | 'Follower'
   | 'RingMod'

@@ -11,7 +11,6 @@ const DEFAULT_SYNC_BEATS = 1;
 const DRONE_SLOT = MAX_ACTIVE_VOICES;
 const AUDIO_TARGET = -1;
 const LINK_TARGET_BASE = -2;
-const MASTER_GAIN = 0.18;
 const DSP_OUTPUT_START_FADE_SECONDS = 0.02;
 const VOICE_START_FADE_SECONDS = 0.006;
 const VOICE_STEAL_FADE_SECONDS = 0.03;
@@ -650,6 +649,13 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       }
       states.set(binding.id, values);
     }
+    for (const op of program.ops || []) {
+      if (op.opcode !== 3 || op.a !== 9 || op.state < 0) continue;
+      const binding = program.customWaveBindings?.[Math.trunc(op.value)];
+      if (binding?.customWave?.mode === "once") {
+        states.set(`${binding.nodeId}:oscillator:custom-wave-once`, true);
+      }
+    }
     this.captureDspMemoryState(program, states);
     return states;
   }
@@ -665,6 +671,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
           op.opcode === 12
           || op.opcode === 13
           || op.opcode === 14
+          || op.opcode === 39
           || (op.opcode === 4 && (op.a === 5 || op.a === 6))
         ) {
           effectOpsByState.set(op.state, true);
@@ -720,6 +727,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
           op.opcode === 12
           || op.opcode === 13
           || op.opcode === 14
+          || op.opcode === 39
           || (op.opcode === 4 && (op.a === 5 || op.a === 6))
         ) {
           effectOpsByState.set(op.state, true);
@@ -881,18 +889,25 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       );
     }
 
-    // A one-shot custom wave is an event-driven source.  It must stay silent
-    // after the engine starts (or when it is newly added) until its phase-reset
-    // input receives a rising edge.  Restore any existing state afterwards so
-    // a running one-shot is not interrupted by an unrelated graph update.
+    this.restoreDspState(preservedState);
+
+    // A newly created one-shot custom wave is an event-driven source. It must
+    // stay silent until its trigger input receives a rising edge. Preserve the
+    // state of an existing one-shot so unrelated graph updates do not interrupt
+    // it while it is playing.
+    this.armDspCustomWaveOneShots(preservedState);
+  }
+
+  armDspCustomWaveOneShots(preservedState = null) {
+    if (!this.dspProgram || !this.wasm?.setDspState) return;
     for (const op of this.dspProgram.ops) {
       if (op.opcode !== 3 || op.a !== 9 || op.state < 0) continue;
       const binding = this.dspProgram.customWaveBindings[Math.trunc(op.value)];
-      if (binding?.customWave?.mode === "once") {
-        this.wasm.setDspState?.(op.state + 3, 1);
+      const wasAlreadyOneShot = preservedState?.has(`${binding?.nodeId}:oscillator:custom-wave-once`);
+      if (binding?.customWave?.mode === "once" && !wasAlreadyOneShot) {
+        this.wasm.setDspState(op.state + 3, 1);
       }
     }
-    this.restoreDspState(preservedState);
   }
 
   setMidiCc(payload = {}) {
@@ -1716,6 +1731,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.outputDcBlockers = [this.createDcBlocker(), this.createDcBlocker()];
     if (this.wasm) this.wasm.resetPhases();
     this.wasm?.resetDspRuntimeState?.();
+    this.armDspCustomWaveOneShots();
     this.wasm?.clearLinkMeters?.();
     // Retaining scope history is only for live DSP hot-swaps. A transport
     // stop/panic must begin the next run with fresh visualization buffers.
@@ -2324,11 +2340,11 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     let peak = 0;
     for (let i = 0; i < frames; i += 1) {
       const lifecycleGain = this.nextOutputLifecycleGain();
-      const rawLeftSample = Math.tanh((this.leftBuffer[i] || 0) * MASTER_GAIN * lifecycleGain);
-      const rawRightSample = Math.tanh((this.rightBuffer[i] || 0) * MASTER_GAIN * lifecycleGain);
+      const rawLeftSample = (this.leftBuffer[i] || 0) * lifecycleGain;
+      const rawRightSample = (this.rightBuffer[i] || 0) * lifecycleGain;
       const [mixedLeftSample, mixedRightSample] = this.nextGraphUpdateCrossfadeSample(rawLeftSample, rawRightSample);
-      const leftSample = this.applyMasterEffects(mixedLeftSample, 0);
-      const rightSample = this.applyMasterEffects(mixedRightSample, 1);
+      const leftSample = this.sanitizeSample(mixedLeftSample);
+      const rightSample = this.sanitizeSample(mixedRightSample);
       this.lastGraphLeftSample = mixedLeftSample;
       this.lastGraphRightSample = mixedRightSample;
       left[i] = leftSample;

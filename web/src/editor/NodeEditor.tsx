@@ -19,7 +19,7 @@ import {
   Viewport,
   type CoordinateExtent,
 } from '@xyflow/react';
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type FocusEvent as ReactFocusEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type DragEvent, type FocusEvent as ReactFocusEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { compilePatchToDspProgram } from '../audio/dspProgram';
 import { useAudioEngine, type LinkMeterReading, type MidiControlChange, type MidiInputState } from '../audio/useAudioEngine';
 import { normalizeCustomWave } from '../graph/customWave';
@@ -87,7 +87,11 @@ const DEFAULT_NODE_BOUNDS_SIZE = { width: 240, height: 96 };
 const NODE_HEADER_HEIGHT = 32;
 const DSP_ERROR_PANEL_LIMIT = 4;
 const FIT_VIEW_OPTIONS = { padding: DEFAULT_FIT_VIEW_PADDING };
-const TRANSPARENT_CONNECTION_LINE_STYLE = { stroke: 'transparent' };
+const CONNECTION_LINE_COLORS: Record<LinkMode, string> = {
+  set: 'var(--color-link-set)',
+  add: 'var(--color-link-add)',
+  multiply: 'var(--color-link-multiply)',
+};
 const DELETE_KEY_CODES = ['Backspace', 'Delete'];
 const MULTI_SELECTION_KEY_CODES = ['Meta', 'Shift'];
 const REACT_FLOW_PRO_OPTIONS = { hideAttribution: true };
@@ -3750,7 +3754,11 @@ function NodeEditorInner() {
             onReconnectStart={onReconnectStart}
             onReconnectEnd={onReconnectEnd}
             reconnectRadius={12}
-            connectionLineStyle={draftNodePreview ? TRANSPARENT_CONNECTION_LINE_STYLE : undefined}
+            connectionLineStyle={{
+              '--connection-line-color': draftNodePreview
+                ? 'transparent'
+                : CONNECTION_LINE_COLORS[draftNodeConnection?.mode ?? 'set'],
+            } as CSSProperties}
             onEdgeDoubleClick={(event, edge) => {
               event.preventDefault();
               event.stopPropagation();

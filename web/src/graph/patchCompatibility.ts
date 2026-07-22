@@ -68,6 +68,16 @@ function normalizeCompatibleLink(
   }
 
   const targetNode = nodeById.get(normalizedLink.to.node);
+  if (targetNode?.type === 'CustomWave' && normalizedLink.to.port === 'phaseReset') {
+    normalizedLink = {
+      ...normalizedLink,
+      to: {
+        ...normalizedLink.to,
+        port: 'trigger',
+      },
+    };
+  }
+
   if (targetNode?.type === 'Sequencer' && normalizedLink.to.port === 'tick') {
     normalizedLink = {
       ...normalizedLink,
@@ -184,6 +194,14 @@ function portExists(
 }
 
 function normalizeLegacyNodeParams(type: NodeType, params: Record<string, number>): Record<string, number> {
+  if (type === 'CustomWave' && params.phaseReset !== undefined) {
+    const { phaseReset, ...nextParams } = params;
+    return {
+      ...nextParams,
+      trigger: params.trigger ?? phaseReset,
+    };
+  }
+
   if (type !== 'SamplePlayer' || params.originalFrequency !== undefined || params.originalPitch === undefined) {
     return params;
   }
@@ -196,6 +214,12 @@ function normalizeLegacyNodeParams(type: NodeType, params: Record<string, number
 }
 
 function normalizeLegacyInputDefinitions(type: NodeType, inputs: PortDefinition[] | undefined): PortDefinition[] | undefined {
+  if (type === 'CustomWave') {
+    return inputs?.map((input) => (
+      input.name === 'phaseReset' ? { ...input, name: 'trigger' } : input
+    ));
+  }
+
   if (type !== 'SamplePlayer') return inputs;
   return inputs?.map((input) => (
     input.name === 'originalPitch'

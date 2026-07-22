@@ -84,7 +84,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     inputs: [
       { name: 'frequency', defaultValue: 220 },
       { name: 'phase', defaultValue: 0 },
-      { name: 'phaseReset', defaultValue: 0 },
+      { name: 'trigger', defaultValue: 0 },
       { name: 'rangeMin', defaultValue: -1 },
       { name: 'rangeMax', defaultValue: 1 },
     ],
@@ -337,6 +337,12 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     { name: 'knee', defaultValue: 6, min: 0, max: 40, step: 0.1 },
     { name: 'makeup', defaultValue: 0, min: -24, max: 24, step: 0.1 },
   ]),
+  Limiter: processor('Limiter', [
+    { name: 'inputGain', defaultValue: 0, min: -24, max: 24, step: 0.1 },
+    { name: 'ceiling', defaultValue: -1, min: -24, max: 0, step: 0.1 },
+    { name: 'release', defaultValue: 0.05, min: 0.001, max: 3, step: 0.001 },
+    { name: 'lookahead', defaultValue: 0.005, min: 0, max: 0.02, step: 0.001 },
+  ]),
   Envelope: processor('Envelope', [
     { name: 'trigger', valueEditor: false },
     { name: 'gate', valueEditor: false },
@@ -437,6 +443,7 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   Chorus: 'Chorus',
   Reverb: 'Reverb',
   Compress: 'Compress',
+  Limiter: 'Limiter',
   Envelope: 'Envelope',
   Follower: 'Follower',
   RingMod: 'Ring Mod',

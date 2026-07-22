@@ -89,6 +89,11 @@ const compressorSidechain = getDefinition('Compress').inputs.find((entry) => ent
 assert(compressorSidechain, 'Compress.sidechain is missing from node metadata.');
 assert(compressorSidechain.connectable !== false, 'Compress.sidechain should be connectable.');
 assert(compressorSidechain.valueEditor === false, 'Compress.sidechain should only accept a linked signal.');
+for (const port of ['inputGain', 'ceiling', 'release', 'lookahead']) {
+  const input = getDefinition('Limiter').inputs.find((entry) => entry.name === port);
+  assert(input, `Limiter.${port} is missing from node metadata.`);
+  assert(input.connectable !== false, `Limiter.${port} should be connectable.`);
+}
 assert(
   getNodeDefinition({
     ...node('legacy_accumulator', 'Accumulator'),
@@ -232,6 +237,20 @@ assert(
   )),
   'A linked compressor sidechain should not compile as a static parameter.',
 );
+
+const limiterProgram = compilePatchToDspProgram({
+  nodes: [
+    node('signal', 'Constant', { value: 2 }),
+    node('limiter', 'Limiter', { inputGain: 0, ceiling: -1, release: 0.05, lookahead: 0.005 }),
+    node('out', 'AudioOut', { level: 1 }),
+  ],
+  links: [
+    link('signal', 'signal', 'limiter', 'signal'),
+    link('limiter', 'signal', 'out', 'both'),
+  ],
+});
+assert(limiterProgram.errors.length === 0, `Limiter DSP compile failed: ${limiterProgram.errors.join('; ')}`);
+assert(limiterProgram.ops.some((op) => op.opcode === 39), 'Limiter should emit a Limiter DSP operation.');
 
 for (const [type, ports] of Object.entries(auditedPorts)) {
   const nodeId = type === 'LowpassFilter' ? 'filter' : type === 'SamplePlayer' ? 'sample' : type.toLowerCase();

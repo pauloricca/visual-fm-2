@@ -2187,6 +2187,17 @@ button:hover {
   box-shadow: 0 0 6px var(--color-accent-glow);
 }
 
+.audio-out-node-meter-peak {
+  position: absolute;
+  inset: -1px auto -1px 0;
+  z-index: 1;
+  width: 2px;
+  transform: translateX(-50%);
+  background: var(--color-foreground);
+  box-shadow: 0 0 5px var(--color-foreground-62);
+  transition: left 150ms ease-out;
+}
+
 .audio-node-scope-display {
   position: relative;
   height: var(--node-display-height, 48px);
@@ -2627,7 +2638,7 @@ button:hover {
 }
 
 .react-flow__connection-path {
-  stroke: var(--color-accent) !important;
+  stroke: var(--connection-line-color, var(--color-accent)) !important;
   stroke-width: 3 !important;
 }
 
@@ -2651,15 +2662,15 @@ button:hover {
 }
 
 .shader-edge-path-mode-set.shader-edge-path-foreground {
-  stroke: var(--color-foreground);
-}
-
-.shader-edge-path-mode-add.shader-edge-path-foreground {
   stroke: var(--color-link-set);
 }
 
+.shader-edge-path-mode-add.shader-edge-path-foreground {
+  stroke: var(--color-link-add);
+}
+
 .shader-edge-path-mode-multiply.shader-edge-path-foreground {
-  stroke: var(--color-add-link-active);
+  stroke: var(--color-link-multiply);
 }
 
 .shader-edge-path-disabled {
@@ -2671,21 +2682,21 @@ button:hover {
 .react-flow__edge.selectable:focus .react-flow__edge-path.shader-edge-path-mode-set.shader-edge-path-foreground,
 .react-flow__edge.selectable:focus-visible .react-flow__edge-path.shader-edge-path-mode-set.shader-edge-path-foreground,
 .react-flow__edge.selected .react-flow__edge-path.shader-edge-path-mode-set.shader-edge-path-foreground {
-  stroke: var(--color-foreground) !important;
+  stroke: var(--color-link-set) !important;
 }
 
 .react-flow__edge.updating .react-flow__edge-path.shader-edge-path-mode-add.shader-edge-path-foreground,
 .react-flow__edge.selectable:focus .react-flow__edge-path.shader-edge-path-mode-add.shader-edge-path-foreground,
 .react-flow__edge.selectable:focus-visible .react-flow__edge-path.shader-edge-path-mode-add.shader-edge-path-foreground,
 .react-flow__edge.selected .react-flow__edge-path.shader-edge-path-mode-add.shader-edge-path-foreground {
-  stroke: var(--color-link-set) !important;
+  stroke: var(--color-link-add) !important;
 }
 
 .react-flow__edge.updating .react-flow__edge-path.shader-edge-path-mode-multiply.shader-edge-path-foreground,
 .react-flow__edge.selectable:focus .react-flow__edge-path.shader-edge-path-mode-multiply.shader-edge-path-foreground,
 .react-flow__edge.selectable:focus-visible .react-flow__edge-path.shader-edge-path-mode-multiply.shader-edge-path-foreground,
 .react-flow__edge.selected .react-flow__edge-path.shader-edge-path-mode-multiply.shader-edge-path-foreground {
-  stroke: var(--color-add-link-active) !important;
+  stroke: var(--color-link-multiply) !important;
 }
 
 .shader-edge-path-dsp-error.shader-edge-path-foreground {
@@ -2722,17 +2733,17 @@ button:hover {
 
 .react-flow__edge.selected .shader-edge-path-mode-set.shader-edge-path-foreground,
 .shader-edge-path-selected.shader-edge-path-mode-set {
-  filter: drop-shadow(0 0 2px var(--color-foreground));
+  filter: drop-shadow(0 0 2px var(--color-link-set));
 }
 
 .react-flow__edge.selected .shader-edge-path-mode-add.shader-edge-path-foreground,
 .shader-edge-path-selected.shader-edge-path-mode-add {
-  filter: drop-shadow(0 0 2px var(--color-link-set));
+  filter: drop-shadow(0 0 2px var(--color-link-add));
 }
 
 .react-flow__edge.selected .shader-edge-path-mode-multiply.shader-edge-path-foreground,
 .shader-edge-path-selected.shader-edge-path-mode-multiply {
-  filter: drop-shadow(0 0 2px var(--color-add-link-active));
+  filter: drop-shadow(0 0 2px var(--color-link-multiply));
 }
 
 .react-flow__edge.selected .shader-edge-path-underlay {

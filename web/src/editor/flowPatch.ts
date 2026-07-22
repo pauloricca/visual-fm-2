@@ -650,6 +650,14 @@ function persistedPortExists(
 }
 
 function normalizePersistedNodeParams(node: PersistedEditorState['nodes'][number]): Record<string, number> {
+  if (node.type === 'CustomWave' && node.params.phaseReset !== undefined) {
+    const { phaseReset, ...params } = node.params;
+    return {
+      ...params,
+      trigger: node.params.trigger ?? phaseReset,
+    };
+  }
+
   if (node.type !== 'SamplePlayer' || node.params.originalFrequency !== undefined || node.params.originalPitch === undefined) {
     return node.params;
   }
@@ -664,6 +672,12 @@ function normalizePersistedNodeParams(node: PersistedEditorState['nodes'][number
 function normalizePersistedInputDefinitions(
   node: PersistedEditorState['nodes'][number],
 ): PortDefinition[] | undefined {
+  if (node.type === 'CustomWave') {
+    return node.inputs?.map((input) => (
+      input.name === 'phaseReset' ? { ...input, name: 'trigger' } : input
+    ));
+  }
+
   if (node.type !== 'SamplePlayer') return node.inputs;
   return node.inputs?.map((input) => (
     input.name === 'originalPitch'
@@ -697,6 +711,16 @@ function normalizePersistedPatchLink(
   }
 
   const targetNode = nodesById.get(link.to.node);
+  if (targetNode?.type === 'CustomWave' && link.to.port === 'phaseReset') {
+    return {
+      ...link,
+      to: {
+        ...link.to,
+        port: 'trigger',
+      },
+    };
+  }
+
   if (targetNode?.type === 'Sequencer' && link.to.port === 'tick') {
     return {
       ...link,

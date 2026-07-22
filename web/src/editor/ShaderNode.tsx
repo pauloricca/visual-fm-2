@@ -1878,12 +1878,14 @@ function useRecentBipolarLevels(level: number, enabled: boolean): { positive: nu
 
 function AudioOutputMeterRow({ label, level }: { label: string; level: number }) {
   const normalized = Math.max(0, Math.min(1, level));
+  const recentMax = useRecentMaxLevel(normalized, true);
 
   return (
     <div className="audio-out-node-meter-row" aria-hidden="true">
       <span className="audio-out-node-meter-label">{label}</span>
       <span className="audio-out-node-meter-track">
         <span className="audio-out-node-meter-fill" style={{ width: `${normalized * 100}%` }} />
+        <span className="audio-out-node-meter-peak" style={{ left: `${recentMax * 100}%` }} />
       </span>
     </div>
   );

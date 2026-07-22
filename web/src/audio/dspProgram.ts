@@ -55,6 +55,7 @@ export const DSP_OP = {
   Image: 36,
   Time: 37,
   Compress: 38,
+  Limiter: 39,
 } as const;
 
 export interface DspProgram {
@@ -707,7 +708,7 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       a: 9,
       b: frequency,
       d: resolveInput(node, 'phase', 0, context),
-      e: resolveInput(node, 'phaseReset', 0, context),
+      e: resolveInput(node, 'trigger', 0, context),
       state,
       value: customWaveIndex,
     });
@@ -992,6 +993,29 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       state,
       value: packRegisterPair(knee, makeup),
       value2: sidechain,
+    });
+    return output;
+  }
+
+  if (node.type === 'Limiter') {
+    const output = nextRegister(context);
+    const state = nextState(context, 2);
+    context.stateBindings.push({
+      id: `${node.id}:limiter`,
+      state,
+      count: 2,
+      kind: 'effect',
+      nodeId: node.id,
+    });
+    context.ops.push({
+      opcode: DSP_OP.Limiter,
+      out: output,
+      a: resolveInput(node, 'signal', 0, context),
+      b: resolveInput(node, 'inputGain', 0, context),
+      c: resolveInput(node, 'ceiling', -1, context),
+      d: resolveInput(node, 'release', 0.05, context),
+      e: resolveInput(node, 'lookahead', 0.005, context),
+      state,
     });
     return output;
   }

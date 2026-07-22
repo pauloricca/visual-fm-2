@@ -127,6 +127,7 @@ const DSP_OP_SEQUENCER: i32 = 35;
 const DSP_OP_IMAGE: i32 = 36;
 const DSP_OP_TIME: i32 = 37;
 const DSP_OP_COMPRESS: i32 = 38;
+const DSP_OP_LIMITER: i32 = 39;
 const MIN_ENVELOPE_ATTACK_SECONDS: f64 = 0.001;
 const MAX_DSP_TEMPO_SOURCES: usize = 129;
 const TEMPO_OUTPUT_COUNT: i32 = 10;
@@ -1432,6 +1433,7 @@ pub extern "C" fn addDspOp(
         if opcode == DSP_OP_DELAY
             || opcode == DSP_OP_CHORUS
             || opcode == DSP_OP_REVERB
+            || opcode == DSP_OP_LIMITER
             || (opcode == DSP_OP_FILTER && (a == 5 || a == 6))
         {
             if let Some(slot) = dsp_effect_slot(state) {
@@ -4960,6 +4962,121 @@ fn render_dsp_compressor(op: DspOp, sample_rate: f64) -> f64 {
     }
 }
 
+fn render_dsp_limiter(op: DspOp, sample_rate: f64) -> f64 {
+    let sample = sanitize_sample(dsp_reg(op.a), 32.0);
+    let input_gain_db = dsp_reg(op.b).clamp(-24.0, 24.0);
+    let ceiling_db = dsp_reg(op.c).clamp(-24.0, 0.0);
+    let release = dsp_reg(op.d).clamp(0.001, 3.0);
+    let lookahead = dsp_reg(op.e).clamp(0.0, 0.02);
+    let lookahead_samples = (lookahead * sample_rate.max(1.0)).round() as usize;
+    let driven = sanitize_sample(sample * 10.0_f64.powf(input_gain_db / 20.0), 32.0);
+    let ceiling = 10.0_f64.powf(ceiling_db / 20.0);
+    let required_gain = if driven.abs() > ceiling {
+        ceiling / driven.abs()
+    } else {
+        1.0
+    };
+
+    let gain = if op.state < 0 || op.state as usize + 1 >= MAX_DSP_STATE {
+        required_gain
+    } else {
+        unsafe {
+            let state_index = op.state as usize;
+            let current = if DSP_STATE[state_index] > 0.0 {
+                DSP_STATE[state_index].clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            let hold_samples = DSP_STATE[state_index + 1].max(0.0);
+            let (next, next_hold) = if required_gain < current {
+                (required_gain, lookahead_samples as f64)
+            } else if hold_samples >= 1.0 {
+                (current, hold_samples - 1.0)
+            } else {
+                let coefficient = envelope_coefficient(release, sample_rate);
+                (current + (required_gain - current) * coefficient, 0.0)
+            };
+            DSP_STATE[state_index] = sanitize_control_value(next).clamp(0.0, 1.0);
+            DSP_STATE[state_index + 1] = next_hold;
+            DSP_STATE[state_index]
+        }
+    };
+
+    let delayed = if let Some(slot) = dsp_effect_slot(op.state) {
+        unsafe {
+            let index = DSP_EFFECT_INDICES[slot];
+            let output = if lookahead_samples == 0 {
+                driven
+            } else {
+                read_dsp_effect_delay(slot, index, lookahead_samples as f64)
+            };
+            write_dsp_effect_buffer(slot, index, driven);
+            DSP_EFFECT_INDICES[slot] = (index + 1) % MAX_DSP_DELAY_SAMPLES;
+            output
+        }
+    } else {
+        driven
+    };
+
+    sanitize_sample(delayed * gain, 32.0).clamp(-ceiling, ceiling)
+}
+
+#[cfg(test)]
+mod limiter_tests {
+    use super::{
+        ensure_dsp_effect_buffer, render_dsp_limiter, DspOp, DSP_EFFECT_BUFFERS,
+        DSP_EFFECT_INDICES, DSP_REGS, DSP_STATE, MAX_DSP_EFFECT_SLOTS,
+    };
+
+    #[test]
+    fn lookahead_is_optional_and_output_respects_the_ceiling() {
+        let state = 100;
+        let slot = state as usize % MAX_DSP_EFFECT_SLOTS;
+        let op = DspOp {
+            opcode: 39,
+            out: -1,
+            a: 0,
+            b: 1,
+            c: 2,
+            d: 3,
+            e: 4,
+            state,
+            value: 0.0,
+            value2: 0.0,
+            value3: 0.0,
+            value4: 0.0,
+        };
+
+        unsafe {
+            DSP_REGS[0] = 2.0;
+            DSP_REGS[1] = 0.0;
+            DSP_REGS[2] = -6.0;
+            DSP_REGS[3] = 0.05;
+            DSP_REGS[4] = 0.0;
+            DSP_STATE[state as usize] = 0.0;
+            DSP_STATE[state as usize + 1] = 0.0;
+        }
+        let zero_latency = render_dsp_limiter(op, 48_000.0);
+        assert!((zero_latency.abs() - 10.0_f64.powf(-6.0 / 20.0)).abs() < 0.000001);
+
+        ensure_dsp_effect_buffer(slot);
+        unsafe {
+            DSP_REGS[4] = 0.001;
+            DSP_STATE[state as usize] = 0.0;
+            DSP_STATE[state as usize + 1] = 0.0;
+            DSP_EFFECT_INDICES[slot] = 0;
+            DSP_EFFECT_BUFFERS[slot].as_mut().unwrap().fill(0.0);
+        }
+        let first = render_dsp_limiter(op, 48_000.0);
+        assert_eq!(first, 0.0);
+        let mut delayed_peak = 0.0;
+        for _ in 0..48 {
+            delayed_peak = render_dsp_limiter(op, 48_000.0);
+        }
+        assert!((delayed_peak.abs() - 10.0_f64.powf(-6.0 / 20.0)).abs() < 0.000001);
+    }
+}
+
 #[cfg(test)]
 mod compressor_tests {
     use super::{render_dsp_compressor, DspOp, DSP_REGS, DSP_STATE, MAX_DSP_REGS};
@@ -6162,6 +6279,7 @@ fn render_dsp_op(
         DSP_OP_PLAYHEAD => set_dsp_reg(op.out, render_dsp_playhead(op, sample_rate)),
         DSP_OP_TIME => set_dsp_reg(op.out, render_dsp_time(op, sample_rate)),
         DSP_OP_COMPRESS => set_dsp_reg(op.out, render_dsp_compressor(op, sample_rate)),
+        DSP_OP_LIMITER => set_dsp_reg(op.out, render_dsp_limiter(op, sample_rate)),
         DSP_OP_BUFFER => set_dsp_reg(op.out, render_dsp_buffer(op, sample_rate)),
         DSP_OP_IMAGE => set_dsp_reg(op.out, render_dsp_image(op)),
         _ => {}

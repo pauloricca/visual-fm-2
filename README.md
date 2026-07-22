@@ -29,25 +29,29 @@ Most node types are available from the node picker. `Ins` and `Outs` appear whil
 - `Group`: wraps a subpatch so a reusable patch can live inside a single node.
 - `Ins`: exposes subpatch input ports while editing a subpatch.
 - `Outs`: exposes subpatch output ports while editing a subpatch.
-- `Audio Out`: sends mono graph signals to the stereo hardware output via `both`, `left`, or `right`.
-- `Sine Osc`: generates a sine oscillator signal.
-- `Triangle Osc`: generates a triangle oscillator signal.
-- `Saw Osc`: generates a falling/rising saw oscillator signal.
-- `Ramp Osc`: generates a ramp-style oscillator signal.
-- `Square Osc`: generates a square oscillator signal.
+- `Audio Out`: sends mono graph signals to the stereo hardware output via `both`, `left`, or `right`, with a final `level` control.
+- `Sine Osc`: generates a sine oscillator signal with frequency, phase, phase-reset, and output-range controls.
+- `Triangle Osc`: generates a triangle oscillator signal with frequency, phase, phase-reset, and output-range controls.
+- `Saw Osc`: generates a saw oscillator signal with frequency, phase, phase-reset, and output-range controls.
+- `Ramp Osc`: generates a ramp oscillator signal with frequency, phase, phase-reset, and output-range controls.
+- `Square Osc`: generates a square oscillator signal with frequency, phase, phase-reset, and output-range controls.
 - `Sample Hold`: samples an incoming signal when triggered and holds that value.
 - `Perlin Noise`: generates smooth noise at a controllable speed.
 - `Noise`: generates raw noise.
 - `Audio Input`: brings a microphone or input device into the patch with gain/level controls.
 - `Custom Wave`: generates an editable breakpoint waveform with loop, one-shot, ping-pong, and sustain modes.
-- `Sample`: plays an uploaded sample with trigger, region, pitch, stretch, and granular-style controls.
+- `Sample`: plays an uploaded sample with frequency/original-frequency pitch tracking, trigger, polyphony, region, envelope, stretch, granular-style mode, and level controls.
+- `Image`: samples brightness, RGB, hue, and saturation from an uploaded image at an `x`/`y` position.
 - `Buffer`: records and plays a rolling audio buffer from signal, playhead, record-head, and length controls.
 - `Playhead`: outputs a playback position signal from start and speed controls.
+- `Time`: outputs elapsed time in seconds.
 - `Constant`: outputs a fixed numeric value.
+- `Pass`: passes a signal through unchanged.
 - `Slider`: provides a playable UI control, optionally driven by MIDI CC, that outputs a mapped signal.
 - `Button`: provides a playable UI button, optionally driven by MIDI CC, for gate/toggle/trigger-style control.
+- `Keys`: provides an on-canvas keyboard with configurable size and starting MIDI note, outputting MIDI note and frequency.
 - `Sequencer`: offers Trigger mode for the original clickable pulse grid and Gate mode for freely positioned, edge-resizable intervals; `signal` advances the sequence, `reset` restarts it, each row has its own output, and `trigger index` emits the 1-based index of the first active row.
-- `Tempo`: outputs clock triggers and matching frequency values from 4-bar divisions down to thirty-seconds.
+- `Tempo`: outputs clock triggers and matching frequency values from 4-bar divisions down to thirty-seconds, with BPM, swing, internal/MIDI source, and MIDI-source selection.
 - `MIDI Note`: converts MIDI note input into note, frequency, velocity, gate, and trigger outputs.
 - `MIDI CC`: outputs the current value of a selected MIDI CC.
 - `Selector`: selects one of several input values and can glide between selections.
@@ -56,11 +60,14 @@ Most node types are available from the node picker. `Ins` and `Outs` appear whil
 - `Map`: remaps a signal from one numeric range to another.
 - `Clamp`: limits a signal to a minimum and maximum.
 - `Multiply`: multiplies a signal by a factor.
+- `pow`: raises the signal to an exponent.
 - `Pan`: splits a signal into equal-power `left` and `right` outputs from a `pan` value, where `-1` is left, `0` is center, and `1` is right.
 - `Delay`: applies delay with time, feedback, and wet/dry mix controls.
 - `Chorus`: applies a modulated delay chorus effect.
 - `Reverb`: applies a reverb effect with size, decay, mix controls, and `left`/`right` outputs.
-- `Envelope`: creates an ADSR-style envelope from a trigger input.
+- `Compress`: applies dynamics compression with optional sidechain, threshold, ratio, attack, release, knee, and makeup controls.
+- `Limiter`: applies lookahead limiting with input gain, ceiling, release, and lookahead controls.
+- `Envelope`: creates an envelope with trigger/gate inputs and delay, attack, decay, sustain, gate-length, and release controls.
 - `Follower`: follows the amplitude contour of a signal with attack/release smoothing.
 - `Ring Mod`: multiplies a signal by a modulation amount for ring-mod-style tones.
 - `Fold`: folds a signal back on itself for wavefolding.
@@ -78,6 +85,73 @@ Most node types are available from the node picker. `Ins` and `Outs` appear whil
 - `Fuzz`: applies fuzz-style distortion.
 - `Saturate`: applies saturation-style distortion.
 - `Wavefold`: applies wavefolding distortion.
+
+### Node signatures
+
+The signature notation below is `inputs -> outputs`. Port names are the names used by patch links. `Expression`, `Group`, `Ins`, and `Outs` have patch-defined ports; Sequencer row outputs and Selector value inputs also expand dynamically.
+
+| Node | Inputs | Outputs |
+| --- | --- | --- |
+| Expression | dynamic expression variables | `value` |
+| Group | dynamic subpatch inputs | dynamic subpatch outputs |
+| Ins | — | dynamic subpatch inputs |
+| Outs | dynamic subpatch outputs | — |
+| Audio Out | `both`, `left`, `right`, `level` | — |
+| Sine Osc | `frequency`, `phase`, `phaseReset`, `rangeMin`, `rangeMax` | `signal` |
+| Triangle Osc | `frequency`, `phase`, `phaseReset`, `rangeMin`, `rangeMax` | `signal` |
+| Saw Osc | `frequency`, `phase`, `phaseReset`, `rangeMin`, `rangeMax` | `signal` |
+| Ramp Osc | `frequency`, `phase`, `phaseReset`, `rangeMin`, `rangeMax` | `signal` |
+| Square Osc | `frequency`, `phase`, `phaseReset`, `rangeMin`, `rangeMax` | `signal` |
+| Sample Hold | `signal`, `trigger` | `signal` |
+| Perlin Noise | `speed`, `rangeMin`, `rangeMax` | `signal` |
+| Noise | `rangeMin`, `rangeMax` | `signal` |
+| Audio Input | `gain`, `level` | `signal` |
+| Custom Wave | `frequency`, `phase`, `trigger`, `rangeMin`, `rangeMax` | `signal` |
+| Sample | `frequency`, `originalFrequency`, `trigger`, `voices`, `start`, `end`, `attack`, `release`, `stretch`, `cycleLength`, `overlapRatio`, `mode`, `level` | `signal` |
+| Image | `x`, `y` | `brightness`, `r`, `g`, `b`, `hue`, `saturation` |
+| Buffer | `signal`, `playhead`, `recordHead`, `length` | `signal` |
+| Playhead | `start`, `speed` | `playhead` |
+| Time | — | `seconds` |
+| Constant | `value` | `signal` |
+| Pass | `signal` | `signal` |
+| Slider | `signal`, `value`, `min`, `max`, `direction`, `midiChannel`, `midiCc` | `signal` |
+| Button | `signal`, `mode`, `midiChannel`, `midiCc` | `signal` |
+| Keys | `size`, `startNote` | `midi note`, `frequency` |
+| Sequencer | `steps`, `rows`, `beatLength`, `mode`, `signal`, `reset` | row outputs `1`…`16` (according to `rows`), `trigger index` |
+| Tempo | `bpm`, `swing`, `source`, `midiSource` | `4 bar`, `2 bar`, `bar`, `whole`, `half`, `quarter / beat`, `upbeat`, `eighth`, `sixteenth`, `thirty-second`, plus a matching `… freq` output for each |
+| MIDI Note | `channel`, `voices` | `note`, `frequency`, `velocity`, `gate`, `trigger` |
+| MIDI CC | `channel`, `cc` | `signal` |
+| Selector | `select`, `slide`, dynamic value inputs `1`… | `signal` |
+| Accumulator | `mode`, `trigger`, `reset`, `increment`, `min`, `max` | `signal` |
+| Abs | `signal` | `signal` |
+| Map | `signal`, `srcMin`, `srcMax`, `trgtMin`, `trgtMax` | `signal` |
+| Clamp | `signal`, `min`, `max` | `signal` |
+| Multiply | `signal`, `factor` | `signal` |
+| pow | `signal`, `exponent` | `signal` |
+| Pan | `signal`, `pan` | `left`, `right` |
+| Delay | `signal`, `time`, `feedback`, `mix` | `signal` |
+| Chorus | `signal`, `rate`, `depth`, `mix` | `signal` |
+| Reverb | `signal`, `size`, `decay`, `mix` | `left`, `right` |
+| Compress | `signal`, `sidechain`, `threshold`, `ratio`, `attack`, `release`, `knee`, `makeup` | `signal` |
+| Limiter | `signal`, `inputGain`, `ceiling`, `release`, `lookahead` | `signal` |
+| Envelope | `signal`, `trigger`, `gate`, `delay`, `attack`, `decay`, `sustain`, `gateLength`, `release` | `signal` |
+| Follower | `signal`, `attack`, `release` | `signal` |
+| Ring Mod | `signal`, `amount` | `signal` |
+| Fold | `signal`, `amount` | `signal` |
+| Meter | `signal`, `range`, `mode` | `signal` |
+| Scope | `signal`, `range`, `mode`, `length` | `signal` |
+| Lowpass Filter | `signal`, `cutoff`, `resonance` | `signal` |
+| Highpass Filter | `signal`, `cutoff`, `resonance` | `signal` |
+| Bandpass Filter | `signal`, `cutoff`, `resonance` | `signal` |
+| Equaliser | `signal`, `lows`, `mids`, `highs` | `signal` |
+| Formant Filter | `signal`, `morph`, `intensity` | `signal` |
+| Comb Filter | `signal`, `frequency`, `feedback` | `signal` |
+| Comb Notch | `signal`, `frequency`, `feedback` | `signal` |
+| Hard Clip | `signal`, `drive` | `signal` |
+| Soft Clip | `signal`, `drive` | `signal` |
+| Fuzz | `signal`, `drive` | `signal` |
+| Saturate | `signal`, `drive` | `signal` |
+| Wavefold | `signal`, `drive` | `signal` |
 
 ## Links
 
@@ -109,7 +183,7 @@ So:
 - `add` adds to the local value or to the averaged `set` value.
 - `multiply` multiplies the result after `set` and `add`.
 
-While dragging a new link, press `a` to create it in `add` mode, `m` for `multiply` mode, or `s` for `set` mode (the default).
+While dragging a new link, press `a` to create it in `add` mode, `m` for `multiply` mode, or `s` for `set` mode (the default). The live link changes colour to preview the selected mode.
 
 This order matters. A frequency input with a local value of `80`, an `add` link carrying `1`, and no other links resolves to roughly `81`. A `set` link carrying a slow oscillator around `-1..1` sets the input near those values, rather than multiplying the local `80`.
 
@@ -118,6 +192,35 @@ Static values from nodes like `Constant` and static `Expression` outputs are fol
 ## Areas
 
 Create a visual area by Cmd/Ctrl-dragging on the canvas. Drag the lower edge of an expanded area header to make a dashed UI section for user-facing controls such as sliders and sequencers. When the area is collapsed, that UI section remains visible and usable, while the lower functional section is hidden. UI nodes become display-only: their pins, node editing, moving, and resizing are disabled, and their external cables are presented at the area header instead.
+
+## Editor controls and shortcuts
+
+Shortcuts are ignored while editing text or numeric fields unless noted otherwise.
+
+| Shortcut or gesture | Action |
+| --- | --- |
+| `Space` | Start or stop audio playback. |
+| `Cmd/Ctrl+Z` | Undo. |
+| `Cmd/Ctrl+Shift+Z` or `Cmd/Ctrl+Y` | Redo. |
+| `Cmd/Ctrl+C`, `Cmd/Ctrl+V` | Copy and paste selected nodes. |
+| `Backspace` or `Delete` | Delete the selected nodes, links, subpatch boundary port, or area. |
+| `Cmd/Ctrl+Backspace` or `Cmd/Ctrl+Delete` | Delete selected nodes while bridging compatible incoming and outgoing links. |
+| `A`, `S`, `M` | Set a new or selected link to add, set, or multiply mode. |
+| `X` | Enable or disable the selected links. |
+| `1`…`9` | Set the selected Selector node to the corresponding input. |
+| `Cmd/Ctrl+0` | Reset canvas zoom to 100%. |
+| `Shift` or `Cmd` while selecting | Add to the current selection. |
+| `Alt`-drag selected nodes | Duplicate the selected graph. Add `Cmd`, `Ctrl`, or `Shift` to preserve links between the duplicates and unselected nodes. |
+| `Cmd`, `Ctrl`, or `Alt` while reconnecting a link endpoint | Keep the original link and create the reconnected link as a duplicate. |
+| Drag empty canvas | Rectangle-select nodes and their connected links. |
+| `Cmd/Ctrl`-drag empty canvas | Create an area. The gesture can switch between area creation and rectangle selection while the modifier is pressed or released. |
+| Double-click empty canvas | Create a new untyped node at the pointer. |
+| Double-click a link | Insert a new node into that link. |
+| Double-click a Group node | Enter and edit its subpatch. |
+| Scroll | Pan the canvas. |
+| Pinch | Zoom the canvas. |
+
+The floating controls provide play/stop (`PL`), recording, MIDI device settings (`MD`), patch save/load (`SV`/`LD`), undo/redo (`UN`/`RE`), grouping (`GR`), new patch (`NW`), subpatch import (`IM`), and selected-node scaling (`S+`/`S-`). The zoom percentage button resets zoom to 100%.
 
 ## Compiler And Engine Boundary
 
