@@ -154,6 +154,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.imageDataByNodeId = new Map();
     this.graphUpdateCrossfade = this.normalizeGraphUpdateCrossfade(options.processorOptions?.audioConfig?.graphUpdateCrossfade);
     this.graphUpdateTransition = null;
+    this.customWaveMorphEndSamples = new Map();
+    this.pendingCustomWaveUpdates = new Map();
     this.maxVoices = 5;
     this.tempo = DEFAULT_TEMPO;
     this.voices = new Map();
@@ -215,6 +217,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         this.setDspProgram(payload);
       } else if (type === "dspValues") {
         this.setDspValues(payload);
+      } else if (type === "dspCustomWaves") {
+        this.setDspCustomWaves(payload);
       } else if (type === "sampleData") {
         this.setSampleData(payload);
       } else if (type === "imageData") {
@@ -450,6 +454,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.links = [];
     this.linksById = new Map();
     this.monitorScopeStates.clear();
+    this.customWaveMorphEndSamples.clear();
+    this.pendingCustomWaveUpdates.clear();
     this.syncDspProgram(preservedState);
     this.refreshWasmViews(true);
     this.configureDspScopes();
@@ -496,6 +502,69 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       if (values[index] === this.dspProgram.values[index]) continue;
       this.setDspValueAt(index, values[index]);
     }
+  }
+
+  setDspCustomWaves(payload = {}) {
+    if (!this.dspProgram || !this.wasm?.beginCustomWaveUpdate || !this.wasm?.finishCustomWaveUpdate) return;
+    const incomingBindings = Array.isArray(payload.bindings) ? payload.bindings : [];
+    const currentBindingsByNodeId = new Map(
+      this.dspProgram.customWaveBindings.map((binding, index) => [binding.nodeId, { binding, index }]),
+    );
+
+    for (const incomingBinding of incomingBindings) {
+      const nodeId = String(incomingBinding?.nodeId || "");
+      const current = currentBindingsByNodeId.get(nodeId);
+      const node = this.nodesById.get(nodeId);
+      if (!current || !node || node.wasmIndex < 0) continue;
+
+      const nextCustomWave = this.normalizeCustomWave(incomingBinding?.customWave);
+      if (this.customWavePointsEqual(current.binding.customWave.points, nextCustomWave.points)) {
+        this.pendingCustomWaveUpdates.delete(nodeId);
+        continue;
+      }
+      if ((this.customWaveMorphEndSamples.get(nodeId) || 0) > this.sampleCursor) {
+        // Coalesce rapid edits so a new curve never interrupts an active morph.
+        this.pendingCustomWaveUpdates.set(nodeId, nextCustomWave);
+        continue;
+      }
+
+      this.applyDspCustomWaveUpdate(nodeId, nextCustomWave);
+    }
+  }
+
+  applyDspCustomWaveUpdate(nodeId, nextCustomWave) {
+    const bindingIndex = this.dspProgram?.customWaveBindings.findIndex((binding) => binding.nodeId === nodeId) ?? -1;
+    const node = this.nodesById.get(nodeId);
+    if (bindingIndex < 0 || !node || node.wasmIndex < 0) return;
+
+    const morphFrames = Math.max(1, Math.round(this.graphUpdateCrossfade.seconds * sampleRate));
+    this.wasm.beginCustomWaveUpdate(node.wasmIndex);
+    for (const point of nextCustomWave.points) {
+      this.wasm.addCustomWavePoint(node.wasmIndex, point.x, point.y);
+    }
+    this.wasm.finishCustomWaveUpdate(node.wasmIndex, morphFrames);
+    node.customWave = nextCustomWave;
+    this.dspProgram.customWaveBindings[bindingIndex] = {
+      ...this.dspProgram.customWaveBindings[bindingIndex],
+      customWave: nextCustomWave,
+    };
+    this.customWaveMorphEndSamples.set(nodeId, this.sampleCursor + morphFrames);
+    this.pendingCustomWaveUpdates.delete(nodeId);
+  }
+
+  flushPendingCustomWaveUpdates() {
+    for (const [nodeId, customWave] of this.pendingCustomWaveUpdates) {
+      if ((this.customWaveMorphEndSamples.get(nodeId) || 0) > this.sampleCursor) continue;
+      this.applyDspCustomWaveUpdate(nodeId, customWave);
+    }
+  }
+
+  customWavePointsEqual(left, right) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+    for (let index = 0; index < left.length; index += 1) {
+      if (left[index]?.x !== right[index]?.x || left[index]?.y !== right[index]?.y) return false;
+    }
+    return true;
   }
 
   setDspValueAt(index, value) {
@@ -2358,6 +2427,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.lastOutputPeak = Math.max(this.lastOutputPeak, peak);
     this.recordOutputSamples(left, right, left.length);
     this.sampleCursor += left.length;
+    this.flushPendingCustomWaveUpdates();
     this.flushLinkMeters();
     return true;
   }

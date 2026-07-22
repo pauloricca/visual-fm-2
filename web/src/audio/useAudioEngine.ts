@@ -152,7 +152,7 @@ interface ImageDataRequest {
 // Keep this in step with public/audio/visual-fm-kernel.wasm. AudioWorklet
 // modules and WASM are aggressively cached, so an older kernel can silently
 // omit newer DSP behavior or exports while the current UI is running.
-const AUDIO_ENGINE_ASSET_VERSION = '2026-07-21-explicit-limiter-lookahead-1';
+const AUDIO_ENGINE_ASSET_VERSION = '2026-07-22-custom-wave-morph-1';
 const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const METER_UPDATE_INTERVAL_MS = 80;
@@ -330,6 +330,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   const backendReadyRef = useRef(false);
   const lastSentProgramStructureRef = useRef<string | null>(null);
   const lastSentValuesRef = useRef<number[] | null>(null);
+  const lastSentCustomWavePointsRef = useRef<string | null>(null);
   const activeScopeRequestsRef = useRef<ScopeCaptureRequest[]>([]);
   const sampleDataKeysRef = useRef<Record<string, string>>({});
   const sampleDataCacheRef = useRef<Record<string, SampleDataCacheEntry>>({});
@@ -362,6 +363,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     backendReadyRef.current = false;
     lastSentProgramStructureRef.current = null;
     lastSentValuesRef.current = null;
+    lastSentCustomWavePointsRef.current = null;
     const closePromise = closeAudioContext(
       contextRef,
       nodeRef,
@@ -1308,6 +1310,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
             imageDataKeysRef.current = {};
             lastSentProgramStructureRef.current = dspProgramStructureKey(graphRef.current);
             lastSentValuesRef.current = [...graphRef.current.values];
+            lastSentCustomWavePointsRef.current = dspCustomWavePointsKey(graphRef.current);
             node.port.postMessage({ type: 'dspProgram', payload: graphRef.current });
             syncGraphSamples(graphRef.current, context, node);
             syncGraphImages(graphRef.current, node);
@@ -1396,6 +1399,17 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     }
     const shouldSyncExternalInputs = audioActivationRequestedRef.current;
     const structureKey = dspProgramStructureKey(graph);
+    const customWavePointsKey = dspCustomWavePointsKey(graph);
+    if (
+      lastSentProgramStructureRef.current === structureKey
+      && lastSentCustomWavePointsRef.current !== customWavePointsKey
+    ) {
+      lastSentCustomWavePointsRef.current = customWavePointsKey;
+      nodeRef.current.port.postMessage({
+        type: 'dspCustomWaves',
+        payload: { bindings: graph.customWaveBindings },
+      });
+    }
     if (
       lastSentProgramStructureRef.current === structureKey
       && arraysEqual(lastSentValuesRef.current, graph.values)
@@ -1423,6 +1437,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
 
     lastSentProgramStructureRef.current = structureKey;
     lastSentValuesRef.current = [...graph.values];
+    lastSentCustomWavePointsRef.current = customWavePointsKey;
     nodeRef.current.port.postMessage({ type: 'dspProgram', payload: graph });
     syncGraphSamples(graph, contextRef.current, nodeRef.current);
     syncGraphImages(graph, nodeRef.current);
@@ -1731,12 +1746,26 @@ function dspProgramStructureKey(program: DspProgram): string {
     monitorIds: program.monitorIds,
     sampleBindings: program.sampleBindings,
     imageBindings: program.imageBindings,
-    customWaveBindings: program.customWaveBindings,
+    // Point coordinates have a dedicated in-place worklet update path. Mode
+    // and sustain changes still rebuild because they alter oscillator setup.
+    customWaveBindings: program.customWaveBindings.map((binding) => ({
+      nodeId: binding.nodeId,
+      mode: binding.customWave.mode,
+      sustainStart: binding.customWave.sustainStart,
+      sustainEnd: binding.customWave.sustainEnd,
+    })),
     maxVoices: program.maxVoices,
     usesMidiNote: program.usesMidiNote,
     usesMidiClock: program.usesMidiClock,
     errors: program.errors,
   });
+}
+
+function dspCustomWavePointsKey(program: DspProgram): string {
+  return JSON.stringify(program.customWaveBindings.map((binding) => ({
+    nodeId: binding.nodeId,
+    points: binding.customWave.points,
+  })));
 }
 
 function arraysEqual(left: number[] | null, right: number[]): boolean {

@@ -39,7 +39,7 @@ Most node types are available from the node picker. `Ins` and `Outs` appear whil
 - `Perlin Noise`: generates smooth noise at a controllable speed.
 - `Noise`: generates raw noise.
 - `Audio Input`: brings a microphone or input device into the patch with gain/level controls.
-- `Custom Wave`: generates an editable breakpoint waveform with loop, one-shot, ping-pong, and sustain modes.
+- `Custom Wave`: generates an editable breakpoint waveform with loop, one-shot, ping-pong, and sustain modes. Point drags update the live DSP at a limited rate, morph smoothly between curve revisions without rebuilding the graph, and always commit the final position after release.
 - `Sample`: plays an uploaded sample with frequency/original-frequency pitch tracking, trigger, polyphony, region, envelope, stretch, granular-style mode, and level controls.
 - `Image`: samples brightness, RGB, hue, and saturation from an uploaded image at an `x`/`y` position.
 - `Buffer`: records and plays a rolling audio buffer from signal, playhead, record-head, and length controls.

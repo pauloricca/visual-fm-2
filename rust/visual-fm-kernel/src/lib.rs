@@ -435,6 +435,14 @@ static mut CUSTOM_WAVE_XS: [[f64; MAX_CUSTOM_WAVE_POINTS]; MAX_NODES] =
 static mut CUSTOM_WAVE_YS: [[f64; MAX_CUSTOM_WAVE_POINTS]; MAX_NODES] =
     [[0.0; MAX_CUSTOM_WAVE_POINTS]; MAX_NODES];
 static mut CUSTOM_WAVE_COUNTS: [usize; MAX_NODES] = [0; MAX_NODES];
+static mut CUSTOM_WAVE_PREVIOUS_XS: [[f64; MAX_CUSTOM_WAVE_POINTS]; MAX_NODES] =
+    [[0.0; MAX_CUSTOM_WAVE_POINTS]; MAX_NODES];
+static mut CUSTOM_WAVE_PREVIOUS_YS: [[f64; MAX_CUSTOM_WAVE_POINTS]; MAX_NODES] =
+    [[0.0; MAX_CUSTOM_WAVE_POINTS]; MAX_NODES];
+static mut CUSTOM_WAVE_PREVIOUS_COUNTS: [usize; MAX_NODES] = [0; MAX_NODES];
+static mut CUSTOM_WAVE_MORPH_TOTAL_FRAMES: [u32; MAX_NODES] = [0; MAX_NODES];
+static mut CUSTOM_WAVE_MORPH_REMAINING_AT_QUANTUM_START: [u32; MAX_NODES] = [0; MAX_NODES];
+static mut CUSTOM_WAVE_MORPH_CONSUMED_FRAMES: [u32; MAX_NODES] = [0; MAX_NODES];
 static mut CUSTOM_WAVE_DONE: [[bool; MAX_NODES]; MAX_VOICE_SLOTS] =
     [[false; MAX_NODES]; MAX_VOICE_SLOTS];
 static mut CUSTOM_WAVE_DIRECTIONS: [[f64; MAX_NODES]; MAX_VOICE_SLOTS] =
@@ -956,6 +964,12 @@ pub extern "C" fn clear(frames: u32) {
 #[no_mangle]
 pub extern "C" fn beginDspRenderQuantum() {
     unsafe {
+        for index in 0..NODE_COUNT {
+            CUSTOM_WAVE_MORPH_REMAINING_AT_QUANTUM_START[index] =
+                CUSTOM_WAVE_MORPH_REMAINING_AT_QUANTUM_START[index]
+                    .saturating_sub(CUSTOM_WAVE_MORPH_CONSUMED_FRAMES[index]);
+            CUSTOM_WAVE_MORPH_CONSUMED_FRAMES[index] = 0;
+        }
         DSP_RENDER_QUANTUM_ID = DSP_RENDER_QUANTUM_ID.wrapping_add(1);
         if DSP_RENDER_QUANTUM_ID == 0 {
             DSP_RENDER_QUANTUM_ID = 1;
@@ -985,6 +999,10 @@ pub extern "C" fn clearGraph() {
         }
         for index in 0..MAX_NODES {
             CUSTOM_WAVE_COUNTS[index] = 0;
+            CUSTOM_WAVE_PREVIOUS_COUNTS[index] = 0;
+            CUSTOM_WAVE_MORPH_TOTAL_FRAMES[index] = 0;
+            CUSTOM_WAVE_MORPH_REMAINING_AT_QUANTUM_START[index] = 0;
+            CUSTOM_WAVE_MORPH_CONSUMED_FRAMES[index] = 0;
             SAMPLE_SLOT_FOR_NODE[index] = -1;
             SAMPLE_STRETCH_MODS[index] = 0.0;
             FREQUENCY_MODS[index] = 0.0;
@@ -1605,6 +1623,48 @@ pub extern "C" fn addCustomWavePoint(node_index: i32, x: f64, y: f64) -> i32 {
         CUSTOM_WAVE_YS[node_index][count] = y.clamp(-1.0, 1.0);
         CUSTOM_WAVE_COUNTS[node_index] = count + 1;
         count as i32
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn beginCustomWaveUpdate(node_index: i32) -> i32 {
+    unsafe {
+        if node_index < 0 || node_index as usize >= NODE_COUNT {
+            return -1;
+        }
+        let node_index = node_index as usize;
+        let count = CUSTOM_WAVE_COUNTS[node_index];
+        CUSTOM_WAVE_PREVIOUS_COUNTS[node_index] = count;
+        for point_index in 0..count {
+            CUSTOM_WAVE_PREVIOUS_XS[node_index][point_index] =
+                CUSTOM_WAVE_XS[node_index][point_index];
+            CUSTOM_WAVE_PREVIOUS_YS[node_index][point_index] =
+                CUSTOM_WAVE_YS[node_index][point_index];
+        }
+        CUSTOM_WAVE_COUNTS[node_index] = 0;
+        CUSTOM_WAVE_MORPH_TOTAL_FRAMES[node_index] = 0;
+        CUSTOM_WAVE_MORPH_REMAINING_AT_QUANTUM_START[node_index] = 0;
+        CUSTOM_WAVE_MORPH_CONSUMED_FRAMES[node_index] = 0;
+        0
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn finishCustomWaveUpdate(node_index: i32, morph_frames: u32) -> i32 {
+    unsafe {
+        if node_index < 0 || node_index as usize >= NODE_COUNT {
+            return -1;
+        }
+        let node_index = node_index as usize;
+        if CUSTOM_WAVE_COUNTS[node_index] < 2 || CUSTOM_WAVE_PREVIOUS_COUNTS[node_index] < 2 {
+            CUSTOM_WAVE_PREVIOUS_COUNTS[node_index] = 0;
+            return -1;
+        }
+        let frames = morph_frames.max(1);
+        CUSTOM_WAVE_MORPH_TOTAL_FRAMES[node_index] = frames;
+        CUSTOM_WAVE_MORPH_REMAINING_AT_QUANTUM_START[node_index] = frames;
+        CUSTOM_WAVE_MORPH_CONSUMED_FRAMES[node_index] = 0;
+        0
     }
 }
 
@@ -2362,7 +2422,7 @@ fn oscillator(
             current + (next - current) * smooth_step(p)
         },
         8 => unsafe { INPUT[frame.min(MAX_WASM_FRAMES - 1)] as f64 * node.audio_input_gain },
-        9 => custom_wave_value(node_index, p),
+        9 => custom_wave_value(node_index, p, frame),
         11 => node.frequency.clamp(-1.0, 1.0),
         _ => (TWO_PI * p).sin(),
     }
@@ -2382,18 +2442,38 @@ fn modulated_wave(base_wave: i32, modulation: f64) -> i32 {
     waves[index]
 }
 
-fn custom_wave_value(node_index: usize, phase: f64) -> f64 {
+fn custom_wave_curve_value(node_index: usize, phase: f64, previous: bool) -> f64 {
     unsafe {
-        let count = CUSTOM_WAVE_COUNTS[node_index];
+        let count = if previous {
+            CUSTOM_WAVE_PREVIOUS_COUNTS[node_index]
+        } else {
+            CUSTOM_WAVE_COUNTS[node_index]
+        };
         if count < 2 {
             return 0.0;
         }
         let p = phase.clamp(0.0, 1.0);
         for point_index in 1..count {
-            let previous_x = CUSTOM_WAVE_XS[node_index][point_index - 1];
-            let previous_y = CUSTOM_WAVE_YS[node_index][point_index - 1];
-            let next_x = CUSTOM_WAVE_XS[node_index][point_index];
-            let next_y = CUSTOM_WAVE_YS[node_index][point_index];
+            let previous_x = if previous {
+                CUSTOM_WAVE_PREVIOUS_XS[node_index][point_index - 1]
+            } else {
+                CUSTOM_WAVE_XS[node_index][point_index - 1]
+            };
+            let previous_y = if previous {
+                CUSTOM_WAVE_PREVIOUS_YS[node_index][point_index - 1]
+            } else {
+                CUSTOM_WAVE_YS[node_index][point_index - 1]
+            };
+            let next_x = if previous {
+                CUSTOM_WAVE_PREVIOUS_XS[node_index][point_index]
+            } else {
+                CUSTOM_WAVE_XS[node_index][point_index]
+            };
+            let next_y = if previous {
+                CUSTOM_WAVE_PREVIOUS_YS[node_index][point_index]
+            } else {
+                CUSTOM_WAVE_YS[node_index][point_index]
+            };
             if p > next_x && point_index < count - 1 {
                 continue;
             }
@@ -2404,7 +2484,30 @@ fn custom_wave_value(node_index: usize, phase: f64) -> f64 {
             let t = ((p - previous_x) / span).clamp(0.0, 1.0);
             return previous_y + (next_y - previous_y) * t;
         }
-        CUSTOM_WAVE_YS[node_index][count - 1]
+        if previous {
+            CUSTOM_WAVE_PREVIOUS_YS[node_index][count - 1]
+        } else {
+            CUSTOM_WAVE_YS[node_index][count - 1]
+        }
+    }
+}
+
+fn custom_wave_value(node_index: usize, phase: f64, frame: usize) -> f64 {
+    unsafe {
+        let current = custom_wave_curve_value(node_index, phase, false);
+        let total = CUSTOM_WAVE_MORPH_TOTAL_FRAMES[node_index];
+        let remaining_at_start = CUSTOM_WAVE_MORPH_REMAINING_AT_QUANTUM_START[node_index];
+        if total == 0 || remaining_at_start == 0 || CUSTOM_WAVE_PREVIOUS_COUNTS[node_index] < 2 {
+            return current;
+        }
+
+        let frame_offset = (frame as u32).min(remaining_at_start);
+        CUSTOM_WAVE_MORPH_CONSUMED_FRAMES[node_index] =
+            CUSTOM_WAVE_MORPH_CONSUMED_FRAMES[node_index].max(frame_offset.saturating_add(1));
+        let remaining = remaining_at_start.saturating_sub(frame_offset);
+        let mix = smooth_step((total.saturating_sub(remaining)) as f64 / total as f64);
+        let previous = custom_wave_curve_value(node_index, phase, true);
+        previous + (current - previous) * mix
     }
 }
 
@@ -5919,6 +6022,7 @@ fn render_dsp_phase_oscillator_output(
     op: DspOp,
     render_phase: f64,
     state_index: Option<usize>,
+    frame: usize,
 ) -> f64 {
     unsafe {
         match op.a {
@@ -5950,10 +6054,10 @@ fn render_dsp_phase_oscillator_output(
                         if index + 3 < MAX_DSP_STATE && DSP_STATE[index + 3] >= 0.5 {
                             0.0
                         } else {
-                            custom_wave_value(node_index as usize, render_phase)
+                            custom_wave_value(node_index as usize, render_phase, frame)
                         }
                     } else {
-                        custom_wave_value(node_index as usize, render_phase)
+                        custom_wave_value(node_index as usize, render_phase, frame)
                     }
                 } else {
                     0.0
@@ -6053,6 +6157,7 @@ fn render_dsp_op(
                                     op,
                                     previous_render_phase,
                                     state_index,
+                                    frame,
                                 );
                                 DSP_STATE[reset_fade_index + 1] = 0.0;
                                 phase_reset_fade_started = true;
@@ -6102,7 +6207,7 @@ fn render_dsp_op(
                             0.0
                         }
                     }
-                    _ => render_dsp_phase_oscillator_output(op, render_phase, state_index),
+                    _ => render_dsp_phase_oscillator_output(op, render_phase, state_index, frame),
                 }
             };
             if op.a != 5 && op.a != 7 {

@@ -56,6 +56,8 @@ import {
 } from './flowPatch';
 import { getSampleWaveform, type SampleWaveform, type SampleWaveformBin } from '../audio/sampleWaveformCache';
 
+const CUSTOM_WAVE_DRAG_UPDATE_INTERVAL_MS = 50;
+
 export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNode>) {
   const node = data.patchNode;
   const scopeGradientId = `scope-gradient-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
@@ -73,6 +75,11 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const customWaveEditorRef = useRef<SVGSVGElement | null>(null);
   const customWaveDragRef = useRef<{ pointerId: number; index: number } | null>(null);
   const customWaveClickRef = useRef<{ index: number | null; time: number }>({ index: null, time: 0 });
+  const customWaveDragCommitRef = useRef<{
+    lastCommitTime: number;
+    pending: { customWave: CustomWaveSettings; historyKey: string } | null;
+    timeout: ReturnType<typeof setTimeout> | null;
+  }>({ lastCommitTime: Number.NEGATIVE_INFINITY, pending: null, timeout: null });
   const inputPortRowsRef = useRef<Record<string, HTMLDivElement | null>>({});
   const outputPortRowsRef = useRef<Record<string, HTMLDivElement | null>>({});
   const expressionInputRef = useRef<HTMLInputElement | null>(null);
@@ -283,6 +290,15 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   }
 
   useEffect(() => {
+    return () => {
+      const dragCommit = customWaveDragCommitRef.current;
+      if (dragCommit.timeout !== null) clearTimeout(dragCommit.timeout);
+      dragCommit.timeout = null;
+      dragCommit.pending = null;
+    };
+  }, []);
+
+  useEffect(() => {
     function handlePointerMove(event: globalThis.PointerEvent) {
       const draggedPort = draggedPortRef.current;
       if (!draggedPort || draggedPort.pointerId !== event.pointerId || !definition) return;
@@ -437,12 +453,13 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
       const nextPoints = customWave.points.map((entry, index) => (
         index === drag.index ? { x, y: point.y } : entry
       ));
-      commitCustomWave({ ...customWave, points: nextPoints }, `custom-wave-point:${node.id}`);
+      scheduleCustomWaveDragCommit({ ...customWave, points: nextPoints }, `custom-wave-point:${node.id}`);
     }
 
     function stopDragging(pointerId: number) {
       if (!customWaveDragRef.current || customWaveDragRef.current.pointerId !== pointerId) return;
 
+      flushCustomWaveDragCommit();
       customWaveDragRef.current = null;
     }
 
@@ -537,6 +554,36 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
 
   function commitCustomWave(nextCustomWave: CustomWaveSettings, historyKey?: string) {
     data.onCustomWaveChange?.(node.id, normalizeCustomWave(nextCustomWave), historyKey);
+  }
+
+  function scheduleCustomWaveDragCommit(nextCustomWave: CustomWaveSettings, historyKey: string) {
+    const dragCommit = customWaveDragCommitRef.current;
+    const now = performance.now();
+    dragCommit.pending = { customWave: nextCustomWave, historyKey };
+
+    const elapsed = now - dragCommit.lastCommitTime;
+    if (elapsed >= CUSTOM_WAVE_DRAG_UPDATE_INTERVAL_MS) {
+      flushCustomWaveDragCommit(now);
+      return;
+    }
+
+    if (dragCommit.timeout !== null) return;
+    dragCommit.timeout = setTimeout(() => {
+      dragCommit.timeout = null;
+      flushCustomWaveDragCommit();
+    }, CUSTOM_WAVE_DRAG_UPDATE_INTERVAL_MS - elapsed);
+  }
+
+  function flushCustomWaveDragCommit(commitTime = performance.now()) {
+    const dragCommit = customWaveDragCommitRef.current;
+    if (dragCommit.timeout !== null) clearTimeout(dragCommit.timeout);
+    dragCommit.timeout = null;
+
+    const pending = dragCommit.pending;
+    if (!pending) return;
+    dragCommit.pending = null;
+    dragCommit.lastCommitTime = commitTime;
+    commitCustomWave(pending.customWave, pending.historyKey);
   }
 
   function customWavePointFromPointer(event: Pick<globalThis.PointerEvent, 'clientX' | 'clientY'>): CustomWavePoint | null {
