@@ -39,7 +39,7 @@ Most node types are available from the node picker. `Ins` and `Outs` appear whil
 - `Perlin Noise`: generates smooth noise at a controllable speed.
 - `Noise`: generates raw noise.
 - `Audio Input`: brings a microphone or input device into the patch with gain/level controls.
-- `Custom Wave`: generates an editable breakpoint waveform with loop, one-shot, ping-pong, and sustain modes. Its scope-style grid shows the configured output range; the zero-origin endpoints follow that range proportionally and clamp to an edge when zero is outside it, while saved curve points remain normalized and range-independent. Point drags update the live DSP at a limited rate, morph smoothly between curve revisions without rebuilding the graph, and always commit the final position after release.
+- `Custom Wave`: generates an editable breakpoint waveform with loop, one-shot, ping-pong, and sustain modes. Its scope-style grid shows the configured output range; zooming into the canvas reveals denser grid divisions and more scale labels while labels and edit points stay screen-relative, with a small capped size increase at high zoom for legibility. The zero-origin endpoints follow the configured range proportionally and clamp to an edge when zero is outside it, while saved curve points remain normalized and range-independent. Point drags update the live DSP at a limited rate, morph smoothly between curve revisions without rebuilding the graph, and always commit the final position after release.
 - `Sample`: plays a selected, uploaded, or microphone-recorded sample with frequency/original-frequency pitch tracking, trigger, polyphony, region, envelope, stretch, granular-style mode, and level controls. Positive frequency plays forward, negative frequency plays backward, and zero pauses the playhead. With `voices` set to `1`, playback follows live parameter changes; with more than one voice, each voice keeps the parameter values captured by its trigger. The sample picker can record from the microphone; stopping converts the capture to PCM WAV, prompts for a name, saves the `.wav` file in `samples/`, and selects it for the node.
 - `Image`: samples brightness, RGB, hue, and saturation from an uploaded image at an `x`/`y` position.
 - `Buffer`: records and plays a rolling audio buffer from signal, playhead, record-head, and length controls.
@@ -71,8 +71,8 @@ Most node types are available from the node picker. `Ins` and `Outs` appear whil
 - `Follower`: follows the amplitude contour of a signal with attack/release smoothing.
 - `Ring Mod`: multiplies a signal by a modulation amount for ring-mod-style tones.
 - `Fold`: folds a signal back on itself for wavefolding.
-- `Meter`: measures a signal level for display and downstream control.
-- `Scope`: shows an oscilloscope-style view of the signal.
+- `Meter`: measures a signal level for display and downstream control. Canvas zoom increases its grid and scale-label detail, with a small capped label-size increase at high zoom.
+- `Scope`: shows an oscilloscope-style view of the signal. Canvas zoom increases its grid and scale-label detail, with a small capped label-size increase at high zoom.
 - `Lowpass Filter`: filters out frequencies above the cutoff.
 - `Highpass Filter`: filters out frequencies below the cutoff.
 - `Bandpass Filter`: keeps frequencies around the cutoff and attenuates the rest.

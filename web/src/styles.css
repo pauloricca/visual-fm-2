@@ -2061,7 +2061,7 @@ button:hover {
 .audio-node-meter-scale {
   position: absolute;
   color: var(--color-foreground-76);
-  font-size: inherit;
+  font-size: calc(1em * var(--graph-screen-scale, 1));
   font-variant-numeric: tabular-nums;
   line-height: 1;
   pointer-events: none;
@@ -2237,7 +2237,7 @@ button:hover {
   inset: 0 auto 0 4px;
   width: 56px;
   color: var(--color-foreground-76);
-  font-size: inherit;
+  font-size: calc(1em * var(--graph-screen-scale, 1));
   font-variant-numeric: tabular-nums;
   line-height: 1;
   pointer-events: none;

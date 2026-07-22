@@ -57,6 +57,7 @@ import {
   type ShaderNodeData,
 } from './flowPatch';
 import { getSampleWaveform, type SampleWaveform, type SampleWaveformBin } from '../audio/sampleWaveformCache';
+import { graphDetailScreenEmphasis, graphDetailZoomScale } from './canvasZoom';
 import { ChartGrid, chartGridColumns, chartGridRows, chartScaleTicks } from './chartGrid';
 
 const CUSTOM_WAVE_DRAG_UPDATE_INTERVAL_MS = 50;
@@ -65,6 +66,8 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const node = data.patchNode;
   const scopeGradientId = `scope-gradient-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const reactFlow = useReactFlow<ShaderFlowNode, ShaderFlowEdge>();
+  const graphZoomScale = graphDetailZoomScale(data.canvasZoom ?? Number.NaN);
+  const graphScreenEmphasis = graphDetailScreenEmphasis(graphZoomScale);
   const updateNodeInternals = useUpdateNodeInternals();
   const draggedPortRef = useRef<{ side: 'input' | 'output'; port: string; pointerId: number } | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -159,13 +162,17 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const displaySize = showSequencerDisplay
     ? sequencerDisplaySize
     : showCustomWaveEditor || showSampleUpload || showImageDisplay ? waveformDisplaySize : scopeSize;
-  const meterScaleTicks = showMeterDisplay ? amplitudeScaleTicks(amplitudeRange, displaySize.width, meterMode) : [];
-  const meterGridTicks = showMeterDisplay ? chartGridColumns(displaySize.width) : [];
-  const meterGridRows = showMeterDisplay ? chartGridRows(displaySize.height).map((tick) => tick.fraction) : [];
+  const graphDetailSize = {
+    width: displaySize.width * graphZoomScale,
+    height: displaySize.height * graphZoomScale,
+  };
+  const meterScaleTicks = showMeterDisplay ? amplitudeScaleTicks(amplitudeRange, graphDetailSize.width, meterMode) : [];
+  const meterGridTicks = showMeterDisplay ? chartGridColumns(graphDetailSize.width) : [];
+  const meterGridRows = showMeterDisplay ? chartGridRows(graphDetailSize.height).map((tick) => tick.fraction) : [];
   const scopeScaleTicks = showScopeDisplay
-    ? chartScaleTicks(amplitudeRange, scopeMode === 'bipolar' ? -amplitudeRange : 0, displaySize.height, 'vertical')
+    ? chartScaleTicks(amplitudeRange, scopeMode === 'bipolar' ? -amplitudeRange : 0, graphDetailSize.height, 'vertical')
     : [];
-  const scopeGridTicks = showScopeDisplay ? chartGridColumns(displaySize.width) : [];
+  const scopeGridTicks = showScopeDisplay ? chartGridColumns(graphDetailSize.width) : [];
   const nodeSizeStyle = showResizableDisplay
     ? ({
         '--node-display-width': `${displaySize.width}px`,
@@ -213,6 +220,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     ...(nodeSizeStyle ?? {}),
     '--input-label-width': inputLabelWidth,
     '--node-scale': String(node.scale ?? 1),
+    '--graph-screen-scale': String(graphScreenEmphasis / graphZoomScale),
   } as CSSProperties;
   const className = [
     'shader-node',
@@ -920,6 +928,8 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               playhead={customWavePlayhead}
               compact={!showAllPorts}
               displaySize={displaySize}
+              graphZoomScale={graphZoomScale}
+              graphScreenEmphasis={graphScreenEmphasis}
               editorRef={customWaveEditorRef}
               onPointerDown={handleCustomWavePointerDown}
               onDoubleClick={handleCustomWaveDoubleClick}
@@ -1794,6 +1804,8 @@ interface CustomWaveEditorProps {
   playhead: number;
   compact: boolean;
   displaySize: ScopeNodeSize;
+  graphZoomScale: number;
+  graphScreenEmphasis: number;
   editorRef: RefObject<SVGSVGElement | null>;
   onPointerDown: (event: PointerEvent<SVGSVGElement>) => void;
   onDoubleClick: (event: MouseEvent<SVGSVGElement>) => void;
@@ -2807,6 +2819,8 @@ function CustomWaveEditor({
   playhead,
   compact,
   displaySize,
+  graphZoomScale,
+  graphScreenEmphasis,
   editorRef,
   onPointerDown,
   onDoubleClick,
@@ -2821,16 +2835,20 @@ function CustomWaveEditor({
   const innerHeight = height - padding * 2;
   const points = customWaveWithRangeOrigin(customWave, rangeMin, rangeMax).points;
   const path = customWavePath(points, width, height, padding);
-  const gridColumns = chartGridColumns(displaySize.width);
-  const gridRows = customWaveGridRows(rangeMin, rangeMax, displaySize.height);
+  const graphDetailSize = {
+    width: displaySize.width * graphZoomScale,
+    height: displaySize.height * graphZoomScale,
+  };
+  const gridColumns = chartGridColumns(graphDetailSize.width);
+  const gridRows = customWaveGridRows(rangeMin, rangeMax, graphDetailSize.height);
   const sustainStartX = padding + customWave.sustainStart * innerWidth;
   const sustainEndX = padding + customWave.sustainEnd * innerWidth;
   const showSustainStart = customWaveUsesSustainStart(customWave.mode);
   const showSustainEnd = customWaveUsesSustainEnd(customWave.mode);
   const playheadX = padding + playhead * innerWidth;
-  const hitRadius = screenCircleRadius(15, width, height, displaySize);
-  const endpointRadius = screenCircleRadius(5, width, height, displaySize);
-  const handleRadius = screenCircleRadius(6, width, height, displaySize);
+  const hitRadius = screenCircleRadius(15 * graphScreenEmphasis, width, height, graphDetailSize);
+  const endpointRadius = screenCircleRadius(5 * graphScreenEmphasis, width, height, graphDetailSize);
+  const handleRadius = screenCircleRadius(6 * graphScreenEmphasis, width, height, graphDetailSize);
 
   return (
     <div className="custom-wave-node-editor nodrag nopan">
@@ -3066,8 +3084,8 @@ function amplitudeScaleTicks(
 
 function amplitudeLabelDivisions(size: number, orientation: 'horizontal' | 'vertical', mode: 'unipolar' | 'bipolar'): number {
   const base = orientation === 'horizontal'
-    ? size >= 560 ? 8 : size >= 360 ? 4 : 2
-    : size >= 176 ? 8 : size >= 104 ? 4 : 2;
+    ? size >= 1120 ? 16 : size >= 560 ? 8 : size >= 360 ? 4 : 2
+    : size >= 352 ? 16 : size >= 176 ? 8 : size >= 104 ? 4 : 2;
   return mode === 'bipolar' ? Math.max(2, base) : base;
 }
 

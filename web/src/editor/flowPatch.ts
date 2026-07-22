@@ -25,6 +25,7 @@ export type EditorPatchNode = Omit<PatchNode, 'type'> & {
 
 export interface ShaderNodeData extends Record<string, unknown> {
   patchNode: EditorPatchNode;
+  canvasZoom?: number;
   audioMeter?: {
     input: number;
     output: number;

@@ -30,6 +30,7 @@ import { normalizePatchCompatibility } from '../graph/patchCompatibility';
 import { patchToJson } from '../graph/serialize';
 import type { CustomWaveSettings, ImageAsset, LinkMode, NodeType, Patch, PatchLink, PatchNode, PortDefinition, SampleAsset } from '../graph/types';
 import { EdgeOverlayProvider } from './EdgeOverlayContext';
+import { USER_ZOOM_BASELINE } from './canvasZoom';
 import { scopedDspNodeId } from './dspNodeScope';
 import {
   edgeFromLink,
@@ -72,10 +73,10 @@ const SELECTED_NODE_Z_INDEX = 2;
 const SELECTED_EDGE_Z_INDEX = 10000;
 const DEFAULT_FIT_VIEW_PADDING = 0.2;
 const MIN_CANVAS_ZOOM = 0.05;
-const USER_ZOOM_BASELINE = 0.5;
 const ZOOM_RESET_TARGET = USER_ZOOM_BASELINE;
 const ZOOM_SETTLE_THRESHOLD = USER_ZOOM_BASELINE * 0.1;
 const ZOOM_CHANGE_EPSILON = 0.0001;
+const GRAPH_DETAIL_ZOOM_SETTLE_MS = 80;
 const PASTE_OFFSET = { x: 36, y: 36 };
 const DRAFT_NODE_WIDTH = 168;
 const DRAFT_NODE_HANDLE_X_OFFSET = 13;
@@ -293,6 +294,7 @@ function NodeEditorInner() {
   const initialState = useMemo(() => loadInitialEditorState(), []);
   const [patchName, setPatchName] = useState(initialState?.ui?.patchName ?? 'single-patch');
   const [viewport, setViewport] = useState<Viewport>(initialState?.ui?.viewport ?? { x: 0, y: 0, zoom: USER_ZOOM_BASELINE });
+  const [settledGraphZoom, setSettledGraphZoom] = useState(viewport.zoom);
   const [editorSize, setEditorSize] = useState({ width: 0, height: 0 });
   const [editingTypeNodeId, setEditingTypeNodeId] = useState<string | null>(null);
   const [reactFlow, setReactFlow] = useState<ReactFlowInstance<ShaderFlowNode, ShaderFlowEdge> | null>(null);
@@ -312,6 +314,13 @@ function NodeEditorInner() {
   });
   const [history, setHistory] = useState<HistoryState>({ past: [], future: [] });
   const zoomInteractionRef = useRef({ zoomChanged: false, lastZoom: viewport.zoom });
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setSettledGraphZoom(viewport.zoom);
+    }, GRAPH_DETAIL_ZOOM_SETTLE_MS);
+    return () => window.clearTimeout(timeout);
+  }, [viewport.zoom]);
   const nodesRef = useRef(nodes);
   const areasRef = useRef(areas);
   const edgesRef = useRef(edges);
@@ -2089,6 +2098,7 @@ function NodeEditorInner() {
           ? { midiInput: audio.midiInput }
           : {}),
         connectedPorts: connectedPortsByNode.get(node.id),
+        canvasZoom: settledGraphZoom,
         previewPort: pendingBoundaryPort && pendingBoundaryPort.nodeId === node.id
           ? { side: pendingBoundaryPort.side, name: pendingBoundaryPort.port }
           : null,
@@ -2115,6 +2125,7 @@ function NodeEditorInner() {
     nodeStackRanks,
     selectedBoundaryPort,
     selectedLinkPortsByNode,
+    settledGraphZoom,
     updateBoundaryPortName,
     updateBoundaryPortOrder,
     updateExpression,

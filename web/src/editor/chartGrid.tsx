@@ -90,8 +90,12 @@ export function chartScaleTicks(
 
 export function chartGridColumns(width: number): ChartGridTick[] {
   const labelDivisions = chartLabelDivisions(width, 'horizontal');
-  const divisions = width >= 560
-    ? 64
+  const divisions = width >= 1120
+    ? 128
+    : width >= 840
+      ? 96
+      : width >= 560
+        ? 64
     : width >= 400
       ? 48
       : width >= 280
@@ -108,8 +112,12 @@ export function chartGridColumns(width: number): ChartGridTick[] {
 }
 
 export function chartGridRows(height: number): ChartGridTick[] {
-  const rows = height >= 112
-    ? 8
+  const rows = height >= 336
+    ? 16
+    : height >= 224
+      ? 12
+      : height >= 112
+        ? 8
     : height >= 84
       ? 6
       : height >= 64
@@ -123,8 +131,8 @@ export function chartGridRows(height: number): ChartGridTick[] {
 
 function chartLabelDivisions(size: number, orientation: 'horizontal' | 'vertical'): number {
   return orientation === 'horizontal'
-    ? size >= 560 ? 8 : size >= 360 ? 4 : 2
-    : size >= 176 ? 8 : size >= 104 ? 4 : 2;
+    ? size >= 1120 ? 16 : size >= 560 ? 8 : size >= 360 ? 4 : 2
+    : size >= 352 ? 16 : size >= 176 ? 8 : size >= 104 ? 4 : 2;
 }
 
 function formatChartValue(value: number): string {
