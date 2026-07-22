@@ -500,7 +500,11 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   }, []);
 
   const beginRecordingCapture = useCallback((context: AudioContext, node: AudioWorkletNode) => {
-    if (recordingCaptureRef.current || context.state !== 'running') return;
+    if (
+      recordingCaptureRef.current ||
+      !audioActivationRequestedRef.current ||
+      context.state !== 'running'
+    ) return;
 
     const id = recordingSessionIdRef.current;
     const chunks: Float32Array[][] = [];
@@ -577,7 +581,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     setRecordingElapsedSeconds(0);
     const context = contextRef.current;
     const node = nodeRef.current;
-    if (context?.state === 'running' && node) {
+    if (audioActivationRequestedRef.current && context?.state === 'running' && node) {
       beginRecordingCapture(context, node);
       return;
     }

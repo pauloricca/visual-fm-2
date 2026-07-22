@@ -515,6 +515,10 @@ static mut SAMPLE_POSITIONS: [[f64; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS] =
     [[0.0; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS];
 static mut SAMPLE_DIRECTIONS: [[f64; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS] =
     [[1.0; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS];
+static mut SAMPLE_FREQUENCY_DIRECTIONS: [[f64; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS] =
+    [[1.0; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS];
+static mut SAMPLE_HAS_ADVANCED: [[bool; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS] =
+    [[false; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS];
 static mut SAMPLE_PLAYBACK_AGES: [[f64; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS] =
     [[0.0; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS];
 static mut SAMPLE_RELEASE_AGES: [[f64; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS] =
@@ -2071,6 +2075,9 @@ pub extern "C" fn resetPhases() {
     let sample_playing = core::ptr::addr_of_mut!(SAMPLE_PLAYING).cast::<bool>();
     let sample_positions = core::ptr::addr_of_mut!(SAMPLE_POSITIONS).cast::<f64>();
     let sample_directions = core::ptr::addr_of_mut!(SAMPLE_DIRECTIONS).cast::<f64>();
+    let sample_frequency_directions =
+        core::ptr::addr_of_mut!(SAMPLE_FREQUENCY_DIRECTIONS).cast::<f64>();
+    let sample_has_advanced = core::ptr::addr_of_mut!(SAMPLE_HAS_ADVANCED).cast::<bool>();
     let sample_start_values = core::ptr::addr_of_mut!(SAMPLE_START_VALUES).cast::<f64>();
     let sample_last_outputs = core::ptr::addr_of_mut!(SAMPLE_LAST_OUTPUTS).cast::<f64>();
     let sample_retrigger_outputs =
@@ -2112,6 +2119,8 @@ pub extern "C" fn resetPhases() {
             *sample_playing.add(index) = false;
             *sample_positions.add(index) = 0.0;
             *sample_directions.add(index) = 1.0;
+            *sample_frequency_directions.add(index) = 1.0;
+            *sample_has_advanced.add(index) = false;
             *sample_start_values.add(index) = 0.0;
             *sample_last_outputs.add(index) = 0.0;
             *sample_retrigger_outputs.add(index) = 0.0;
@@ -2134,6 +2143,8 @@ pub extern "C" fn resetPhases() {
             *sample_playing.add(index) = false;
             *sample_positions.add(index) = 0.0;
             *sample_directions.add(index) = 1.0;
+            *sample_frequency_directions.add(index) = 1.0;
+            *sample_has_advanced.add(index) = false;
             *sample_start_values.add(index) = 0.0;
             *sample_last_outputs.add(index) = 0.0;
             *sample_retrigger_outputs.add(index) = 0.0;
@@ -2227,6 +2238,8 @@ pub extern "C" fn resetVoiceSlot(voice_slot: u32) {
                 false;
             SAMPLE_POSITIONS[voice_slot][node_index] = 0.0;
             SAMPLE_DIRECTIONS[voice_slot][node_index] = 1.0;
+            SAMPLE_FREQUENCY_DIRECTIONS[voice_slot][node_index] = 1.0;
+            SAMPLE_HAS_ADVANCED[voice_slot][node_index] = false;
             SAMPLE_PLAYBACK_AGES[voice_slot][node_index] = 0.0;
             SAMPLE_RELEASE_AGES[voice_slot][node_index] = -1.0;
             SAMPLE_START_VALUES[voice_slot][node_index] = 0.0;
@@ -2579,12 +2592,11 @@ fn sample_playback_step(
         return 0.0;
     };
     unsafe {
-        let target_frequency = if target_frequency.is_finite() && target_frequency >= 0.0 {
+        let target_frequency = if target_frequency.is_finite() {
             target_frequency
         } else {
             base_frequency(node, note_frequency)
-        }
-        .max(0.0001);
+        };
         let original = node.sample_original_frequency.max(0.0001);
         let source_rate = SAMPLE_RATES[slot].max(1.0);
         (target_frequency / original) * (source_rate / sample_rate.max(1.0))
@@ -2632,7 +2644,7 @@ fn start_sample_player(
             SAMPLE_RETRIGGER_FADE_DURATIONS[voice_slot][node_index] = 0.0;
             SAMPLE_LAST_OUTPUTS[voice_slot][node_index] = 0.0;
         }
-        let Some((start_frame, _, _, _, direction, _)) =
+        let Some((start_frame, end_frame, _, _, direction, _)) =
             sample_range(node_index, node, start_mod, end_mod)
         else {
             SAMPLE_PLAYING[voice_slot][node_index] = false;
@@ -2642,11 +2654,15 @@ fn start_sample_player(
             SAMPLE_PLAYING[voice_slot][node_index] = false;
             return;
         };
+        let frequency_direction = SAMPLE_FREQUENCY_DIRECTIONS[voice_slot][node_index];
+        let initial_position =
+            sample_player_start_boundary(start_frame, end_frame, frequency_direction);
         let start_index =
-            (start_frame.round() as usize).min(SAMPLE_LENGTHS[slot].saturating_sub(1));
+            (initial_position.round() as usize).min(SAMPLE_LENGTHS[slot].saturating_sub(1));
         SAMPLE_PLAYING[voice_slot][node_index] = true;
-        SAMPLE_POSITIONS[voice_slot][node_index] = start_frame;
-        SAMPLE_DIRECTIONS[voice_slot][node_index] = direction;
+        SAMPLE_POSITIONS[voice_slot][node_index] = initial_position;
+        SAMPLE_DIRECTIONS[voice_slot][node_index] = direction * frequency_direction;
+        SAMPLE_HAS_ADVANCED[voice_slot][node_index] = false;
         SAMPLE_PLAYBACK_AGES[voice_slot][node_index] = 0.0;
         SAMPLE_RELEASE_AGES[voice_slot][node_index] = -1.0;
         let Some(sample_data) = SAMPLE_DATA[slot].as_ref() else {
@@ -2656,7 +2672,53 @@ fn start_sample_player(
         SAMPLE_START_VALUES[voice_slot][node_index] =
             sample_data.get(start_index).copied().unwrap_or(0.0) as f64;
         SAMPLE_STRETCH_PHASES[voice_slot][node_index] = 0.0;
-        SAMPLE_STRETCH_ANCHORS[voice_slot][node_index] = start_frame;
+        SAMPLE_STRETCH_ANCHORS[voice_slot][node_index] = initial_position;
+    }
+}
+
+fn sync_sample_frequency_direction(
+    node_index: usize,
+    voice_slot: usize,
+    node: Node,
+    frequency: f64,
+) {
+    if !frequency.is_finite() || frequency == 0.0 {
+        return;
+    }
+    unsafe {
+        let next_direction = if frequency < 0.0 { -1.0 } else { 1.0 };
+        let previous_direction = SAMPLE_FREQUENCY_DIRECTIONS[voice_slot][node_index];
+        if next_direction == previous_direction {
+            return;
+        }
+        SAMPLE_FREQUENCY_DIRECTIONS[voice_slot][node_index] = next_direction;
+        SAMPLE_DIRECTIONS[voice_slot][node_index] =
+            -SAMPLE_DIRECTIONS[voice_slot][node_index];
+
+        // Until the playhead actually moves, let the first non-zero frequency
+        // choose its starting edge. Later sign changes reverse in place.
+        if SAMPLE_HAS_ADVANCED[voice_slot][node_index] {
+            return;
+        }
+        let Some((start_frame, end_frame, _, _, _, _)) =
+            sample_range(node_index, node, 0.0, 0.0)
+        else {
+            return;
+        };
+        let initial_position =
+            sample_player_start_boundary(start_frame, end_frame, next_direction);
+        SAMPLE_POSITIONS[voice_slot][node_index] = initial_position;
+        SAMPLE_STRETCH_ANCHORS[voice_slot][node_index] = initial_position;
+        let Some(slot) = sample_slot_for_node(node_index) else {
+            return;
+        };
+        let Some(sample_data) = SAMPLE_DATA[slot].as_ref() else {
+            return;
+        };
+        let initial_index =
+            (initial_position.round() as usize).min(SAMPLE_LENGTHS[slot].saturating_sub(1));
+        SAMPLE_START_VALUES[voice_slot][node_index] =
+            sample_data.get(initial_index).copied().unwrap_or(0.0) as f64;
     }
 }
 
@@ -2709,6 +2771,39 @@ fn sample_player_before_start(position: f64, play_direction: f64, start_frame: f
     }
 }
 
+fn sample_player_start_boundary(
+    start_frame: f64,
+    end_frame: f64,
+    frequency_direction: f64,
+) -> f64 {
+    if frequency_direction < 0.0 {
+        end_frame
+    } else {
+        start_frame
+    }
+}
+
+#[cfg(test)]
+mod sample_player_direction_tests {
+    use super::{sample_player_before_start, sample_player_start_boundary};
+
+    #[test]
+    fn reversing_inside_the_region_does_not_restart_the_sample() {
+        let reverse_start = sample_player_start_boundary(0.0, 100.0, -1.0);
+        assert_eq!(reverse_start, 100.0);
+        assert!(!sample_player_before_start(50.0, -1.0, reverse_start));
+        assert!(sample_player_before_start(101.0, -1.0, reverse_start));
+    }
+
+    #[test]
+    fn returning_forward_inside_the_region_does_not_restart_the_sample() {
+        let forward_start = sample_player_start_boundary(0.0, 100.0, 1.0);
+        assert_eq!(forward_start, 0.0);
+        assert!(!sample_player_before_start(50.0, 1.0, forward_start));
+        assert!(sample_player_before_start(-1.0, 1.0, forward_start));
+    }
+}
+
 fn finish_sample_boundary(
     node_index: usize,
     voice_slot: usize,
@@ -2736,12 +2831,11 @@ fn finish_sample_boundary(
             let span = (end_frame - start_frame).abs().max(1.0);
             let overshoot = (position - boundary).abs();
             let wrapped = overshoot % span;
-            SAMPLE_POSITIONS[voice_slot][node_index] = if direction >= 0.0 {
-                start_frame + wrapped
+            SAMPLE_POSITIONS[voice_slot][node_index] = if play_direction >= 0.0 {
+                first_frame + wrapped
             } else {
-                start_frame - wrapped
+                last_frame - wrapped
             };
-            SAMPLE_DIRECTIONS[voice_slot][node_index] = direction;
         } else if node.sample_mode == SAMPLE_MODE_PING_PONG {
             let next_direction = -play_direction;
             let overshoot = (position - boundary).abs();
@@ -2789,10 +2883,15 @@ fn sample_value(
             SAMPLE_PLAYING[voice_slot][node_index] = false;
             return 0.0;
         }
+        let playback_start = sample_player_start_boundary(
+            start_frame,
+            end_frame,
+            SAMPLE_FREQUENCY_DIRECTIONS[voice_slot][node_index],
+        );
         if sample_player_before_start(
             SAMPLE_POSITIONS[voice_slot][node_index],
             SAMPLE_DIRECTIONS[voice_slot][node_index],
-            start_frame,
+            playback_start,
         ) {
             start_sample_player(node_index, voice_slot, node, start_mod, end_mod);
         }
@@ -4101,7 +4200,12 @@ fn render_node(
         }
 
         let phase = PHASES[voice_slot][node_index];
-        let frequency_value = frequency_mod.apply(node_base_frequency).max(0.0);
+        let linked_frequency = frequency_mod.apply(node_base_frequency);
+        let frequency_value = if node.wave == 10 {
+            linked_frequency
+        } else {
+            linked_frequency.max(0.0)
+        };
         let phase_value = phase_mod.apply(0.0);
         let wave_value = wave_mod.apply(0.0);
         let fold_value = fold_drive.apply(0.0);
@@ -4124,6 +4228,12 @@ fn render_node(
             && CUSTOM_WAVE_DONE[voice_slot][node_index];
         let mut value = if active_wave && !custom_done {
             if node.wave == 10 {
+                sync_sample_frequency_direction(
+                    node_index,
+                    voice_slot,
+                    node,
+                    frequency_value,
+                );
                 sample_value(
                     node_index,
                     node,
@@ -4330,8 +4440,10 @@ fn advance_phases(voice_slot: usize, sample_rate: f64, note_frequency: f64, rele
                         frequency,
                         sample_rate,
                     )
-                    .abs()
-                    .max(0.0001);
+                    .abs();
+                    if sample_step > 0.0 {
+                        SAMPLE_HAS_ADVANCED[voice_slot][node_index] = true;
+                    }
                     let stretch =
                         (node.sample_stretch + SAMPLE_STRETCH_MODS[node_index]).max(0.001);
                     if SAMPLE_RELEASE_AGES[voice_slot][node_index] >= 0.0 {
@@ -5302,8 +5414,10 @@ fn advance_dsp_sample_player(
             target_frequency,
             sample_rate,
         )
-        .abs()
-        .max(0.0001);
+        .abs();
+        if sample_step > 0.0 {
+            SAMPLE_HAS_ADVANCED[voice_slot][node_index] = true;
+        }
         let stretch = node.sample_stretch.max(0.001);
         if SAMPLE_RELEASE_AGES[voice_slot][node_index] >= 0.0 {
             SAMPLE_RELEASE_AGES[voice_slot][node_index] += 1.0 / sample_rate.max(1.0);
@@ -5392,7 +5506,11 @@ fn snapshot_dsp_sample_voice(
     unsafe {
         DSP_SAMPLE_VOICE_SETTINGS[sample_index][voice] = DspSampleVoiceSettings {
             node,
-            frequency: if frequency.is_finite() { frequency.max(0.0001) } else { 220.0 },
+            frequency: if frequency.is_finite() {
+                frequency
+            } else {
+                220.0
+            },
             level: if level.is_finite() { level } else { 0.0 },
         };
     }
@@ -5446,20 +5564,56 @@ fn render_dsp_sample(op: DspOp, sample_rate: f64) -> f64 {
                 continue;
             }
             let voice_settings = DSP_SAMPLE_VOICE_SETTINGS[sample_index][voice];
+            // A monophonic player has no overlapping voices to protect, so let
+            // its active voice follow the current inputs. Polyphonic playback
+            // keeps each voice's trigger-time snapshot so later notes cannot
+            // retune or reshape voices that are already sounding.
+            let live_mono_voice = voice_count == 1 && voice == 0;
+            let playback_node = if live_mono_voice {
+                node
+            } else {
+                voice_settings.node
+            };
+            let playback_frequency = if live_mono_voice {
+                let frequency = dsp_reg(op.b);
+                if frequency.is_finite() {
+                    frequency
+                } else {
+                    220.0
+                }
+            } else {
+                voice_settings.frequency
+            };
+            let playback_level = if live_mono_voice {
+                let level = if op.e >= 0 { dsp_reg(op.e) } else { 1.0 };
+                if level.is_finite() {
+                    level
+                } else {
+                    0.0
+                }
+            } else {
+                voice_settings.level
+            };
+            sync_sample_frequency_direction(
+                node_index,
+                voice_slot,
+                playback_node,
+                playback_frequency,
+            );
             output += sample_value(
                 node_index,
-                voice_settings.node,
+                playback_node,
                 voice_slot,
                 sample_rate,
                 0.0,
                 0.0,
                 0.0,
-            ) * voice_settings.level;
+            ) * playback_level;
             advance_dsp_sample_player(
                 node_index,
-                voice_settings.node,
+                playback_node,
                 voice_slot,
-                voice_settings.frequency,
+                playback_frequency,
                 sample_rate,
             );
         }

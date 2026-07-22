@@ -18,6 +18,7 @@ import {
   CUSTOM_WAVE_MODES,
   customWaveUsesSustainEnd,
   customWaveUsesSustainStart,
+  customWaveWithRangeOrigin,
   normalizeCustomWave,
 } from '../graph/customWave';
 import {
@@ -55,6 +56,7 @@ import {
   type ShaderNodeData,
 } from './flowPatch';
 import { getSampleWaveform, type SampleWaveform, type SampleWaveformBin } from '../audio/sampleWaveformCache';
+import { ChartGrid, chartGridColumns, chartGridRows, chartScaleTicks } from './chartGrid';
 
 const CUSTOM_WAVE_DRAG_UPDATE_INTERVAL_MS = 50;
 
@@ -157,10 +159,12 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     ? sequencerDisplaySize
     : showCustomWaveEditor || showSampleUpload || showImageDisplay ? waveformDisplaySize : scopeSize;
   const meterScaleTicks = showMeterDisplay ? amplitudeScaleTicks(amplitudeRange, displaySize.width, meterMode) : [];
-  const meterGridTicks = showMeterDisplay ? meterGridTicksForWidth(displaySize.width) : [];
-  const meterGridRows = showMeterDisplay ? meterGridRowsForHeight(displaySize.height) : [];
-  const scopeScaleTicks = showScopeDisplay ? amplitudeScaleTicks(amplitudeRange, displaySize.height, scopeMode, 'vertical') : [];
-  const scopeGridTicks = showScopeDisplay ? meterGridTicksForWidth(displaySize.width) : [];
+  const meterGridTicks = showMeterDisplay ? chartGridColumns(displaySize.width) : [];
+  const meterGridRows = showMeterDisplay ? chartGridRows(displaySize.height).map((tick) => tick.fraction) : [];
+  const scopeScaleTicks = showScopeDisplay
+    ? chartScaleTicks(amplitudeRange, scopeMode === 'bipolar' ? -amplitudeRange : 0, displaySize.height, 'vertical')
+    : [];
+  const scopeGridTicks = showScopeDisplay ? chartGridColumns(displaySize.width) : [];
   const nodeSizeStyle = showResizableDisplay
     ? ({
         '--node-display-width': `${displaySize.width}px`,
@@ -910,6 +914,8 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           {showCustomWaveEditor && customWave ? (
             <CustomWaveEditor
               customWave={customWave}
+              rangeMin={node.params.rangeMin ?? -1}
+              rangeMax={node.params.rangeMax ?? 1}
               playhead={customWavePlayhead}
               compact={!showAllPorts}
               displaySize={displaySize}
@@ -997,29 +1003,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           ) : null}
           {showScopeDisplay ? (
             <div className="audio-node-scope-display" aria-hidden="true">
-              <svg className="audio-node-scope-grid" viewBox="0 0 160 48" preserveAspectRatio="none" focusable="false">
-                {scopeGridTicks.map((tick) => (
-                  <line key={`column-${tick.fraction}`} className={tick.major ? 'audio-node-meter-grid-line audio-node-meter-grid-line-major' : 'audio-node-meter-grid-line'} x1={tick.fraction * 160} y1="0" x2={tick.fraction * 160} y2="48" />
-                ))}
-                {scopeScaleTicks.map((tick) => (
-                  <line key={`row-${tick.fraction}`} className="audio-node-meter-grid-line audio-node-meter-grid-line-major" x1="0" y1={tick.fraction * 48} x2="160" y2={tick.fraction * 48} />
-                ))}
-              </svg>
-              <span className="audio-node-scope-scale">
-                {scopeScaleTicks.map((tick) => (
-                  <span
-                    key={tick.fraction}
-                    className={[
-                      'audio-node-scope-scale-label',
-                      tick.fraction === 0 ? 'audio-node-scope-scale-label-top' : '',
-                      tick.fraction === 1 ? 'audio-node-scope-scale-label-bottom' : '',
-                    ].filter(Boolean).join(' ')}
-                    style={{ top: `${tick.fraction * 100}%` }}
-                  >
-                    {tick.label}
-                  </span>
-                ))}
-              </span>
+              <ChartGrid width={160} height={48} columns={scopeGridTicks} rows={scopeScaleTicks} showRowLabels />
               <svg className="audio-node-scope-waveform" viewBox="0 0 160 48" preserveAspectRatio="none">
                 <defs>
                   <linearGradient id={scopeGradientId} gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="160" y2="0">
@@ -1804,6 +1788,8 @@ function centeredCoordinateToUnit(value: number): number {
 
 interface CustomWaveEditorProps {
   customWave: CustomWaveSettings;
+  rangeMin: number;
+  rangeMax: number;
   playhead: number;
   compact: boolean;
   displaySize: ScopeNodeSize;
@@ -2815,6 +2801,8 @@ function SequencerGrid({
 
 function CustomWaveEditor({
   customWave,
+  rangeMin,
+  rangeMax,
   playhead,
   compact,
   displaySize,
@@ -2830,8 +2818,10 @@ function CustomWaveEditor({
   const padding = 12;
   const innerWidth = width - padding * 2;
   const innerHeight = height - padding * 2;
-  const points = customWave.points;
+  const points = customWaveWithRangeOrigin(customWave, rangeMin, rangeMax).points;
   const path = customWavePath(points, width, height, padding);
+  const gridColumns = chartGridColumns(displaySize.width);
+  const gridRows = customWaveGridRows(rangeMin, rangeMax, displaySize.height);
   const sustainStartX = padding + customWave.sustainStart * innerWidth;
   const sustainEndX = padding + customWave.sustainEnd * innerWidth;
   const showSustainStart = customWaveUsesSustainStart(customWave.mode);
@@ -2843,20 +2833,26 @@ function CustomWaveEditor({
 
   return (
     <div className="custom-wave-node-editor nodrag nopan">
-      <svg
-        ref={editorRef}
-        className="custom-wave-node-canvas"
-        viewBox={`0 0 ${width} ${height}`}
-        preserveAspectRatio="none"
-        aria-label="Custom wave editor"
-        role="img"
-        onPointerDown={onPointerDown}
-        onDoubleClick={onDoubleClick}
-      >
+      <div className="custom-wave-node-chart">
+        <ChartGrid
+          width={innerWidth}
+          height={innerHeight}
+          columns={gridColumns}
+          rows={gridRows}
+          className="custom-wave-node-grid"
+          showRowLabels
+        />
+        <svg
+          ref={editorRef}
+          className="custom-wave-node-canvas"
+          viewBox={`0 0 ${width} ${height}`}
+          preserveAspectRatio="none"
+          aria-label="Custom wave editor"
+          role="img"
+          onPointerDown={onPointerDown}
+          onDoubleClick={onDoubleClick}
+        >
         <g className="custom-wave-chart-chrome">
-          <line className="custom-wave-grid-line" x1={padding} y1={padding} x2={width - padding} y2={padding} />
-          <line className="custom-wave-grid-line custom-wave-zero" x1={padding} y1={height / 2} x2={width - padding} y2={height / 2} />
-          <line className="custom-wave-grid-line" x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} />
           {showSustainStart ? (
             <line className="custom-wave-sustain-line" x1={sustainStartX} y1={padding} x2={sustainStartX} y2={height - padding} />
           ) : null}
@@ -2896,7 +2892,8 @@ function CustomWaveEditor({
             </g>
           );
         })}
-      </svg>
+        </svg>
+      </div>
       {!compact ? (
       <div className="custom-wave-node-controls">
         <label className="custom-wave-node-field">
@@ -2938,6 +2935,21 @@ function CustomWaveEditor({
       ) : null}
     </div>
   );
+}
+
+function customWaveGridRows(rangeMin: number, rangeMax: number, height: number) {
+  const min = Number.isFinite(rangeMin) ? rangeMin : -1;
+  const max = Number.isFinite(rangeMax) ? rangeMax : 1;
+  const ticks = chartScaleTicks(max, min, height, 'vertical');
+  const zeroY = (1 - normalizedCustomWaveValue(0, min, max)) / 2;
+  const existingZero = ticks.find((tick) => Math.abs(tick.fraction - zeroY) < 0.0001);
+  if (existingZero) {
+    existingZero.origin = true;
+    existingZero.label = '0';
+    return ticks;
+  }
+  return [...ticks, { fraction: zeroY, label: '0', major: true, origin: true }]
+    .sort((left, right) => left.fraction - right.fraction);
 }
 
 interface CustomWaveRangeProps {

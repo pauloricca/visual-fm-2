@@ -73,6 +73,37 @@ export function customWaveUsesSustainEnd(mode: CustomWaveMode): boolean {
   return mode === 'sustain-loop' || mode === 'sustain-ping-pong';
 }
 
+/**
+ * Returns a copy whose locked endpoints produce zero in the configured output
+ * range. The stored points stay normalized, so changing the range never
+ * rewrites the user's curve.
+ */
+export function customWaveWithRangeOrigin(
+  customWave: CustomWaveSettings,
+  rangeMin: number,
+  rangeMax: number,
+): CustomWaveSettings {
+  const endpointY = normalizedCustomWaveValue(0, rangeMin, rangeMax);
+  const lastIndex = customWave.points.length - 1;
+  return {
+    ...customWave,
+    points: customWave.points.map((point, index) => (
+      index === 0 || index === lastIndex ? { ...point, y: endpointY } : point
+    )),
+  };
+}
+
+export function normalizedCustomWaveValue(value: number, rangeMin: number, rangeMax: number): number {
+  const min = Number.isFinite(rangeMin) ? rangeMin : -1;
+  const max = Number.isFinite(rangeMax) ? rangeMax : 1;
+  const span = max - min;
+  if (span === 0) {
+    if (min === value) return 0;
+    return value < min ? -1 : 1;
+  }
+  return clamp(((value - min) / span) * 2 - 1, -1, 1);
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }

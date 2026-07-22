@@ -40,7 +40,7 @@ Most node types are available from the node picker. `Ins` and `Outs` appear whil
 - `Noise`: generates raw noise.
 - `Audio Input`: brings a microphone or input device into the patch with gain/level controls.
 - `Custom Wave`: generates an editable breakpoint waveform with loop, one-shot, ping-pong, and sustain modes. Point drags update the live DSP at a limited rate, morph smoothly between curve revisions without rebuilding the graph, and always commit the final position after release.
-- `Sample`: plays an uploaded sample with frequency/original-frequency pitch tracking, trigger, polyphony, region, envelope, stretch, granular-style mode, and level controls.
+- `Sample`: plays a selected, uploaded, or microphone-recorded sample with frequency/original-frequency pitch tracking, trigger, polyphony, region, envelope, stretch, granular-style mode, and level controls. Positive frequency plays forward, negative frequency plays backward, and zero pauses the playhead. With `voices` set to `1`, playback follows live parameter changes; with more than one voice, each voice keeps the parameter values captured by its trigger. The sample picker can record from the microphone; stopping converts the capture to PCM WAV, prompts for a name, saves the `.wav` file in `samples/`, and selects it for the node.
 - `Image`: samples brightness, RGB, hue, and saturation from an uploaded image at an `x`/`y` position.
 - `Buffer`: records and plays a rolling audio buffer from signal, playhead, record-head, and length controls.
 - `Playhead`: outputs a playback position signal from start and speed controls.
@@ -220,7 +220,7 @@ Shortcuts are ignored while editing text or numeric fields unless noted otherwis
 | Scroll | Pan the canvas. |
 | Pinch | Zoom the canvas. |
 
-The floating controls provide play/stop (`PL`), recording, MIDI device settings (`MD`), patch save/load (`SV`/`LD`), undo/redo (`UN`/`RE`), grouping (`GR`), new patch (`NW`), subpatch import (`IM`), and selected-node scaling (`S+`/`S-`). The zoom percentage button resets zoom to 100%.
+The floating controls provide play/stop (`PL`), recording, MIDI device settings (`MD`), patch save/load (`SV`/`LD`), undo/redo (`UN`/`RE`), grouping (`GR`), new patch (`NW`), subpatch import (`IM`), and selected-node scaling (`S+`/`S-`). Pressing record while playback is stopped arms recording at `0:00`; capture begins when playback starts. The zoom percentage button resets zoom to 100%.
 
 ## Compiler And Engine Boundary
 
@@ -254,7 +254,7 @@ Run the app through Docker with the local helper:
 
 `./start` serves the editor on port `5174` by default, generates a self-signed HTTPS certificate when `openssl` is available, prints LAN URLs for another device or projector, and supports `--port=PORT`, `--patch-storage=local`, and `--patch-storage=browser`.
 
-Themes are selected with `--theme=NAME` (or `--theme NAME`). Available presets are `console` (green phosphor), `amber` (warm orange), and `ocean` (cool blue); for example, `./start --theme=amber`. The default theme preserves the original monochrome appearance. Palette and font tokens live in `web/src/themes.css`; add a `:root[data-theme='NAME']` block there to create another theme.
+Themes are selected with `--theme=NAME` (or `--theme NAME`). Available presets are `console` (green phosphor), `amber` (warm orange), and `ocean` (cool blue); for example, `./start --theme=amber`. The default theme preserves the original monochrome appearance. Sample waveform start/end markers always retain the default blue/amber colors for visibility and consistent editing. Palette and font tokens live in `web/src/themes.css`; add a `:root[data-theme='NAME']` block there to create another theme.
 
 Typecheck:
 

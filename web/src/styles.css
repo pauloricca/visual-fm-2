@@ -1259,11 +1259,11 @@ button:hover {
 }
 
 .sample-waveform-boundary-line.is-start {
-  stroke: var(--color-add-link);
+  stroke: var(--color-sample-boundary-start);
 }
 
 .sample-waveform-boundary-line.is-end {
-  stroke: var(--color-add-link-end);
+  stroke: var(--color-sample-boundary-end);
 }
 
 .sample-waveform-phase-line {
@@ -3278,6 +3278,42 @@ select:not([multiple]):hover {
   max-height: min(420px, calc(100vh - 220px));
   overflow: auto;
   border-bottom: 1px solid var(--color-foreground);
+}
+
+.sample-recording-status {
+  margin: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-foreground);
+  color: var(--color-record);
+  font-variant-numeric: tabular-nums;
+}
+
+.sample-recording-name-form {
+  display: flex;
+  flex-direction: column;
+}
+
+.sample-recording-name-form > label {
+  padding: 16px 12px 8px;
+  font-weight: 700;
+}
+
+.sample-recording-name-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 16px;
+}
+
+.sample-recording-name-row input {
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+}
+
+.sample-recording-name-row span {
+  color: var(--color-foreground-66);
 }
 
 .sample-option {

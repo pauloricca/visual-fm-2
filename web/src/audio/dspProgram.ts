@@ -1,5 +1,5 @@
 import { expandGroups } from '../graph/subpatch';
-import { normalizeCustomWave } from '../graph/customWave';
+import { customWaveWithRangeOrigin, normalizeCustomWave } from '../graph/customWave';
 import {
   SEQUENCER_DEFAULT_ROWS,
   SEQUENCER_DEFAULT_STEPS,
@@ -690,7 +690,11 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     const customWaveIndex = context.customWaveBindings.length;
     context.customWaveBindings.push({
       nodeId: node.id,
-      customWave: normalizeCustomWave(node.customWave, node.params),
+      customWave: customWaveWithRangeOrigin(
+        normalizeCustomWave(node.customWave, node.params),
+        node.params.rangeMin ?? -1,
+        node.params.rangeMax ?? 1,
+      ),
     });
     const frequency = resolveInput(node, 'frequency', 220, context);
     const output = nextRegister(context);

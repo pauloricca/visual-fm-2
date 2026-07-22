@@ -206,6 +206,24 @@ interface SampleLibraryState {
   error: string | null;
 }
 
+type SampleRecordingStatus = 'idle' | 'requesting' | 'recording' | 'processing' | 'naming' | 'saving';
+
+interface SampleRecordingState {
+  status: SampleRecordingStatus;
+  blob: Blob | null;
+  extension: string;
+  elapsedSeconds: number;
+  name: string;
+}
+
+const IDLE_SAMPLE_RECORDING: SampleRecordingState = {
+  status: 'idle',
+  blob: null,
+  extension: '.wav',
+  elapsedSeconds: 0,
+  name: 'recording',
+};
+
 interface ImageLibraryState {
   nodeId: string;
   images: ImageAsset[];
@@ -324,6 +342,7 @@ function NodeEditorInner() {
   const [saveFeedbackActive, setSaveFeedbackActive] = useState(false);
   const [localPatchLibrary, setLocalPatchLibrary] = useState<LocalPatchLibraryState | null>(null);
   const [sampleLibrary, setSampleLibrary] = useState<SampleLibraryState | null>(null);
+  const [sampleRecording, setSampleRecording] = useState<SampleRecordingState>(IDLE_SAMPLE_RECORDING);
   const [imageLibrary, setImageLibrary] = useState<ImageLibraryState | null>(null);
   const [subpatchImportModal, setSubpatchImportModal] = useState<SubpatchImportModalState | null>(null);
   const [localSubpatchImport, setLocalSubpatchImport] = useState<LocalSubpatchImportState | null>(null);
@@ -339,6 +358,13 @@ function NodeEditorInner() {
   const sampleFileInputRef = useRef<HTMLInputElement | null>(null);
   const imageFileInputRef = useRef<HTMLInputElement | null>(null);
   const pendingSampleUploadNodeIdRef = useRef<string | null>(null);
+  const sampleRecorderRef = useRef<MediaRecorder | null>(null);
+  const sampleRecordingStreamRef = useRef<MediaStream | null>(null);
+  const sampleRecordingChunksRef = useRef<Blob[]>([]);
+  const sampleRecordingCancelledRef = useRef(false);
+  const sampleRecordingStartedAtRef = useRef(0);
+  const sampleRecordingTimerRef = useRef<number | null>(null);
+  const sampleRecordingSessionIdRef = useRef(0);
   const pendingImageUploadNodeIdRef = useRef<string | null>(null);
   const saveFeedbackTimeoutRef = useRef<number | null>(null);
   const selectedLocalPatchOptionRef = useRef<HTMLButtonElement | null>(null);
@@ -657,10 +683,131 @@ function NodeEditorInner() {
       : node));
   }, [commitHistory]);
 
+  const resetSampleRecording = useCallback(() => {
+    sampleRecordingSessionIdRef.current += 1;
+    sampleRecordingCancelledRef.current = true;
+    if (sampleRecordingTimerRef.current !== null) {
+      window.clearInterval(sampleRecordingTimerRef.current);
+      sampleRecordingTimerRef.current = null;
+    }
+    const recorder = sampleRecorderRef.current;
+    sampleRecorderRef.current = null;
+    if (recorder) {
+      recorder.ondataavailable = null;
+      recorder.onerror = null;
+      recorder.onstop = null;
+      if (recorder.state !== 'inactive') recorder.stop();
+    }
+    sampleRecordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+    sampleRecordingStreamRef.current = null;
+    sampleRecordingChunksRef.current = [];
+    sampleRecordingStartedAtRef.current = 0;
+    setSampleRecording(IDLE_SAMPLE_RECORDING);
+  }, []);
+
+  useEffect(() => resetSampleRecording, [resetSampleRecording]);
+
+  const startSampleRecording = useCallback(async () => {
+    if (!sampleLibrary || sampleRecording.status !== 'idle') return;
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setSampleLibrary((current) => current ? { ...current, error: 'Microphone recording is not supported by this browser.' } : current);
+      return;
+    }
+
+    sampleRecordingCancelledRef.current = false;
+    const recordingSessionId = sampleRecordingSessionIdRef.current + 1;
+    sampleRecordingSessionIdRef.current = recordingSessionId;
+    setSampleRecording((current) => ({ ...current, status: 'requesting', elapsedSeconds: 0 }));
+    setSampleLibrary((current) => current ? { ...current, error: null } : current);
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (sampleRecordingCancelledRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+
+      const recordingFormat = preferredSampleRecordingFormat();
+      const recorder = recordingFormat.mimeType
+        ? new MediaRecorder(stream, { mimeType: recordingFormat.mimeType })
+        : new MediaRecorder(stream);
+      sampleRecordingStreamRef.current = stream;
+      sampleRecorderRef.current = recorder;
+      sampleRecordingChunksRef.current = [];
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) sampleRecordingChunksRef.current.push(event.data);
+      };
+      recorder.onerror = () => {
+        resetSampleRecording();
+        setSampleLibrary((current) => current ? { ...current, error: 'Microphone recording failed.' } : current);
+      };
+      recorder.onstop = async () => {
+        if (sampleRecordingTimerRef.current !== null) {
+          window.clearInterval(sampleRecordingTimerRef.current);
+          sampleRecordingTimerRef.current = null;
+        }
+        stream.getTracks().forEach((track) => track.stop());
+        sampleRecordingStreamRef.current = null;
+        sampleRecorderRef.current = null;
+        if (sampleRecordingCancelledRef.current) return;
+
+        const chunks = sampleRecordingChunksRef.current;
+        sampleRecordingChunksRef.current = [];
+        const recordedBlob = new Blob(chunks, { type: recorder.mimeType || recordingFormat.mimeType || 'audio/webm' });
+        if (recordedBlob.size === 0) {
+          setSampleRecording(IDLE_SAMPLE_RECORDING);
+          setSampleLibrary((current) => current ? { ...current, error: 'The microphone recording was empty.' } : current);
+          return;
+        }
+        try {
+          const wavBlob = await convertRecordedAudioToWav(recordedBlob);
+          if (sampleRecordingCancelledRef.current || sampleRecordingSessionIdRef.current !== recordingSessionId) return;
+          setSampleRecording((current) => ({
+            ...current,
+            status: 'naming',
+            blob: wavBlob,
+            extension: '.wav',
+            name: 'recording',
+          }));
+        } catch (error) {
+          if (sampleRecordingCancelledRef.current || sampleRecordingSessionIdRef.current !== recordingSessionId) return;
+          setSampleRecording(IDLE_SAMPLE_RECORDING);
+          const message = error instanceof Error ? error.message : 'Could not convert the microphone recording to WAV.';
+          setSampleLibrary((current) => current ? { ...current, error: message } : current);
+        }
+      };
+
+      recorder.start(250);
+      sampleRecordingStartedAtRef.current = performance.now();
+      sampleRecordingTimerRef.current = window.setInterval(() => {
+        setSampleRecording((current) => ({
+          ...current,
+          elapsedSeconds: Math.floor((performance.now() - sampleRecordingStartedAtRef.current) / 1000),
+        }));
+      }, 250);
+      setSampleRecording((current) => ({ ...current, status: 'recording', extension: '.wav' }));
+    } catch (error) {
+      resetSampleRecording();
+      const message = error instanceof DOMException && error.name === 'NotAllowedError'
+        ? 'Microphone permission was denied.'
+        : error instanceof Error ? error.message : 'Could not access the microphone.';
+      setSampleLibrary((current) => current ? { ...current, error: message } : current);
+    }
+  }, [resetSampleRecording, sampleLibrary, sampleRecording.status]);
+
+  const stopSampleRecording = useCallback(() => {
+    const recorder = sampleRecorderRef.current;
+    if (!recorder || recorder.state === 'inactive') return;
+    setSampleRecording((current) => ({ ...current, status: 'processing' }));
+    recorder.stop();
+  }, []);
+
   const openSampleLibrary = useCallback(async (nodeId: string) => {
     const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
     if (!relatedNode || relatedNode.data.patchNode.type !== 'SamplePlayer') return;
 
+    resetSampleRecording();
     const currentSample = relatedNode.data.patchNode.sample ?? null;
     setSampleLibrary({
       nodeId,
@@ -693,11 +840,12 @@ function NodeEditorInner() {
       } : current);
       setImportError(message);
     }
-  }, []);
+  }, [resetSampleRecording]);
 
   const closeSampleLibrary = useCallback(() => {
+    resetSampleRecording();
     setSampleLibrary(null);
-  }, []);
+  }, [resetSampleRecording]);
 
   const selectSampleFromLibrary = useCallback((sample: SampleAsset) => {
     if (!sampleLibrary) return;
@@ -717,7 +865,7 @@ function NodeEditorInner() {
   }, [requestSampleUpload, sampleLibrary]);
 
   const uploadSampleForNode = useCallback(async (nodeId: string, file: File) => {
-    if (!file || !nodeId) return;
+    if (!file || !nodeId) return false;
 
     try {
       setSampleLibrary((current) => current && current.nodeId === nodeId ? { ...current, loading: true, error: null } : current);
@@ -738,12 +886,29 @@ function NodeEditorInner() {
       updateNodeSample(nodeId, sample);
       setSampleLibrary((current) => current && current.nodeId === nodeId ? null : current);
       setImportError(null);
+      return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setSampleLibrary((current) => current && current.nodeId === nodeId ? { ...current, loading: false, error: message } : current);
       setImportError(message);
+      return false;
     }
   }, [updateNodeSample]);
+
+  const saveSampleRecording = useCallback(async () => {
+    if (!sampleLibrary || sampleRecording.status !== 'naming' || !sampleRecording.blob) return;
+    const trimmedName = sampleRecording.name.trim();
+    if (!trimmedName) {
+      setSampleLibrary((current) => current ? { ...current, error: 'Enter a name for the recording.' } : current);
+      return;
+    }
+
+    setSampleRecording((current) => ({ ...current, status: 'saving' }));
+    const fileName = sampleRecordingFileName(trimmedName, sampleRecording.extension);
+    const file = new File([sampleRecording.blob], fileName, { type: sampleRecording.blob.type });
+    const saved = await uploadSampleForNode(sampleLibrary.nodeId, file);
+    if (!saved) setSampleRecording((current) => ({ ...current, status: 'naming' }));
+  }, [sampleLibrary, sampleRecording, uploadSampleForNode]);
 
   const uploadDroppedSampleFiles = useCallback((nodeId: string, files: FileList) => {
     const file = files[0];
@@ -4050,31 +4215,80 @@ function NodeEditorInner() {
                     {sampleLibrary.error ?? 'Reading samples...'}
                   </p>
                 ) : null}
-                {sampleLibrary.samples.length > 0 ? (
-                  <div className="sample-list" role="listbox" aria-label="Samples">
-                    {sampleLibrary.samples.map((sample) => (
-                      <button
-                        className={[
-                          'sample-option',
-                          sample.url === sampleLibrary.selectedUrl ? 'sample-option-selected' : '',
-                        ].filter(Boolean).join(' ')}
-                        key={sample.url}
-                        type="button"
-                        role="option"
-                        aria-selected={sample.url === sampleLibrary.selectedUrl}
-                        onClick={() => setSampleLibrary((current) => current ? { ...current, selectedUrl: sample.url } : current)}
-                        onDoubleClick={() => selectSampleFromLibrary(sample)}
-                      >
-                        <span>{sample.name}</span>
+                {sampleRecording.status === 'naming' || sampleRecording.status === 'saving' ? (
+                  <form
+                    className="sample-recording-name-form"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void saveSampleRecording();
+                    }}
+                  >
+                    <label htmlFor="sample-recording-name">Name this recording</label>
+                    <div className="sample-recording-name-row">
+                      <input
+                        id="sample-recording-name"
+                        type="text"
+                        value={sampleRecording.name}
+                        onChange={(event) => setSampleRecording((current) => ({ ...current, name: event.target.value }))}
+                        autoFocus
+                        disabled={sampleRecording.status === 'saving'}
+                      />
+                      <span>{sampleRecording.extension}</span>
+                    </div>
+                    <footer className="import-modal-actions">
+                      <button type="button" onClick={resetSampleRecording} disabled={sampleRecording.status === 'saving'}>Discard</button>
+                      <button type="submit" disabled={sampleRecording.status === 'saving' || !sampleRecording.name.trim()}>
+                        {sampleRecording.status === 'saving' ? 'Saving...' : 'Save and select'}
                       </button>
-                    ))}
-                  </div>
-                ) : null}
-                <footer className="import-modal-actions">
-                  <button type="button" onClick={closeSampleLibrary}>Cancel</button>
-                  <button type="button" onClick={requestSampleUploadFromLibrary}>Upload new</button>
-                  <button type="button" onClick={() => selectedSample && selectSampleFromLibrary(selectedSample)} disabled={!selectedSample}>Select</button>
-                </footer>
+                    </footer>
+                  </form>
+                ) : (
+                  <>
+                    {sampleRecording.status !== 'idle' ? (
+                      <p className="sample-recording-status" aria-live="polite">
+                        {sampleRecording.status === 'requesting'
+                          ? 'Waiting for microphone permission...'
+                          : sampleRecording.status === 'processing'
+                            ? 'Finishing recording...'
+                            : `Recording ${formatRecordingTimestamp(sampleRecording.elapsedSeconds)}`}
+                      </p>
+                    ) : null}
+                    {sampleLibrary.samples.length > 0 ? (
+                      <div className="sample-list" role="listbox" aria-label="Samples">
+                        {sampleLibrary.samples.map((sample) => (
+                          <button
+                            className={[
+                              'sample-option',
+                              sample.url === sampleLibrary.selectedUrl ? 'sample-option-selected' : '',
+                            ].filter(Boolean).join(' ')}
+                            key={sample.url}
+                            type="button"
+                            role="option"
+                            aria-selected={sample.url === sampleLibrary.selectedUrl}
+                            onClick={() => setSampleLibrary((current) => current ? { ...current, selectedUrl: sample.url } : current)}
+                            onDoubleClick={() => selectSampleFromLibrary(sample)}
+                          >
+                            <span>{sample.name}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                    <footer className="import-modal-actions">
+                      <button type="button" onClick={closeSampleLibrary}>Cancel</button>
+                      <button
+                        className="viewport-button-record"
+                        type="button"
+                        aria-checked={sampleRecording.status !== 'idle'}
+                        onClick={sampleRecording.status === 'recording' ? stopSampleRecording : () => void startSampleRecording()}
+                        disabled={sampleRecording.status === 'requesting' || sampleRecording.status === 'processing'}
+                      >
+                        {sampleRecording.status === 'recording' ? 'Stop' : 'Record'}
+                      </button>
+                      <button type="button" onClick={requestSampleUploadFromLibrary} disabled={sampleRecording.status !== 'idle'}>Upload new</button>
+                      <button type="button" onClick={() => selectedSample && selectSampleFromLibrary(selectedSample)} disabled={!selectedSample || sampleRecording.status !== 'idle'}>Select</button>
+                    </footer>
+                  </>
+                )}
               </section>
             </div>
           ) : null}
@@ -4474,6 +4688,76 @@ function formatRecordingTimestamp(totalSeconds: number): string {
   const minutes = Math.floor(safeSeconds / 60);
   const seconds = safeSeconds % 60;
   return `${padDatePart(minutes)}:${padDatePart(seconds)}`;
+}
+
+function preferredSampleRecordingFormat(): { mimeType: string; extension: string } {
+  const formats = [
+    { mimeType: 'audio/webm;codecs=opus', extension: '.webm' },
+    { mimeType: 'audio/ogg;codecs=opus', extension: '.ogg' },
+    { mimeType: 'audio/mp4', extension: '.m4a' },
+    { mimeType: 'audio/webm', extension: '.webm' },
+    { mimeType: 'audio/ogg', extension: '.ogg' },
+  ];
+  return formats.find((format) => MediaRecorder.isTypeSupported(format.mimeType))
+    ?? { mimeType: '', extension: '.webm' };
+}
+
+function sampleRecordingFileName(name: string, extension: string): string {
+  const stem = name.replace(/\.(?:aac|aif|aiff|flac|m4a|mp3|oga|ogg|wav|wave|webm)$/i, '').trim() || 'recording';
+  return `${stem}${extension}`;
+}
+
+async function convertRecordedAudioToWav(recording: Blob): Promise<Blob> {
+  const context = new AudioContext();
+  try {
+    const audioBuffer = await context.decodeAudioData(await recording.arrayBuffer());
+    return encodeAudioBufferAsWav(audioBuffer);
+  } catch (error) {
+    throw new Error('Could not convert the microphone recording to WAV.', { cause: error });
+  } finally {
+    await context.close();
+  }
+}
+
+function encodeAudioBufferAsWav(audioBuffer: AudioBuffer): Blob {
+  const channelCount = audioBuffer.numberOfChannels;
+  const bytesPerSample = 2;
+  const blockAlign = channelCount * bytesPerSample;
+  const dataSize = audioBuffer.length * blockAlign;
+  const wav = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(wav);
+
+  writeWavText(view, 0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeWavText(view, 8, 'WAVE');
+  writeWavText(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, channelCount, true);
+  view.setUint32(24, audioBuffer.sampleRate, true);
+  view.setUint32(28, audioBuffer.sampleRate * blockAlign, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bytesPerSample * 8, true);
+  writeWavText(view, 36, 'data');
+  view.setUint32(40, dataSize, true);
+
+  const channels = Array.from({ length: channelCount }, (_, channel) => audioBuffer.getChannelData(channel));
+  let offset = 44;
+  for (let frame = 0; frame < audioBuffer.length; frame += 1) {
+    for (let channel = 0; channel < channelCount; channel += 1) {
+      const sample = Math.max(-1, Math.min(1, channels[channel][frame] ?? 0));
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+      offset += bytesPerSample;
+    }
+  }
+
+  return new Blob([wav], { type: 'audio/wav' });
+}
+
+function writeWavText(view: DataView, offset: number, text: string): void {
+  for (let index = 0; index < text.length; index += 1) {
+    view.setUint8(offset + index, text.charCodeAt(index));
+  }
 }
 
 interface MidiSettingsModalProps {

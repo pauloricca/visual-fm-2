@@ -19,6 +19,7 @@
 ## Preserve the Running Docker Configuration During Builds
 
 - A static host build such as `npm run build` is allowed without additional permission. A Docker/Compose rebuild, container recreation, restart, or invocation of `./start` is not a static build and remains prohibited unless the user explicitly asks for it.
+- Engine-build exception: after changing the Rust/WASM audio engine, always run `npm run build:wasm` before handoff so the updated kernel is copied into the web assets; this required artifact build is permitted even though its script uses Docker, but it does not grant permission to start, restart, refresh, or functionally test the app.
 - The running Docker app bind-mounts this repository and serves `web/dist`, so a host build replaces the bundle used by the user's app. Before building, preserve the active theme from the existing Docker container configuration or from the user's stated launch configuration. Determine it with read-only inspection only; do not open the app, refresh a tab, restart a container, or infer a theme from visual appearance.
 - Build the Docker-served bundle with both `VITE_VISUAL_FM_THEME` set to the active theme and `VITE_VISUAL_VISUAL_PATCH_STORAGE=local`. The latter is required so `SV` saves to the local patch library instead of downloading a file.
 - Do not run an unconfigured `npm run build` while the Docker app is running, because it compiles the default theme and storage mode into `web/dist`. Use the equivalent of `VITE_VISUAL_FM_THEME="$ACTIVE_THEME" VITE_VISUAL_VISUAL_PATCH_STORAGE=local npm run build`.
