@@ -137,5 +137,5 @@ function formatChartValue(value: number): string {
       : absoluteValue >= 1
         ? value.toFixed(2)
         : value.toFixed(3);
-  return formatted.replace(/\.?0+$/, '');
+  return formatted.includes('.') ? formatted.replace(/\.?0+$/, '') : formatted;
 }

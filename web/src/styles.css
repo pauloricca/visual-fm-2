@@ -1559,16 +1559,20 @@ button:hover {
   min-width: 0;
 }
 
+.custom-wave-node-chart {
+  position: relative;
+  height: var(--node-display-height, 128px);
+  overflow: hidden;
+}
+
 .custom-wave-node-canvas {
+  position: relative;
+  z-index: 1;
   display: block;
   width: 100%;
-  height: var(--node-display-height, 128px);
+  height: 100%;
   border: 0;
-  background:
-    linear-gradient(var(--color-foreground-18) 1px, transparent 1px),
-    linear-gradient(90deg, var(--color-foreground-18) 1px, transparent 1px),
-    transparent;
-  background-size: 18px 18px;
+  background: transparent;
   cursor: crosshair;
   touch-action: none;
   user-select: none;
@@ -1579,14 +1583,8 @@ button:hover {
   pointer-events: none;
 }
 
-.custom-wave-grid-line {
-  stroke: var(--color-foreground-28);
-  stroke-width: 1;
-  vector-effect: non-scaling-stroke;
-}
-
-.custom-wave-zero {
-  stroke: var(--color-foreground-52);
+.audio-chart-grid-layer.custom-wave-node-grid {
+  inset: 9.375% 4%;
 }
 
 .custom-wave-sustain-line {
@@ -2060,8 +2058,7 @@ button:hover {
   overflow: hidden;
 }
 
-.audio-node-meter-scale,
-.audio-node-scope-scale {
+.audio-node-meter-scale {
   position: absolute;
   color: var(--color-foreground-76);
   font-size: inherit;
@@ -2204,13 +2201,50 @@ button:hover {
   border: 1px solid var(--color-foreground);
 }
 
-.audio-node-scope-scale {
+.audio-chart-grid-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.audio-chart-grid {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.audio-chart-grid-line {
+  stroke: var(--color-foreground-18);
+  stroke-width: 0.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.audio-chart-grid-line-major {
+  stroke: var(--color-foreground-32);
+  stroke-width: 1;
+}
+
+.audio-chart-grid-line-origin {
+  stroke: var(--color-foreground-52);
+}
+
+.audio-chart-grid-scale {
+  position: absolute;
   z-index: 1;
   inset: 0 auto 0 4px;
   width: 56px;
+  color: var(--color-foreground-76);
+  font-size: inherit;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  pointer-events: none;
+  text-shadow: 0 1px 0 var(--color-background), 1px 0 0 var(--color-background), 0 -1px 0 var(--color-background), -1px 0 0 var(--color-background);
 }
 
-.audio-node-scope-scale-label {
+.audio-chart-grid-scale-label {
   position: absolute;
   max-width: 100%;
   overflow: hidden;
@@ -2219,26 +2253,20 @@ button:hover {
   white-space: nowrap;
 }
 
-.audio-node-scope-scale-label-top {
+.audio-chart-grid-scale-label-top {
   transform: none;
 }
 
-.audio-node-scope-scale-label-bottom {
+.audio-chart-grid-scale-label-bottom {
   transform: translateY(-100%);
 }
 
-.audio-node-scope-grid,
 .audio-node-scope-waveform {
   position: absolute;
   inset: 0;
   display: block;
   width: 100%;
   height: 100%;
-}
-
-.audio-node-scope-grid {
-  z-index: 0;
-  pointer-events: none;
 }
 
 .audio-node-scope-waveform {

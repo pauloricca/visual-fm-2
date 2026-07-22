@@ -19,6 +19,7 @@ import {
   customWaveUsesSustainEnd,
   customWaveUsesSustainStart,
   customWaveWithRangeOrigin,
+  normalizedCustomWaveValue,
   normalizeCustomWave,
 } from '../graph/customWave';
 import {
@@ -2942,13 +2943,14 @@ function customWaveGridRows(rangeMin: number, rangeMax: number, height: number) 
   const max = Number.isFinite(rangeMax) ? rangeMax : 1;
   const ticks = chartScaleTicks(max, min, height, 'vertical');
   const zeroY = (1 - normalizedCustomWaveValue(0, min, max)) / 2;
+  const containsZero = (min <= 0 && max >= 0) || (max <= 0 && min >= 0);
   const existingZero = ticks.find((tick) => Math.abs(tick.fraction - zeroY) < 0.0001);
   if (existingZero) {
     existingZero.origin = true;
-    existingZero.label = '0';
+    if (containsZero) existingZero.label = '0';
     return ticks;
   }
-  return [...ticks, { fraction: zeroY, label: '0', major: true, origin: true }]
+  return [...ticks, { fraction: zeroY, label: containsZero ? '0' : undefined, major: true, origin: true }]
     .sort((left, right) => left.fraction - right.fraction);
 }
 
@@ -3060,36 +3062,6 @@ function amplitudeScaleTicks(
       label: formatAmplitude(value),
     };
   });
-}
-
-function meterGridTicksForWidth(width: number): Array<{ fraction: number; major: boolean }> {
-  const labelDivisions = amplitudeLabelDivisions(width, 'horizontal', 'unipolar');
-  const divisions = width >= 560
-    ? 64
-    : width >= 400
-      ? 48
-      : width >= 280
-        ? 32
-        : width >= 200
-          ? 24
-          : 12;
-  const majorStep = divisions / labelDivisions;
-
-  return Array.from({ length: divisions + 1 }, (_, index) => ({
-    fraction: index / divisions,
-    major: index % majorStep === 0,
-  }));
-}
-
-function meterGridRowsForHeight(height: number): number[] {
-  const rows = height >= 112
-    ? 8
-    : height >= 84
-      ? 6
-      : height >= 64
-        ? 4
-        : 2;
-  return Array.from({ length: rows }, (_, index) => (index + 1) / (rows + 1));
 }
 
 function amplitudeLabelDivisions(size: number, orientation: 'horizontal' | 'vertical', mode: 'unipolar' | 'bipolar'): number {
