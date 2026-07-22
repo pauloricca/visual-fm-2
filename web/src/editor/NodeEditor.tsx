@@ -5480,10 +5480,14 @@ function groupSelectedGraph(
   const outputDefinitions = outputPorts.map(({ name }): PortDefinition => ({ name }));
   const inputNameByEndpoint = new Map(inputPorts.map((port) => [endpointKey(port.endpoint), port.name]));
   const outputNameByEndpoint = new Map(outputPorts.map((port) => [endpointKey(port.endpoint), port.name]));
+  const subpatchNodeIds = new Set(selectedNodeIds);
+  const insNodeId = makeNodeId('Ins', subpatchNodeIds);
+  subpatchNodeIds.add(insNodeId);
+  const outsNodeId = makeNodeId('Outs', subpatchNodeIds);
   const subpatch = {
     nodes: [
       {
-        id: 'ins_1',
+        id: insNodeId,
         type: 'Ins' as const,
         params: Object.fromEntries(inputDefinitions.map((port) => [port.name, port.defaultValue ?? 0])),
         outputs: inputDefinitions,
@@ -5491,7 +5495,7 @@ function groupSelectedGraph(
       },
       ...selectedNodes.map((node) => patchNodeFromFlowNode(node)),
       {
-        id: 'outs_1',
+        id: outsNodeId,
         type: 'Outs' as const,
         params: {},
         inputs: outputDefinitions,
@@ -5502,11 +5506,11 @@ function groupSelectedGraph(
       ...internalEdges.map(({ link }) => link),
       ...incomingBoundary.flatMap(({ link }) => {
         const port = inputNameByEndpoint.get(endpointKey(link.to));
-        return port ? [{ from: { node: 'ins_1', port }, to: link.to, weight: link.weight, mode: link.mode, enabled: link.enabled }] : [];
+        return port ? [{ from: { node: insNodeId, port }, to: link.to, weight: link.weight, mode: link.mode, enabled: link.enabled }] : [];
       }),
       ...outgoingBoundary.flatMap(({ link }) => {
         const port = outputNameByEndpoint.get(endpointKey(link.from));
-        return port ? [{ from: link.from, to: { node: 'outs_1', port }, weight: link.weight, mode: link.mode, enabled: link.enabled }] : [];
+        return port ? [{ from: link.from, to: { node: outsNodeId, port }, weight: link.weight, mode: link.mode, enabled: link.enabled }] : [];
       }),
     ]),
   };
