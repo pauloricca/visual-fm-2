@@ -60,6 +60,7 @@
   --color-add-link-end: #ffd27a;
   --color-sample-boundary-start: #7db7ff;
   --color-sample-boundary-end: #ffd27a;
+  --color-sample-phase-attack: #7db7ff;
   --color-link-set: #fff;
   --color-link-add: #ffe45c;
   --color-link-multiply: #8fdcff;
@@ -237,6 +238,8 @@
   --color-add-link: #5caeff;
   --color-add-link-active: #8fdcff;
   --color-add-link-end: #95f2ff;
+  --color-sample-boundary-start: #57f287;
+  --color-sample-phase-attack: #57f287;
   --color-edge-underlay: #02090e;
   --color-edge-error-underlay: #2b0910;
 }

@@ -1326,7 +1326,7 @@ button:hover {
 }
 
 .sample-waveform-phase-line.is-attack {
-  stroke: var(--color-add-link);
+  stroke: var(--color-sample-phase-attack);
 }
 
 .sample-waveform-phase-line.is-release {
@@ -1338,7 +1338,7 @@ button:hover {
 }
 
 .sample-waveform-phase.is-attack {
-  fill: var(--color-add-link);
+  fill: var(--color-sample-phase-attack);
 }
 
 .sample-waveform-phase.is-release {
