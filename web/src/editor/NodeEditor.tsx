@@ -396,6 +396,7 @@ function NodeEditorInner() {
   const [selectedAreaId, setSelectedAreaId] = useState<string | null>(null);
   const [editingAreaId, setEditingAreaId] = useState<string | null>(null);
   const areaTitleInputRef = useRef<HTMLInputElement | null>(null);
+  const areaTitlePointerStartRef = useRef<ScreenPoint | null>(null);
 
   useEffect(() => {
     if (!editingAreaId) return;
@@ -4038,9 +4039,24 @@ function NodeEditorInner() {
                         <button
                           className="canvas-area-title nodrag nopan"
                           type="button"
-                          onPointerDown={(event) => event.stopPropagation()}
+                          onPointerDown={(event) => {
+                            areaTitlePointerStartRef.current = { x: event.clientX, y: event.clientY };
+                          }}
+                          onPointerCancel={() => {
+                            areaTitlePointerStartRef.current = null;
+                          }}
                           onDoubleClick={(event) => event.stopPropagation()}
                           onClick={(event) => {
+                            const pointerStart = areaTitlePointerStartRef.current;
+                            areaTitlePointerStartRef.current = null;
+                            const moved = pointerStart
+                              ? Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y) > 4
+                              : false;
+                            if (moved) {
+                              event.preventDefault();
+                              return;
+                            }
+
                             event.stopPropagation();
                             setSelectedAreaId(area.id);
                             setEditingAreaId(area.id);

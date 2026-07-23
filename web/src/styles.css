@@ -1685,8 +1685,7 @@ button:hover {
   stroke: var(--color-accent);
   stroke-linecap: square;
   stroke-linejoin: round;
-  stroke-width: calc(2px * var(--graph-stroke-scale, 1));
-  vector-effect: non-scaling-stroke;
+  stroke-width: 2;
 }
 
 .wave-playhead-line {
@@ -1708,7 +1707,7 @@ button:hover {
 .custom-wave-handle {
   fill: var(--color-background);
   stroke: var(--color-accent);
-  stroke-width: calc(2px * var(--graph-stroke-scale, 1));
+  stroke-width: calc(2px * var(--graph-stroke-scale, 1) * var(--custom-wave-point-screen-scale, 1));
   cursor: grab;
   pointer-events: none;
   vector-effect: non-scaling-stroke;

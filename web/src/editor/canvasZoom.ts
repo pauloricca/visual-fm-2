@@ -10,6 +10,11 @@ export function canvasHeaderTitleScale(zoom: number): number {
   return 1;
 }
 
+export function customWaveEditPointScreenScale(zoomScale: number): number {
+  const normalizedScale = Number.isFinite(zoomScale) && zoomScale > 0 ? zoomScale : 1;
+  return Math.max(0.45, Math.min(1, normalizedScale / 0.7));
+}
+
 export function graphDetailZoomScale(zoom: number): number {
   const normalizedZoom = Number.isFinite(zoom) && zoom > 0 ? zoom : USER_ZOOM_BASELINE;
   return normalizedZoom / USER_ZOOM_BASELINE;

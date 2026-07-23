@@ -59,7 +59,12 @@ import {
   type ShaderNodeData,
 } from './flowPatch';
 import { getSampleWaveform, type SampleWaveform, type SampleWaveformBin } from '../audio/sampleWaveformCache';
-import { canvasHeaderTitleScale, graphDetailScreenEmphasis, graphDetailZoomScale } from './canvasZoom';
+import {
+  canvasHeaderTitleScale,
+  customWaveEditPointScreenScale,
+  graphDetailScreenEmphasis,
+  graphDetailZoomScale,
+} from './canvasZoom';
 import { ChartGrid, chartGridColumns, chartGridRows, chartScaleTicks, formatChartValue } from './chartGrid';
 
 const CUSTOM_WAVE_DRAG_UPDATE_INTERVAL_MS = 50;
@@ -71,6 +76,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const graphZoomScale = graphDetailZoomScale(data.canvasZoom ?? Number.NaN);
   const graphScreenEmphasis = graphDetailScreenEmphasis(graphZoomScale);
   const headerTitleScale = canvasHeaderTitleScale(data.canvasZoom ?? Number.NaN);
+  const customWavePointScale = customWaveEditPointScreenScale(graphZoomScale);
   const updateNodeInternals = useUpdateNodeInternals();
   const draggedPortRef = useRef<{ side: 'input' | 'output'; port: string; pointerId: number } | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -225,6 +231,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     '--input-label-width': inputLabelWidth,
     '--node-scale': String(node.scale ?? 1),
     '--canvas-header-title-scale': String(headerTitleScale),
+    '--custom-wave-point-screen-scale': String(customWavePointScale),
     '--graph-screen-scale': String(graphScreenEmphasis / graphZoomScale),
     '--graph-stroke-scale': String(1 / graphZoomScale),
   } as CSSProperties;
@@ -2895,8 +2902,9 @@ function CustomWaveEditor({
   const showSustainEnd = customWaveUsesSustainEnd(customWave.mode);
   const playheadX = padding + playhead * innerWidth;
   const hitRadius = screenCircleRadius(15 * graphScreenEmphasis, width, height, graphDetailSize);
-  const endpointRadius = screenCircleRadius(5 * graphScreenEmphasis, width, height, graphDetailSize);
-  const handleRadius = screenCircleRadius(6 * graphScreenEmphasis, width, height, graphDetailSize);
+  const editPointScreenScale = customWaveEditPointScreenScale(graphZoomScale);
+  const endpointRadius = screenCircleRadius(5 * graphScreenEmphasis * editPointScreenScale, width, height, graphDetailSize);
+  const handleRadius = screenCircleRadius(6 * graphScreenEmphasis * editPointScreenScale, width, height, graphDetailSize);
   const valueLabelIndex = activePointIndex ?? hoveredPointIndex;
   const valueLabelPoint = valueLabelIndex === null ? null : points[valueLabelIndex] ?? null;
   const valueLabelScreen = valueLabelPoint
