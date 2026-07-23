@@ -2004,6 +2004,16 @@ button:hover {
   cursor: ew-resize;
 }
 
+.sequencer-velocity-handle {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 7px;
+  cursor: ns-resize;
+}
+
 .sequencer-gate-handle-left { left: 0; }
 .sequencer-gate-handle-right { right: 0; }
 

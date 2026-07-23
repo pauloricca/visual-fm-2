@@ -9,6 +9,7 @@ import {
   sequencerOutputIndex,
   sequencerPatternValue,
   sequencerShape,
+  sequencerStepVelocity,
   sequencerTriggerPositionParamName,
   sequencerTriggersForRow,
   sequencerUsesGateMode,
@@ -1455,7 +1456,9 @@ function compileSequencerRow(node: PatchNode, rowIndex: number, context: Compile
         value: gate.start,
         value2: gate.end,
       });
-      return output;
+      const velocity = sequencerStepVelocity(node.params, rowIndex, gate.slot);
+      if (velocity >= 1) return output;
+      return emitBinary(DSP_OP.Mul, output, constantRegister(velocity, context), context);
     });
     const sum = sumRegisters(outputs, context);
     if (outputs.length <= 1) return sum;
@@ -1481,7 +1484,10 @@ function compileSequencerRow(node: PatchNode, rowIndex: number, context: Compile
     value4: pattern[3],
   });
   const positionedOutputs = sequencerTriggersForRow(node.params, rowIndex, shape.steps)
-    .filter((trigger) => node.params[sequencerTriggerPositionParamName(rowIndex, trigger.slot)] !== undefined)
+    .filter((trigger) => (
+      node.params[sequencerTriggerPositionParamName(rowIndex, trigger.slot)] !== undefined
+      || trigger.velocity < 1
+    ))
     .map((trigger) => {
       const triggerOutput = nextRegister(context);
       context.ops.push({
@@ -1495,7 +1501,9 @@ function compileSequencerRow(node: PatchNode, rowIndex: number, context: Compile
         state,
         value: trigger.position,
       });
-      return triggerOutput;
+      const velocity = sequencerStepVelocity(node.params, rowIndex, trigger.slot);
+      if (velocity >= 1) return triggerOutput;
+      return emitBinary(DSP_OP.Mul, triggerOutput, constantRegister(velocity, context), context);
     });
   if (positionedOutputs.length === 0) return output;
   const sum = sumRegisters([output, ...positionedOutputs], context);

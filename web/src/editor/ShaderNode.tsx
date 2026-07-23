@@ -37,6 +37,8 @@ import {
   SEQUENCER_INDEX_OUTPUT,
   sequencerOutputName,
   sequencerShape,
+  sequencerStepVelocityParamName,
+  SEQUENCER_MIN_VELOCITY,
 } from '../graph/nodeTypes';
 import type { CustomWaveMode, CustomWavePoint, CustomWaveSettings, NodeDefinition, NodeType, PatchNode } from '../graph/types';
 import { formatNumericValue } from './numericDisplay';
@@ -2381,8 +2383,10 @@ function SequencerGrid({
     pointerId: number;
     rowIndex: number;
     slot?: number;
-    action?: 'move' | 'resize-left' | 'resize-right';
+    action?: 'move' | 'resize-left' | 'resize-right' | 'velocity';
     anchorX?: number;
+    anchorY?: number;
+    anchorVelocity?: number;
     anchorStart?: number;
     anchorEnd?: number;
     moved?: boolean;
@@ -2604,7 +2608,7 @@ function SequencerGrid({
     slot: number,
     start: number,
     end: number,
-    action: 'move' | 'resize-left' | 'resize-right',
+    action: 'move' | 'resize-left' | 'resize-right' | 'velocity',
   ) {
     if (event.button !== 0) return;
     event.preventDefault();
@@ -2617,18 +2621,30 @@ function SequencerGrid({
       anchorX: event.clientX,
       anchorStart: start,
       anchorEnd: end,
+      anchorY: event.clientY,
+      anchorVelocity: params[sequencerStepVelocityParamName(rowIndex, slot)] ?? 1,
       moved: false,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
-  function updateGateDrag(event: PointerEvent<HTMLDivElement>) {
+  function updateGateDrag(event: PointerEvent<HTMLElement>) {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId || drag.slot === undefined || !drag.action) return;
-    const rowWidth = event.currentTarget.closest('.sequencer-cells')?.getBoundingClientRect().width ?? steps * 26;
+    const rowRect = event.currentTarget.closest('.sequencer-cells')?.getBoundingClientRect();
+    const rowWidth = rowRect?.width ?? steps * 26;
+    const rowHeight = rowRect?.height ?? 26;
     const delta = ((event.clientX - (drag.anchorX ?? event.clientX)) / Math.max(1, rowWidth)) * steps;
-    if (Math.abs(event.clientX - (drag.anchorX ?? event.clientX)) >= 3) drag.moved = true;
+    const velocityDelta = ((event.clientY - (drag.anchorY ?? event.clientY)) / Math.max(1, rowHeight));
+    if (Math.hypot(event.clientX - (drag.anchorX ?? event.clientX), event.clientY - (drag.anchorY ?? event.clientY)) >= 3) drag.moved = true;
     if (!drag.moved) return;
+
+    if (drag.action === 'velocity') {
+      onParamsChange({
+        [sequencerStepVelocityParamName(drag.rowIndex, drag.slot)]: Math.max(SEQUENCER_MIN_VELOCITY, Math.min(1, (drag.anchorVelocity ?? 1) - velocityDelta)),
+      });
+      return;
+    }
 
     const minimumLength = 0.05;
     let start = drag.anchorStart ?? 0;
@@ -2648,12 +2664,12 @@ function SequencerGrid({
     });
   }
 
-  function endGateDrag(event: PointerEvent<HTMLDivElement>) {
+  function endGateDrag(event: PointerEvent<HTMLElement>) {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId || drag.slot === undefined) return;
     event.preventDefault();
     event.stopPropagation();
-    if (!drag.moved) {
+    if (!drag.moved && drag.action !== 'velocity') {
       onParamsChange({ [sequencerGateParamName(drag.rowIndex, drag.slot, 'active')]: 0 });
     }
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
@@ -2755,18 +2771,29 @@ function SequencerGrid({
                       ? triggerPreview.position
                       : trigger.position) / steps) * 100}%`,
                     width: `${(1 / steps) * 100}%`,
+                    top: `${(1 - trigger.velocity) * 100}%`,
                   }}
                   role="button"
                   tabIndex={0}
                   aria-label={`Row ${rowIndex + 1} trigger at ${trigger.position.toFixed(2)}`}
-                  title="Drag to move; click to delete"
-                  onPointerDown={(event) => beginTriggerDrag(event, rowIndex, trigger.slot, trigger.position)}
+                  title="Drag to move; drag top edge to set velocity; click to delete"
+                  onPointerDown={(event) => {
+                    if (event.target === event.currentTarget) beginTriggerDrag(event, rowIndex, trigger.slot, trigger.position);
+                  }}
                   onPointerMove={updateTriggerDrag}
                   onPointerUp={endTriggerDrag}
                   onPointerCancel={endTriggerDrag}
                   onLostPointerCapture={(event) => finishTriggerDrag(event.pointerId)}
                   onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}
-                />
+                >
+                  <span
+                    className="sequencer-velocity-handle"
+                    onPointerDown={(event) => beginGateDrag(event, rowIndex, trigger.slot, trigger.position, trigger.position + 1, 'velocity')}
+                    onPointerMove={updateGateDrag}
+                    onPointerUp={endGateDrag}
+                    onPointerCancel={endGateDrag}
+                  />
+                </div>
               ))}
               {gates.map((gate) => (
                 <div
@@ -2775,11 +2802,12 @@ function SequencerGrid({
                   style={{
                     left: `${(gate.start / steps) * 100}%`,
                     width: `${((gate.end - gate.start) / steps) * 100}%`,
+                    top: `${(1 - gate.velocity) * 100}%`,
                   }}
                   role="button"
                   tabIndex={0}
-                  aria-label={`Row ${rowIndex + 1} gate from ${gate.start.toFixed(2)} to ${gate.end.toFixed(2)}`}
-                  title="Drag to move; drag either edge to resize; click to delete"
+                  aria-label={`Row ${rowIndex + 1} gate from ${gate.start.toFixed(2)} to ${gate.end.toFixed(2)}, velocity ${gate.velocity.toFixed(2)}`}
+                  title="Drag to move; drag side edges to resize; drag top edge to set velocity; click to delete"
                   onPointerDown={(event) => {
                     if (event.target === event.currentTarget) {
                       beginGateDrag(event, rowIndex, gate.slot, gate.start, gate.end, 'move');
@@ -2791,6 +2819,13 @@ function SequencerGrid({
                   onLostPointerCapture={() => { dragRef.current = null; }}
                   onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}
                 >
+                  <span
+                    className="sequencer-velocity-handle"
+                    onPointerDown={(event) => beginGateDrag(event, rowIndex, gate.slot, gate.start, gate.end, 'velocity')}
+                    onPointerMove={updateGateDrag}
+                    onPointerUp={endGateDrag}
+                    onPointerCancel={endGateDrag}
+                  />
                   <span
                     className="sequencer-gate-handle sequencer-gate-handle-left"
                     onPointerDown={(event) => beginGateDrag(event, rowIndex, gate.slot, gate.start, gate.end, 'resize-left')}

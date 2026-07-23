@@ -561,15 +561,19 @@ export function sequencerCellParamName(rowIndex: number, stepIndex: number): str
 export const SEQUENCER_GATE_MODE_PARAM = 'mode';
 export const SEQUENCER_GATE_INITIALIZED_PARAM = 'gate:initialized';
 
+export const SEQUENCER_MIN_VELOCITY = 0.1;
+
 export interface SequencerGate {
   slot: number;
   start: number;
   end: number;
+  velocity: number;
 }
 
 export interface SequencerTrigger {
   slot: number;
   position: number;
+  velocity: number;
 }
 
 export function sequencerUsesGateMode(params: Record<string, number>): boolean {
@@ -588,6 +592,16 @@ export function sequencerTriggerPositionParamName(rowIndex: number, slot: number
   return `trigger:position:${rowIndex}:${slot}`;
 }
 
+export function sequencerStepVelocityParamName(rowIndex: number, slot: number): string {
+  return `velocity:${rowIndex}:${slot}`;
+}
+
+export function sequencerStepVelocity(params: Record<string, number>, rowIndex: number, slot: number): number {
+  const value = params[sequencerStepVelocityParamName(rowIndex, slot)] ?? 1;
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(SEQUENCER_MIN_VELOCITY, Math.min(1, value));
+}
+
 export function sequencerTriggersForRow(
   params: Record<string, number>,
   rowIndex: number,
@@ -603,6 +617,7 @@ export function sequencerTriggersForRow(
     triggers.push({
       slot,
       position,
+      velocity: sequencerStepVelocity(params, rowIndex, slot),
     });
   }
   return triggers;
@@ -617,7 +632,7 @@ export function sequencerGatesForRow(
     const legacy: SequencerGate[] = [];
     for (let stepIndex = 0; stepIndex < steps; stepIndex += 1) {
       if ((params[sequencerCellParamName(rowIndex, stepIndex)] ?? 0) >= 0.5) {
-        legacy.push({ slot: stepIndex, start: stepIndex, end: stepIndex + 1 });
+        legacy.push({ slot: stepIndex, start: stepIndex, end: stepIndex + 1, velocity: sequencerStepVelocity(params, rowIndex, stepIndex) });
       }
     }
     return legacy;
@@ -628,7 +643,7 @@ export function sequencerGatesForRow(
     if ((params[sequencerGateParamName(rowIndex, slot, 'active')] ?? 0) < 0.5) continue;
     const start = Math.max(0, Math.min(steps, params[sequencerGateParamName(rowIndex, slot, 'start')] ?? slot));
     const end = Math.max(start, Math.min(steps, params[sequencerGateParamName(rowIndex, slot, 'end')] ?? start + 1));
-    if (end > start) gates.push({ slot, start, end });
+    if (end > start) gates.push({ slot, start, end, velocity: sequencerStepVelocity(params, rowIndex, slot) });
   }
   return gates;
 }
@@ -639,6 +654,7 @@ export function sequencerPatternValue(params: Record<string, number>, rowIndex: 
     if (
       (params[sequencerCellParamName(rowIndex, stepIndex)] ?? 0) >= 0.5
       && params[sequencerTriggerPositionParamName(rowIndex, stepIndex)] === undefined
+      && sequencerStepVelocity(params, rowIndex, stepIndex) >= 1
     ) {
       const laneIndex = Math.floor(stepIndex / 32);
       if (laneIndex < pattern.length) {
