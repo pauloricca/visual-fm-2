@@ -11,6 +11,7 @@ interface ChartGridProps {
   columns: ChartGridTick[];
   rows: ChartGridTick[];
   className?: string;
+  showColumnLabels?: boolean;
   showRowLabels?: boolean;
 }
 
@@ -20,6 +21,7 @@ export function ChartGrid({
   columns,
   rows,
   className = '',
+  showColumnLabels = false,
   showRowLabels = false,
 }: ChartGridProps) {
   return (
@@ -50,15 +52,32 @@ export function ChartGrid({
           />
         ))}
       </svg>
+      {showColumnLabels ? (
+        <span className="audio-chart-grid-column-scale">
+          {columns.map((tick) => tick.label === undefined ? null : (
+            <span
+              key={`column-label-${tick.fraction}`}
+              className={[
+                'audio-chart-grid-column-scale-label',
+                tick.fraction === 0 ? 'audio-chart-grid-column-scale-label-start' : '',
+                tick.fraction === 1 ? 'audio-chart-grid-column-scale-label-end' : '',
+              ].filter(Boolean).join(' ')}
+              style={{ left: `${tick.fraction * 100}%` }}
+            >
+              {tick.label}
+            </span>
+          ))}
+        </span>
+      ) : null}
       {showRowLabels ? (
-        <span className="audio-chart-grid-scale">
+        <span className="audio-chart-grid-row-scale">
           {rows.map((tick) => tick.label === undefined ? null : (
             <span
               key={`label-${tick.fraction}`}
               className={[
-                'audio-chart-grid-scale-label',
-                tick.fraction === 0 ? 'audio-chart-grid-scale-label-top' : '',
-                tick.fraction === 1 ? 'audio-chart-grid-scale-label-bottom' : '',
+                'audio-chart-grid-row-scale-label',
+                tick.fraction === 0 ? 'audio-chart-grid-row-scale-label-top' : '',
+                tick.fraction === 1 ? 'audio-chart-grid-row-scale-label-bottom' : '',
               ].filter(Boolean).join(' ')}
               style={{ top: `${tick.fraction * 100}%` }}
             >

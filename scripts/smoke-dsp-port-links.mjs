@@ -393,6 +393,46 @@ assert(
   'Terminal Button -> Scope patch should compile the Button op.',
 );
 
+const terminalFftProgram = compilePatchToDspProgram({
+  nodes: [
+    node('fft_source', 'Constant', { value: 0.5 }),
+    node('fft', 'FFT'),
+    node('fft_frequency_meter', 'Meter', { range: 20000 }),
+    node('fft_amplitude_meter', 'Meter', { range: 1 }),
+  ],
+  links: [
+    link('fft_source', 'signal', 'fft', 'signal'),
+    link('fft', 'frequency', 'fft_frequency_meter', 'signal'),
+    link('fft', 'amplitude', 'fft_amplitude_meter', 'signal'),
+  ],
+});
+assert(
+  terminalFftProgram.errors.length === 0,
+  `Terminal FFT compile failed: ${terminalFftProgram.errors.join('; ')}`,
+);
+assert(Object.hasOwn(terminalFftProgram.monitorIds, 'fft'), 'Terminal FFT signal should be monitored.');
+assert(
+  getDefinition('FFT').outputs.map((output) => output.name).join(',') === 'frequency,amplitude',
+  'FFT should expose dominant frequency and amplitude outputs.',
+);
+assert(terminalFftProgram.fftBindings.length === 1, 'FFT should compile one analyser binding.');
+assert(
+  terminalFftProgram.ops.filter((op) => (
+    op.opcode === 0
+    && (
+      op.a === terminalFftProgram.fftBindings[0].frequencyValueIndex
+      || op.a === terminalFftProgram.fftBindings[0].amplitudeValueIndex
+    )
+    && op.value === 1
+  )).length === 2,
+  'Linked FFT outputs should compile as immediate live analyser values.',
+);
+for (const [port, defaultValue] of [['minFreq', 20], ['maxFreq', 20000]]) {
+  const input = getDefinition('FFT').inputs.find((entry) => entry.name === port);
+  assert(input?.defaultValue === defaultValue, `FFT.${port} should default to ${defaultValue}.`);
+  assert(input?.connectable === false, `FFT.${port} should remain a local display control.`);
+}
+
 const keysProgram = compilePatchToDspProgram({
   nodes: [
     node('keys', 'Keys', { note: 0, frequency: 0, size: 12, startNote: 60 }),

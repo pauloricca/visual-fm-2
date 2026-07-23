@@ -57,6 +57,7 @@ export const DSP_OP = {
   Time: 37,
   Compress: 38,
   Limiter: 39,
+  Quantise: 40,
 } as const;
 
 export interface DspProgram {
@@ -75,6 +76,7 @@ export interface DspProgram {
   sampleBindings: DspSampleBinding[];
   imageBindings: DspImageBinding[];
   customWaveBindings: DspCustomWaveBinding[];
+  fftBindings: DspFftBinding[];
   maxVoices: number;
   usesMidiNote: boolean;
   usesMidiClock: boolean;
@@ -99,7 +101,7 @@ export interface DspOp {
 export interface DspValueBinding {
   id: string;
   valueIndex: number;
-  kind: 'node-param' | 'link-weight' | 'constant';
+  kind: 'node-param' | 'link-weight' | 'constant' | 'analyser-output';
   nodeId?: string;
   port?: string;
   linkId?: string;
@@ -143,6 +145,15 @@ export interface DspCustomWaveBinding {
   customWave: CustomWaveSettings;
 }
 
+export interface DspFftBinding {
+  nodeId: string;
+  inputRegister: number;
+  minFrequencyValueIndex: number;
+  maxFrequencyValueIndex: number;
+  frequencyValueIndex: number;
+  amplitudeValueIndex: number;
+}
+
 export interface DspImageBinding {
   nodeId: string;
   image: { name: string; url: string };
@@ -179,6 +190,8 @@ interface CompileContext {
   imageBindings: DspImageBinding[];
   imageBindingIndexByNodeId: Map<string, number>;
   customWaveBindings: DspCustomWaveBinding[];
+  fftBindings: DspFftBinding[];
+  fftBindingByNodeId: Map<string, DspFftBinding>;
   usesMidiNote: boolean;
   usesMidiClock: boolean;
   maxVoices: number;
@@ -236,7 +249,7 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
   const expandedPatch = expandGroups(patch);
   const context = createContext(expandedPatch);
   const audioOutNodes = expandedPatch.nodes.filter((node) => node.type === 'AudioOut');
-  const monitorNodes = expandedPatch.nodes.filter((node) => node.type === 'Meter' || node.type === 'Scope');
+  const monitorNodes = expandedPatch.nodes.filter((node) => node.type === 'Meter' || node.type === 'Scope' || node.type === 'FFT');
   const sliderMonitorNodes = expandedPatch.nodes.filter((node) => node.type === 'Slider');
   const sequencerMonitorNodes = expandedPatch.nodes.filter((node) => node.type === 'Sequencer');
   const imagePreviewNodes = expandedPatch.nodes.filter((node) => node.type === 'Image');
@@ -253,7 +266,11 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
   }
 
   for (const node of monitorNodes) {
-    resolveOutput(node, 'signal', context);
+    if (node.type === 'FFT') {
+      ensureFftBinding(node, context);
+    } else {
+      resolveOutput(node, 'signal', context);
+    }
   }
 
   for (const node of sliderMonitorNodes) {
@@ -295,6 +312,7 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
       sampleBindings: context.sampleBindings,
       imageBindings: context.imageBindings,
       customWaveBindings: context.customWaveBindings,
+      fftBindings: context.fftBindings,
       maxVoices: context.maxVoices,
       usesMidiNote: context.usesMidiNote,
       usesMidiClock: context.usesMidiClock,
@@ -318,6 +336,7 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
     sampleBindings: context.sampleBindings,
     imageBindings: context.imageBindings,
     customWaveBindings: context.customWaveBindings,
+    fftBindings: context.fftBindings,
     maxVoices: context.maxVoices,
     usesMidiNote: context.usesMidiNote,
     usesMidiClock: context.usesMidiClock,
@@ -363,6 +382,8 @@ function createContext(patch: Patch): CompileContext {
     imageBindings: [],
     imageBindingIndexByNodeId: new Map(),
     customWaveBindings: [],
+    fftBindings: [],
+    fftBindingByNodeId: new Map(),
     usesMidiNote: false,
     usesMidiClock: false,
     maxVoices: 1,
@@ -558,6 +579,14 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
 
   if (node.type === 'Pass') {
     return resolveInput(node, 'signal', 0, context);
+  }
+
+  if (node.type === 'FFT') {
+    const binding = ensureFftBinding(node, context);
+    if (port === 'frequency') return emitValue(binding.frequencyValueIndex, context, 'immediate');
+    if (port === 'amplitude') return emitValue(binding.amplitudeValueIndex, context, 'immediate');
+    context.errors.push(`FFT node "${node.id}" does not have supported output "${port}".`);
+    return null;
   }
 
   if (node.type === 'Slider') {
@@ -1031,6 +1060,18 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     return output;
   }
 
+  if (node.type === 'Quantise') {
+    const output = nextRegister(context);
+    context.ops.push({
+      opcode: DSP_OP.Quantise,
+      out: output,
+      a: resolveInput(node, 'signal', 0, context),
+      b: resolveInput(node, 'scale', 0, context, 'immediate'),
+      c: resolveInput(node, 'root', 60, context, 'immediate'),
+    });
+    return output;
+  }
+
   if (node.type === 'Map') {
     const output = nextRegister(context);
     context.ops.push({
@@ -1192,6 +1233,39 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
 
   context.errors.push(`Node type "${node.type}" is not supported by the first DSP program slice.`);
   return null;
+}
+
+function ensureFftBinding(node: PatchNode, context: CompileContext): DspFftBinding {
+  const existing = context.fftBindingByNodeId.get(node.id);
+  if (existing) return existing;
+
+  const inputRegister = resolveInput(node, 'signal', 0, context);
+  const minFrequencyValueIndex = valueIndexForNodeParam(node, 'minFreq', 20, context);
+  const maxFrequencyValueIndex = valueIndexForNodeParam(node, 'maxFreq', 20000, context);
+  const frequencyValueIndex = valueIndex(0, {
+    id: `${node.id}.frequency`,
+    kind: 'analyser-output',
+    nodeId: node.id,
+    port: 'frequency',
+  }, context);
+  const amplitudeValueIndex = valueIndex(0, {
+    id: `${node.id}.amplitude`,
+    kind: 'analyser-output',
+    nodeId: node.id,
+    port: 'amplitude',
+  }, context);
+  const binding = {
+    nodeId: node.id,
+    inputRegister,
+    minFrequencyValueIndex,
+    maxFrequencyValueIndex,
+    frequencyValueIndex,
+    amplitudeValueIndex,
+  };
+  context.monitorIds[node.id] = inputRegister;
+  context.fftBindings.push(binding);
+  context.fftBindingByNodeId.set(node.id, binding);
+  return binding;
 }
 
 function resolveSliderUnitValue(node: PatchNode, context: CompileContext): number {

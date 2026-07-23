@@ -63,6 +63,7 @@ export interface LinkScopeReading {
 export interface ScopeCaptureRequest {
   id: string;
   length: number;
+  points?: number;
 }
 
 export interface RecordingState {
@@ -153,7 +154,7 @@ interface ImageDataRequest {
 // Keep this in step with public/audio/visual-fm-kernel.wasm. AudioWorklet
 // modules and WASM are aggressively cached, so an older kernel can silently
 // omit newer DSP behavior or exports while the current UI is running.
-const AUDIO_ENGINE_ASSET_VERSION = '2026-07-22-custom-wave-morph-1-cpu-meter-2';
+const AUDIO_ENGINE_ASSET_VERSION = '2026-07-23-fft-windowed-outputs-3';
 const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const METER_UPDATE_INTERVAL_MS = 80;
@@ -1738,7 +1739,12 @@ async function uploadRecording(blob: Blob, patchName: string): Promise<{ name: s
 function scopePayload(requests: ScopeCaptureRequest[]) {
   return {
     linkIds: requests.map((request) => request.id),
-    scopes: requests.map((request) => ({ id: request.id, seconds: request.length })),
+    scopes: requests.map((request) => ({
+      id: request.id,
+      seconds: request.length,
+      points: request.points ?? SCOPE_CAPTURE_POINTS,
+      displayPoints: request.points ?? SCOPE_DISPLAY_POINTS,
+    })),
     points: SCOPE_CAPTURE_POINTS,
     displayPoints: SCOPE_DISPLAY_POINTS,
     mode: SCOPE_MODE,
@@ -1759,6 +1765,7 @@ function dspProgramStructureKey(program: DspProgram): string {
     monitorIds: program.monitorIds,
     sampleBindings: program.sampleBindings,
     imageBindings: program.imageBindings,
+    fftBindings: program.fftBindings,
     // Point coordinates have a dedicated in-place worklet update path. Mode
     // and sustain changes still rebuild because they alter oscillator setup.
     customWaveBindings: program.customWaveBindings.map((binding) => ({
@@ -1794,14 +1801,25 @@ function normalizeScopeCaptureRequests(requests: ScopeCaptureRequest[]): ScopeCa
   return requests.flatMap((request) => {
     if (!request.id || seen.has(request.id)) return [];
     seen.add(request.id);
-    return [{ id: request.id, length: clampNumber(request.length, 0.01, 30) }];
+    const points = request.points === undefined
+      ? undefined
+      : Math.round(clampNumber(request.points, 32, 512));
+    return [{
+      id: request.id,
+      length: clampNumber(request.length, 0.01, 30),
+      ...(points === undefined ? {} : { points }),
+    }];
   });
 }
 
 function scopeCaptureRequestsEqual(left: ScopeCaptureRequest[], right: ScopeCaptureRequest[]): boolean {
   if (left.length !== right.length) return false;
   for (let index = 0; index < left.length; index += 1) {
-    if (left[index].id !== right[index].id || left[index].length !== right[index].length) return false;
+    if (
+      left[index].id !== right[index].id
+      || left[index].length !== right[index].length
+      || left[index].points !== right[index].points
+    ) return false;
   }
   return true;
 }

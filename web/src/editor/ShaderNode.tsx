@@ -41,6 +41,7 @@ import {
   SEQUENCER_MIN_VELOCITY,
 } from '../graph/nodeTypes';
 import type { CustomWaveMode, CustomWavePoint, CustomWaveSettings, NodeDefinition, NodeType, PatchNode } from '../graph/types';
+import { midiNoteLabel, QUANTISE_SCALES } from '../graph/musicScales';
 import { formatNumericValue } from './numericDisplay';
 import {
   clampControlNodeSize,
@@ -51,6 +52,7 @@ import {
   clampScopeNodeSize,
   DEFAULT_IMAGE_ASPECT_RATIO,
   DEFAULT_CUSTOM_WAVE_NODE_SIZE,
+  DEFAULT_FFT_NODE_SIZE,
   DEFAULT_KEYS_NODE_SIZE,
   DEFAULT_SCOPE_NODE_SIZE,
   type ScopeNodeSize,
@@ -65,9 +67,12 @@ import {
   graphDetailScreenEmphasis,
   graphDetailZoomScale,
 } from './canvasZoom';
-import { ChartGrid, chartGridColumns, chartGridRows, chartScaleTicks, formatChartValue } from './chartGrid';
+import { ChartGrid, chartGridColumns, chartGridRows, chartScaleTicks, formatChartValue, type ChartGridTick } from './chartGrid';
 
 const CUSTOM_WAVE_DRAG_UPDATE_INTERVAL_MS = 50;
+const FFT_CAPTURE_SECONDS = 0.012;
+const FFT_ANALYSIS_MIN_FREQUENCY = 20;
+const FFT_ANALYSIS_MAX_FREQUENCY = 20000;
 
 export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNode>) {
   const node = data.patchNode;
@@ -88,6 +93,8 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     minWidth?: number;
   } | null>(null);
   const customWaveEditorRef = useRef<SVGSVGElement | null>(null);
+  const fftDisplayRef = useRef<HTMLDivElement | null>(null);
+  const fftBoundaryDragRef = useRef<{ boundary: 'min' | 'max'; pointerId: number } | null>(null);
   const customWaveDragRef = useRef<{ pointerId: number; index: number } | null>(null);
   const customWaveClickRef = useRef<{ index: number | null; time: number }>({ index: null, time: 0 });
   const customWaveDragCommitRef = useRef<{
@@ -119,10 +126,12 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const previewOutputPort = data.previewPort?.side === 'output' ? data.previewPort.name : null;
   const showMeterDisplay = node.type === 'Meter';
   const showScopeDisplay = node.type === 'Scope';
+  const showFftDisplay = node.type === 'FFT';
   const showSliderDisplay = node.type === 'Slider';
   const showButtonDisplay = node.type === 'Button';
   const showKeysDisplay = node.type === 'Keys';
   const showAccumulatorDisplay = node.type === 'Accumulator';
+  const showQuantiseDisplay = node.type === 'Quantise';
   const showSequencerDisplay = node.type === 'Sequencer';
   const showTempoDisplay = node.type === 'Tempo';
   const showAudioOutputDisplay = node.type === 'AudioOut';
@@ -131,10 +140,10 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const showCustomWaveEditor = node.type === 'CustomWave';
   const showSampleUpload = node.type === 'SamplePlayer';
   const showImageDisplay = node.type === 'Image';
-  const showTopGraphic = showMeterDisplay || showScopeDisplay || showSliderDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay;
+  const showTopGraphic = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay;
   const imageX = centeredCoordinateToUnit(data.audioImagePosition?.x ?? node.params.x ?? 0);
   const imageY = centeredCoordinateToUnit(data.audioImagePosition?.y ?? node.params.y ?? 0);
-  const showResizableDisplay = showMeterDisplay || showScopeDisplay || showSliderDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay || showSequencerDisplay;
+  const showResizableDisplay = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay || showSequencerDisplay;
   const customWave = showCustomWaveEditor ? normalizeCustomWave(node.customWave, node.params) : null;
   const customWavePlayhead = clamp(data.audioPlayheads?.[0] ?? normalizeUnitInterval(node.params.phase ?? 0), 0, 1);
   const sequencer = showSequencerDisplay ? sequencerShape(node.params) : null;
@@ -154,8 +163,8 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     ? clampKeysNodeSize(node.scopeSize ?? DEFAULT_KEYS_NODE_SIZE)
     : showSliderDisplay || showButtonDisplay
     ? clampControlNodeSize(node.scopeSize ?? DEFAULT_SCOPE_NODE_SIZE)
-    : showMeterDisplay || showScopeDisplay
-      ? clampScopeNodeSize(node.scopeSize ?? DEFAULT_SCOPE_NODE_SIZE)
+    : showMeterDisplay || showScopeDisplay || showFftDisplay
+      ? clampScopeNodeSize(node.scopeSize ?? (showFftDisplay ? DEFAULT_FFT_NODE_SIZE : DEFAULT_SCOPE_NODE_SIZE))
     : DEFAULT_SCOPE_NODE_SIZE;
   const waveformDisplaySize = showImageDisplay
     ? clampImageNodeSize(node.scopeSize ?? DEFAULT_CUSTOM_WAVE_NODE_SIZE, imageAspectRatio)
@@ -176,13 +185,31 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     width: displaySize.width * graphZoomScale,
     height: displaySize.height * graphZoomScale,
   };
+  const fftBarCount = clamp(Math.round(displaySize.width / 9), 24, 96);
+  const spectrumBars = useMemo(
+    () => spectrumBarsFromSamples(data.audioSpectrum?.samples ?? [], fftBarCount),
+    [data.audioSpectrum?.samples, fftBarCount],
+  );
+  const fftMinFrequency = clamp(node.params.minFreq ?? FFT_ANALYSIS_MIN_FREQUENCY, FFT_ANALYSIS_MIN_FREQUENCY, FFT_ANALYSIS_MAX_FREQUENCY);
+  const fftMaxFrequency = clamp(node.params.maxFreq ?? FFT_ANALYSIS_MAX_FREQUENCY, FFT_ANALYSIS_MIN_FREQUENCY, FFT_ANALYSIS_MAX_FREQUENCY);
+  const fftWindowStart = Math.min(fftMinFrequency, fftMaxFrequency);
+  const fftWindowEnd = Math.max(fftMinFrequency, fftMaxFrequency);
+  const fftWindowStartFraction = frequencyScaleFraction(fftWindowStart);
+  const fftWindowEndFraction = frequencyScaleFraction(fftWindowEnd);
   const meterScaleTicks = showMeterDisplay ? amplitudeScaleTicks(amplitudeRange, graphDetailSize.width, meterMode) : [];
-  const meterGridTicks = showMeterDisplay ? chartGridColumns(graphDetailSize.width) : [];
-  const meterGridRows = showMeterDisplay ? chartGridRows(graphDetailSize.height).map((tick) => tick.fraction) : [];
+  const meterGridTicks = showMeterDisplay
+    ? chartGridColumns(graphDetailSize.width).map((tick) => ({
+        ...tick,
+        label: meterScaleTicks.find((scaleTick) => Math.abs(scaleTick.fraction - tick.fraction) < 0.0001)?.label,
+      }))
+    : [];
+  const meterGridRows = showMeterDisplay ? chartGridRows(graphDetailSize.height) : [];
   const scopeScaleTicks = showScopeDisplay
     ? chartScaleTicks(amplitudeRange, scopeMode === 'bipolar' ? -amplitudeRange : 0, graphDetailSize.height, 'vertical')
     : [];
   const scopeGridTicks = showScopeDisplay ? chartGridColumns(graphDetailSize.width) : [];
+  const fftGridTicks = showFftDisplay ? frequencyGridTicks(graphDetailSize.width) : [];
+  const fftGridRows = showFftDisplay ? chartGridRows(graphDetailSize.height) : [];
   const nodeSizeStyle = showResizableDisplay
     ? ({
         '--node-display-width': `${displaySize.width}px`,
@@ -239,10 +266,12 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     'shader-node',
     showMeterDisplay ? 'shader-node-meter' : '',
     showScopeDisplay ? 'shader-node-scope' : '',
+    showFftDisplay ? 'shader-node-fft' : '',
     showSliderDisplay ? 'shader-node-slider' : '',
     showButtonDisplay ? 'shader-node-button' : '',
     showKeysDisplay ? 'shader-node-keys' : '',
     showAccumulatorDisplay ? 'shader-node-accumulator' : '',
+    showQuantiseDisplay ? 'shader-node-quantise' : '',
     showSequencerDisplay ? 'shader-node-sequencer' : '',
     showAudioOutputDisplay ? 'shader-node-audio-out' : '',
     showSampleUpload ? 'shader-node-sampleplayer' : '',
@@ -580,6 +609,44 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     data.onSampleDrop?.(node.id, event.dataTransfer.files);
   }
 
+  function updateFftBoundaryFromPointer(event: Pick<PointerEvent<HTMLElement>, 'clientX'>) {
+    const drag = fftBoundaryDragRef.current;
+    const bounds = fftDisplayRef.current?.getBoundingClientRect();
+    if (!drag || !bounds || bounds.width <= 0) return;
+
+    const fraction = clamp((event.clientX - bounds.left) / bounds.width, 0, 1);
+    const frequency = Math.round(
+      FFT_ANALYSIS_MIN_FREQUENCY
+      * (FFT_ANALYSIS_MAX_FREQUENCY / FFT_ANALYSIS_MIN_FREQUENCY) ** fraction,
+    );
+    if (drag.boundary === 'min') {
+      const maxFrequency = clamp(node.params.maxFreq ?? FFT_ANALYSIS_MAX_FREQUENCY, FFT_ANALYSIS_MIN_FREQUENCY, FFT_ANALYSIS_MAX_FREQUENCY);
+      data.onParamChange(node.id, 'minFreq', Math.min(frequency, maxFrequency));
+    } else {
+      const minFrequency = clamp(node.params.minFreq ?? FFT_ANALYSIS_MIN_FREQUENCY, FFT_ANALYSIS_MIN_FREQUENCY, FFT_ANALYSIS_MAX_FREQUENCY);
+      data.onParamChange(node.id, 'maxFreq', Math.max(frequency, minFrequency));
+    }
+  }
+
+  function handleFftBoundaryPointerDown(event: PointerEvent<HTMLSpanElement>, boundary: 'min' | 'max') {
+    event.preventDefault();
+    event.stopPropagation();
+    fftBoundaryDragRef.current = { boundary, pointerId: event.pointerId };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    updateFftBoundaryFromPointer(event);
+  }
+
+  function handleFftBoundaryPointerMove(event: PointerEvent<HTMLDivElement>) {
+    if (fftBoundaryDragRef.current?.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    updateFftBoundaryFromPointer(event);
+  }
+
+  function finishFftBoundaryDrag(pointerId: number) {
+    if (fftBoundaryDragRef.current?.pointerId === pointerId) fftBoundaryDragRef.current = null;
+  }
+
   function commitCustomWave(nextCustomWave: CustomWaveSettings, historyKey?: string) {
     data.onCustomWaveChange?.(node.id, normalizeCustomWave(nextCustomWave), historyKey);
   }
@@ -842,7 +909,8 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             || visibleInputPorts.length > 0
             || (normalOutputPorts.length > 0 && !showHeaderOutputPort)
             || showMeterDisplay
-            || showScopeDisplay;
+            || showScopeDisplay
+            || showFftDisplay;
 
           if (!showBody) return null;
 
@@ -995,14 +1063,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           ) : null}
           {showMeterDisplay ? (
             <div className="audio-node-meter-display" aria-hidden="true">
-              <svg className="audio-node-meter-grid" viewBox="0 0 100 48" preserveAspectRatio="none" focusable="false">
-                {meterGridRows.map((fraction) => (
-                  <line key={`row-${fraction}`} className="audio-node-meter-grid-line" x1="0" y1={fraction * 48} x2="100" y2={fraction * 48} />
-                ))}
-                {meterGridTicks.map((tick) => (
-                  <line key={tick.fraction} className={tick.major ? 'audio-node-meter-grid-line audio-node-meter-grid-line-major' : 'audio-node-meter-grid-line'} x1={tick.fraction * 100} y1="0" x2={tick.fraction * 100} y2="48" />
-                ))}
-              </svg>
+              <ChartGrid width={160} height={48} columns={meterGridTicks} rows={meterGridRows} showColumnLabels />
               <span
                 className="audio-node-meter-fill"
                 style={meterMode === 'bipolar'
@@ -1018,17 +1079,6 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               </> : (
                 <span className="audio-node-meter-peak" style={{ left: `${meterPeak * 100}%` }} />
               )}
-              <span className="audio-node-meter-scale">
-                {meterScaleTicks.map((tick) => (
-                  <span key={tick.fraction} className={[
-                    'audio-node-meter-scale-label',
-                    tick.fraction === 0 ? 'audio-node-meter-scale-label-min' : '',
-                    tick.fraction === 1 ? 'audio-node-meter-scale-label-max' : '',
-                  ].filter(Boolean).join(' ')} style={{ left: `${tick.fraction * 100}%` }}>
-                    {tick.label}
-                  </span>
-                ))}
-              </span>
             </div>
           ) : null}
           {showScopeDisplay ? (
@@ -1044,6 +1094,64 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                 </defs>
                 <path d={scopePath} style={{ stroke: `url(#${scopeGradientId})` }} />
               </svg>
+            </div>
+          ) : null}
+          {showFftDisplay ? (
+            <div
+              ref={fftDisplayRef}
+              className="audio-node-spectrum-display nodrag nopan"
+              aria-label="Live frequency spectrum"
+              onPointerMove={handleFftBoundaryPointerMove}
+              onPointerUp={(event) => finishFftBoundaryDrag(event.pointerId)}
+              onPointerCancel={(event) => finishFftBoundaryDrag(event.pointerId)}
+              onLostPointerCapture={(event) => finishFftBoundaryDrag(event.pointerId)}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <ChartGrid width={320} height={96} columns={fftGridTicks} rows={fftGridRows} showColumnLabels />
+              <div className="audio-node-spectrum-bars" aria-hidden="true">
+                {spectrumBars.map((bar, index) => (
+                  <span
+                    className="audio-node-spectrum-bar"
+                    key={index}
+                    style={{
+                      height: `${Math.max(1.5, bar.level * 100)}%`,
+                      opacity: spectrumWindowOpacity(bar, fftWindowStart, fftWindowEnd),
+                    }}
+                  />
+                ))}
+              </div>
+              <span
+                className="audio-node-spectrum-window-fade audio-node-spectrum-window-fade-low"
+                style={{ width: `${fftWindowStartFraction * 100}%` }}
+                aria-hidden="true"
+              />
+              <span
+                className="audio-node-spectrum-window-fade audio-node-spectrum-window-fade-high"
+                style={{ left: `${fftWindowEndFraction * 100}%` }}
+                aria-hidden="true"
+              />
+              <span
+                className="audio-node-spectrum-boundary audio-node-spectrum-boundary-min"
+                style={{ left: `${fftWindowStartFraction * 100}%` }}
+                role="slider"
+                aria-label="Minimum analysis frequency"
+                aria-valuemin={FFT_ANALYSIS_MIN_FREQUENCY}
+                aria-valuemax={fftWindowEnd}
+                aria-valuenow={fftWindowStart}
+                title={`Min frequency: ${fftWindowStart} Hz`}
+                onPointerDown={(event) => handleFftBoundaryPointerDown(event, 'min')}
+              />
+              <span
+                className="audio-node-spectrum-boundary audio-node-spectrum-boundary-max"
+                style={{ left: `${fftWindowEndFraction * 100}%` }}
+                role="slider"
+                aria-label="Maximum analysis frequency"
+                aria-valuemin={fftWindowStart}
+                aria-valuemax={FFT_ANALYSIS_MAX_FREQUENCY}
+                aria-valuenow={fftWindowEnd}
+                title={`Max frequency: ${fftWindowEnd} Hz`}
+                onPointerDown={(event) => handleFftBoundaryPointerDown(event, 'max')}
+              />
             </div>
           ) : null}
           </div>
@@ -1416,6 +1524,64 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                     <option value="1">continuous</option>
                   </select>
                 </>
+              ) : showQuantiseDisplay && input.name === 'scale' && !input.preview ? (
+                <>
+                  <PortNameLabel
+                    name={input.name}
+                    editable={false}
+                    draggable={false}
+                    preview={false}
+                    selected={data.selectedPort?.side === 'input' && data.selectedPort.name === input.name}
+                    activeDragTarget={false}
+                    activeDragSource={false}
+                    onChange={() => undefined}
+                  />
+                  <select
+                    className="display-mode-select nodrag nopan"
+                    aria-label="Quantise scale"
+                    value={String(clamp(Math.round(node.params.scale ?? input.defaultValue ?? 0), 0, QUANTISE_SCALES.length - 1))}
+                    onChange={(event) => {
+                      data.onParamChange(node.id, input.name, Number(event.currentTarget.value));
+                      event.currentTarget.blur();
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    {QUANTISE_SCALES.map((scale, index) => (
+                      <option key={scale.label} value={index}>{scale.label}</option>
+                    ))}
+                  </select>
+                </>
+              ) : showQuantiseDisplay && input.name === 'root' && !input.preview ? (
+                <>
+                  <PortNameLabel
+                    name={input.name}
+                    editable={false}
+                    draggable={false}
+                    preview={false}
+                    selected={data.selectedPort?.side === 'input' && data.selectedPort.name === input.name}
+                    activeDragTarget={false}
+                    activeDragSource={false}
+                    onChange={() => undefined}
+                  />
+                  <select
+                    className="display-mode-select nodrag nopan"
+                    aria-label="Quantise root note"
+                    value={String(clamp(Math.round(node.params.root ?? input.defaultValue ?? 60), 0, 127))}
+                    onChange={(event) => {
+                      data.onParamChange(node.id, input.name, Number(event.currentTarget.value));
+                      event.currentTarget.blur();
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    {Array.from({ length: 128 }, (_, note) => (
+                      <option key={note} value={note}>{midiNoteLabel(note)}</option>
+                    ))}
+                  </select>
+                </>
               ) : (
                 <PortNameLabel
                   name={input.name}
@@ -1433,7 +1599,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   onChange={(nextName) => data.onPortNameChange(node.id, 'input', input.name, nextName)}
                 />
               )}
-              {!input.preview && node.type !== 'Outs' && input.valueEditor !== false && input.defaultValue !== undefined && !(showSliderDisplay && input.name === 'direction') && !(showSequencerDisplay && input.name === 'mode') && !(showButtonDisplay && input.name === 'mode') && !(showAccumulatorDisplay && input.name === 'mode') && !(showSampleUpload && input.name === 'mode') && !(showMidiNoteDisplay && input.name === 'voices') && !(showTempoDisplay && (input.name === 'source' || input.name === 'midiSource')) ? (
+              {!input.preview && node.type !== 'Outs' && input.valueEditor !== false && input.defaultValue !== undefined && !(showSliderDisplay && input.name === 'direction') && !(showSequencerDisplay && input.name === 'mode') && !(showButtonDisplay && input.name === 'mode') && !(showAccumulatorDisplay && input.name === 'mode') && !(showQuantiseDisplay && (input.name === 'scale' || input.name === 'root')) && !(showSampleUpload && input.name === 'mode') && !(showMidiNoteDisplay && input.name === 'voices') && !(showTempoDisplay && (input.name === 'source' || input.name === 'midiSource')) ? (
                 <NumericScrubber
                   value={node.params[input.name] ?? input.defaultValue ?? 0}
                   min={input.min}
@@ -1544,7 +1710,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   'audio-node-scope-resize-handle audio-node-scope-resize-handle-left nodrag nopan',
                   scopeResizeCorner === 'bottom-left' ? 'audio-node-scope-resize-handle-active' : '',
                 ].filter(Boolean).join(' ')}
-                title={showSequencerDisplay ? 'Resize sequencer' : showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showImageDisplay ? 'Resize image' : showKeysDisplay ? 'Resize keys' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : 'Resize scope'}
+                title={showSequencerDisplay ? 'Resize sequencer' : showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showImageDisplay ? 'Resize image' : showKeysDisplay ? 'Resize keys' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : showFftDisplay ? 'Resize FFT' : 'Resize scope'}
                 onPointerDown={(event) => handleScopeResizePointerDown(event, 'bottom-left')}
                 onClick={handleScopeResizeClick}
                 onDoubleClick={(event) => event.stopPropagation()}
@@ -1554,7 +1720,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   'audio-node-scope-resize-handle audio-node-scope-resize-handle-right nodrag nopan',
                   scopeResizeCorner === 'bottom-right' ? 'audio-node-scope-resize-handle-active' : '',
                 ].filter(Boolean).join(' ')}
-                title={showSequencerDisplay ? 'Resize sequencer' : showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showImageDisplay ? 'Resize image' : showKeysDisplay ? 'Resize keys' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : 'Resize scope'}
+                title={showSequencerDisplay ? 'Resize sequencer' : showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showImageDisplay ? 'Resize image' : showKeysDisplay ? 'Resize keys' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : showFftDisplay ? 'Resize FFT' : 'Resize scope'}
                 onPointerDown={(event) => handleScopeResizePointerDown(event, 'bottom-right')}
                 onClick={handleScopeResizeClick}
                 onDoubleClick={(event) => event.stopPropagation()}
@@ -3202,6 +3368,132 @@ function samplesToScopePath(samples: number[], range: number, mode: 'unipolar' |
   }).join(' ');
 }
 
+interface SpectrumBar {
+  level: number;
+  startFrequency: number;
+  endFrequency: number;
+}
+
+function spectrumBarsFromSamples(samples: number[], barCount: number): SpectrumBar[] {
+  const frequencyBounds = Array.from({ length: barCount + 1 }, (_, index) => (
+    FFT_ANALYSIS_MIN_FREQUENCY * (
+      FFT_ANALYSIS_MAX_FREQUENCY / FFT_ANALYSIS_MIN_FREQUENCY
+    ) ** (index / barCount)
+  ));
+  const empty = () => Array.from({ length: barCount }, (_, index) => ({
+    level: 0,
+    startFrequency: frequencyBounds[index],
+    endFrequency: frequencyBounds[index + 1],
+  }));
+  if (samples.length < 32) return empty();
+
+  const fftSize = largestPowerOfTwoAtMost(Math.min(samples.length, 512));
+  if (fftSize < 32) return empty();
+
+  const real = new Float64Array(fftSize);
+  const imaginary = new Float64Array(fftSize);
+  const offset = samples.length - fftSize;
+  for (let index = 0; index < fftSize; index += 1) {
+    const window = 0.5 - 0.5 * Math.cos((2 * Math.PI * index) / (fftSize - 1));
+    real[index] = (Number.isFinite(samples[offset + index]) ? samples[offset + index] : 0) * window;
+  }
+
+  fftInPlace(real, imaginary);
+  const upperBin = fftSize / 2;
+  const binFrequency = 1 / FFT_CAPTURE_SECONDS;
+  const magnitudes = new Float64Array(upperBin);
+  for (let bin = 1; bin < upperBin; bin += 1) {
+    magnitudes[bin] = (2 * Math.hypot(real[bin], imaginary[bin])) / fftSize;
+  }
+
+  return Array.from({ length: barCount }, (_, barIndex) => {
+    const startFrequency = frequencyBounds[barIndex];
+    const endFrequency = frequencyBounds[barIndex + 1];
+    const start = Math.max(1, Math.floor(startFrequency / binFrequency));
+    const end = Math.max(start + 1, Math.ceil(endFrequency / binFrequency));
+    let magnitude = 0;
+    for (let bin = start; bin < Math.min(end, upperBin); bin += 1) {
+      magnitude = Math.max(magnitude, magnitudes[bin] ?? 0);
+    }
+    const decibels = 20 * Math.log10(Math.max(1e-6, magnitude));
+    return {
+      level: clamp((decibels + 84) / 84, 0, 1),
+      startFrequency,
+      endFrequency,
+    };
+  });
+}
+
+function spectrumWindowOpacity(bar: SpectrumBar, windowStart: number, windowEnd: number): number {
+  const overlap = Math.max(0, Math.min(bar.endFrequency, windowEnd) - Math.max(bar.startFrequency, windowStart));
+  const overlapFraction = overlap / Math.max(1, bar.endFrequency - bar.startFrequency);
+  return 0.14 + overlapFraction * 0.86;
+}
+
+function frequencyGridTicks(detailWidth: number): ChartGridTick[] {
+  const frequencies = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
+  const labelled = detailWidth >= 720
+    ? new Set(frequencies)
+    : detailWidth >= 400
+      ? new Set([20, 100, 200, 500, 1000, 2000, 5000, 10000, 20000])
+      : new Set([20, 100, 500, 2000, 10000, 20000]);
+  return frequencies.map((frequency) => ({
+    fraction: frequencyScaleFraction(frequency),
+    label: labelled.has(frequency) ? formatFrequency(frequency) : undefined,
+    major: labelled.has(frequency),
+  }));
+}
+
+function frequencyScaleFraction(frequency: number): number {
+  const clampedFrequency = clamp(frequency, FFT_ANALYSIS_MIN_FREQUENCY, FFT_ANALYSIS_MAX_FREQUENCY);
+  return Math.log(clampedFrequency / FFT_ANALYSIS_MIN_FREQUENCY)
+    / Math.log(FFT_ANALYSIS_MAX_FREQUENCY / FFT_ANALYSIS_MIN_FREQUENCY);
+}
+
+function formatFrequency(frequency: number): string {
+  if (frequency >= 1000) return `${frequency / 1000}k`;
+  return `${frequency}`;
+}
+
+function largestPowerOfTwoAtMost(value: number): number {
+  return 2 ** Math.floor(Math.log2(Math.max(1, value)));
+}
+
+function fftInPlace(real: Float64Array, imaginary: Float64Array): void {
+  const size = real.length;
+  for (let index = 1, reversed = 0; index < size; index += 1) {
+    let bit = size >> 1;
+    for (; reversed & bit; bit >>= 1) reversed ^= bit;
+    reversed ^= bit;
+    if (index >= reversed) continue;
+    [real[index], real[reversed]] = [real[reversed], real[index]];
+    [imaginary[index], imaginary[reversed]] = [imaginary[reversed], imaginary[index]];
+  }
+
+  for (let length = 2; length <= size; length <<= 1) {
+    const angle = -2 * Math.PI / length;
+    const stepReal = Math.cos(angle);
+    const stepImaginary = Math.sin(angle);
+    for (let start = 0; start < size; start += length) {
+      let twiddleReal = 1;
+      let twiddleImaginary = 0;
+      for (let offset = 0; offset < length / 2; offset += 1) {
+        const evenIndex = start + offset;
+        const oddIndex = evenIndex + length / 2;
+        const oddReal = real[oddIndex] * twiddleReal - imaginary[oddIndex] * twiddleImaginary;
+        const oddImaginary = real[oddIndex] * twiddleImaginary + imaginary[oddIndex] * twiddleReal;
+        real[oddIndex] = real[evenIndex] - oddReal;
+        imaginary[oddIndex] = imaginary[evenIndex] - oddImaginary;
+        real[evenIndex] += oddReal;
+        imaginary[evenIndex] += oddImaginary;
+        const nextTwiddleReal = twiddleReal * stepReal - twiddleImaginary * stepImaginary;
+        twiddleImaginary = twiddleReal * stepImaginary + twiddleImaginary * stepReal;
+        twiddleReal = nextTwiddleReal;
+      }
+    }
+  }
+}
+
 function roundPathNumber(value: number): number {
   return Math.round(value * 100) / 100;
 }
@@ -3440,6 +3732,8 @@ function PortNameLabel({
 
 function displayPortName(name: string): string {
   if (name === 'originalFrequency') return 'original frequency';
+  if (name === 'minFreq') return 'min freq';
+  if (name === 'maxFreq') return 'max freq';
   if (name === 'rangeMin') return 'range min';
   if (name === 'rangeMax') return 'range max';
   if (name === 'beatLength') return 'beat length';

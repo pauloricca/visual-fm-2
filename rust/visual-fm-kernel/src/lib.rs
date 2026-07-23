@@ -128,6 +128,7 @@ const DSP_OP_IMAGE: i32 = 36;
 const DSP_OP_TIME: i32 = 37;
 const DSP_OP_COMPRESS: i32 = 38;
 const DSP_OP_LIMITER: i32 = 39;
+const DSP_OP_QUANTISE: i32 = 40;
 const MIN_ENVELOPE_ATTACK_SECONDS: f64 = 0.001;
 const MAX_DSP_TEMPO_SOURCES: usize = 129;
 const TEMPO_OUTPUT_COUNT: i32 = 10;
@@ -4893,15 +4894,24 @@ fn render_dsp_delay(op: DspOp, sample_rate: f64) -> f64 {
     };
     unsafe {
         let sample = sanitize_sample(dsp_reg(op.a), 8.0);
-        let time = dsp_reg(op.b).clamp(0.001, 1.5);
+        let time = dsp_reg(op.b).clamp(0.0, 1.5);
         let feedback = dsp_reg(op.c).clamp(0.0, 0.98);
         let mix = dsp_reg(op.d).clamp(0.0, 1.0);
         let index = DSP_EFFECT_INDICES[slot];
+        if time == 0.0 {
+            write_dsp_effect_buffer(slot, index, sample);
+            DSP_EFFECT_INDICES[slot] = (index + 1) % MAX_DSP_DELAY_SAMPLES;
+            return sample;
+        }
         let delayed = sanitize_sample(
             read_dsp_effect_delay(slot, index, time * sample_rate.max(1.0)),
             8.0,
         );
-        write_dsp_effect_buffer(slot, index, sanitize_sample(sample + delayed * feedback, 8.0));
+        write_dsp_effect_buffer(
+            slot,
+            index,
+            sanitize_sample(sample + delayed * feedback, 8.0),
+        );
         DSP_EFFECT_INDICES[slot] = (index + 1) % MAX_DSP_DELAY_SAMPLES;
         sanitize_sample(sample * (1.0 - mix) + delayed * mix, 8.0)
     }
@@ -5234,6 +5244,60 @@ fn render_dsp_limiter(op: DspOp, sample_rate: f64) -> f64 {
     };
 
     sanitize_sample(delayed * gain, 32.0).clamp(-ceiling, ceiling)
+}
+
+#[cfg(test)]
+mod delay_tests {
+    use super::{
+        ensure_dsp_effect_buffer, render_dsp_delay, DspOp, DSP_EFFECT_BUFFERS, DSP_EFFECT_INDICES,
+        DSP_REGS, MAX_DSP_EFFECT_SLOTS,
+    };
+
+    #[test]
+    fn zero_is_passthrough_and_positive_sub_sample_times_use_one_sample() {
+        let state = (MAX_DSP_EFFECT_SLOTS - 1) as i32;
+        let slot = state as usize;
+        let op = DspOp {
+            opcode: 12,
+            out: -1,
+            a: 0,
+            b: 1,
+            c: 2,
+            d: 3,
+            e: -1,
+            state,
+            value: 0.0,
+            value2: 0.0,
+            value3: 0.0,
+            value4: 0.0,
+        };
+
+        ensure_dsp_effect_buffer(slot);
+        unsafe {
+            DSP_EFFECT_INDICES[slot] = 0;
+            DSP_EFFECT_BUFFERS[slot].as_mut().unwrap().fill(0.0);
+            DSP_REGS[0] = 0.75;
+            DSP_REGS[1] = 0.0;
+            DSP_REGS[2] = 0.9;
+            DSP_REGS[3] = 1.0;
+        }
+        assert_eq!(render_dsp_delay(op, 48_000.0), 0.75);
+
+        unsafe {
+            DSP_EFFECT_INDICES[slot] = 0;
+            DSP_EFFECT_BUFFERS[slot].as_mut().unwrap().fill(0.0);
+            DSP_REGS[0] = 1.0;
+            DSP_REGS[1] = 0.000000001;
+            DSP_REGS[2] = 0.0;
+            DSP_REGS[3] = 1.0;
+        }
+        assert_eq!(render_dsp_delay(op, 48_000.0), 0.0);
+
+        unsafe {
+            DSP_REGS[0] = 0.25;
+        }
+        assert_eq!(render_dsp_delay(op, 48_000.0), 1.0);
+    }
 }
 
 #[cfg(test)]
@@ -6539,9 +6603,134 @@ fn render_dsp_op(
         DSP_OP_TIME => set_dsp_reg(op.out, render_dsp_time(op, sample_rate)),
         DSP_OP_COMPRESS => set_dsp_reg(op.out, render_dsp_compressor(op, sample_rate)),
         DSP_OP_LIMITER => set_dsp_reg(op.out, render_dsp_limiter(op, sample_rate)),
+        DSP_OP_QUANTISE => set_dsp_reg(
+            op.out,
+            quantise_frequency_signal(dsp_reg(op.a), dsp_reg(op.b), dsp_reg(op.c)),
+        ),
         DSP_OP_BUFFER => set_dsp_reg(op.out, render_dsp_buffer(op, sample_rate)),
         DSP_OP_IMAGE => set_dsp_reg(op.out, render_dsp_image(op)),
         _ => {}
+    }
+}
+
+fn quantise_midi_note(note: f64, scale_value: f64, root_value: f64) -> f64 {
+    if !note.is_finite() {
+        return 0.0;
+    }
+
+    const CHROMATIC: &[i32] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+    const MAJOR: &[i32] = &[0, 2, 4, 5, 7, 9, 11];
+    const MINOR: &[i32] = &[0, 2, 3, 5, 7, 8, 10];
+    const HARMONIC_MINOR: &[i32] = &[0, 2, 3, 5, 7, 8, 11];
+    const MELODIC_MINOR: &[i32] = &[0, 2, 3, 5, 7, 9, 11];
+    const MAJOR_PENTATONIC: &[i32] = &[0, 2, 4, 7, 9];
+    const MINOR_PENTATONIC: &[i32] = &[0, 3, 5, 7, 10];
+    const BLUES: &[i32] = &[0, 3, 5, 6, 7, 10];
+    const DORIAN: &[i32] = &[0, 2, 3, 5, 7, 9, 10];
+    const PHRYGIAN: &[i32] = &[0, 1, 3, 5, 7, 8, 10];
+    const LYDIAN: &[i32] = &[0, 2, 4, 6, 7, 9, 11];
+    const MIXOLYDIAN: &[i32] = &[0, 2, 4, 5, 7, 9, 10];
+    const LOCRIAN: &[i32] = &[0, 1, 3, 5, 6, 8, 10];
+    const WHOLE_TONE: &[i32] = &[0, 2, 4, 6, 8, 10];
+    const DIMINISHED_WHOLE_HALF: &[i32] = &[0, 2, 3, 5, 6, 8, 9, 11];
+    const DIMINISHED_HALF_WHOLE: &[i32] = &[0, 1, 3, 4, 6, 7, 9, 10];
+
+    let scale = match scale_value.round().clamp(0.0, 15.0) as i32 {
+        1 => MAJOR,
+        2 => MINOR,
+        3 => HARMONIC_MINOR,
+        4 => MELODIC_MINOR,
+        5 => MAJOR_PENTATONIC,
+        6 => MINOR_PENTATONIC,
+        7 => BLUES,
+        8 => DORIAN,
+        9 => PHRYGIAN,
+        10 => LYDIAN,
+        11 => MIXOLYDIAN,
+        12 => LOCRIAN,
+        13 => WHOLE_TONE,
+        14 => DIMINISHED_WHOLE_HALF,
+        15 => DIMINISHED_HALF_WHOLE,
+        _ => CHROMATIC,
+    };
+    let root = if root_value.is_finite() {
+        root_value.round()
+    } else {
+        60.0
+    };
+    let relative = note - root;
+    let centre_octave = (relative / 12.0).floor() as i32;
+    let mut nearest = root;
+    let mut nearest_distance = f64::INFINITY;
+
+    for octave in (centre_octave - 1)..=(centre_octave + 1) {
+        for semitone in scale {
+            let candidate = root + (octave * 12 + semitone) as f64;
+            let distance = (candidate - note).abs();
+            if distance < nearest_distance
+                || ((distance - nearest_distance).abs() <= f64::EPSILON && candidate > nearest)
+            {
+                nearest = candidate;
+                nearest_distance = distance;
+            }
+        }
+    }
+    nearest
+}
+
+fn quantise_frequency_signal(frequency: f64, scale_value: f64, root_value: f64) -> f64 {
+    if !frequency.is_finite() || frequency == 0.0 {
+        return 0.0;
+    }
+
+    let direction = frequency.signum();
+    let midi_note = 69.0 + 12.0 * (frequency.abs() / 440.0).log2();
+    let quantised_note = quantise_midi_note(midi_note, scale_value, root_value);
+    direction * 440.0 * 2.0_f64.powf((quantised_note - 69.0) / 12.0)
+}
+
+#[cfg(test)]
+mod quantise_tests {
+    use super::quantise_frequency_signal;
+
+    fn frequency_for_midi_note(note: f64) -> f64 {
+        440.0 * 2.0_f64.powf((note - 69.0) / 12.0)
+    }
+
+    fn assert_near(actual: f64, expected: f64) {
+        assert!((actual - expected).abs() < 0.000001, "{actual} != {expected}");
+    }
+
+    #[test]
+    fn chromatic_rounds_to_the_nearest_semitone_and_breaks_ties_upward() {
+        assert_near(
+            quantise_frequency_signal(frequency_for_midi_note(60.49), 0.0, 60.0),
+            frequency_for_midi_note(60.0),
+        );
+        assert_near(
+            quantise_frequency_signal(frequency_for_midi_note(60.5), 0.0, 60.0),
+            frequency_for_midi_note(61.0),
+        );
+    }
+
+    #[test]
+    fn major_scale_uses_the_selected_root_across_octaves() {
+        assert_near(
+            quantise_frequency_signal(frequency_for_midi_note(55.0), 1.0, 54.0),
+            frequency_for_midi_note(56.0),
+        );
+        assert_near(
+            quantise_frequency_signal(frequency_for_midi_note(67.0), 1.0, 54.0),
+            frequency_for_midi_note(68.0),
+        );
+    }
+
+    #[test]
+    fn minor_scale_snaps_frequency_and_preserves_reverse_direction() {
+        assert_near(
+            quantise_frequency_signal(-frequency_for_midi_note(55.8), 2.0, 57.0),
+            -frequency_for_midi_note(55.0),
+        );
     }
 }
 

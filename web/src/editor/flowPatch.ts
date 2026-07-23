@@ -11,6 +11,7 @@ export interface ScopeNodeSize {
 }
 
 export const DEFAULT_SCOPE_NODE_SIZE: ScopeNodeSize = { width: 224, height: 48 };
+export const DEFAULT_FFT_NODE_SIZE: ScopeNodeSize = { width: 420, height: 96 };
 export const DEFAULT_KEYS_NODE_SIZE: ScopeNodeSize = { width: 372, height: 120 };
 export const DEFAULT_CUSTOM_WAVE_NODE_SIZE: ScopeNodeSize = { width: 372, height: 128 };
 export const DEFAULT_SEQUENCER_NODE_SIZE: ScopeNodeSize = { width: 416, height: 104 };
@@ -36,6 +37,9 @@ export interface ShaderNodeData extends Record<string, unknown> {
     right: number;
   };
   audioScope?: {
+    samples: number[];
+  };
+  audioSpectrum?: {
     samples: number[];
   };
   audioSliderValue?: number;

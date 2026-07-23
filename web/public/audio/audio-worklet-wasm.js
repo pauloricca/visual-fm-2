@@ -502,7 +502,12 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       : [];
     if (values.length !== this.dspProgram.values.length) return;
 
+    const analyserValueIndexes = new Set((this.dspProgram.fftBindings || []).flatMap((binding) => [
+      binding.frequencyValueIndex,
+      binding.amplitudeValueIndex,
+    ]));
     for (let index = 0; index < values.length; index += 1) {
+      if (analyserValueIndexes.has(index)) continue;
       if (values[index] === this.dspProgram.values[index]) continue;
       this.setDspValueAt(index, values[index]);
     }
@@ -653,6 +658,27 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         customWave: this.normalizeCustomWave(binding?.customWave),
       })).filter((binding) => binding.nodeId)
       : [];
+    const fftBindings = Array.isArray(program.fftBindings)
+      ? program.fftBindings.map((binding) => ({
+        nodeId: String(binding?.nodeId || ""),
+        inputRegister: Math.trunc(Number(binding?.inputRegister ?? -1)),
+        minFrequencyValueIndex: Math.trunc(Number(binding?.minFrequencyValueIndex ?? -1)),
+        maxFrequencyValueIndex: Math.trunc(Number(binding?.maxFrequencyValueIndex ?? -1)),
+        frequencyValueIndex: Math.trunc(Number(binding?.frequencyValueIndex ?? -1)),
+        amplitudeValueIndex: Math.trunc(Number(binding?.amplitudeValueIndex ?? -1)),
+      })).filter((binding) => (
+        binding.nodeId
+        && binding.inputRegister >= 0
+        && binding.minFrequencyValueIndex >= 0
+        && binding.minFrequencyValueIndex < values.length
+        && binding.maxFrequencyValueIndex >= 0
+        && binding.maxFrequencyValueIndex < values.length
+        && binding.frequencyValueIndex >= 0
+        && binding.frequencyValueIndex < values.length
+        && binding.amplitudeValueIndex >= 0
+        && binding.amplitudeValueIndex < values.length
+      ))
+      : [];
     const midiControlBindings = Array.isArray(program.midiControlBindings)
       ? program.midiControlBindings.map((binding) => ({
         nodeId: String(binding?.nodeId || ""),
@@ -703,6 +729,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       sampleBindings,
       imageBindings,
       customWaveBindings,
+      fftBindings,
       maxVoices: this.clamp(Math.round(Number(program.maxVoices) || 1), 1, MAX_ACTIVE_VOICES),
       usesMidiNote: Boolean(program.usesMidiNote),
       usesMidiClock: Boolean(program.usesMidiClock),
@@ -1033,9 +1060,19 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
   configureDspScopes() {
     if (!this.dspProgram || !this.wasm?.setDspScope || !this.wasm?.dspScopePtr) return;
 
+    const requestsById = new Map(this.linkScopeRequests.map((request) => [request.linkId, request]));
+    for (const binding of this.dspProgram.fftBindings || []) {
+      requestsById.set(binding.nodeId, {
+        linkId: binding.nodeId,
+        mode: "continuous",
+        points: 512,
+        displayPoints: 512,
+        seconds: 0.012,
+      });
+    }
     const nextScopes = [];
     let slot = 0;
-    for (const request of this.linkScopeRequests) {
+    for (const request of requestsById.values()) {
       if (slot >= 32) break;
       const register = Math.trunc(Number(this.dspProgram.monitorIds?.[request.linkId]));
       if (!Number.isFinite(register) || register < 0) continue;
@@ -1845,9 +1882,13 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       this.linkScopeRequests = [];
       this.linkScopeRequestIndex = 0;
       this.monitorScopeStates.clear();
-      this.dspScopeStates.clear();
       this.wasm?.setLinkScope?.(-1, 0, 0.08, 256, sampleRate);
-      this.wasm?.clearDspScopes?.();
+      if ((this.dspProgram?.fftBindings?.length || 0) > 0) {
+        this.configureDspScopes();
+      } else {
+        this.dspScopeStates.clear();
+        this.wasm?.clearDspScopes?.();
+      }
       return;
     }
 
@@ -1860,13 +1901,17 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     const displayPoints = this.clamp(Math.round(Number(payload.displayPoints) || points), 32, points);
     const defaultSeconds = this.clamp(Number(payload.seconds) || 0.08, 0.01, LINK_SCOPE_SECONDS_MAX);
     const mode = payload.mode === "zero-crossing" ? "zero-crossing" : payload.mode === "envelope" ? "envelope" : "continuous";
-    const nextRequests = [...new Set(linkIds)].map((linkId) => ({
-      linkId,
-      mode,
-      points,
-      displayPoints,
-      seconds: this.clamp(Number(scopeSettings.get(linkId)?.seconds) || defaultSeconds, 0.01, LINK_SCOPE_SECONDS_MAX),
-    }));
+    const nextRequests = [...new Set(linkIds)].map((linkId) => {
+      const settings = scopeSettings.get(linkId);
+      const requestPoints = this.clamp(Math.round(Number(settings?.points) || points), 32, 512);
+      return {
+        linkId,
+        mode,
+        points: requestPoints,
+        displayPoints: this.clamp(Math.round(Number(settings?.displayPoints) || displayPoints), 32, requestPoints),
+        seconds: this.clamp(Number(settings?.seconds) || defaultSeconds, 0.01, LINK_SCOPE_SECONDS_MAX),
+      };
+    });
     if (scopeRequestListsEqual(this.linkScopeRequests, nextRequests)) return;
 
     this.linkScopeRequests = nextRequests;
@@ -2298,10 +2343,19 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       });
     }
     for (const state of this.dspScopeStates.values()) {
+      const samples = this.dspScopeFrameSamples(state);
+      const fftBinding = (this.dspProgram?.fftBindings || []).find((binding) => binding.nodeId === state.request.linkId);
+      if (fftBinding) {
+        const minFrequency = this.dspProgram.values[fftBinding.minFrequencyValueIndex];
+        const maxFrequency = this.dspProgram.values[fftBinding.maxFrequencyValueIndex];
+        const peak = dominantSpectrumPeak(samples, state.request.seconds, minFrequency, maxFrequency);
+        this.setDspValueAt(fftBinding.frequencyValueIndex, peak.frequency);
+        this.setDspValueAt(fftBinding.amplitudeValueIndex, peak.amplitude);
+      }
       scopes.push({
         id: state.request.linkId,
         mode: state.request.mode,
-        samples: this.dspScopeFrameSamples(state),
+        samples,
       });
     }
     this.port.postMessage({
@@ -2552,6 +2606,90 @@ function resampleScopeSamples(samples, targetCount) {
     const fraction = sourcePosition - leftIndex;
     return samples[leftIndex] + (samples[rightIndex] - samples[leftIndex]) * fraction;
   });
+}
+
+function dominantSpectrumPeak(samples, seconds, minFrequency = 20, maxFrequency = 20000) {
+  const size = largestPowerOfTwoAtMost(Math.min(512, samples.length));
+  if (size < 32 || !(seconds > 0)) return { frequency: 0, amplitude: 0 };
+
+  const real = new Float64Array(size);
+  const imaginary = new Float64Array(size);
+  const offset = samples.length - size;
+  for (let index = 0; index < size; index += 1) {
+    const sample = Number(samples[offset + index]);
+    const window = 0.5 - 0.5 * Math.cos(2 * Math.PI * index / (size - 1));
+    real[index] = (Number.isFinite(sample) ? sample : 0) * window;
+  }
+  fftInPlace(real, imaginary);
+
+  const binFrequency = 1 / seconds;
+  const windowStart = Math.max(20, Math.min(20000, Math.min(minFrequency, maxFrequency)));
+  const windowEnd = Math.max(20, Math.min(20000, Math.max(minFrequency, maxFrequency)));
+  const upperBin = Math.min(size / 2 - 1, Math.floor(windowEnd / binFrequency));
+  const lowerBin = Math.max(1, Math.ceil(windowStart / binFrequency));
+  if (upperBin < lowerBin) return { frequency: 0, amplitude: 0 };
+  const magnitudes = new Float64Array(size / 2);
+  let peakBin = lowerBin;
+  let peakMagnitude = 0;
+  for (let bin = lowerBin; bin <= upperBin; bin += 1) {
+    const magnitude = Math.hypot(real[bin], imaginary[bin]);
+    magnitudes[bin] = magnitude;
+    if (magnitude > peakMagnitude) {
+      peakMagnitude = magnitude;
+      peakBin = bin;
+    }
+  }
+  if (peakMagnitude <= 1e-9) return { frequency: 0, amplitude: 0 };
+
+  const left = magnitudes[peakBin - 1] || peakMagnitude;
+  const right = magnitudes[peakBin + 1] || peakMagnitude;
+  const denominator = left - 2 * peakMagnitude + right;
+  const offsetBins = Math.abs(denominator) <= 1e-12
+    ? 0
+    : Math.max(-0.5, Math.min(0.5, 0.5 * (left - right) / denominator));
+  return {
+    frequency: Math.max(windowStart, Math.min(windowEnd, (peakBin + offsetBins) * binFrequency)),
+    // A Hann window has a coherent gain of 0.5, hence the factor of four.
+    amplitude: 4 * peakMagnitude / size,
+  };
+}
+
+function largestPowerOfTwoAtMost(value) {
+  return 2 ** Math.floor(Math.log2(Math.max(1, value)));
+}
+
+function fftInPlace(real, imaginary) {
+  const size = real.length;
+  for (let index = 1, reversed = 0; index < size; index += 1) {
+    let bit = size >> 1;
+    for (; reversed & bit; bit >>= 1) reversed ^= bit;
+    reversed ^= bit;
+    if (index >= reversed) continue;
+    [real[index], real[reversed]] = [real[reversed], real[index]];
+    [imaginary[index], imaginary[reversed]] = [imaginary[reversed], imaginary[index]];
+  }
+  for (let length = 2; length <= size; length <<= 1) {
+    const angle = -2 * Math.PI / length;
+    const stepReal = Math.cos(angle);
+    const stepImaginary = Math.sin(angle);
+    for (let start = 0; start < size; start += length) {
+      let twiddleReal = 1;
+      let twiddleImaginary = 0;
+      for (let offset = 0; offset < length / 2; offset += 1) {
+        const evenIndex = start + offset;
+        const oddIndex = evenIndex + length / 2;
+        const oddReal = real[oddIndex] * twiddleReal - imaginary[oddIndex] * twiddleImaginary;
+        const oddImaginary = real[oddIndex] * twiddleImaginary + imaginary[oddIndex] * twiddleReal;
+        real[oddIndex] = real[evenIndex] - oddReal;
+        imaginary[oddIndex] = imaginary[evenIndex] - oddImaginary;
+        real[evenIndex] += oddReal;
+        imaginary[evenIndex] += oddImaginary;
+        const nextTwiddleReal = twiddleReal * stepReal - twiddleImaginary * stepImaginary;
+        twiddleImaginary = twiddleReal * stepImaginary + twiddleImaginary * stepReal;
+        twiddleReal = nextTwiddleReal;
+      }
+    }
+  }
 }
 
 registerProcessor("visual-fm-wasm-engine", VisualFmWasmEngine);

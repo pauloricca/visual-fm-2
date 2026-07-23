@@ -277,6 +277,15 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     ],
     outputs: [{ name: 'signal' }],
   },
+  Quantise: {
+    type: 'Quantise',
+    inputs: [
+      { name: 'signal', valueEditor: false },
+      { name: 'scale', defaultValue: 0, min: 0, max: 15, integer: true, connectable: false, valueEditor: false },
+      { name: 'root', defaultValue: 60, min: 0, max: 127, integer: true, connectable: false, valueEditor: false },
+    ],
+    outputs: [{ name: 'signal' }],
+  },
   Abs: processor('Abs', []),
   Map: processor('Map', [
     { name: 'srcMin', defaultValue: 0 },
@@ -306,7 +315,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     ],
   },
   Delay: processor('Delay', [
-    { name: 'time', defaultValue: 0.28, min: 0.02, max: 1.5 },
+    { name: 'time', defaultValue: 0.28, min: 0, max: 1.5 },
     { name: 'feedback', defaultValue: 0.35, min: 0, max: 0.92 },
     { name: 'mix', defaultValue: 0.25, min: 0, max: 1 },
   ]),
@@ -372,6 +381,18 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     { name: 'mode', defaultValue: 1, min: 0, max: 1, integer: true, connectable: false, valueEditor: false },
     { name: 'length', defaultValue: 0.08, min: 0.01, max: 30, step: 0.01, connectable: false },
   ]),
+  FFT: {
+    type: 'FFT',
+    inputs: [
+      { name: 'signal', valueEditor: false },
+      { name: 'minFreq', defaultValue: 20, min: 20, max: 20000, step: 1, connectable: false },
+      { name: 'maxFreq', defaultValue: 20000, min: 20, max: 20000, step: 1, connectable: false },
+    ],
+    outputs: [
+      { name: 'frequency' },
+      { name: 'amplitude' },
+    ],
+  },
   LowpassFilter: filter('LowpassFilter'),
   HighpassFilter: filter('HighpassFilter'),
   BandpassFilter: filter('BandpassFilter'),
@@ -433,6 +454,7 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   MidiCc: 'MIDI CC',
   Selector: 'Selector',
   Accumulator: 'Accumulator',
+  Quantise: 'Quantise',
   Abs: 'Abs',
   Map: 'Map',
   Clamp: 'Clamp',
@@ -450,6 +472,7 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   Fold: 'Fold',
   Meter: 'Meter',
   Scope: 'Scope',
+  FFT: 'FFT',
   LowpassFilter: 'Lowpass Filter',
   HighpassFilter: 'Highpass Filter',
   BandpassFilter: 'Bandpass Filter',

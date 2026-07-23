@@ -56,13 +56,14 @@ Most node types are available from the node picker. `Ins` and `Outs` appear whil
 - `MIDI CC`: outputs the current value of a selected MIDI CC.
 - `Selector`: selects one of several input values and can glide between selections.
 - `Accumulator`: steps through a min/max range by a configurable, floating-point increment, either on trigger edges or continuously for every audio sample.
+- `Quantise`: snaps incoming frequency values in Hz to the nearest note in a selected scale and root, preserving the sign for reverse-playback frequency signals. Scale choices include chromatic, major, minor, modal, pentatonic, blues, whole-tone, and diminished scales; roots use note-and-octave labels such as `C1` and `F#3`.
 - `Abs`: outputs the absolute value of the input signal.
 - `Map`: remaps a signal from one numeric range to another.
 - `Clamp`: limits a signal to a minimum and maximum.
 - `Multiply`: multiplies a signal by a factor.
 - `pow`: raises the signal to an exponent.
 - `Pan`: splits a signal into equal-power `left` and `right` outputs from a `pan` value, where `-1` is left, `0` is center, and `1` is right.
-- `Delay`: applies delay with time, feedback, and wet/dry mix controls.
+- `Delay`: applies delay with time, feedback, and wet/dry mix controls. A time of `0` bypasses the delay; positive times resolve to at least one audio sample.
 - `Chorus`: applies a modulated delay chorus effect.
 - `Reverb`: applies a reverb effect with size, decay, mix controls, and `left`/`right` outputs.
 - `Compress`: applies dynamics compression with optional sidechain, threshold, ratio, attack, release, knee, and makeup controls.
@@ -71,8 +72,9 @@ Most node types are available from the node picker. `Ins` and `Outs` appear whil
 - `Follower`: follows the amplitude contour of a signal with attack/release smoothing.
 - `Ring Mod`: multiplies a signal by a modulation amount for ring-mod-style tones.
 - `Fold`: folds a signal back on itself for wavefolding.
-- `Meter`: measures a signal level for display and downstream control. Canvas zoom increases its grid and scale-label detail while preserving thin screen-relative chart strokes, with a small capped label-size increase at high zoom.
+- `Meter`: measures a signal level for display and downstream control. It uses the shared adaptive chart grid: resizing or canvas zoom changes the grid and legend detail while preserving thin screen-relative chart strokes and legible labels.
 - `Scope`: shows an oscilloscope-style view of the signal. Canvas zoom increases its grid and scale-label detail while preserving thin screen-relative chart strokes, with a small capped label-size increase at high zoom.
+- `FFT`: analyses an input signal and shows its live frequency spectrum as logarithmically grouped bars in a wide, resizable display. `minFreq` and `maxFreq` set an analysis window from 20 Hz to 20 kHz; drag the two coloured boundaries directly on the chart to adjust them. The full spectrum is still calculated for display while bars outside the window fade. Its frequency grid and legends adapt to node size and canvas zoom through the same shared chart grid as Meter. The `frequency` output reports the strongest spectral frequency inside the selected window in hertz, and `amplitude` reports that frequency's linear amplitude at visualization/control rate. If the window contains no measurable spectral energy, both outputs are `0`.
 - `Lowpass Filter`: filters out frequencies above the cutoff.
 - `Highpass Filter`: filters out frequencies below the cutoff.
 - `Bandpass Filter`: keeps frequencies around the cutoff and attenuates the rest.
@@ -123,6 +125,7 @@ The signature notation below is `inputs -> outputs`. Port names are the names us
 | MIDI CC | `channel`, `cc` | `signal` |
 | Selector | `select`, `slide`, dynamic value inputs `1`… | `signal` |
 | Accumulator | `mode`, `trigger`, `reset`, `increment`, `min`, `max` | `signal` |
+| Quantise | `signal`, `scale`, `root` | `signal` |
 | Abs | `signal` | `signal` |
 | Map | `signal`, `srcMin`, `srcMax`, `trgtMin`, `trgtMax` | `signal` |
 | Clamp | `signal`, `min`, `max` | `signal` |
@@ -140,6 +143,7 @@ The signature notation below is `inputs -> outputs`. Port names are the names us
 | Fold | `signal`, `amount` | `signal` |
 | Meter | `signal`, `range`, `mode` | `signal` |
 | Scope | `signal`, `range`, `mode`, `length` | `signal` |
+| FFT | `signal`, `minFreq`, `maxFreq` | `frequency`, `amplitude` |
 | Lowpass Filter | `signal`, `cutoff`, `resonance` | `signal` |
 | Highpass Filter | `signal`, `cutoff`, `resonance` | `signal` |
 | Bandpass Filter | `signal`, `cutoff`, `resonance` | `signal` |

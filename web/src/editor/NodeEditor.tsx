@@ -42,6 +42,7 @@ import {
   clampSequencerNodeSize,
   clampScopeNodeSize,
   DEFAULT_CUSTOM_WAVE_NODE_SIZE,
+  DEFAULT_FFT_NODE_SIZE,
   DEFAULT_KEYS_NODE_SIZE,
   DEFAULT_SEQUENCER_NODE_SIZE,
   DEFAULT_SCOPE_NODE_SIZE,
@@ -1364,6 +1365,7 @@ function NodeEditorInner() {
       (
         relatedNode.data.patchNode.type !== 'Scope' &&
         relatedNode.data.patchNode.type !== 'Meter' &&
+        relatedNode.data.patchNode.type !== 'FFT' &&
         relatedNode.data.patchNode.type !== 'CustomWave' &&
         relatedNode.data.patchNode.type !== 'SamplePlayer' &&
         relatedNode.data.patchNode.type !== 'Image' &&
@@ -1411,6 +1413,8 @@ function NodeEditorInner() {
             )
         : node.data.patchNode.type === 'Keys'
           ? DEFAULT_KEYS_NODE_SIZE
+        : node.data.patchNode.type === 'FFT'
+          ? DEFAULT_FFT_NODE_SIZE
         : node.data.patchNode.type === 'CustomWave' || node.data.patchNode.type === 'SamplePlayer' || node.data.patchNode.type === 'Image'
           ? DEFAULT_CUSTOM_WAVE_NODE_SIZE
           : DEFAULT_SCOPE_NODE_SIZE
@@ -2259,6 +2263,7 @@ function NodeEditorInner() {
         ...(hasAudioOutputMeter ? { audioOutputMeter: { left: audioOutputLeft, right: audioOutputRight } } : {}),
         ...(monitorLinkId && node.data.patchNode.type === 'Meter' ? { audioMeter: audio.linkMeters[monitorLinkId] } : {}),
         ...(monitorLinkId && node.data.patchNode.type === 'Scope' ? { audioScope: audio.linkScopes[dspNodeId] } : {}),
+        ...(monitorLinkId && node.data.patchNode.type === 'FFT' ? { audioSpectrum: audio.linkScopes[dspNodeId] } : {}),
         ...(monitorLinkId && node.data.patchNode.type === 'Slider' ? { audioSliderValue: audio.linkMeters[monitorLinkId]?.output } : {}),
         ...(audioSelectorIndex !== undefined ? { audioSelectorIndex } : {}),
         ...(audioAccumulatorValue !== undefined ? { audioAccumulatorValue } : {}),
@@ -2476,12 +2481,17 @@ function NodeEditorInner() {
 
   useEffect(() => {
     const scopeRequests = nodesWithCallbacks.flatMap((node) => {
-      if (node.data.patchNode.type !== 'Scope') return [];
-      const linkId = monitorLinkIdByNode.get(node.id);
-      return linkId ? [{ id: node.id, length: node.data.patchNode.params.length ?? 0.08 }] : [];
+      const type = node.data.patchNode.type;
+      if (type !== 'Scope' && type !== 'FFT') return [];
+      const dspNodeId = scopedDspNodeId(node.id, activeDspGroupIds);
+      const linkId = monitorLinkIdByNode.get(dspNodeId);
+      if (!linkId) return [];
+      return type === 'FFT'
+        ? [{ id: dspNodeId, length: 0.012, points: 512 }]
+        : [{ id: dspNodeId, length: node.data.patchNode.params.length ?? 0.08 }];
     });
     audio.setLinkScopes(scopeRequests);
-  }, [audio.setLinkScopes, monitorLinkIdByNode, nodesWithCallbacks]);
+  }, [activeDspGroupIds, audio.setLinkScopes, monitorLinkIdByNode, nodesWithCallbacks]);
 
   useEffect(() => {
     const state = flowToEditorState(materializedGraph.nodes, materializedGraph.edges, {
@@ -6089,8 +6099,10 @@ function viewportNodeSize(node: ShaderFlowNode): { width: number; height: number
     return { width: size.width, height: size.height + NODE_HEADER_HEIGHT };
   }
 
-  if (patchNode.type === 'Scope' || patchNode.type === 'Meter') {
-    const size = clampScopeNodeSize(patchNode.scopeSize ?? DEFAULT_SCOPE_NODE_SIZE);
+  if (patchNode.type === 'Scope' || patchNode.type === 'Meter' || patchNode.type === 'FFT') {
+    const size = clampScopeNodeSize(
+      patchNode.scopeSize ?? (patchNode.type === 'FFT' ? DEFAULT_FFT_NODE_SIZE : DEFAULT_SCOPE_NODE_SIZE),
+    );
     return { width: size.width, height: size.height + NODE_HEADER_HEIGHT };
   }
 

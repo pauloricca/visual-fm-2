@@ -792,6 +792,11 @@ button:hover {
   background: var(--color-surface);
 }
 
+.shader-node-fft {
+  width: max(var(--node-display-width, 420px), 160px);
+  background: var(--color-surface);
+}
+
 .shader-node-slider {
   width: var(--node-display-width, 224px);
   min-width: 72px;
@@ -814,6 +819,10 @@ button:hover {
   --accumulator-control-width: 96px;
   min-width: 116px;
   background: var(--color-surface);
+}
+
+.shader-node-quantise {
+  min-width: calc(var(--input-label-width, 0ch) + 106px);
 }
 
 .shader-node-slider:has(.shader-inputs:not(:empty)),
@@ -1165,6 +1174,7 @@ button:hover {
 
 .shader-node-content-graphic > .audio-node-meter-display,
 .shader-node-content-graphic > .audio-node-scope-display,
+.shader-node-content-graphic > .audio-node-spectrum-display,
 .shader-node-content-graphic > .audio-node-slider-display,
 .shader-node-content-graphic > .audio-node-button-display,
 .shader-node-content-graphic > .keys-node-keyboard {
@@ -1172,7 +1182,8 @@ button:hover {
 }
 
 .shader-node-content-graphic > .audio-node-meter-display,
-.shader-node-content-graphic > .audio-node-scope-display {
+.shader-node-content-graphic > .audio-node-scope-display,
+.shader-node-content-graphic > .audio-node-spectrum-display {
   border: 0;
 }
 
@@ -2133,6 +2144,7 @@ button:hover {
 
 .audio-node-meter-display,
 .audio-node-scope-display,
+.audio-node-spectrum-display,
 .audio-node-slider-display,
 .audio-node-button-display,
 .keys-node-keyboard {
@@ -2147,59 +2159,6 @@ button:hover {
   border: calc(1px * var(--graph-stroke-scale, 1)) solid var(--color-foreground);
   background: var(--color-surface);
   overflow: hidden;
-}
-
-.audio-node-meter-scale {
-  position: absolute;
-  color: var(--color-foreground-76);
-  font-size: calc(1em * var(--graph-screen-scale, 1));
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
-  pointer-events: none;
-  text-shadow: 0 1px 0 var(--color-background), 1px 0 0 var(--color-background), 0 -1px 0 var(--color-background), -1px 0 0 var(--color-background);
-}
-
-.audio-node-meter-scale {
-  inset: auto 4px 3px;
-  z-index: 4;
-  height: 13px;
-}
-
-.audio-node-meter-scale-label {
-  position: absolute;
-  max-width: 56px;
-  overflow: hidden;
-  transform: translateX(-50%);
-  text-overflow: clip;
-  white-space: nowrap;
-}
-
-.audio-node-meter-scale-label-min {
-  transform: none;
-}
-
-.audio-node-meter-scale-label-max {
-  transform: translateX(-100%);
-}
-
-.audio-node-meter-grid {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-}
-
-.audio-node-meter-grid-line {
-  stroke: var(--color-foreground-18);
-  stroke-width: calc(0.5px * var(--graph-stroke-scale, 1));
-  vector-effect: non-scaling-stroke;
-}
-
-.audio-node-meter-grid-line-major {
-  stroke: var(--color-foreground-32);
-  stroke-width: calc(1px * var(--graph-stroke-scale, 1));
 }
 
 .audio-node-meter-fill {
@@ -2295,7 +2254,6 @@ button:hover {
 .audio-chart-grid-layer {
   position: absolute;
   inset: 0;
-  z-index: 0;
   pointer-events: none;
 }
 
@@ -2322,11 +2280,10 @@ button:hover {
   stroke: var(--color-foreground-52);
 }
 
-.audio-chart-grid-scale {
+.audio-chart-grid-row-scale,
+.audio-chart-grid-column-scale {
   position: absolute;
-  z-index: 1;
-  inset: 0 auto 0 4px;
-  width: 56px;
+  z-index: 4;
   color: var(--color-foreground-76);
   font-size: calc(1em * var(--graph-screen-scale, 1));
   font-variant-numeric: tabular-nums;
@@ -2335,7 +2292,12 @@ button:hover {
   text-shadow: 0 1px 0 var(--color-background), 1px 0 0 var(--color-background), 0 -1px 0 var(--color-background), -1px 0 0 var(--color-background);
 }
 
-.audio-chart-grid-scale-label {
+.audio-chart-grid-row-scale {
+  inset: 0 auto 0 4px;
+  width: 56px;
+}
+
+.audio-chart-grid-row-scale-label {
   position: absolute;
   max-width: 100%;
   overflow: hidden;
@@ -2344,12 +2306,34 @@ button:hover {
   white-space: nowrap;
 }
 
-.audio-chart-grid-scale-label-top {
+.audio-chart-grid-row-scale-label-top {
   transform: none;
 }
 
-.audio-chart-grid-scale-label-bottom {
+.audio-chart-grid-row-scale-label-bottom {
   transform: translateY(-100%);
+}
+
+.audio-chart-grid-column-scale {
+  inset: auto 4px 3px;
+  height: 13px;
+}
+
+.audio-chart-grid-column-scale-label {
+  position: absolute;
+  max-width: 56px;
+  overflow: hidden;
+  transform: translateX(-50%);
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+.audio-chart-grid-column-scale-label-start {
+  transform: none;
+}
+
+.audio-chart-grid-column-scale-label-end {
+  transform: translateX(-100%);
 }
 
 .audio-node-scope-waveform {
@@ -2370,6 +2354,83 @@ button:hover {
   stroke: var(--color-accent);
   stroke-width: calc(2px * var(--graph-stroke-scale, 1));
   vector-effect: non-scaling-stroke;
+}
+
+.audio-node-spectrum-display {
+  position: relative;
+  height: var(--node-display-height, 48px);
+  overflow: hidden;
+  border: calc(1px * var(--graph-stroke-scale, 1)) solid var(--color-foreground);
+  background: var(--color-background-42);
+}
+
+.audio-node-spectrum-bars {
+  position: absolute;
+  z-index: 1;
+  inset: 3px;
+  display: flex;
+  align-items: end;
+  gap: max(1px, calc(1px * var(--graph-stroke-scale, 1)));
+}
+
+.audio-node-spectrum-bar {
+  flex: 1 1 0;
+  min-width: 1px;
+  background: var(--color-accent);
+  box-shadow: 0 0 5px var(--color-accent-glow);
+  transition: height 80ms ease-out, opacity 120ms ease-out;
+}
+
+.audio-node-spectrum-window-fade {
+  position: absolute;
+  z-index: 2;
+  inset-block: 0;
+  pointer-events: none;
+  background: var(--color-background);
+  opacity: 0.56;
+}
+
+.audio-node-spectrum-window-fade-low {
+  left: 0;
+}
+
+.audio-node-spectrum-window-fade-high {
+  right: 0;
+}
+
+.audio-node-spectrum-boundary {
+  position: absolute;
+  z-index: 5;
+  top: 0;
+  bottom: 0;
+  width: 16px;
+  transform: translateX(-8px);
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.audio-node-spectrum-boundary::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 7px;
+  width: 2px;
+  content: '';
+  background: var(--color-foreground-62);
+  pointer-events: none;
+}
+
+.audio-node-spectrum-boundary-min::before {
+  background: var(--color-sample-boundary-start);
+}
+
+.audio-node-spectrum-boundary-max::before {
+  background: var(--color-sample-boundary-end);
+}
+
+.audio-node-spectrum-boundary:hover::before,
+.audio-node-spectrum-boundary:active::before {
+  background: var(--color-foreground);
 }
 
 .audio-node-slider-display {
