@@ -59,7 +59,7 @@ import {
   type ShaderNodeData,
 } from './flowPatch';
 import { getSampleWaveform, type SampleWaveform, type SampleWaveformBin } from '../audio/sampleWaveformCache';
-import { graphDetailScreenEmphasis, graphDetailZoomScale } from './canvasZoom';
+import { canvasHeaderTitleScale, graphDetailScreenEmphasis, graphDetailZoomScale } from './canvasZoom';
 import { ChartGrid, chartGridColumns, chartGridRows, chartScaleTicks, formatChartValue } from './chartGrid';
 
 const CUSTOM_WAVE_DRAG_UPDATE_INTERVAL_MS = 50;
@@ -70,6 +70,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const reactFlow = useReactFlow<ShaderFlowNode, ShaderFlowEdge>();
   const graphZoomScale = graphDetailZoomScale(data.canvasZoom ?? Number.NaN);
   const graphScreenEmphasis = graphDetailScreenEmphasis(graphZoomScale);
+  const headerTitleScale = canvasHeaderTitleScale(data.canvasZoom ?? Number.NaN);
   const updateNodeInternals = useUpdateNodeInternals();
   const draggedPortRef = useRef<{ side: 'input' | 'output'; port: string; pointerId: number } | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -223,6 +224,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     ...(nodeSizeStyle ?? {}),
     '--input-label-width': inputLabelWidth,
     '--node-scale': String(node.scale ?? 1),
+    '--canvas-header-title-scale': String(headerTitleScale),
     '--graph-screen-scale': String(graphScreenEmphasis / graphZoomScale),
     '--graph-stroke-scale': String(1 / graphZoomScale),
   } as CSSProperties;
@@ -261,6 +263,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     connectedInputPorts,
     connectedOutputPorts,
     headerInputPort,
+    headerTitleScale,
     inputLabelWidth,
     node.id,
     outputCount,

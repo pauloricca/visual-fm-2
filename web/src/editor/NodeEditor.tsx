@@ -30,7 +30,7 @@ import { normalizePatchCompatibility } from '../graph/patchCompatibility';
 import { patchToJson } from '../graph/serialize';
 import type { CustomWaveSettings, ImageAsset, LinkMode, NodeType, Patch, PatchLink, PatchNode, PortDefinition, SampleAsset } from '../graph/types';
 import { EdgeOverlayProvider } from './EdgeOverlayContext';
-import { USER_ZOOM_BASELINE } from './canvasZoom';
+import { canvasHeaderTitleScale, USER_ZOOM_BASELINE } from './canvasZoom';
 import { scopedDspNodeId } from './dspNodeScope';
 import {
   edgeFromLink,
@@ -395,6 +395,16 @@ function NodeEditorInner() {
   const [areaDraw, setAreaDraw] = useState<AreaDrawState | null>(null);
   const [selectedAreaId, setSelectedAreaId] = useState<string | null>(null);
   const [editingAreaId, setEditingAreaId] = useState<string | null>(null);
+  const areaTitleInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!editingAreaId) return;
+    const animationFrame = requestAnimationFrame(() => {
+      areaTitleInputRef.current?.focus();
+      areaTitleInputRef.current?.select();
+    });
+    return () => cancelAnimationFrame(animationFrame);
+  }, [editingAreaId]);
 
   const toggleAudioPlayback = useCallback(() => {
     if (audioPlaybackActive) {
@@ -3673,8 +3683,15 @@ function NodeEditorInner() {
 
   const renameArea = useCallback((areaId: string, title: string) => {
     commitHistory(`area-title:${areaId}`);
-    setAreas((current) => current.map((area) => area.id === areaId ? { ...area, title: title || 'Area' } : area));
+    setAreas((current) => current.map((area) => area.id === areaId ? { ...area, title } : area));
   }, [commitHistory]);
+
+  const finishAreaRename = useCallback((areaId: string) => {
+    setAreas((current) => current.map((area) => (
+      area.id === areaId && !area.title ? { ...area, title: 'Area' } : area
+    )));
+    setEditingAreaId(null);
+  }, []);
 
   const toggleAreaCollapsed = useCallback((areaId: string) => {
     commitHistory(`area-collapse:${areaId}`);
@@ -3967,7 +3984,12 @@ function NodeEditorInner() {
             proOptions={REACT_FLOW_PRO_OPTIONS}
           >
             <ViewportPortal>
-              <div className="area-layer">
+              <div
+                className="area-layer"
+                style={{
+                  '--canvas-header-title-scale': String(canvasHeaderTitleScale(settledGraphZoom)),
+                } as CSSProperties}
+              >
                 {areaDrawBounds && (
                   <div
                     className="canvas-area canvas-area-drawing"
@@ -3994,12 +4016,16 @@ function NodeEditorInner() {
                     >
                       {editingAreaId === area.id ? (
                         <input
+                          ref={areaTitleInputRef}
                           className="canvas-area-title-input"
-                          autoFocus
                           value={area.title}
                           aria-label="Area name"
                           onPointerDown={(event) => event.stopPropagation()}
-                          onBlur={() => setEditingAreaId(null)}
+                          onDoubleClick={(event) => {
+                            event.stopPropagation();
+                            event.currentTarget.select();
+                          }}
+                          onBlur={() => finishAreaRename(area.id)}
                           onKeyDown={(event) => {
                             if (event.key === 'Enter' || event.key === 'Escape') {
                               event.preventDefault();
@@ -4013,6 +4039,7 @@ function NodeEditorInner() {
                           className="canvas-area-title nodrag nopan"
                           type="button"
                           onPointerDown={(event) => event.stopPropagation()}
+                          onDoubleClick={(event) => event.stopPropagation()}
                           onClick={(event) => {
                             event.stopPropagation();
                             setSelectedAreaId(area.id);
@@ -6137,7 +6164,7 @@ function connectedAreaIds(areas: EditorArea[], rootId: string): Set<string> {
     changed = false;
     for (const candidate of areas) {
       if (connected.has(candidate.id)) continue;
-      if (!areas.some((area) => connected.has(area.id) && areasOverlap(area, candidate))) continue;
+      if (!areas.some((area) => connected.has(area.id) && areaContainsPoint(area, candidate.position))) continue;
       connected.add(candidate.id);
       changed = true;
     }
@@ -6145,18 +6172,11 @@ function connectedAreaIds(areas: EditorArea[], rootId: string): Set<string> {
   return connected;
 }
 
-function areasOverlap(left: EditorArea, right: EditorArea): boolean {
-  return left.position.x < right.position.x + right.size.width
-    && left.position.x + left.size.width > right.position.x
-    && left.position.y < right.position.y + right.size.height
-    && left.position.y + left.size.height > right.position.y;
-}
-
 function areaContainsPoint(area: EditorArea, point: { x: number; y: number }): boolean {
   return point.x >= area.position.x
-    && point.x <= area.position.x + area.size.width
+    && point.x < area.position.x + area.size.width
     && point.y >= area.position.y
-    && point.y <= area.position.y + area.size.height;
+    && point.y < area.position.y + area.size.height;
 }
 
 function collapsedAreaContainingNode(areas: EditorArea[], node: ShaderFlowNode): EditorArea | undefined {
@@ -6177,7 +6197,7 @@ function areaContainsNode(area: EditorArea, node: ShaderFlowNode): boolean {
 function nodeIsInAreaUiSection(area: EditorArea, node: ShaderFlowNode): boolean {
   return area.uiHeight !== undefined
     && node.position.x >= area.position.x
-    && node.position.x <= area.position.x + area.size.width
+    && node.position.x < area.position.x + area.size.width
     && node.position.y >= area.position.y + NODE_HEADER_HEIGHT
     && node.position.y < area.position.y + NODE_HEADER_HEIGHT + area.uiHeight;
 }
