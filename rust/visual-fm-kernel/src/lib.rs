@@ -21,6 +21,13 @@ const MAX_DSP_OPS: usize = 4096;
 const MAX_DSP_REGS: usize = 2048;
 const MAX_DSP_VALUES: usize = 2048;
 const MAX_DSP_STATE: usize = 4096;
+const DSP_DERIVED_CACHE_VALUES_PER_STATE: usize = 4;
+const DSP_DERIVED_CACHE_ATTACK: usize = 0;
+const DSP_DERIVED_CACHE_RELEASE: usize = 1;
+const DSP_DERIVED_CACHE_INPUT_GAIN: usize = 2;
+const DSP_DERIVED_CACHE_CEILING: usize = 3;
+const DSP_BIQUAD_CACHE_KIND_FORMANT_BASE: i32 = 100;
+const DSP_BIQUAD_CACHE_KIND_EQUALIZER_BASE: i32 = 200;
 const MAX_DSP_SPREADS: usize = 128;
 const MAX_DSP_SCOPES: usize = 32;
 const MAX_DSP_METERS: usize = 128;
@@ -219,6 +226,27 @@ struct DspOp {
     value4: f64,
 }
 
+type BiquadCoefficients = (f64, f64, f64, f64, f64);
+
+#[derive(Copy, Clone)]
+struct DspBiquadCoefficientCache {
+    initialized: bool,
+    kind: i32,
+    parameter_a: f64,
+    parameter_b: f64,
+    sample_rate: f64,
+    coefficients: BiquadCoefficients,
+    gain: f64,
+}
+
+#[derive(Copy, Clone)]
+struct DspDerivedValueCache {
+    initialized: bool,
+    parameter_a: f64,
+    parameter_b: f64,
+    value: f64,
+}
+
 struct DspSpreadRuntime {
     states_by_context: Vec<Vec<f64>>,
 }
@@ -313,6 +341,24 @@ const EMPTY_DSP_OP: DspOp = DspOp {
     value2: 0.0,
     value3: 0.0,
     value4: 0.0,
+};
+
+const EMPTY_DSP_BIQUAD_COEFFICIENT_CACHE: DspBiquadCoefficientCache =
+    DspBiquadCoefficientCache {
+        initialized: false,
+        kind: 0,
+        parameter_a: 0.0,
+        parameter_b: 0.0,
+        sample_rate: 0.0,
+        coefficients: (0.0, 0.0, 0.0, 0.0, 0.0),
+        gain: 0.0,
+    };
+
+const EMPTY_DSP_DERIVED_VALUE_CACHE: DspDerivedValueCache = DspDerivedValueCache {
+    initialized: false,
+    parameter_a: 0.0,
+    parameter_b: 0.0,
+    value: 0.0,
 };
 
 #[derive(Copy, Clone)]
@@ -485,6 +531,11 @@ static mut DSP_REGS: [f64; MAX_DSP_REGS] = [0.0; MAX_DSP_REGS];
 static mut DSP_STATE: [f64; MAX_DSP_STATE] = [0.0; MAX_DSP_STATE];
 static mut DSP_VOICE_STATES: [[f64; MAX_DSP_STATE]; MAX_VOICE_SLOTS] =
     [[0.0; MAX_DSP_STATE]; MAX_VOICE_SLOTS];
+static mut DSP_BIQUAD_COEFFICIENT_CACHES: [DspBiquadCoefficientCache; MAX_DSP_STATE] =
+    [EMPTY_DSP_BIQUAD_COEFFICIENT_CACHE; MAX_DSP_STATE];
+static mut DSP_DERIVED_VALUE_CACHES:
+    [DspDerivedValueCache; MAX_DSP_STATE * DSP_DERIVED_CACHE_VALUES_PER_STATE] =
+    [EMPTY_DSP_DERIVED_VALUE_CACHE; MAX_DSP_STATE * DSP_DERIVED_CACHE_VALUES_PER_STATE];
 static mut DSP_SPREAD_RUNTIMES: [Option<DspSpreadRuntime>; MAX_DSP_SPREADS] =
     [const { None }; MAX_DSP_SPREADS];
 static mut DSP_SPREAD_ITEM_INDEX: usize = 0;
@@ -511,6 +562,7 @@ static mut DSP_TEMPO_LAST_FRAME_BY_SOURCE: [u32; MAX_DSP_TEMPO_SOURCES] =
     [DSP_RENDER_FRAME_UNSET; MAX_DSP_TEMPO_SOURCES];
 static mut DSP_RENDER_QUANTUM_ID: u32 = 1;
 static mut DSP_SCOPE_REGS: [i32; MAX_DSP_SCOPES] = [-1; MAX_DSP_SCOPES];
+static mut DSP_SCOPE_SLOT_COUNT: usize = 0;
 static mut DSP_SCOPE_SAMPLES: [[f32; LINK_SCOPE_POINTS]; MAX_DSP_SCOPES] =
     [[0.0; LINK_SCOPE_POINTS]; MAX_DSP_SCOPES];
 static mut DSP_SCOPE_POINTS_ACTIVE: [usize; MAX_DSP_SCOPES] = [256; MAX_DSP_SCOPES];
@@ -519,6 +571,7 @@ static mut DSP_SCOPE_DECIMATE_COUNTERS: [u32; MAX_DSP_SCOPES] = [0; MAX_DSP_SCOP
 static mut DSP_SCOPE_COUNTS: [u32; MAX_DSP_SCOPES] = [0; MAX_DSP_SCOPES];
 static mut DSP_SCOPE_WRITE_INDICES: [u32; MAX_DSP_SCOPES] = [0; MAX_DSP_SCOPES];
 static mut DSP_METER_REGS: [i32; MAX_DSP_METERS] = [-1; MAX_DSP_METERS];
+static mut DSP_METER_SLOT_COUNT: usize = 0;
 static mut DSP_METER_SUMS: [f64; MAX_DSP_METERS] = [0.0; MAX_DSP_METERS];
 static mut DSP_METER_SIGNED_SUMS: [f64; MAX_DSP_METERS] = [0.0; MAX_DSP_METERS];
 static mut DSP_METER_COUNTS: [u32; MAX_DSP_METERS] = [0; MAX_DSP_METERS];
@@ -1289,6 +1342,7 @@ fn reset_dsp_scope(slot: usize) {
 #[no_mangle]
 pub extern "C" fn clearDspScopes() {
     unsafe {
+        DSP_SCOPE_SLOT_COUNT = 0;
         for slot in 0..MAX_DSP_SCOPES {
             DSP_SCOPE_REGS[slot] = -1;
             DSP_SCOPE_POINTS_ACTIVE[slot] = 256;
@@ -1324,6 +1378,7 @@ pub extern "C" fn setDspScope(
         let active_points = (points as usize).clamp(32, LINK_SCOPE_POINTS);
 
         DSP_SCOPE_REGS[slot] = register;
+        DSP_SCOPE_SLOT_COUNT = DSP_SCOPE_SLOT_COUNT.max(slot + 1);
         DSP_SCOPE_POINTS_ACTIVE[slot] = active_points;
         DSP_SCOPE_DECIMATE[slot] = ((safe_seconds * safe_rate) / active_points as f64)
             .round()
@@ -1376,6 +1431,7 @@ pub extern "C" fn restoreDspScopeHistory(slot: u32, count: u32, write_index: u32
 #[no_mangle]
 pub extern "C" fn clearDspMeters() {
     unsafe {
+        DSP_METER_SLOT_COUNT = 0;
         for slot in 0..MAX_DSP_METERS {
             DSP_METER_REGS[slot] = -1;
             DSP_METER_SUMS[slot] = 0.0;
@@ -1404,6 +1460,7 @@ pub extern "C" fn setDspMeter(slot: u32, register: i32) -> i32 {
             return -1;
         }
         DSP_METER_REGS[slot] = register;
+        DSP_METER_SLOT_COUNT = DSP_METER_SLOT_COUNT.max(slot + 1);
         DSP_METER_SUMS[slot] = 0.0;
         DSP_METER_SIGNED_SUMS[slot] = 0.0;
         DSP_METER_COUNTS[slot] = 0;
@@ -1471,6 +1528,86 @@ pub extern "C" fn setDspValueImmediate(index: u32, value: f64) {
     }
 }
 
+fn valid_dsp_register(index: i32) -> bool {
+    index >= 0 && (index as usize) < MAX_DSP_REGS
+}
+
+fn valid_dsp_value(index: i32) -> bool {
+    index >= 0 && (index as usize) < MAX_DSP_VALUES
+}
+
+fn valid_optional_dsp_register(index: i32) -> bool {
+    index == -1 || valid_dsp_register(index)
+}
+
+fn valid_dsp_register_value(value: f64) -> bool {
+    if !value.is_finite() {
+        return false;
+    }
+    let index = value as i32;
+    value == index as f64 && valid_dsp_register(index)
+}
+
+fn valid_dsp_state_range(state: i32, count: usize) -> bool {
+    state >= 0 && (state as usize).saturating_add(count) <= MAX_DSP_STATE
+}
+
+fn valid_hot_dsp_op(
+    opcode: i32,
+    out: i32,
+    a: i32,
+    b: i32,
+    c: i32,
+    d: i32,
+    e: i32,
+    state: i32,
+    value2: f64,
+    value3: f64,
+    value4: f64,
+) -> bool {
+    match opcode {
+        DSP_OP_VALUE => valid_dsp_register(out) && valid_dsp_value(a),
+        DSP_OP_ADD | DSP_OP_MUL | DSP_OP_SUB | DSP_OP_DIV => {
+            valid_dsp_register(out) && valid_dsp_register(a) && valid_dsp_register(b)
+        }
+        DSP_OP_NEG | DSP_OP_ABS => valid_dsp_register(out) && valid_dsp_register(a),
+        DSP_OP_OSC => {
+            let frequency_is_valid = if a == 5 || a == 6 {
+                valid_optional_dsp_register(b)
+            } else {
+                valid_dsp_register(b)
+            };
+            let state_count = match a {
+                6 => 0,
+                5 | 7 => 3,
+                9 => 6,
+                _ if e >= 0 => 4,
+                _ => 1,
+            };
+            let state_is_valid =
+                state_count == 0 || valid_dsp_state_range(state, state_count);
+            let range_is_valid = value4 < 0.5
+                || (valid_dsp_register_value(value2) && valid_dsp_register_value(value3));
+            let oscillator_inputs_are_valid = if a == 9 {
+                valid_dsp_register(c)
+                    && valid_optional_dsp_register(d)
+                    && valid_optional_dsp_register(e)
+            } else {
+                valid_optional_dsp_register(c)
+                    && valid_optional_dsp_register(d)
+                    && valid_optional_dsp_register(e)
+            };
+
+            valid_dsp_register(out)
+                && frequency_is_valid
+                && oscillator_inputs_are_valid
+                && state_is_valid
+                && range_is_valid
+        }
+        _ => true,
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn addDspOp(
     opcode: i32,
@@ -1488,6 +1625,11 @@ pub extern "C" fn addDspOp(
 ) -> i32 {
     unsafe {
         if DSP_OP_COUNT >= MAX_DSP_OPS {
+            return -1;
+        }
+        if !valid_hot_dsp_op(
+            opcode, out, a, b, c, d, e, state, value2, value3, value4,
+        ) {
             return -1;
         }
         if opcode == DSP_OP_DELAY
@@ -4596,6 +4738,32 @@ fn dsp_reg(index: i32) -> f64 {
     }
 }
 
+#[inline(always)]
+unsafe fn dsp_reg_unchecked(index: i32) -> f64 {
+    *core::ptr::addr_of!(DSP_REGS)
+        .cast::<f64>()
+        .add(index as usize)
+}
+
+#[inline(always)]
+unsafe fn set_dsp_reg_unchecked(index: i32, value: f64) {
+    *core::ptr::addr_of_mut!(DSP_REGS)
+        .cast::<f64>()
+        .add(index as usize) = value;
+}
+
+#[inline(always)]
+unsafe fn set_dsp_reg_sanitized_unchecked(index: i32, value: f64) {
+    set_dsp_reg_unchecked(
+        index,
+        if value.is_finite() {
+            value.clamp(-12_000.0, 12_000.0)
+        } else {
+            0.0
+        },
+    );
+}
+
 fn set_dsp_reg(index: i32, value: f64) {
     unsafe {
         if index >= 0 && (index as usize) < MAX_DSP_REGS {
@@ -4604,16 +4772,6 @@ fn set_dsp_reg(index: i32, value: f64) {
             } else {
                 0.0
             };
-        }
-    }
-}
-
-fn dsp_value(index: i32) -> f64 {
-    unsafe {
-        if index < 0 || index as usize >= MAX_DSP_VALUES {
-            0.0
-        } else {
-            DSP_VALUES[index as usize]
         }
     }
 }
@@ -4628,8 +4786,25 @@ fn dsp_value_target(index: i32) -> f64 {
     }
 }
 
-fn advance_dsp_values(sample_rate: f64) {
-    let alpha = 1.0 - (-1.0 / (sample_rate * DSP_VALUE_SMOOTH_SECONDS.max(0.001))).exp();
+#[inline(always)]
+unsafe fn dsp_value_unchecked(index: i32) -> f64 {
+    *core::ptr::addr_of!(DSP_VALUES)
+        .cast::<f64>()
+        .add(index as usize)
+}
+
+#[inline(always)]
+unsafe fn dsp_value_target_unchecked(index: i32) -> f64 {
+    *core::ptr::addr_of!(DSP_VALUE_TARGETS)
+        .cast::<f64>()
+        .add(index as usize)
+}
+
+fn dsp_value_smoothing_alpha(sample_rate: f64) -> f64 {
+    1.0 - (-1.0 / (sample_rate * DSP_VALUE_SMOOTH_SECONDS.max(0.001))).exp()
+}
+
+fn advance_dsp_values(alpha: f64) {
     unsafe {
         for index in 0..DSP_VALUE_ACTIVE_COUNT {
             if !DSP_VALUE_INITIALIZED[index] {
@@ -4637,7 +4812,11 @@ fn advance_dsp_values(sample_rate: f64) {
             }
             let current = DSP_VALUES[index];
             let target = DSP_VALUE_TARGETS[index];
-            let next = current + (target - current) * alpha;
+            let delta = target - current;
+            if delta == 0.0 {
+                continue;
+            }
+            let next = current + delta * alpha;
             DSP_VALUES[index] = if (target - next).abs() <= DSP_VALUE_SETTLE_EPSILON {
                 target
             } else {
@@ -4666,10 +4845,94 @@ fn dsp_oscillator(wave: i32, phase: f64) -> f64 {
 
 fn dsp_sample_hold_value(input_register: i32) -> f64 {
     if input_register >= 0 {
-        sanitize_control_value(dsp_reg(input_register))
+        unsafe { sanitize_control_value(dsp_reg_unchecked(input_register)) }
     } else {
         random_unit(DRONE_VOICE_SLOT)
     }
+}
+
+fn cached_biquad_coefficients(
+    state_index: usize,
+    kind: i32,
+    parameter_a: f64,
+    parameter_b: f64,
+    sample_rate: f64,
+    calculate: impl FnOnce() -> (BiquadCoefficients, f64),
+) -> (BiquadCoefficients, f64) {
+    if state_index >= MAX_DSP_STATE {
+        return calculate();
+    }
+
+    unsafe {
+        let cache = DSP_BIQUAD_COEFFICIENT_CACHES[state_index];
+        if cache.initialized
+            && cache.kind == kind
+            && cache.parameter_a == parameter_a
+            && cache.parameter_b == parameter_b
+            && cache.sample_rate == sample_rate
+        {
+            return (cache.coefficients, cache.gain);
+        }
+    }
+
+    let (coefficients, gain) = calculate();
+    unsafe {
+        DSP_BIQUAD_COEFFICIENT_CACHES[state_index] = DspBiquadCoefficientCache {
+            initialized: true,
+            kind,
+            parameter_a,
+            parameter_b,
+            sample_rate,
+            coefficients,
+            gain,
+        };
+    }
+    (coefficients, gain)
+}
+
+fn cached_derived_value(
+    state_index: usize,
+    slot: usize,
+    parameter_a: f64,
+    parameter_b: f64,
+    calculate: impl FnOnce() -> f64,
+) -> f64 {
+    if state_index >= MAX_DSP_STATE || slot >= DSP_DERIVED_CACHE_VALUES_PER_STATE {
+        return calculate();
+    }
+    let cache_index = state_index * DSP_DERIVED_CACHE_VALUES_PER_STATE + slot;
+
+    unsafe {
+        let cache = DSP_DERIVED_VALUE_CACHES[cache_index];
+        if cache.initialized
+            && cache.parameter_a == parameter_a
+            && cache.parameter_b == parameter_b
+        {
+            return cache.value;
+        }
+    }
+
+    let value = calculate();
+    unsafe {
+        DSP_DERIVED_VALUE_CACHES[cache_index] = DspDerivedValueCache {
+            initialized: true,
+            parameter_a,
+            parameter_b,
+            value,
+        };
+    }
+    value
+}
+
+fn cached_envelope_coefficient(
+    state_index: usize,
+    slot: usize,
+    seconds: f64,
+    sample_rate: f64,
+) -> f64 {
+    cached_derived_value(state_index, slot, seconds, sample_rate, || {
+        envelope_coefficient(seconds, sample_rate)
+    })
 }
 
 fn render_dsp_biquad_state(
@@ -4711,8 +4974,18 @@ fn render_dsp_formant_filter(op: DspOp, sample_rate: f64) -> f64 {
     let mut wet = 0.0;
 
     for band_index in 0..MAX_FORMANT_BANDS {
-        let (frequency, q, gain) = formant_band(morph, intensity, band_index, sample_rate);
-        let coefficients = filter_coefficients(3, frequency, q, sample_rate);
+        let (coefficients, gain) = cached_biquad_coefficients(
+            state_index + band_index * 4,
+            DSP_BIQUAD_CACHE_KIND_FORMANT_BASE + band_index as i32,
+            morph,
+            intensity,
+            sample_rate,
+            || {
+                let (frequency, q, gain) =
+                    formant_band(morph, intensity, band_index, sample_rate);
+                (filter_coefficients(3, frequency, q, sample_rate), gain)
+            },
+        );
         wet += render_dsp_biquad_state(state_index + band_index * 4, sample, coefficients) * gain;
     }
 
@@ -4731,10 +5004,23 @@ fn render_dsp_equalizer(op: DspOp, sample_rate: f64) -> f64 {
     let gains = [dsp_reg(op.c), dsp_reg(op.d), dsp_reg(op.e)];
     let mut output = sample;
     for (band, gain) in gains.into_iter().enumerate() {
+        let (coefficients, _) = cached_biquad_coefficients(
+            state_index + band * 4,
+            DSP_BIQUAD_CACHE_KIND_EQUALIZER_BASE + band as i32,
+            gain,
+            0.0,
+            sample_rate,
+            || {
+                (
+                    equalizer_coefficients(band as i32, gain, sample_rate),
+                    1.0,
+                )
+            },
+        );
         output = render_dsp_biquad_state(
             state_index + band * 4,
             output,
-            equalizer_coefficients(band as i32, gain, sample_rate),
+            coefficients,
         );
     }
     sanitize_sample(output, 4.0)
@@ -4782,7 +5068,19 @@ fn render_dsp_filter(op: DspOp, sample_rate: f64) -> f64 {
     }
     let cutoff = dsp_reg(op.c);
     let resonance = dsp_reg(op.d);
-    let coefficients = filter_coefficients(op.a, cutoff, resonance, sample_rate);
+    let (coefficients, _) = cached_biquad_coefficients(
+        op.state as usize,
+        op.a,
+        cutoff,
+        resonance,
+        sample_rate,
+        || {
+            (
+                filter_coefficients(op.a, cutoff, resonance, sample_rate),
+                1.0,
+            )
+        },
+    );
     render_dsp_biquad_state(op.state as usize, dsp_reg(op.b), coefficients)
 }
 
@@ -5201,9 +5499,19 @@ fn render_dsp_follower(op: DspOp, sample_rate: f64) -> f64 {
         let attack = dsp_reg(op.b).max(0.0);
         let release = dsp_reg(op.c).max(0.0);
         let coefficient = if target > current {
-            envelope_coefficient(attack, sample_rate)
+            cached_envelope_coefficient(
+                state_index,
+                DSP_DERIVED_CACHE_ATTACK,
+                attack,
+                sample_rate,
+            )
         } else {
-            envelope_coefficient(release, sample_rate)
+            cached_envelope_coefficient(
+                state_index,
+                DSP_DERIVED_CACHE_RELEASE,
+                release,
+                sample_rate,
+            )
         };
         let next = current + (target - current) * coefficient;
         DSP_STATE[state_index] = sanitize_control_value(next).max(0.0);
@@ -5230,9 +5538,19 @@ fn render_dsp_compressor(op: DspOp, sample_rate: f64) -> f64 {
         let attack = dsp_reg(op.d).clamp(0.0, 1.0);
         let release = dsp_reg(op.e).clamp(0.0, 3.0);
         let coefficient = if detector > current {
-            envelope_coefficient(attack, sample_rate)
+            cached_envelope_coefficient(
+                state_index,
+                DSP_DERIVED_CACHE_ATTACK,
+                attack,
+                sample_rate,
+            )
         } else {
-            envelope_coefficient(release, sample_rate)
+            cached_envelope_coefficient(
+                state_index,
+                DSP_DERIVED_CACHE_RELEASE,
+                release,
+                sample_rate,
+            )
         };
         let envelope = current + (detector - current) * coefficient;
         DSP_STATE[state_index] = sanitize_control_value(envelope).max(0.0);
@@ -5269,8 +5587,26 @@ fn render_dsp_limiter(op: DspOp, sample_rate: f64) -> f64 {
     let release = dsp_reg(op.d).clamp(0.001, 3.0);
     let lookahead = dsp_reg(op.e).clamp(0.0, 0.02);
     let lookahead_samples = (lookahead * sample_rate.max(1.0)).round() as usize;
-    let driven = sanitize_sample(sample * 10.0_f64.powf(input_gain_db / 20.0), 32.0);
-    let ceiling = 10.0_f64.powf(ceiling_db / 20.0);
+    let state_index = if op.state >= 0 {
+        op.state as usize
+    } else {
+        MAX_DSP_STATE
+    };
+    let input_gain = cached_derived_value(
+        state_index,
+        DSP_DERIVED_CACHE_INPUT_GAIN,
+        input_gain_db,
+        0.0,
+        || 10.0_f64.powf(input_gain_db / 20.0),
+    );
+    let ceiling = cached_derived_value(
+        state_index,
+        DSP_DERIVED_CACHE_CEILING,
+        ceiling_db,
+        0.0,
+        || 10.0_f64.powf(ceiling_db / 20.0),
+    );
+    let driven = sanitize_sample(sample * input_gain, 32.0);
     let required_gain = if driven.abs() > ceiling {
         ceiling / driven.abs()
     } else {
@@ -5293,7 +5629,12 @@ fn render_dsp_limiter(op: DspOp, sample_rate: f64) -> f64 {
             } else if hold_samples >= 1.0 {
                 (current, hold_samples - 1.0)
             } else {
-                let coefficient = envelope_coefficient(release, sample_rate);
+                let coefficient = cached_envelope_coefficient(
+                    state_index,
+                    DSP_DERIVED_CACHE_RELEASE,
+                    release,
+                    sample_rate,
+                );
                 (current + (required_gain - current) * coefficient, 0.0)
             };
             DSP_STATE[state_index] = sanitize_control_value(next).clamp(0.0, 1.0);
@@ -6343,7 +6684,7 @@ fn render_dsp_phase_oscillator_output(
             9 => {
                 let node_index = op.value.round() as i32;
                 if node_index >= 0 && (node_index as usize) < MAX_NODES {
-                    let endpoint = dsp_reg(op.c).clamp(-1.0, 1.0);
+                    let endpoint = dsp_reg_unchecked(op.c).clamp(-1.0, 1.0);
                     custom_wave_value_with_endpoint(
                         node_index as usize,
                         render_phase,
@@ -6357,6 +6698,18 @@ fn render_dsp_phase_oscillator_output(
             _ => dsp_oscillator(op.a, render_phase),
         }
     }
+}
+
+#[inline(always)]
+unsafe fn map_dsp_oscillator_range(op: DspOp, output: f64) -> f64 {
+    if op.value4 < 0.5 {
+        return output;
+    }
+    let range_min_register = op.value2.round() as i32;
+    let range_max_register = op.value3.round() as i32;
+    let range_min = dsp_reg_unchecked(range_min_register);
+    let range_max = dsp_reg_unchecked(range_max_register);
+    range_min + (output + 1.0) * 0.5 * (range_max - range_min)
 }
 
 fn render_dsp_slew(op: DspOp, sample_rate: f64) -> f64 {
@@ -6400,47 +6753,78 @@ fn render_dsp_op(
 ) {
     let _ = op.value;
     match op.opcode {
-        DSP_OP_VALUE => {
+        DSP_OP_VALUE => unsafe {
             let value = if op.value >= DSP_VALUE_MODE_IMMEDIATE {
-                dsp_value_target(op.a)
+                dsp_value_target_unchecked(op.a)
             } else {
-                dsp_value(op.a)
+                dsp_value_unchecked(op.a)
             };
-            set_dsp_reg(op.out, value);
-        }
-        DSP_OP_ADD => set_dsp_reg(op.out, dsp_reg(op.a) + dsp_reg(op.b)),
-        DSP_OP_MUL => set_dsp_reg(op.out, dsp_reg(op.a) * dsp_reg(op.b)),
-        DSP_OP_SUB => set_dsp_reg(op.out, dsp_reg(op.a) - dsp_reg(op.b)),
+            set_dsp_reg_sanitized_unchecked(op.out, value);
+        },
+        DSP_OP_ADD => unsafe {
+            set_dsp_reg_sanitized_unchecked(
+                op.out,
+                dsp_reg_unchecked(op.a) + dsp_reg_unchecked(op.b),
+            )
+        },
+        DSP_OP_MUL => unsafe {
+            set_dsp_reg_sanitized_unchecked(
+                op.out,
+                dsp_reg_unchecked(op.a) * dsp_reg_unchecked(op.b),
+            )
+        },
+        DSP_OP_SUB => unsafe {
+            set_dsp_reg_sanitized_unchecked(
+                op.out,
+                dsp_reg_unchecked(op.a) - dsp_reg_unchecked(op.b),
+            )
+        },
         DSP_OP_DIV => {
-            let denominator = dsp_reg(op.b);
+            let denominator = unsafe { dsp_reg_unchecked(op.b) };
             let output = if denominator.abs() <= 0.000001 {
                 0.0
             } else {
-                dsp_reg(op.a) / denominator
+                (unsafe { dsp_reg_unchecked(op.a) }) / denominator
             };
-            set_dsp_reg(op.out, output);
+            unsafe { set_dsp_reg_sanitized_unchecked(op.out, output) };
         }
-        DSP_OP_NEG => set_dsp_reg(op.out, -dsp_reg(op.a)),
+        DSP_OP_NEG => unsafe {
+            set_dsp_reg_unchecked(op.out, -dsp_reg_unchecked(op.a));
+        },
         DSP_OP_OSC => unsafe {
-            let frequency = dsp_reg(op.b).max(0.0);
+            let frequency = if op.b >= 0 {
+                dsp_reg_unchecked(op.b).max(0.0)
+            } else {
+                0.0
+            };
             let state_index = if op.state >= 0 && (op.state as usize) < MAX_DSP_STATE {
                 Some(op.state as usize)
             } else {
                 None
             };
+            if op.a >= 0 && op.a <= 4 && op.d < 0 && op.e < 0 {
+                let index = op.state as usize;
+                let phase = DSP_STATE[index];
+                let output = map_dsp_oscillator_range(op, dsp_oscillator(op.a, phase));
+                set_dsp_reg_unchecked(op.out, output);
+                DSP_STATE[index] =
+                    normalize_phase(phase + frequency / sample_rate.max(1.0));
+                return;
+            }
             let mut phase = state_index.map(|index| DSP_STATE[index]).unwrap_or(0.0);
             let mut phase_reset_fade_started = false;
-            if op.a != 5 && op.a != 7 {
+            if op.a != 5 && op.a != 7 && op.e >= 0 {
                 if let Some(index) = state_index {
                     if index + 1 < MAX_DSP_STATE && op.e >= 0 {
-                        let reset_trigger = dsp_reg(op.e) >= ENVELOPE_TRIGGER_THRESHOLD;
+                        let reset_trigger =
+                            dsp_reg_unchecked(op.e) >= ENVELOPE_TRIGGER_THRESHOLD;
                         let previous_reset_trigger =
                             DSP_STATE[index + 1] >= ENVELOPE_TRIGGER_THRESHOLD;
                         if reset_trigger && !previous_reset_trigger {
                             let reset_fade_index = if op.a == 9 { index + 4 } else { index + 2 };
                             if reset_fade_index + 1 < MAX_DSP_STATE {
                                 let previous_render_phase = if op.d >= 0 {
-                                    phase + dsp_reg(op.d)
+                                    phase + dsp_reg_unchecked(op.d)
                                 } else {
                                     phase
                                 };
@@ -6465,7 +6849,7 @@ fn render_dsp_op(
                 }
             }
             let render_phase = if op.a != 5 && op.a != 7 && op.d >= 0 {
-                phase + dsp_reg(op.d)
+                phase + dsp_reg_unchecked(op.d)
             } else {
                 phase
             };
@@ -6474,7 +6858,7 @@ fn render_dsp_op(
                     .map(|index| index + 3 < MAX_DSP_STATE && DSP_STATE[index + 3] >= 0.5)
                     .unwrap_or(false);
             let mut output = if custom_wave_is_done {
-                dsp_reg(op.c).clamp(-1.0, 1.0)
+                dsp_reg_unchecked(op.c).clamp(-1.0, 1.0)
             } else {
                 match op.a {
                     5 => {
@@ -6483,7 +6867,11 @@ fn render_dsp_op(
                                 DSP_STATE[index + 1] = dsp_sample_hold_value(op.c);
                                 DSP_STATE[index + 2] = 1.0;
                             }
-                            let trigger = dsp_reg(op.d) >= ENVELOPE_TRIGGER_THRESHOLD;
+                            let trigger = if op.d >= 0 {
+                                dsp_reg_unchecked(op.d) >= ENVELOPE_TRIGGER_THRESHOLD
+                            } else {
+                                false
+                            };
                             let previous_trigger = DSP_STATE[index] >= ENVELOPE_TRIGGER_THRESHOLD;
                             if trigger && !previous_trigger {
                                 DSP_STATE[index + 1] = dsp_sample_hold_value(op.c);
@@ -6501,7 +6889,7 @@ fn render_dsp_op(
                     _ => render_dsp_phase_oscillator_output(op, render_phase, state_index, frame),
                 }
             };
-            if op.a != 5 && op.a != 7 {
+            if op.a != 5 && op.a != 7 && op.e >= 0 {
                 if let Some(index) = state_index {
                     let reset_fade_index = if op.a == 9 { index + 4 } else { index + 2 };
                     if reset_fade_index + 1 < MAX_DSP_STATE {
@@ -6517,7 +6905,8 @@ fn render_dsp_op(
                     }
                 }
             }
-            set_dsp_reg(op.out, output);
+            output = map_dsp_oscillator_range(op, output);
+            set_dsp_reg_unchecked(op.out, output);
             if let Some(index) = state_index {
                 let next_phase = phase + frequency / sample_rate.max(1.0);
                 if op.a == 7 && next_phase >= 1.0 && index + 2 < MAX_DSP_STATE {
@@ -6614,7 +7003,9 @@ fn render_dsp_op(
                 *right_sample = sanitize_sample(*right_sample + sample, 8.0);
             }
         }
-        DSP_OP_ABS => set_dsp_reg(op.out, dsp_reg(op.a).abs()),
+        DSP_OP_ABS => unsafe {
+            set_dsp_reg_unchecked(op.out, dsp_reg_unchecked(op.a).abs());
+        },
         DSP_OP_MAP => {
             let source = dsp_reg(op.a);
             let src_min = dsp_reg(op.b);
@@ -6831,7 +7222,7 @@ mod quantise_tests {
 
 fn capture_dsp_scopes() {
     unsafe {
-        for slot in 0..MAX_DSP_SCOPES {
+        for slot in 0..DSP_SCOPE_SLOT_COUNT {
             let register = DSP_SCOPE_REGS[slot];
             if register < 0 || register as usize >= MAX_DSP_REGS {
                 continue;
@@ -6857,13 +7248,14 @@ fn capture_dsp_scopes() {
 
 fn capture_dsp_meters() {
     unsafe {
-        for slot in 0..MAX_DSP_METERS {
+        for slot in 0..DSP_METER_SLOT_COUNT {
             let register = DSP_METER_REGS[slot];
             if register < 0 || register as usize >= MAX_DSP_REGS {
                 continue;
             }
-            DSP_METER_SUMS[slot] += dsp_reg(register).abs();
-            DSP_METER_SIGNED_SUMS[slot] += dsp_reg(register);
+            let value = DSP_REGS[register as usize];
+            DSP_METER_SUMS[slot] += value.abs();
+            DSP_METER_SIGNED_SUMS[slot] += value;
             DSP_METER_COUNTS[slot] = DSP_METER_COUNTS[slot].saturating_add(1);
         }
     }
@@ -6945,13 +7337,14 @@ pub extern "C" fn renderDspProgram(frames: u32, sample_rate: f64) {
     if frames == 0 || sample_rate <= 0.0 {
         return;
     }
+    let value_smoothing_alpha = dsp_value_smoothing_alpha(sample_rate);
 
     unsafe {
         DSP_SPREAD_CONTEXT = 0;
         for frame in 0..frames {
             let mut left_sample = 0.0;
             let mut right_sample = 0.0;
-            advance_dsp_values(sample_rate);
+            advance_dsp_values(value_smoothing_alpha);
             render_dsp_ops(frame, sample_rate, &mut left_sample, &mut right_sample);
             capture_dsp_meters();
             capture_dsp_scopes();
@@ -6982,6 +7375,7 @@ pub extern "C" fn renderDspProgramVoice(
 
     let voice_slot = (slot as usize).min(MAX_VOICE_SLOTS - 1);
     let base_amp = velocity.clamp(0.0, 1.0) * lifecycle_gain.clamp(0.0, 1.0);
+    let value_smoothing_alpha = dsp_value_smoothing_alpha(sample_rate);
 
     unsafe {
         DSP_SPREAD_CONTEXT = voice_slot + 1;
@@ -7029,7 +7423,7 @@ pub extern "C" fn renderDspProgramVoice(
                 0.0
             };
 
-            advance_dsp_values(sample_rate);
+            advance_dsp_values(value_smoothing_alpha);
             render_dsp_ops(frame, sample_rate, &mut left_sample, &mut right_sample);
             capture_dsp_meters();
             capture_dsp_scopes();

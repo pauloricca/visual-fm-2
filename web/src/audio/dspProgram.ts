@@ -651,6 +651,17 @@ function hasInput(node: PatchNode, port: string, context: CompileContext): boole
   return (context.incomingByInput.get(inputKey(node.id, port)) ?? []).length > 0;
 }
 
+function resolveOptionalZeroInput(
+  node: PatchNode,
+  port: string,
+  context: CompileContext,
+): number {
+  if (!hasInput(node, port, context) && finiteNumber(node.params[port], 0) === 0) {
+    return -1;
+  }
+  return resolveInput(node, port, 0, context);
+}
+
 function resolveLinkValue(link: PatchLink, context: CompileContext): number | null {
   const spreadBoundaryRegister = context.spreadBoundaryRegisterByLink.get(link);
   if (spreadBoundaryRegister !== undefined) return spreadBoundaryRegister;
@@ -843,16 +854,35 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
   }
 
   if (node.type === 'Noise') {
+    const rangeMin = resolveInput(node, 'rangeMin', -1, context);
+    const rangeMax = resolveInput(node, 'rangeMax', 1, context);
     const output = nextRegister(context);
-    context.ops.push({ opcode: DSP_OP.Osc, out: output, a: 6, b: constantRegister(0, context) });
-    return mapBipolarOscillatorAmplitude(output, node, context);
+    context.ops.push({
+      opcode: DSP_OP.Osc,
+      out: output,
+      a: 6,
+      b: -1,
+      value2: rangeMin,
+      value3: rangeMax,
+      value4: 1,
+    });
+    return output;
   }
 
   const wave = OSC_WAVES[node.type];
   if (wave !== undefined) {
-    const frequency = wave === 5 ? constantRegister(0, context) : resolveInput(node, 'frequency', 220, context);
+    const frequency = wave === 5 ? -1 : resolveInput(node, 'frequency', 220, context);
+    const signal = hasInput(node, 'signal', context) ? resolveInput(node, 'signal', 0, context) : -1;
+    const phaseOrTrigger = wave === 5
+      ? resolveOptionalZeroInput(node, 'trigger', context)
+      : resolveOptionalZeroInput(node, 'phase', context);
+    const phaseReset = wave === 5
+      ? -1
+      : resolveOptionalZeroInput(node, 'phaseReset', context);
+    const rangeMin = wave === 5 ? -1 : resolveInput(node, 'rangeMin', -1, context);
+    const rangeMax = wave === 5 ? -1 : resolveInput(node, 'rangeMax', 1, context);
     const output = nextRegister(context);
-    const stateCount = wave === 5 ? 3 : 4;
+    const stateCount = wave === 5 ? 3 : phaseReset >= 0 ? 4 : 1;
     const state = nextState(context, stateCount);
     context.stateBindings.push({
       id: `${node.id}:oscillator`,
@@ -866,12 +896,15 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       out: output,
       a: wave,
       b: frequency,
-      c: hasInput(node, 'signal', context) ? resolveInput(node, 'signal', 0, context) : -1,
-      d: wave === 5 ? resolveInput(node, 'trigger', 0, context) : resolveInput(node, 'phase', 0, context),
-      e: wave === 5 ? -1 : resolveInput(node, 'phaseReset', 0, context),
+      c: signal,
+      d: phaseOrTrigger,
+      e: phaseReset,
       state,
+      value2: rangeMin,
+      value3: rangeMax,
+      value4: wave === 5 ? 0 : 1,
     });
-    return wave === 5 ? output : mapBipolarOscillatorAmplitude(output, node, context);
+    return output;
   }
 
   if (node.type === 'CustomWave') {
@@ -924,16 +957,21 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       a: 9,
       b: frequency,
       c: normalizedBaseLevel,
-      d: resolveInput(node, 'phase', 0, context),
-      e: resolveInput(node, 'trigger', 0, context),
+      d: resolveOptionalZeroInput(node, 'phase', context),
+      e: resolveOptionalZeroInput(node, 'trigger', context),
       state,
       value: customWaveIndex,
+      value2: rangeMin,
+      value3: rangeMax,
+      value4: 1,
     });
-    return mapBipolarAmplitude(output, rangeMin, rangeMax, context);
+    return output;
   }
 
   if (node.type === 'PerlinNoise') {
     const speed = resolveInput(node, 'speed', 8, context);
+    const rangeMin = resolveInput(node, 'rangeMin', -1, context);
+    const rangeMax = resolveInput(node, 'rangeMax', 1, context);
     const output = nextRegister(context);
     const state = nextState(context, 3);
     context.stateBindings.push({
@@ -943,8 +981,17 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       kind: 'oscillator',
       nodeId: node.id,
     });
-    context.ops.push({ opcode: DSP_OP.Osc, out: output, a: 7, b: speed, state });
-    return mapBipolarOscillatorAmplitude(output, node, context);
+    context.ops.push({
+      opcode: DSP_OP.Osc,
+      out: output,
+      a: 7,
+      b: speed,
+      state,
+      value2: rangeMin,
+      value3: rangeMax,
+      value4: 1,
+    });
+    return output;
   }
 
   if (node.type === 'AudioInput') {
@@ -2129,28 +2176,6 @@ function emitBinary(opcode: number, a: number, b: number, context: CompileContex
   const out = nextRegister(context);
   context.ops.push({ opcode, out, a, b });
   return out;
-}
-
-function mapBipolarOscillatorAmplitude(signal: number, node: PatchNode, context: CompileContext): number {
-  const min = resolveInput(node, 'rangeMin', -1, context);
-  const max = resolveInput(node, 'rangeMax', 1, context);
-  return mapBipolarAmplitude(signal, min, max, context);
-}
-
-function mapBipolarAmplitude(
-  signal: number,
-  min: number,
-  max: number,
-  context: CompileContext,
-): number {
-  const unitSignal = emitBinary(
-    DSP_OP.Mul,
-    emitBinary(DSP_OP.Add, signal, constantRegister(1, context), context),
-    constantRegister(0.5, context),
-    context,
-  );
-  const range = emitBinary(DSP_OP.Sub, max, min, context);
-  return emitBinary(DSP_OP.Add, min, emitBinary(DSP_OP.Mul, unitSignal, range, context), context);
 }
 
 function emitFunction(functionId: number, args: number[], context: CompileContext): number {

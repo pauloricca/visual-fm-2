@@ -810,18 +810,20 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             onChange={(value) => data.onParamChange(node.id, 'count', value)}
           />
         </div>
-        <div className="spread-port-output">
-          <span>item index</span>
-          <Handle
-            id="out:item index"
-            type="source"
-            position={Position.Right}
-            className={[
-              'shader-handle shader-handle-output spread-item-index-handle',
-              selectedLinkOutputs.includes('item index') ? 'shader-handle-selected-link' : '',
-            ].filter(Boolean).join(' ')}
-          />
-        </div>
+        {!isAreaUiCollapsedPresentation ? (
+          <div className="spread-port-output">
+            <span>item index</span>
+            <Handle
+              id="out:item index"
+              type="source"
+              position={Position.Right}
+              className={[
+                'shader-handle shader-handle-output spread-item-index-handle',
+                selectedLinkOutputs.includes('item index') ? 'shader-handle-selected-link' : '',
+              ].filter(Boolean).join(' ')}
+            />
+          </div>
+        ) : null}
       </div>
     );
   }

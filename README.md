@@ -201,7 +201,7 @@ Create a visual area by Cmd/Ctrl-dragging on the canvas, or choose `Area` from a
 
 ## Spreads
 
-Choose `Spread` from a node's type picker to create a functional area. A Spread uses the same header, title editing, lock, collapse, resizing, nesting, membership, and movement interactions as an Area. Its fixed control strip sits immediately below the header: `count` uses a normal boundary input on the left, and the inward-facing `item index` pin follows immediately after the count editor on the same row. The control strip remains visible when the Spread is collapsed.
+Choose `Spread` from a node's type picker to create a functional area. A Spread uses the same header, title editing, lock, collapse, resizing, nesting, membership, and movement interactions as an Area. Its fixed control strip sits immediately below the header: `count` uses a normal boundary input on the left, and the inward-facing `item index` pin follows immediately after the count editor on the same row. When the Spread is collapsed, the control strip and count input remain visible while the internal-only `item index` pin is hidden.
 
 A node is part of an unlocked Spread when its top-left corner is inside the functional body below the control strip. Locking the Spread preserves the same membership snapshot used by Areas, including after a member is moved outside the visible bounds. Unlike a visual Area, a Spread changes the DSP graph:
 
