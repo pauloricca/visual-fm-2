@@ -2456,7 +2456,12 @@ fn modulated_wave(base_wave: i32, modulation: f64) -> i32 {
     waves[index]
 }
 
-fn custom_wave_curve_value(node_index: usize, phase: f64, previous: bool) -> f64 {
+fn custom_wave_curve_value(
+    node_index: usize,
+    phase: f64,
+    previous: bool,
+    endpoint: Option<f64>,
+) -> f64 {
     unsafe {
         let count = if previous {
             CUSTOM_WAVE_PREVIOUS_COUNTS[node_index]
@@ -2473,7 +2478,15 @@ fn custom_wave_curve_value(node_index: usize, phase: f64, previous: bool) -> f64
             } else {
                 CUSTOM_WAVE_XS[node_index][point_index - 1]
             };
-            let previous_y = if previous {
+            let previous_y = if point_index == 1 {
+                endpoint.unwrap_or_else(|| {
+                    if previous {
+                        CUSTOM_WAVE_PREVIOUS_YS[node_index][0]
+                    } else {
+                        CUSTOM_WAVE_YS[node_index][0]
+                    }
+                })
+            } else if previous {
                 CUSTOM_WAVE_PREVIOUS_YS[node_index][point_index - 1]
             } else {
                 CUSTOM_WAVE_YS[node_index][point_index - 1]
@@ -2483,7 +2496,15 @@ fn custom_wave_curve_value(node_index: usize, phase: f64, previous: bool) -> f64
             } else {
                 CUSTOM_WAVE_XS[node_index][point_index]
             };
-            let next_y = if previous {
+            let next_y = if point_index == count - 1 {
+                endpoint.unwrap_or_else(|| {
+                    if previous {
+                        CUSTOM_WAVE_PREVIOUS_YS[node_index][point_index]
+                    } else {
+                        CUSTOM_WAVE_YS[node_index][point_index]
+                    }
+                })
+            } else if previous {
                 CUSTOM_WAVE_PREVIOUS_YS[node_index][point_index]
             } else {
                 CUSTOM_WAVE_YS[node_index][point_index]
@@ -2498,7 +2519,9 @@ fn custom_wave_curve_value(node_index: usize, phase: f64, previous: bool) -> f64
             let t = ((p - previous_x) / span).clamp(0.0, 1.0);
             return previous_y + (next_y - previous_y) * t;
         }
-        if previous {
+        if let Some(endpoint) = endpoint {
+            endpoint
+        } else if previous {
             CUSTOM_WAVE_PREVIOUS_YS[node_index][count - 1]
         } else {
             CUSTOM_WAVE_YS[node_index][count - 1]
@@ -2507,8 +2530,17 @@ fn custom_wave_curve_value(node_index: usize, phase: f64, previous: bool) -> f64
 }
 
 fn custom_wave_value(node_index: usize, phase: f64, frame: usize) -> f64 {
+    custom_wave_value_with_endpoint(node_index, phase, frame, None)
+}
+
+fn custom_wave_value_with_endpoint(
+    node_index: usize,
+    phase: f64,
+    frame: usize,
+    endpoint: Option<f64>,
+) -> f64 {
     unsafe {
-        let current = custom_wave_curve_value(node_index, phase, false);
+        let current = custom_wave_curve_value(node_index, phase, false, endpoint);
         let total = CUSTOM_WAVE_MORPH_TOTAL_FRAMES[node_index];
         let remaining_at_start = CUSTOM_WAVE_MORPH_REMAINING_AT_QUANTUM_START[node_index];
         if total == 0 || remaining_at_start == 0 || CUSTOM_WAVE_PREVIOUS_COUNTS[node_index] < 2 {
@@ -2520,7 +2552,7 @@ fn custom_wave_value(node_index: usize, phase: f64, frame: usize) -> f64 {
             CUSTOM_WAVE_MORPH_CONSUMED_FRAMES[node_index].max(frame_offset.saturating_add(1));
         let remaining = remaining_at_start.saturating_sub(frame_offset);
         let mix = smooth_step((total.saturating_sub(remaining)) as f64 / total as f64);
-        let previous = custom_wave_curve_value(node_index, phase, true);
+        let previous = custom_wave_curve_value(node_index, phase, true, endpoint);
         previous + (current - previous) * mix
     }
 }
@@ -4227,6 +4259,11 @@ fn render_node(
         let custom_done = node.wave == 9
             && custom_mode_is_finite(node.custom_mode)
             && CUSTOM_WAVE_DONE[voice_slot][node_index];
+        let custom_base_level = if node.wave == 9 && custom_mode_is_finite(node.custom_mode) {
+            custom_wave_curve_value(node_index, 0.0, false, None)
+        } else {
+            0.0
+        };
         let mut value = if active_wave && !custom_done {
             if node.wave == 10 {
                 sync_sample_frequency_direction(
@@ -4255,9 +4292,10 @@ fn render_node(
                 )
             }
         } else {
-            0.0
+            custom_base_level
         };
-        value *= custom_one_shot_edge_gain(node, phase, frequency_value);
+        let custom_edge_gain = custom_one_shot_edge_gain(node, phase, frequency_value);
+        value = custom_base_level + (value - custom_base_level) * custom_edge_gain;
 
         if ring_value > 0.0 {
             let depth = ring_value.clamp(0.0, 1.0);
@@ -6268,15 +6306,13 @@ fn render_dsp_phase_oscillator_output(
             9 => {
                 let node_index = op.value.round() as i32;
                 if node_index >= 0 && (node_index as usize) < MAX_NODES {
-                    if let Some(index) = state_index {
-                        if index + 3 < MAX_DSP_STATE && DSP_STATE[index + 3] >= 0.5 {
-                            0.0
-                        } else {
-                            custom_wave_value(node_index as usize, render_phase, frame)
-                        }
-                    } else {
-                        custom_wave_value(node_index as usize, render_phase, frame)
-                    }
+                    let endpoint = dsp_reg(op.c).clamp(-1.0, 1.0);
+                    custom_wave_value_with_endpoint(
+                        node_index as usize,
+                        render_phase,
+                        frame,
+                        Some(endpoint),
+                    )
                 } else {
                     0.0
                 }
@@ -6401,7 +6437,7 @@ fn render_dsp_op(
                     .map(|index| index + 3 < MAX_DSP_STATE && DSP_STATE[index + 3] >= 0.5)
                     .unwrap_or(false);
             let mut output = if custom_wave_is_done {
-                0.0
+                dsp_reg(op.c).clamp(-1.0, 1.0)
             } else {
                 match op.a {
                     5 => {

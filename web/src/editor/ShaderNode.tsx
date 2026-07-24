@@ -18,7 +18,7 @@ import {
   CUSTOM_WAVE_MODES,
   customWaveUsesSustainEnd,
   customWaveUsesSustainStart,
-  customWaveWithRangeOrigin,
+  customWaveWithBaseLevel,
   normalizedCustomWaveValue,
   normalizeCustomWave,
 } from '../graph/customWave';
@@ -1009,6 +1009,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           {showCustomWaveEditor && customWave ? (
             <CustomWaveEditor
               customWave={customWave}
+              baseLevel={node.params.baseLevel ?? 0}
               rangeMin={node.params.rangeMin ?? -1}
               rangeMax={node.params.rangeMax ?? 1}
               playhead={customWavePlayhead}
@@ -1984,6 +1985,7 @@ function centeredCoordinateToUnit(value: number): number {
 
 interface CustomWaveEditorProps {
   customWave: CustomWaveSettings;
+  baseLevel: number;
   rangeMin: number;
   rangeMax: number;
   playhead: number;
@@ -3033,6 +3035,7 @@ function SequencerGrid({
 
 function CustomWaveEditor({
   customWave,
+  baseLevel,
   rangeMin,
   rangeMax,
   playhead,
@@ -3054,7 +3057,7 @@ function CustomWaveEditor({
   const padding = 12;
   const innerWidth = width - padding * 2;
   const innerHeight = height - padding * 2;
-  const points = customWaveWithRangeOrigin(customWave, rangeMin, rangeMax).points;
+  const points = customWaveWithBaseLevel(customWave, baseLevel, rangeMin, rangeMax).points;
   const path = customWavePath(points, width, height, padding);
   const graphDetailSize = {
     width: displaySize.width * graphZoomScale,
@@ -3732,6 +3735,7 @@ function PortNameLabel({
 
 function displayPortName(name: string): string {
   if (name === 'originalFrequency') return 'original frequency';
+  if (name === 'baseLevel') return 'base level';
   if (name === 'minFreq') return 'min freq';
   if (name === 'maxFreq') return 'max freq';
   if (name === 'rangeMin') return 'range min';

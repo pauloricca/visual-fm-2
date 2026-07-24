@@ -74,16 +74,17 @@ export function customWaveUsesSustainEnd(mode: CustomWaveMode): boolean {
 }
 
 /**
- * Returns a copy whose locked endpoints produce zero in the configured output
- * range. The stored points stay normalized, so changing the range never
- * rewrites the user's curve.
+ * Returns a copy whose locked endpoints produce the base level in the
+ * configured output range. The stored points stay normalized, so changing the
+ * base level or range never rewrites the user's curve.
  */
-export function customWaveWithRangeOrigin(
+export function customWaveWithBaseLevel(
   customWave: CustomWaveSettings,
+  baseLevel: number,
   rangeMin: number,
   rangeMax: number,
 ): CustomWaveSettings {
-  const endpointY = normalizedCustomWaveValue(0, rangeMin, rangeMax);
+  const endpointY = normalizedCustomWaveValue(baseLevel, rangeMin, rangeMax);
   const lastIndex = customWave.points.length - 1;
   return {
     ...customWave,

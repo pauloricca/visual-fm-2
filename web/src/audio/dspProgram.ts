@@ -1,5 +1,5 @@
 import { expandGroups } from '../graph/subpatch';
-import { customWaveWithRangeOrigin, normalizeCustomWave } from '../graph/customWave';
+import { customWaveWithBaseLevel, normalizeCustomWave } from '../graph/customWave';
 import {
   SEQUENCER_DEFAULT_ROWS,
   SEQUENCER_DEFAULT_STEPS,
@@ -717,16 +717,40 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
   }
 
   if (node.type === 'CustomWave') {
+    const staticBaseLevel = node.params.baseLevel ?? 0;
+    const staticRangeMin = node.params.rangeMin ?? -1;
+    const staticRangeMax = node.params.rangeMax ?? 1;
     const customWaveIndex = context.customWaveBindings.length;
     context.customWaveBindings.push({
       nodeId: node.id,
-      customWave: customWaveWithRangeOrigin(
+      customWave: customWaveWithBaseLevel(
         normalizeCustomWave(node.customWave, node.params),
-        node.params.rangeMin ?? -1,
-        node.params.rangeMax ?? 1,
+        staticBaseLevel,
+        staticRangeMin,
+        staticRangeMax,
       ),
     });
     const frequency = resolveInput(node, 'frequency', 220, context);
+    const baseLevel = resolveInput(node, 'baseLevel', 0, context);
+    const rangeMin = resolveInput(node, 'rangeMin', -1, context);
+    const rangeMax = resolveInput(node, 'rangeMax', 1, context);
+    const mappedBaseLevel = nextRegister(context);
+    context.ops.push({
+      opcode: DSP_OP.Map,
+      out: mappedBaseLevel,
+      a: baseLevel,
+      b: rangeMin,
+      c: rangeMax,
+      d: constantRegister(-1, context),
+      e: constantRegister(1, context),
+    });
+    const normalizedBaseLevel = nextRegister(context);
+    context.ops.push({
+      opcode: DSP_OP.HardClip,
+      out: normalizedBaseLevel,
+      a: mappedBaseLevel,
+      b: constantRegister(1, context),
+    });
     const output = nextRegister(context);
     const state = nextState(context, 6);
     context.stateBindings.push({
@@ -741,12 +765,13 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       out: output,
       a: 9,
       b: frequency,
+      c: normalizedBaseLevel,
       d: resolveInput(node, 'phase', 0, context),
       e: resolveInput(node, 'trigger', 0, context),
       state,
       value: customWaveIndex,
     });
-    return mapBipolarOscillatorAmplitude(output, node, context);
+    return mapBipolarAmplitude(output, rangeMin, rangeMax, context);
   }
 
   if (node.type === 'PerlinNoise') {
@@ -1951,6 +1976,15 @@ function emitBinary(opcode: number, a: number, b: number, context: CompileContex
 function mapBipolarOscillatorAmplitude(signal: number, node: PatchNode, context: CompileContext): number {
   const min = resolveInput(node, 'rangeMin', -1, context);
   const max = resolveInput(node, 'rangeMax', 1, context);
+  return mapBipolarAmplitude(signal, min, max, context);
+}
+
+function mapBipolarAmplitude(
+  signal: number,
+  min: number,
+  max: number,
+  context: CompileContext,
+): number {
   const unitSignal = emitBinary(
     DSP_OP.Mul,
     emitBinary(DSP_OP.Add, signal, constantRegister(1, context), context),
