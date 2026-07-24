@@ -7298,32 +7298,66 @@ unsafe fn render_dsp_ops(
             }
         }
 
+        if state_count == 0 {
+            for item_index in 0..count {
+                DSP_SPREAD_ITEM_INDEX = item_index;
+                for template_index in (op_index + 1)..end_index {
+                    render_dsp_op(
+                        DSP_OPS[template_index],
+                        frame,
+                        sample_rate,
+                        left_sample,
+                        right_sample,
+                    );
+                }
+            }
+            op_index = end_index + 1;
+            continue;
+        }
+
         let mut runtime = DSP_SPREAD_RUNTIMES[spread_slot]
             .take()
             .unwrap_or_else(DspSpreadRuntime::new);
         let context = DSP_SPREAD_CONTEXT.min(MAX_VOICE_SLOTS);
         let required_states = count.saturating_mul(state_count);
-        runtime.states_by_context[context].resize(required_states, 0.0);
+        let states = &mut runtime.states_by_context[context];
+        states.resize(required_states, 0.0);
+        let dsp_state_ptr = core::ptr::addr_of_mut!(DSP_STATE)
+            .cast::<f64>()
+            .add(state_start);
 
-        for item_index in 0..count {
-            DSP_SPREAD_ITEM_INDEX = item_index;
-            let item_state_start = item_index.saturating_mul(state_count);
-            for offset in 0..state_count {
-                DSP_STATE[state_start + offset] =
-                    runtime.states_by_context[context][item_state_start + offset];
+        if state_count == 1 {
+            for item_index in 0..count {
+                DSP_SPREAD_ITEM_INDEX = item_index;
+                let item_state_ptr = states.as_mut_ptr().add(item_index);
+                *dsp_state_ptr = *item_state_ptr;
+                for template_index in (op_index + 1)..end_index {
+                    render_dsp_op(
+                        DSP_OPS[template_index],
+                        frame,
+                        sample_rate,
+                        left_sample,
+                        right_sample,
+                    );
+                }
+                *item_state_ptr = *dsp_state_ptr;
             }
-            for template_index in (op_index + 1)..end_index {
-                render_dsp_op(
-                    DSP_OPS[template_index],
-                    frame,
-                    sample_rate,
-                    left_sample,
-                    right_sample,
-                );
-            }
-            for offset in 0..state_count {
-                runtime.states_by_context[context][item_state_start + offset] =
-                    DSP_STATE[state_start + offset];
+        } else {
+            for item_index in 0..count {
+                DSP_SPREAD_ITEM_INDEX = item_index;
+                let item_state_start = item_index.saturating_mul(state_count);
+                let item_state_ptr = states.as_mut_ptr().add(item_state_start);
+                core::ptr::copy_nonoverlapping(item_state_ptr, dsp_state_ptr, state_count);
+                for template_index in (op_index + 1)..end_index {
+                    render_dsp_op(
+                        DSP_OPS[template_index],
+                        frame,
+                        sample_rate,
+                        left_sample,
+                        right_sample,
+                    );
+                }
+                core::ptr::copy_nonoverlapping(dsp_state_ptr, item_state_ptr, state_count);
             }
         }
         DSP_SPREAD_RUNTIMES[spread_slot] = Some(runtime);

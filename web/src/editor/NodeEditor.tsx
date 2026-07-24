@@ -2121,6 +2121,11 @@ function NodeEditorInner() {
   }, [edges]);
 
   const selectedNodeCount = nodes.filter((node) => node.selected).length;
+  const selectedAreaNodeIds = useMemo(() => (
+    selectedAreaId
+      ? nodeIdsContainedByAreaHierarchy(areas, nodes, selectedAreaId)
+      : new Set<string>()
+  ), [areas, nodes, selectedAreaId]);
   const nodeStackRanks = useMemo(() => {
     const nodeIds = new Set(nodes.map((node) => node.id));
     const orderedNodeIds = nodeStackOrder.filter((nodeId) => nodeIds.has(nodeId));
@@ -2144,7 +2149,7 @@ function NodeEditorInner() {
       zIndex: node.data.patchNode.type === 'Spread'
         ? 0
         : 1 + nodeZIndex(
-            node.selected === true,
+            node.selected === true || selectedAreaNodeIds.has(node.id),
             compactPorts,
             nodeStackRanks.get(node.id) ?? 0,
             nodes.length,
@@ -2214,6 +2219,7 @@ function NodeEditorInner() {
     uploadDroppedSampleFiles,
     openImageLibrary,
     nodeStackRanks,
+    selectedAreaNodeIds,
     selectedBoundaryPort,
     selectedLinkPortsByNode,
     settledGraphZoom,
@@ -3514,9 +3520,28 @@ function NodeEditorInner() {
     });
   }, []);
 
+  const promoteAreaFromTarget = useCallback((eventTarget: EventTarget | null) => {
+    const target = eventTarget instanceof Element ? eventTarget : null;
+    const areaId = target?.closest<HTMLElement>('.canvas-area[data-area-id]')?.dataset.areaId;
+    if (!areaId) return;
+
+    const containedNodeIds = nodeIdsContainedByAreaHierarchy(
+      areasRef.current,
+      nodesRef.current,
+      areaId,
+    );
+    setSelectedAreaId(areaId);
+    setNodeStackOrder((current) => promoteNodeIdsInStackOrder(
+      current,
+      nodesRef.current.map((node) => node.id),
+      containedNodeIds,
+    ));
+  }, []);
+
   const handleEditorFocusCapture = useCallback((event: ReactFocusEvent<HTMLElement>) => {
     promoteNodeFromTarget(event.target);
-  }, [promoteNodeFromTarget]);
+    promoteAreaFromTarget(event.target);
+  }, [promoteAreaFromTarget, promoteNodeFromTarget]);
 
   const handleEditorPointerDownCapture = useCallback((event: ReactPointerEvent<HTMLElement>) => {
     if (!event.nativeEvent.isTrusted && ignoreSyntheticSelectionPointerDownRef.current) {
@@ -3524,6 +3549,7 @@ function NodeEditorInner() {
       return;
     }
     promoteNodeFromTarget(event.target);
+    promoteAreaFromTarget(event.target);
     const target = event.target instanceof Element ? event.target : null;
     const nodeElement = target?.closest<HTMLElement>('.react-flow__node[data-id]');
     const nodeId = nodeElement?.dataset.id;
@@ -3575,7 +3601,7 @@ function NodeEditorInner() {
       nodeSelection: selectionById(nodesRef.current),
       edgeSelection: selectionById(edgesRef.current),
     };
-  }, [promoteNodeFromTarget]);
+  }, [promoteAreaFromTarget, promoteNodeFromTarget]);
 
   const screenToFlow = useCallback((point: ScreenPoint) => {
     const rect = editorShellRef.current?.getBoundingClientRect();
@@ -3650,13 +3676,21 @@ function NodeEditorInner() {
     if (width >= 24 && height >= 24) {
       commitHistory();
       const id = `area-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-      setAreas((current) => [...current, {
+      const newArea: EditorArea = {
         id,
         title: 'Area',
         position: { x: Math.min(start.x, finish.x), y: Math.min(start.y, finish.y) },
         size: { width, height },
-      }]);
+      };
+      const nextAreas = [...areasRef.current, newArea];
+      const containedNodeIds = nodeIdsContainedByAreaHierarchy(nextAreas, nodesRef.current, id);
+      setAreas((current) => [...current, newArea]);
       setSelectedAreaId(id);
+      setNodeStackOrder((current) => promoteNodeIdsInStackOrder(
+        current,
+        nodesRef.current.map((node) => node.id),
+        containedNodeIds,
+      ));
     }
     areaDrawRef.current = null;
     setAreaDraw(null);
@@ -3741,11 +3775,54 @@ function NodeEditorInner() {
       resize.historyCommitted = true;
     }
     const resizedArea = areasRef.current.find((area) => area.id === resize.areaId);
-    const width = Math.max(resizedArea?.kind === 'spread' ? 240 : 48, resize.originalSize.width + (resize.corner.includes('left') ? -delta.x : delta.x));
-    const height = Math.max(resizedArea?.kind === 'spread' ? NODE_HEADER_HEIGHT + SPREAD_PORTS_HEIGHT + 48 : 48, resize.originalSize.height + (resize.corner.includes('top') ? -delta.y : delta.y));
+    const containedBounds = resizedArea?.locked
+      ? lockedAreaNodeBounds(resizedArea, nodesRef.current)
+      : null;
+    const minimumWidth = Math.max(
+      resizedArea?.kind === 'spread' ? 240 : 48,
+      containedBounds?.width ?? 0,
+    );
+    const minimumHeight = Math.max(
+      resizedArea?.kind === 'spread' ? NODE_HEADER_HEIGHT + SPREAD_PORTS_HEIGHT + 48 : 48,
+      containedBounds?.height ?? 0,
+    );
+    const originalRight = resize.originalPosition.x + resize.originalSize.width;
+    const originalBottom = resize.originalPosition.y + resize.originalSize.height;
+    const resizingLeft = resize.corner.includes('left');
+    const resizingTop = resize.corner.includes('top');
+    const left = resizingLeft
+      ? Math.min(
+        resize.originalPosition.x + delta.x,
+        originalRight - minimumWidth,
+        containedBounds?.x ?? Number.POSITIVE_INFINITY,
+      )
+      : resize.originalPosition.x;
+    const right = resizingLeft
+      ? originalRight
+      : Math.max(
+        originalRight + delta.x,
+        resize.originalPosition.x + minimumWidth,
+        containedBounds ? containedBounds.x + containedBounds.width : Number.NEGATIVE_INFINITY,
+      );
+    const top = resizingTop
+      ? Math.min(
+        resize.originalPosition.y + delta.y,
+        originalBottom - minimumHeight,
+        containedBounds?.y ?? Number.POSITIVE_INFINITY,
+      )
+      : resize.originalPosition.y;
+    const bottom = resizingTop
+      ? originalBottom
+      : Math.max(
+        originalBottom + delta.y,
+        resize.originalPosition.y + minimumHeight,
+        containedBounds ? containedBounds.y + containedBounds.height : Number.NEGATIVE_INFINITY,
+      );
+    const width = right - left;
+    const height = bottom - top;
     const position = {
-      x: resize.corner.includes('left') ? resize.originalPosition.x + resize.originalSize.width - width : resize.originalPosition.x,
-      y: resize.corner.includes('top') ? resize.originalPosition.y + resize.originalSize.height - height : resize.originalPosition.y,
+      x: left,
+      y: top,
     };
     setAreas((current) => current.map((area) => area.id === resize.areaId ? {
       ...area,
@@ -4141,6 +4218,7 @@ function NodeEditorInner() {
                 {areas.map((area) => (
                   <div
                     key={area.id}
+                    data-area-id={area.id}
                     className={`canvas-area${area.kind === 'spread' ? ' canvas-area-spread' : ''}${area.collapsed ? ' canvas-area-collapsed' : ''}${selectedAreaId === area.id ? ' canvas-area-selected' : ''}`}
                     style={{ left: area.position.x, top: area.position.y, width: area.size.width, height: area.collapsed ? NODE_HEADER_HEIGHT + (area.uiHeight ?? 0) : area.size.height }}
                   >
@@ -6286,6 +6364,38 @@ function viewportNodeSize(node: ShaderFlowNode): { width: number; height: number
   return DEFAULT_NODE_BOUNDS_SIZE;
 }
 
+function lockedAreaNodeBounds(
+  area: EditorArea,
+  nodes: ShaderFlowNode[],
+): { x: number; y: number; width: number; height: number } | null {
+  const containedNodeIds = new Set(area.nodeIds ?? []);
+  const containedNodes = nodes.filter((node) => (
+    node.id !== area.spreadNodeId
+    && containedNodeIds.has(node.id)
+  ));
+  if (containedNodes.length === 0) return null;
+
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  for (const node of containedNodes) {
+    const size = viewportNodeSize(node);
+    minX = Math.min(minX, node.position.x);
+    minY = Math.min(minY, node.position.y);
+    maxX = Math.max(maxX, node.position.x + size.width);
+    maxY = Math.max(maxY, node.position.y + size.height);
+  }
+
+  return {
+    x: minX,
+    y: minY,
+    width: maxX - minX,
+    height: maxY - minY,
+  };
+}
+
 function flowNodeIsInsideSpread(spread: ShaderFlowNode, node: ShaderFlowNode): boolean {
   if (spread.data.patchNode.type !== 'Spread' || node.id === spread.id) return false;
   if (spread.data.patchNode.spreadNodeIds) {
@@ -6358,6 +6468,45 @@ function connectedAreaIds(areas: EditorArea[], rootId: string): Set<string> {
     }
   }
   return connected;
+}
+
+function nodeIdsContainedByAreaHierarchy(
+  areas: EditorArea[],
+  nodes: ShaderFlowNode[],
+  rootId: string,
+): Set<string> {
+  const containedAreaIds = connectedAreaIds(areas, rootId);
+  const containedAreas = areas.filter((area) => containedAreaIds.has(area.id));
+  return new Set(nodes.flatMap((node) => (
+    containedAreas.some((area) => (
+      areaContainsNode(area, node) || area.spreadNodeId === node.id
+    ))
+      ? [node.id]
+      : []
+  )));
+}
+
+function promoteNodeIdsInStackOrder(
+  stackOrder: string[],
+  activeNodeIds: string[],
+  promotedNodeIds: Set<string>,
+): string[] {
+  const activeNodeIdSet = new Set(activeNodeIds);
+  const orderedActiveIds = stackOrder.filter((nodeId) => activeNodeIdSet.has(nodeId));
+  const orderedActiveIdSet = new Set(orderedActiveIds);
+  const completeOrder = [
+    ...orderedActiveIds,
+    ...activeNodeIds.filter((nodeId) => !orderedActiveIdSet.has(nodeId)),
+  ];
+  const nextOrder = [
+    ...completeOrder.filter((nodeId) => !promotedNodeIds.has(nodeId)),
+    ...completeOrder.filter((nodeId) => promotedNodeIds.has(nodeId)),
+  ];
+
+  return nextOrder.length === stackOrder.length
+    && nextOrder.every((nodeId, index) => nodeId === stackOrder[index])
+    ? stackOrder
+    : nextOrder;
 }
 
 function spreadAreaForNode(node: ShaderFlowNode): EditorArea {
