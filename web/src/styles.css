@@ -867,6 +867,67 @@ button:hover {
   background: var(--color-surface);
 }
 
+.spread-port-panel {
+  position: relative;
+  display: flex;
+  width: var(--spread-port-width, 320px);
+  height: 44px;
+  align-items: center;
+  justify-content: flex-start;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  transform: translateY(var(--spread-header-height, 32px));
+  zoom: var(--node-scale, 1);
+  pointer-events: none;
+  --node-pin-size: 8px;
+  --node-pin-half-size: calc(var(--node-pin-size) / 2);
+}
+
+.react-flow__node:has(.spread-port-panel) {
+  pointer-events: none;
+}
+
+.spread-port-input,
+.spread-port-output {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  pointer-events: auto;
+}
+
+.spread-port-output {
+  margin-left: 24px;
+}
+
+.spread-port-input > span,
+.spread-port-output > span {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.spread-port-input .numeric-scrubber {
+  width: 80px;
+}
+
+.spread-count-handle {
+  left: calc(-1 * var(--node-pin-half-size)) !important;
+}
+
+.spread-item-index-handle {
+  position: relative !important;
+  top: auto !important;
+  right: auto !important;
+  flex: 0 0 auto;
+  background: transparent;
+  transform: none !important;
+}
+
+.shader-node-area-ui-collapsed .spread-port-panel .react-flow__handle,
+.shader-node-area-ui-collapsed .spread-port-panel .shader-handle {
+  display: block;
+}
+
 .shader-node-expression {
   width: 240px;
 }

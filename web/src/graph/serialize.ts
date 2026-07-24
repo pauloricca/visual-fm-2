@@ -24,6 +24,7 @@ export function normalizePatch(patch: Patch): Patch {
         ...(node.outputs ? { outputs: node.outputs.map((output) => ({ ...output })) } : {}),
         ...(node.subpatch ? { subpatch: normalizePatch(node.subpatch) } : {}),
         ...(node.compactPorts !== undefined ? { compactPorts: node.compactPorts } : {}),
+        ...(node.spreadNodeIds ? { spreadNodeIds: [...node.spreadNodeIds].sort() } : {}),
       }))
       .sort((a, b) => a.id.localeCompare(b.id)),
     links: [...patch.links]

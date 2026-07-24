@@ -225,6 +225,8 @@ function cloneNode(node: PatchNode): PatchNode {
     ...(node.outputs ? { outputs: node.outputs.map((port) => ({ ...port })) } : {}),
     ...(node.subpatch ? { subpatch: clonePatch(node.subpatch) } : {}),
     ...(node.compactPorts !== undefined ? { compactPorts: node.compactPorts } : {}),
+    ...(node.spreadNodeIds ? { spreadNodeIds: [...node.spreadNodeIds] } : {}),
+    ...(node.runtimeSpread ? { runtimeSpread: { ...node.runtimeSpread } } : {}),
   };
 }
 

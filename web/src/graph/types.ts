@@ -1,6 +1,7 @@
 export type NodeType =
   | 'Expression'
   | 'Group'
+  | 'Spread'
   | 'Ins'
   | 'Outs'
   | 'AudioOut'
@@ -92,6 +93,14 @@ export interface PatchNode {
   outputs?: PortDefinition[];
   subpatch?: Patch;
   compactPorts?: boolean;
+  /** Locked Spread membership, mirroring an area's node snapshot. */
+  spreadNodeIds?: string[];
+  /** Compiler-only metadata attached to nodes cloned from a Spread. */
+  runtimeSpread?: {
+    spreadId: string;
+    itemIndex: number;
+    originalNodeId: string;
+  };
 }
 
 export interface SampleAsset {

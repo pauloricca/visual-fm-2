@@ -21,6 +21,7 @@ const MAX_DSP_OPS: usize = 4096;
 const MAX_DSP_REGS: usize = 2048;
 const MAX_DSP_VALUES: usize = 2048;
 const MAX_DSP_STATE: usize = 4096;
+const MAX_DSP_SPREADS: usize = 128;
 const MAX_DSP_SCOPES: usize = 32;
 const MAX_DSP_METERS: usize = 128;
 const MAX_DSP_EFFECT_SLOTS: usize = 64;
@@ -129,6 +130,11 @@ const DSP_OP_TIME: i32 = 37;
 const DSP_OP_COMPRESS: i32 = 38;
 const DSP_OP_LIMITER: i32 = 39;
 const DSP_OP_QUANTISE: i32 = 40;
+const DSP_OP_BLOCK_LATCH: i32 = 41;
+const DSP_OP_SPREAD_BEGIN: i32 = 42;
+const DSP_OP_SPREAD_INDEX: i32 = 43;
+const DSP_OP_SPREAD_COLLECT: i32 = 44;
+const DSP_OP_SPREAD_END: i32 = 45;
 const MIN_ENVELOPE_ATTACK_SECONDS: f64 = 0.001;
 const MAX_DSP_TEMPO_SOURCES: usize = 129;
 const TEMPO_OUTPUT_COUNT: i32 = 10;
@@ -211,6 +217,18 @@ struct DspOp {
     value2: f64,
     value3: f64,
     value4: f64,
+}
+
+struct DspSpreadRuntime {
+    states_by_context: Vec<Vec<f64>>,
+}
+
+impl DspSpreadRuntime {
+    fn new() -> Self {
+        Self {
+            states_by_context: (0..=MAX_VOICE_SLOTS).map(|_| Vec::new()).collect(),
+        }
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -467,6 +485,10 @@ static mut DSP_REGS: [f64; MAX_DSP_REGS] = [0.0; MAX_DSP_REGS];
 static mut DSP_STATE: [f64; MAX_DSP_STATE] = [0.0; MAX_DSP_STATE];
 static mut DSP_VOICE_STATES: [[f64; MAX_DSP_STATE]; MAX_VOICE_SLOTS] =
     [[0.0; MAX_DSP_STATE]; MAX_VOICE_SLOTS];
+static mut DSP_SPREAD_RUNTIMES: [Option<DspSpreadRuntime>; MAX_DSP_SPREADS] =
+    [const { None }; MAX_DSP_SPREADS];
+static mut DSP_SPREAD_ITEM_INDEX: usize = 0;
+static mut DSP_SPREAD_CONTEXT: usize = 0;
 static mut DSP_CURRENT_NOTE: f64 = 0.0;
 static mut DSP_CURRENT_CHANNEL: f64 = 1.0;
 static mut DSP_CURRENT_FREQUENCY: f64 = 0.0;
@@ -1034,6 +1056,9 @@ fn clear_dsp_buffers() {
 pub extern "C" fn clearDspProgram() {
     unsafe {
         DSP_OP_COUNT = 0;
+        for slot in 0..MAX_DSP_SPREADS {
+            DSP_SPREAD_RUNTIMES[slot] = None;
+        }
         DSP_VALUE_ACTIVE_COUNT = 0;
         for index in 0..MAX_DSP_REGS {
             DSP_REGS[index] = 0.0;
@@ -1072,6 +1097,11 @@ pub extern "C" fn resetDspVoiceState(slot: u32) {
         for index in 0..MAX_DSP_STATE {
             DSP_VOICE_STATES[slot][index] = 0.0;
         }
+        for spread_slot in 0..MAX_DSP_SPREADS {
+            if let Some(runtime) = DSP_SPREAD_RUNTIMES[spread_slot].as_mut() {
+                runtime.states_by_context[slot + 1].clear();
+            }
+        }
     }
 }
 
@@ -1087,6 +1117,13 @@ pub extern "C" fn resetDspRuntimeState() {
         for slot in 0..MAX_VOICE_SLOTS {
             for index in 0..MAX_DSP_STATE {
                 DSP_VOICE_STATES[slot][index] = 0.0;
+            }
+        }
+        for spread_slot in 0..MAX_DSP_SPREADS {
+            if let Some(runtime) = DSP_SPREAD_RUNTIMES[spread_slot].as_mut() {
+                for context in 0..runtime.states_by_context.len() {
+                    runtime.states_by_context[context].fill(0.0);
+                }
             }
         }
         for slot in 0..MAX_DSP_EFFECT_SLOTS {
@@ -6643,6 +6680,28 @@ fn render_dsp_op(
             op.out,
             quantise_frequency_signal(dsp_reg(op.a), dsp_reg(op.b), dsp_reg(op.c)),
         ),
+        DSP_OP_BLOCK_LATCH => unsafe {
+            if op.state >= 0 && (op.state as usize) < MAX_DSP_STATE {
+                let state = op.state as usize;
+                if frame == 0 {
+                    DSP_STATE[state] = sanitize_control_value(dsp_reg(op.a))
+                        .floor()
+                        .max(0.0);
+                }
+                set_dsp_reg(op.out, DSP_STATE[state]);
+            } else {
+                set_dsp_reg(op.out, sanitize_control_value(dsp_reg(op.a)));
+            }
+        },
+        DSP_OP_SPREAD_INDEX => unsafe {
+            set_dsp_reg(op.out, (DSP_SPREAD_ITEM_INDEX + 1) as f64);
+        }
+        DSP_OP_SPREAD_COLLECT => {
+            let current = dsp_reg(op.out);
+            let item = dsp_reg(op.a);
+            set_dsp_reg(op.out, if op.b == 1 { current * item } else { current + item });
+        }
+        DSP_OP_SPREAD_BEGIN | DSP_OP_SPREAD_END => {}
         DSP_OP_BUFFER => set_dsp_reg(op.out, render_dsp_buffer(op, sample_rate)),
         DSP_OP_IMAGE => set_dsp_reg(op.out, render_dsp_image(op)),
         _ => {}
@@ -6810,6 +6869,76 @@ fn capture_dsp_meters() {
     }
 }
 
+unsafe fn render_dsp_ops(
+    frame: usize,
+    sample_rate: f64,
+    left_sample: &mut f64,
+    right_sample: &mut f64,
+) {
+    let mut op_index = 0;
+    while op_index < DSP_OP_COUNT {
+        let op = DSP_OPS[op_index];
+        if op.opcode != DSP_OP_SPREAD_BEGIN {
+            render_dsp_op(op, frame, sample_rate, left_sample, right_sample);
+            op_index += 1;
+            continue;
+        }
+
+        let end_index = op.b.max(op_index as i32 + 1) as usize;
+        if end_index >= DSP_OP_COUNT {
+            return;
+        }
+        let count = dsp_reg(op.a).floor().max(0.0) as usize;
+        let spread_slot = op.value.round().max(0.0) as usize;
+        let state_start = op.state.max(0) as usize;
+        let state_count = op.value2.round().max(0.0) as usize;
+        if spread_slot >= MAX_DSP_SPREADS || state_start.saturating_add(state_count) > MAX_DSP_STATE {
+            op_index = end_index + 1;
+            continue;
+        }
+
+        // Every collector is reset once per sample. Sum/set links start at
+        // zero; multiply links start at the multiplicative identity.
+        for template_index in (op_index + 1)..end_index {
+            let template_op = DSP_OPS[template_index];
+            if template_op.opcode == DSP_OP_SPREAD_COLLECT {
+                set_dsp_reg(template_op.out, if template_op.b == 1 { 1.0 } else { 0.0 });
+            }
+        }
+
+        let mut runtime = DSP_SPREAD_RUNTIMES[spread_slot]
+            .take()
+            .unwrap_or_else(DspSpreadRuntime::new);
+        let context = DSP_SPREAD_CONTEXT.min(MAX_VOICE_SLOTS);
+        let required_states = count.saturating_mul(state_count);
+        runtime.states_by_context[context].resize(required_states, 0.0);
+
+        for item_index in 0..count {
+            DSP_SPREAD_ITEM_INDEX = item_index;
+            let item_state_start = item_index.saturating_mul(state_count);
+            for offset in 0..state_count {
+                DSP_STATE[state_start + offset] =
+                    runtime.states_by_context[context][item_state_start + offset];
+            }
+            for template_index in (op_index + 1)..end_index {
+                render_dsp_op(
+                    DSP_OPS[template_index],
+                    frame,
+                    sample_rate,
+                    left_sample,
+                    right_sample,
+                );
+            }
+            for offset in 0..state_count {
+                runtime.states_by_context[context][item_state_start + offset] =
+                    DSP_STATE[state_start + offset];
+            }
+        }
+        DSP_SPREAD_RUNTIMES[spread_slot] = Some(runtime);
+        op_index = end_index + 1;
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn renderDspProgram(frames: u32, sample_rate: f64) {
     let frames = (frames as usize).min(MAX_WASM_FRAMES);
@@ -6818,19 +6947,12 @@ pub extern "C" fn renderDspProgram(frames: u32, sample_rate: f64) {
     }
 
     unsafe {
+        DSP_SPREAD_CONTEXT = 0;
         for frame in 0..frames {
             let mut left_sample = 0.0;
             let mut right_sample = 0.0;
             advance_dsp_values(sample_rate);
-            for op_index in 0..DSP_OP_COUNT {
-                render_dsp_op(
-                    DSP_OPS[op_index],
-                    frame,
-                    sample_rate,
-                    &mut left_sample,
-                    &mut right_sample,
-                );
-            }
+            render_dsp_ops(frame, sample_rate, &mut left_sample, &mut right_sample);
             capture_dsp_meters();
             capture_dsp_scopes();
             LEFT[frame] += left_sample as f32;
@@ -6862,6 +6984,7 @@ pub extern "C" fn renderDspProgramVoice(
     let base_amp = velocity.clamp(0.0, 1.0) * lifecycle_gain.clamp(0.0, 1.0);
 
     unsafe {
+        DSP_SPREAD_CONTEXT = voice_slot + 1;
         for index in 0..MAX_DSP_STATE {
             DSP_STATE[index] = DSP_VOICE_STATES[voice_slot][index];
         }
@@ -6907,15 +7030,7 @@ pub extern "C" fn renderDspProgramVoice(
             };
 
             advance_dsp_values(sample_rate);
-            for op_index in 0..DSP_OP_COUNT {
-                render_dsp_op(
-                    DSP_OPS[op_index],
-                    frame,
-                    sample_rate,
-                    &mut left_sample,
-                    &mut right_sample,
-                );
-            }
+            render_dsp_ops(frame, sample_rate, &mut left_sample, &mut right_sample);
             capture_dsp_meters();
             capture_dsp_scopes();
             LEFT[frame] += (left_sample * amp) as f32;

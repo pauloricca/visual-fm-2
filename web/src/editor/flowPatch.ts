@@ -71,6 +71,7 @@ export interface ShaderNodeData extends Record<string, unknown> {
   onExpressionChange?: (nodeId: string, expression: string) => void;
   onExpressionCommit?: (nodeId: string, expression: string) => void;
   onTypeChange: (nodeId: string, type: NodeType) => void;
+  onConvertToArea: (nodeId: string) => void;
   onCustomLabelChange?: (nodeId: string, label: string) => void;
   onSubpatchNameChange?: (nodeId: string, nextName: string) => void;
   onSampleSelect?: (nodeId: string) => void;
@@ -152,6 +153,7 @@ export interface PersistedEditorState {
     outputs?: PortDefinition[];
     subpatch?: Patch;
     compactPorts?: boolean;
+    spreadNodeIds?: string[];
     scale?: number;
     scopeSize?: ScopeNodeSize;
   }>;
@@ -170,6 +172,9 @@ export interface PersistedEditorState {
 export interface EditorArea {
   id: string;
   title: string;
+  /** Spreads reuse the complete area interaction model and add a DSP endpoint. */
+  kind?: 'area' | 'spread';
+  spreadNodeId?: string;
   position: { x: number; y: number };
   size: { width: number; height: number };
   /** Height of the user-facing section below the area header. Omit for a conventional area. */
@@ -186,6 +191,7 @@ type NodeCallbacks = Pick<
   | 'onParamsChange'
   | 'onCustomWaveChange'
   | 'onTypeChange'
+  | 'onConvertToArea'
   | 'onTypeEditStart'
   | 'onTypeEditEnd'
   | 'onTypeEditCancel'
@@ -253,6 +259,7 @@ export function editorStateToFlowNodes(
         outputs: node.outputs,
         subpatch: node.subpatch,
         compactPorts: node.compactPorts,
+        spreadNodeIds: node.spreadNodeIds,
         scopeSize: node.scopeSize,
       },
       ...callbacks,
@@ -311,6 +318,7 @@ export function flowToEditorState(
       outputs: node.data.patchNode.outputs,
       subpatch: node.data.patchNode.subpatch,
       compactPorts: node.data.patchNode.compactPorts,
+      spreadNodeIds: node.data.patchNode.spreadNodeIds,
       scopeSize: node.data.patchNode.scopeSize,
     })),
     edges: edges.map((edge) => ({
@@ -397,6 +405,7 @@ export function patchFromFlow(nodes: ShaderFlowNode[], edges: ShaderFlowEdge[]):
       ...(patchNode.outputs ? { outputs: patchNode.outputs } : {}),
       ...(patchNode.subpatch ? { subpatch: patchNode.subpatch } : {}),
       ...(patchNode.compactPorts !== undefined ? { compactPorts: patchNode.compactPorts } : {}),
+      ...(patchNode.spreadNodeIds ? { spreadNodeIds: [...patchNode.spreadNodeIds] } : {}),
     });
   }
 
@@ -578,6 +587,7 @@ function normalizePersistedState(state: PersistedEditorState): PersistedEditorSt
       ...(node.outputs ? { outputs: normalizePersistedOutputDefinitions(node) } : {}),
       ...(node.subpatch ? { subpatch: normalizePatchCompatibility(node.subpatch) } : {}),
       ...(node.compactPorts !== undefined ? { compactPorts: node.compactPorts } : {}),
+      ...(node.spreadNodeIds ? { spreadNodeIds: [...node.spreadNodeIds] } : {}),
       ...(node.scopeSize ? { scopeSize: node.scopeSize } : {}),
     }));
   const typedPatch: Patch = {
@@ -784,6 +794,7 @@ function persistedNodeFromPatchNode(
     outputs: node.outputs,
     subpatch: node.subpatch,
     compactPorts: node.compactPorts ?? original?.compactPorts,
+    spreadNodeIds: node.spreadNodeIds ?? original?.spreadNodeIds,
     scopeSize: node.scopeSize ?? original?.scopeSize,
   };
 }

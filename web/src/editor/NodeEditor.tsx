@@ -28,6 +28,7 @@ import { extractExpressionInputs } from '../graph/expression';
 import { defaultParamsFor, getDefinition, getNodeDefinition, sequencerShape } from '../graph/nodeTypes';
 import { normalizePatchCompatibility } from '../graph/patchCompatibility';
 import { patchToJson } from '../graph/serialize';
+import { DEFAULT_SPREAD_SIZE, SPREAD_PORTS_HEIGHT } from '../graph/spread';
 import type { CustomWaveSettings, ImageAsset, LinkMode, NodeType, Patch, PatchLink, PatchNode, PortDefinition, SampleAsset } from '../graph/types';
 import { EdgeOverlayProvider } from './EdgeOverlayContext';
 import { canvasHeaderTitleScale, USER_ZOOM_BASELINE } from './canvasZoom';
@@ -467,7 +468,29 @@ function NodeEditorInner() {
 
   useEffect(() => {
     areasRef.current = areas;
+    setNodes((current) => {
+      let changed = false;
+      const next = current.map((node) => {
+        if (node.data.patchNode.type !== 'Spread') return node;
+        const area = areas.find((candidate) => candidate.kind === 'spread' && candidate.spreadNodeId === node.id);
+        const spreadNodeIds = area?.locked ? [...(area.nodeIds ?? [])] : undefined;
+        if (optionalStringArraysEqual(node.data.patchNode.spreadNodeIds, spreadNodeIds)) return node;
+        changed = true;
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            patchNode: { ...node.data.patchNode, spreadNodeIds },
+          },
+        };
+      });
+      return changed ? next : current;
+    });
   }, [areas]);
+
+  useEffect(() => {
+    setAreas((current) => reconcileSpreadAreas(current, nodesRef.current));
+  }, [nodes]);
 
   useEffect(() => {
     edgesRef.current = edges;
@@ -1238,6 +1261,7 @@ function NodeEditorInner() {
               ...(type === 'CustomWave' ? {
                 customWave: normalizeCustomWave(node.data.patchNode.customWave, node.data.patchNode.params),
               } : {}),
+              ...(type === 'Spread' ? { scopeSize: { ...DEFAULT_SPREAD_SIZE } } : {}),
               params: nextParams,
               position: node.position,
               ...(expressionInputs ? { inputs: expressionInputs } : {}),
@@ -1251,7 +1275,48 @@ function NodeEditorInner() {
       const remapped = remapEdgeForNodeType(renamed, nextId, previousDefinition, nextDefinition);
       return remapped ? [remapped] : [];
     })));
+    setAreas((current) => {
+      const withoutPreviousSpread = current.filter((area) => area.spreadNodeId !== nodeId);
+      if (type !== 'Spread') return withoutPreviousSpread;
+      return [...withoutPreviousSpread, spreadAreaForNode({
+        ...relatedNode,
+        id: nextId,
+        data: {
+          ...relatedNode.data,
+          patchNode: {
+            ...relatedNode.data.patchNode,
+            id: nextId,
+            type: 'Spread',
+            scopeSize: { ...DEFAULT_SPREAD_SIZE },
+          },
+        },
+      })];
+    });
     setEditingTypeNodeId((current) => current === nodeId ? nextId : current);
+  }, [commitHistory]);
+
+  const convertNodeToArea = useCallback((nodeId: string) => {
+    const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
+    if (!relatedNode) return;
+
+    const nodeSize = viewportNodeSize(relatedNode);
+    const areaId = `area-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+
+    provisionalNodeIdsRef.current.delete(nodeId);
+    commitHistory();
+    setNodes((current) => current.filter((node) => node.id !== nodeId));
+    setEdges((current) => current.filter((edge) => edge.source !== nodeId && edge.target !== nodeId));
+    setAreas((current) => [...current, {
+      id: areaId,
+      title: 'Area',
+      position: { ...relatedNode.position },
+      size: {
+        width: Math.max(48, nodeSize.width),
+        height: Math.max(48, nodeSize.height),
+      },
+    }]);
+    setEditingTypeNodeId(null);
+    setSelectedAreaId(areaId);
   }, [commitHistory]);
 
   const updateNodeCustomLabel = useCallback((nodeId: string, requestedLabel: string) => {
@@ -1372,13 +1437,16 @@ function NodeEditorInner() {
         relatedNode.data.patchNode.type !== 'Slider' &&
         relatedNode.data.patchNode.type !== 'Button' &&
         relatedNode.data.patchNode.type !== 'Keys' &&
-        relatedNode.data.patchNode.type !== 'Sequencer'
+        relatedNode.data.patchNode.type !== 'Sequencer' &&
+        relatedNode.data.patchNode.type !== 'Spread'
       )
     ) {
       return;
     }
 
-    const nextSize = relatedNode.data.patchNode.type === 'Sequencer'
+    const nextSize = relatedNode.data.patchNode.type === 'Spread'
+      ? { width: Math.max(240, Math.round(size.width)), height: Math.max(140, Math.round(size.height)) }
+      : relatedNode.data.patchNode.type === 'Sequencer'
       ? (() => {
           const shape = sequencerShape(relatedNode.data.patchNode.params);
           return clampSequencerNodeSize(size, shape.steps, shape.rows);
@@ -1405,7 +1473,9 @@ function NodeEditorInner() {
       if (node.id !== nodeId) return node;
 
       const currentSize = node.data.patchNode.scopeSize ?? (
-        node.data.patchNode.type === 'Sequencer'
+        node.data.patchNode.type === 'Spread'
+          ? DEFAULT_SPREAD_SIZE
+        : node.data.patchNode.type === 'Sequencer'
           ? clampSequencerNodeSize(
               DEFAULT_SEQUENCER_NODE_SIZE,
               sequencerShape(node.data.patchNode.params).steps,
@@ -2070,12 +2140,15 @@ function NodeEditorInner() {
 
     return {
       ...node,
-      zIndex: nodeZIndex(
-        node.selected === true,
-        compactPorts,
-        nodeStackRanks.get(node.id) ?? 0,
-        nodes.length,
-      ),
+      ...(node.data.patchNode.type === 'Spread' ? { draggable: false, selectable: false } : {}),
+      zIndex: node.data.patchNode.type === 'Spread'
+        ? 0
+        : 1 + nodeZIndex(
+            node.selected === true,
+            compactPorts,
+            nodeStackRanks.get(node.id) ?? 0,
+            nodes.length,
+          ),
       data: {
         ...node.data,
         onParamChange: updateNodeParam,
@@ -2085,6 +2158,7 @@ function NodeEditorInner() {
         onAudioInputRefresh: audio.refreshAudioInputDevices,
         onMidiInputRefresh: audio.refreshMidiInputDevices,
         onTypeChange: updateNodeType,
+        onConvertToArea: convertNodeToArea,
         onCustomLabelChange: updateNodeCustomLabel,
         onExpressionCommit: updateExpression,
         onTypeEditStart: setEditingTypeNodeId,
@@ -2150,6 +2224,7 @@ function NodeEditorInner() {
     addSelectorInput,
     clearSelectorInput,
     cancelProvisionalNode,
+    convertNodeToArea,
     audio.audioInput,
     audio.midiInput,
     audio.refreshAudioInputDevices,
@@ -2300,7 +2375,10 @@ function NodeEditorInner() {
 
   const collapsedUiAreaByNode = useMemo(() => new Map(renderedNodes.flatMap((node) => {
     const area = collapsedAreaByNode.get(node.id);
-    return area && nodeIsInAreaUiSection(area, node) ? [[node.id, area] as const] : [];
+    return area && (
+      nodeIsInAreaUiSection(area, node)
+      || (area.kind === 'spread' && area.spreadNodeId === node.id)
+    ) ? [[node.id, area] as const] : [];
   })), [collapsedAreaByNode, renderedNodes]);
 
   const collapsedRenderedNodes = useMemo(() => renderedNodes.map((node) => (
@@ -2316,14 +2394,27 @@ function NodeEditorInner() {
       selected: false,
       draggable: false,
       selectable: false,
-      connectable: false,
+      connectable: node.data.patchNode.type === 'Spread',
       data: { ...node.data, isAreaUiCollapsedPresentation: true },
     } : node
   )), [collapsedAreaByNode, collapsedUiAreaByNode, renderedNodes]);
 
   const collapsedRenderedEdges = useMemo(() => renderedEdges.flatMap((edge) => {
-    const sourceArea = collapsedAreaByNode.get(edge.source);
-    const targetArea = collapsedAreaByNode.get(edge.target);
+    const containedSourceArea = collapsedAreaByNode.get(edge.source);
+    const containedTargetArea = collapsedAreaByNode.get(edge.target);
+    if (
+      containedSourceArea?.kind === 'spread'
+      && containedSourceArea.spreadNodeId === edge.source
+      && containedSourceArea.id === containedTargetArea?.id
+    ) {
+      return [];
+    }
+    const sourceArea = containedSourceArea?.kind === 'spread' && containedSourceArea.spreadNodeId === edge.source
+      ? undefined
+      : containedSourceArea;
+    const targetArea = containedTargetArea?.kind === 'spread' && containedTargetArea.spreadNodeId === edge.target
+      ? undefined
+      : containedTargetArea;
 
     // Links completely inside one collapsed area have no external presentation.
     if (sourceArea && sourceArea.id === targetArea?.id) return [];
@@ -2662,6 +2753,16 @@ function NodeEditorInner() {
 
     const link = linkFromConnection(connection, draftNodeConnectionRef.current?.mode);
     if (!link) {
+      setPendingBoundaryPort(null);
+      return;
+    }
+    const spreadSource = nodesRef.current.find((node) => (
+      node.id === link.from.node
+      && node.data.patchNode.type === 'Spread'
+      && link.from.port === 'item index'
+    ));
+    const targetNode = nodesRef.current.find((node) => node.id === link.to.node);
+    if (spreadSource && (!targetNode || !flowNodeIsInsideSpread(spreadSource, targetNode))) {
       setPendingBoundaryPort(null);
       return;
     }
@@ -3571,7 +3672,9 @@ function NodeEditorInner() {
     const movedAreas = areas.filter((candidate) => movedAreaIds.has(candidate.id));
     const areaPositions = Object.fromEntries(movedAreas.map((candidate) => [candidate.id, { ...candidate.position }]));
     const nodePositions = Object.fromEntries(nodesRef.current
-      .filter((node) => movedAreas.some((candidate) => areaContainsNode(candidate, node)))
+      .filter((node) => movedAreas.some((candidate) => (
+        areaContainsNode(candidate, node) || candidate.spreadNodeId === node.id
+      )))
       .map((node) => [node.id, { ...node.position }]));
     areaDragRef.current = {
       areaId: area.id,
@@ -3637,17 +3740,36 @@ function NodeEditorInner() {
       commitHistory();
       resize.historyCommitted = true;
     }
-    const width = Math.max(48, resize.originalSize.width + (resize.corner.includes('left') ? -delta.x : delta.x));
-    const height = Math.max(48, resize.originalSize.height + (resize.corner.includes('top') ? -delta.y : delta.y));
+    const resizedArea = areasRef.current.find((area) => area.id === resize.areaId);
+    const width = Math.max(resizedArea?.kind === 'spread' ? 240 : 48, resize.originalSize.width + (resize.corner.includes('left') ? -delta.x : delta.x));
+    const height = Math.max(resizedArea?.kind === 'spread' ? NODE_HEADER_HEIGHT + SPREAD_PORTS_HEIGHT + 48 : 48, resize.originalSize.height + (resize.corner.includes('top') ? -delta.y : delta.y));
+    const position = {
+      x: resize.corner.includes('left') ? resize.originalPosition.x + resize.originalSize.width - width : resize.originalPosition.x,
+      y: resize.corner.includes('top') ? resize.originalPosition.y + resize.originalSize.height - height : resize.originalPosition.y,
+    };
     setAreas((current) => current.map((area) => area.id === resize.areaId ? {
       ...area,
-      position: {
-        x: resize.corner.includes('left') ? resize.originalPosition.x + resize.originalSize.width - width : resize.originalPosition.x,
-        y: resize.corner.includes('top') ? resize.originalPosition.y + resize.originalSize.height - height : resize.originalPosition.y,
-      },
+      position,
       size: { width, height },
       ...(area.uiHeight === undefined ? {} : { uiHeight: Math.min(area.uiHeight, Math.max(0, height - NODE_HEADER_HEIGHT)) }),
     } : area));
+    if (resizedArea?.spreadNodeId) {
+      setNodes((current) => current.map((node) => node.id === resizedArea.spreadNodeId ? {
+        ...node,
+        position,
+        data: {
+          ...node.data,
+          patchNode: {
+            ...node.data.patchNode,
+            position,
+            scopeSize: {
+              width,
+              height: Math.max(SPREAD_PORTS_HEIGHT, height - NODE_HEADER_HEIGHT),
+            },
+          },
+        },
+      } : node));
+    }
   }, [commitHistory, viewport.zoom]);
 
   const stopAreaResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
@@ -3699,7 +3821,9 @@ function NodeEditorInner() {
 
   const finishAreaRename = useCallback((areaId: string) => {
     setAreas((current) => current.map((area) => (
-      area.id === areaId && !area.title ? { ...area, title: 'Area' } : area
+      area.id === areaId && !area.title
+        ? { ...area, title: area.kind === 'spread' ? 'Spread' : 'Area' }
+        : area
     )));
     setEditingAreaId(null);
   }, []);
@@ -3889,6 +4013,13 @@ function NodeEditorInner() {
       event.preventDefault();
       event.stopPropagation();
       commitHistory();
+      const selectedArea = areasRef.current.find((area) => area.id === selectedAreaId);
+      if (selectedArea?.spreadNodeId) {
+        setNodes((current) => current.filter((node) => node.id !== selectedArea.spreadNodeId));
+        setEdges((current) => current.filter((edge) => (
+          edge.source !== selectedArea.spreadNodeId && edge.target !== selectedArea.spreadNodeId
+        )));
+      }
       setAreas((current) => current.filter((area) => area.id !== selectedAreaId));
       setSelectedAreaId(null);
     };
@@ -4010,7 +4141,7 @@ function NodeEditorInner() {
                 {areas.map((area) => (
                   <div
                     key={area.id}
-                    className={`canvas-area${area.collapsed ? ' canvas-area-collapsed' : ''}${selectedAreaId === area.id ? ' canvas-area-selected' : ''}`}
+                    className={`canvas-area${area.kind === 'spread' ? ' canvas-area-spread' : ''}${area.collapsed ? ' canvas-area-collapsed' : ''}${selectedAreaId === area.id ? ' canvas-area-selected' : ''}`}
                     style={{ left: area.position.x, top: area.position.y, width: area.size.width, height: area.collapsed ? NODE_HEADER_HEIGHT + (area.uiHeight ?? 0) : area.size.height }}
                   >
                     <div
@@ -4030,7 +4161,7 @@ function NodeEditorInner() {
                           ref={areaTitleInputRef}
                           className="canvas-area-title-input"
                           value={area.title}
-                          aria-label="Area name"
+                          aria-label={area.kind === 'spread' ? 'Spread name' : 'Area name'}
                           onPointerDown={(event) => event.stopPropagation()}
                           onDoubleClick={(event) => {
                             event.stopPropagation();
@@ -4113,7 +4244,7 @@ function NodeEditorInner() {
                         />
                       </button>
                     </div>
-                    {!area.collapsed && (
+                    {!area.collapsed && area.kind !== 'spread' && (
                       <div
                         className="canvas-area-ui-resize-handle nodrag nopan"
                         aria-label="Resize area UI section"
@@ -5102,6 +5233,9 @@ function stripPatchNodeForDsp(node: PatchNode): PatchNode {
     ...(node.image ? { image: { ...node.image } } : {}),
     ...(node.customWave ? { customWave: normalizeCustomWave(node.customWave, node.params) } : {}),
     params: { ...node.params },
+    ...(node.position ? { position: { ...node.position } } : {}),
+    ...(node.scopeSize ? { scopeSize: { ...node.scopeSize } } : {}),
+    ...(node.spreadNodeIds ? { spreadNodeIds: [...node.spreadNodeIds] } : {}),
     ...(node.inputs ? { inputs: node.inputs.map((port) => ({ ...port })) } : {}),
     ...(node.outputs ? { outputs: node.outputs.map((port) => ({ ...port })) } : {}),
     ...(node.subpatch ? { subpatch: stripPatchForDsp(node.subpatch) } : {}),
@@ -5141,6 +5275,12 @@ function parsePatchNode(value: unknown, index: number): PatchNode | null {
   }
   if (value.compactPorts !== undefined && typeof value.compactPorts !== 'boolean') {
     throw new Error(`Node "${value.id}" compactPorts must be a boolean.`);
+  }
+  if (value.spreadNodeIds !== undefined && (
+    !Array.isArray(value.spreadNodeIds)
+    || !value.spreadNodeIds.every((entry) => typeof entry === 'string')
+  )) {
+    throw new Error(`Node "${value.id}" spreadNodeIds must be an array of strings.`);
   }
   if (value.scale !== undefined && (typeof value.scale !== 'number' || !Number.isFinite(value.scale) || value.scale <= 0)) {
     throw new Error(`Node "${value.id}" scale must be a positive finite number.`);
@@ -5182,6 +5322,7 @@ function parsePatchNode(value: unknown, index: number): PatchNode | null {
     ...(outputs ? { outputs } : {}),
     ...(subpatch ? { subpatch } : {}),
     ...(typeof value.compactPorts === 'boolean' ? { compactPorts: value.compactPorts } : {}),
+    ...(Array.isArray(value.spreadNodeIds) ? { spreadNodeIds: value.spreadNodeIds as string[] } : {}),
   };
 }
 
@@ -6099,6 +6240,11 @@ function viewportNodeSize(node: ShaderFlowNode): { width: number; height: number
     return { width: size.width, height: size.height + NODE_HEADER_HEIGHT };
   }
 
+  if (patchNode.type === 'Spread') {
+    const size = patchNode.scopeSize ?? DEFAULT_SPREAD_SIZE;
+    return { width: size.width, height: size.height + NODE_HEADER_HEIGHT };
+  }
+
   if (patchNode.type === 'Scope' || patchNode.type === 'Meter' || patchNode.type === 'FFT') {
     const size = clampScopeNodeSize(
       patchNode.scopeSize ?? (patchNode.type === 'FFT' ? DEFAULT_FFT_NODE_SIZE : DEFAULT_SCOPE_NODE_SIZE),
@@ -6138,6 +6284,20 @@ function viewportNodeSize(node: ShaderFlowNode): { width: number; height: number
   }
 
   return DEFAULT_NODE_BOUNDS_SIZE;
+}
+
+function flowNodeIsInsideSpread(spread: ShaderFlowNode, node: ShaderFlowNode): boolean {
+  if (spread.data.patchNode.type !== 'Spread' || node.id === spread.id) return false;
+  if (spread.data.patchNode.spreadNodeIds) {
+    return spread.data.patchNode.spreadNodeIds.includes(node.id);
+  }
+  const size = spread.data.patchNode.scopeSize ?? DEFAULT_SPREAD_SIZE;
+  return (
+    node.position.x >= spread.position.x
+    && node.position.x < spread.position.x + size.width
+    && node.position.y >= spread.position.y + NODE_HEADER_HEIGHT + SPREAD_PORTS_HEIGHT
+    && node.position.y < spread.position.y + NODE_HEADER_HEIGHT + size.height
+  );
 }
 
 function normalizedViewportZoom(zoom: number): number {
@@ -6198,6 +6358,47 @@ function connectedAreaIds(areas: EditorArea[], rootId: string): Set<string> {
     }
   }
   return connected;
+}
+
+function spreadAreaForNode(node: ShaderFlowNode): EditorArea {
+  const size = node.data.patchNode.scopeSize ?? DEFAULT_SPREAD_SIZE;
+  return {
+    id: `spread-area:${node.id}`,
+    kind: 'spread',
+    spreadNodeId: node.id,
+    title: 'Spread',
+    position: { ...node.position },
+    size: {
+      width: Math.max(240, size.width),
+      height: Math.max(NODE_HEADER_HEIGHT + SPREAD_PORTS_HEIGHT + 48, NODE_HEADER_HEIGHT + size.height),
+    },
+    uiHeight: SPREAD_PORTS_HEIGHT,
+    ...(node.data.patchNode.spreadNodeIds ? {
+      locked: true,
+      nodeIds: [...node.data.patchNode.spreadNodeIds],
+    } : {}),
+  };
+}
+
+function reconcileSpreadAreas(areas: EditorArea[], nodes: ShaderFlowNode[]): EditorArea[] {
+  const spreadNodes = nodes.filter((node) => node.data.patchNode.type === 'Spread');
+  const spreadNodeIds = new Set(spreadNodes.map((node) => node.id));
+  const retained = areas.filter((area) => (
+    area.kind !== 'spread'
+    || (area.spreadNodeId !== undefined && spreadNodeIds.has(area.spreadNodeId))
+  ));
+  const existingSpreadNodeIds = new Set(retained.flatMap((area) => (
+    area.kind === 'spread' && area.spreadNodeId ? [area.spreadNodeId] : []
+  )));
+  const added = spreadNodes
+    .filter((node) => !existingSpreadNodeIds.has(node.id))
+    .map(spreadAreaForNode);
+  return retained.length === areas.length && added.length === 0 ? areas : [...retained, ...added];
+}
+
+function optionalStringArraysEqual(left: string[] | undefined, right: string[] | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function areaContainsPoint(area: EditorArea, point: { x: number; y: number }): boolean {
@@ -7082,6 +7283,7 @@ function nodeCallbacksPlaceholder() {
     onParamChange: updateParamPlaceholder,
     onParamsChange: updateParamsPlaceholder,
     onTypeChange: updateTypePlaceholder,
+    onConvertToArea: updateConvertToAreaPlaceholder,
     onTypeEditStart: updateTypeEditStartPlaceholder,
     onTypeEditEnd: updateTypeEditEndPlaceholder,
     onTypeEditCancel: updateTypeEditCancelPlaceholder,
@@ -7097,6 +7299,7 @@ function nodeCallbacksPlaceholder() {
 function updateParamPlaceholder() {}
 function updateParamsPlaceholder() {}
 function updateTypePlaceholder() {}
+function updateConvertToAreaPlaceholder() {}
 function updateTypeEditStartPlaceholder() {}
 function updateTypeEditEndPlaceholder() {}
 function updateTypeEditCancelPlaceholder() {}

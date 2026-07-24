@@ -42,6 +42,7 @@ import {
 } from '../graph/nodeTypes';
 import type { CustomWaveMode, CustomWavePoint, CustomWaveSettings, NodeDefinition, NodeType, PatchNode } from '../graph/types';
 import { midiNoteLabel, QUANTISE_SCALES } from '../graph/musicScales';
+import { DEFAULT_SPREAD_SIZE, SPREAD_HEADER_HEIGHT } from '../graph/spread';
 import { formatNumericValue } from './numericDisplay';
 import {
   clampControlNodeSize,
@@ -116,6 +117,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const definition = node.type ? getNodeDefinition(node as PatchNode) : null;
   const isExpression = node.type === 'Expression';
   const isGroup = node.type === 'Group';
+  const isSpread = node.type === 'Spread';
   const isAreaCollapsedPresentation = data.isAreaCollapsedPresentation === true;
   const isAreaUiCollapsedPresentation = data.isAreaUiCollapsedPresentation === true;
   const isSelector = node.type === 'Selector';
@@ -143,7 +145,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const showTopGraphic = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay;
   const imageX = centeredCoordinateToUnit(data.audioImagePosition?.x ?? node.params.x ?? 0);
   const imageY = centeredCoordinateToUnit(data.audioImagePosition?.y ?? node.params.y ?? 0);
-  const showResizableDisplay = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay || showSequencerDisplay;
+  const showResizableDisplay = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay || showSequencerDisplay || isSpread;
   const customWave = showCustomWaveEditor ? normalizeCustomWave(node.customWave, node.params) : null;
   const customWavePlayhead = clamp(data.audioPlayheads?.[0] ?? normalizeUnitInterval(node.params.phase ?? 0), 0, 1);
   const sequencer = showSequencerDisplay ? sequencerShape(node.params) : null;
@@ -178,7 +180,12 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
         sequencer.rows,
       )
     : DEFAULT_SCOPE_NODE_SIZE;
-  const displaySize = showSequencerDisplay
+  const displaySize = isSpread
+    ? {
+        width: Math.max(240, node.scopeSize?.width ?? DEFAULT_SPREAD_SIZE.width),
+        height: Math.max(140, node.scopeSize?.height ?? DEFAULT_SPREAD_SIZE.height),
+      }
+    : showSequencerDisplay
     ? sequencerDisplaySize
     : showCustomWaveEditor || showSampleUpload || showImageDisplay ? waveformDisplaySize : scopeSize;
   const graphDetailSize = {
@@ -278,6 +285,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     showImageDisplay ? 'shader-node-image' : '',
     showAudioInputDisplay ? 'shader-node-audio-input' : '',
     showMidiNoteDisplay ? 'shader-node-midi-note' : '',
+    isSpread ? 'shader-node-spread' : '',
     showCustomWaveEditor ? 'shader-node-custom-wave' : '',
     isExpression ? 'shader-node-expression' : '',
     isGroup ? 'shader-node-group' : '',
@@ -774,6 +782,50 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     removeCustomWavePoint(Number(target.dataset.index));
   }
 
+  if (isSpread) {
+    return (
+      <div
+        className={`spread-port-panel${isAreaUiCollapsedPresentation ? ' spread-port-panel-collapsed' : ''}`}
+        style={{
+          '--spread-port-width': `${displaySize.width}px`,
+          '--spread-header-height': `${SPREAD_HEADER_HEIGHT}px`,
+          '--node-scale': String(node.scale ?? 1),
+        } as CSSProperties}
+      >
+        <div className="spread-port-input">
+          <Handle
+            id="in:count"
+            type="target"
+            position={Position.Left}
+            className={[
+              'shader-handle shader-handle-input spread-count-handle',
+              selectedLinkInputs.includes('count') ? 'shader-handle-selected-link' : '',
+            ].filter(Boolean).join(' ')}
+          />
+          <span>count</span>
+          <NumericScrubber
+            value={node.params.count ?? 1}
+            min={0}
+            integer
+            onChange={(value) => data.onParamChange(node.id, 'count', value)}
+          />
+        </div>
+        <div className="spread-port-output">
+          <span>item index</span>
+          <Handle
+            id="out:item index"
+            type="source"
+            position={Position.Right}
+            className={[
+              'shader-handle shader-handle-output spread-item-index-handle',
+              selectedLinkOutputs.includes('item index') ? 'shader-handle-selected-link' : '',
+            ].filter(Boolean).join(' ')}
+          />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       className={className}
@@ -815,7 +867,9 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             onClose={data.onTypeEditEnd}
             onCancel={() => data.onTypeEditCancel(node.id)}
             onChange={(type) => data.onTypeChange(node.id, type)}
+            onConvertToArea={() => data.onConvertToArea(node.id)}
             onCustomLabelCommit={isGroup ? (label) => data.onSubpatchNameChange?.(node.id, label) : undefined}
+            allowNodeDoubleClick={isGroup}
           />
         )}
         {!forceCompactPorts && !isAreaUiCollapsedPresentation ? (
@@ -910,7 +964,8 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             || (normalOutputPorts.length > 0 && !showHeaderOutputPort)
             || showMeterDisplay
             || showScopeDisplay
-            || showFftDisplay;
+            || showFftDisplay
+            || isSpread;
 
           if (!showBody) return null;
 
@@ -923,6 +978,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           showAudioOutputDisplay ? 'shader-node-body-audio-out' : '',
           showAudioInputDisplay ? 'shader-node-body-audio-input' : '',
           showMidiNoteDisplay ? 'shader-node-body-midi-note' : '',
+          isSpread ? 'shader-node-body-spread' : '',
           showTopGraphic ? 'shader-node-body-graphic' : '',
           !showSequencerDisplay && (visibleOutputPorts.length === 0 || showHeaderOutputPort) ? 'shader-node-body-no-outputs' : '',
         ].filter(Boolean).join(' ')}>
@@ -955,6 +1011,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             />
           ) : null}
           <div className={showTopGraphic ? 'shader-node-content-graphic' : 'shader-node-content-graphic-empty'}>
+          {isSpread ? <div className="spread-node-fill" aria-hidden="true" /> : null}
           {showSampleUpload ? (
             <SampleWaveformDisplay
               sampleUrl={node.sample?.url}
@@ -3544,7 +3601,9 @@ interface NodeTypePickerProps {
   onClose: () => void;
   onCancel: () => void;
   onChange: (type: NodeType) => void;
+  onConvertToArea: () => void;
   onCustomLabelCommit?: (label: string) => void;
+  allowNodeDoubleClick?: boolean;
 }
 
 interface CollapsedNodeLabelProps {
@@ -3764,7 +3823,9 @@ function NodeTypePicker({
   onClose,
   onCancel,
   onChange,
+  onConvertToArea,
   onCustomLabelCommit,
+  allowNodeDoubleClick = false,
 }: NodeTypePickerProps) {
   const nodeTypeLabel = nodeType ? getNodeTypeLabel(nodeType) : 'type';
   const pickerLabel = displayLabel ?? nodeTypeLabel;
@@ -3781,22 +3842,25 @@ function NodeTypePicker({
   const options = useMemo(() => {
     const normalizedQuery = searchQuery.trim().toLowerCase();
 
-    return NODE_TYPE_LIST
-      .filter((type) => {
-        if (!isEditingSubpatch && (type === 'Ins' || type === 'Outs')) return false;
+    return [...NODE_TYPE_LIST, 'Area' as const]
+      .filter((option) => {
+        if (!isEditingSubpatch && (option === 'Ins' || option === 'Outs')) return false;
+        const label = option === 'Area' ? 'Area' : getNodeTypeLabel(option);
         return (
-          type.toLowerCase().includes(normalizedQuery) ||
-          getNodeTypeLabel(type).toLowerCase().includes(normalizedQuery)
+          option.toLowerCase().includes(normalizedQuery) ||
+          label.toLowerCase().includes(normalizedQuery)
         );
       })
       .sort((left, right) => {
+        const leftLabel = left === 'Area' ? 'Area' : getNodeTypeLabel(left);
+        const rightLabel = right === 'Area' ? 'Area' : getNodeTypeLabel(right);
         const leftStartsWithQuery = (
           left.toLowerCase().startsWith(normalizedQuery) ||
-          getNodeTypeLabel(left).toLowerCase().startsWith(normalizedQuery)
+          leftLabel.toLowerCase().startsWith(normalizedQuery)
         );
         const rightStartsWithQuery = (
           right.toLowerCase().startsWith(normalizedQuery) ||
-          getNodeTypeLabel(right).toLowerCase().startsWith(normalizedQuery)
+          rightLabel.toLowerCase().startsWith(normalizedQuery)
         );
 
         return Number(rightStartsWithQuery) - Number(leftStartsWithQuery);
@@ -3834,8 +3898,12 @@ function NodeTypePicker({
     optionRefs.current[highlightedIndex]?.scrollIntoView({ block: 'nearest' });
   }, [highlightedIndex, open]);
 
-  function choose(type: NodeType) {
-    onChange(type);
+  function choose(option: NodeType | 'Area') {
+    if (option === 'Area') {
+      onConvertToArea();
+    } else {
+      onChange(option);
+    }
     onClose();
   }
 
@@ -3944,7 +4012,9 @@ function NodeTypePicker({
           onFocus={(event) => event.currentTarget.select()}
           onKeyDown={handleKeyDown}
           onPointerDown={(event) => event.stopPropagation()}
-          onDoubleClick={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => {
+            if (!allowNodeDoubleClick) event.stopPropagation();
+          }}
           spellCheck={false}
         />
         <div
@@ -3956,10 +4026,10 @@ function NodeTypePicker({
           }}
           onWheel={(event) => event.stopPropagation()}
         >
-          {options.map((type, index) => (
+          {options.map((option, index) => (
             <button
               className={index === highlightedIndex ? 'active' : ''}
-              key={type}
+              key={option}
               ref={(element) => {
                 optionRefs.current[index] = element;
               }}
@@ -3967,10 +4037,10 @@ function NodeTypePicker({
               onMouseDown={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
-                choose(type);
+                choose(option);
               }}
             >
-              {getNodeTypeLabel(type)}
+              {option === 'Area' ? 'Area' : getNodeTypeLabel(option)}
             </button>
           ))}
           {options.length === 0 ? <div className="node-type-picker-empty">no match</div> : null}

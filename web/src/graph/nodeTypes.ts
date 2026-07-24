@@ -21,6 +21,11 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     inputs: [],
     outputs: [],
   },
+  Spread: {
+    type: 'Spread',
+    inputs: [{ name: 'count', defaultValue: 1, min: 0, integer: true }],
+    outputs: [{ name: 'item index' }],
+  },
   Ins: {
     type: 'Ins',
     inputs: [],
@@ -426,6 +431,7 @@ export const NODE_TYPE_LIST = Object.keys(NODE_DEFINITIONS) as NodeType[];
 const NODE_TYPE_LABELS: Record<NodeType, string> = {
   Expression: 'Expression',
   Group: 'Group',
+  Spread: 'Spread',
   Ins: 'Ins',
   Outs: 'Outs',
   AudioOut: 'Audio Out',

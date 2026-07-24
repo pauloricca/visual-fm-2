@@ -1,4 +1,5 @@
 import { expandGroups } from '../graph/subpatch';
+import { expandSpreads } from '../graph/spread';
 import { customWaveWithBaseLevel, normalizeCustomWave } from '../graph/customWave';
 import {
   SEQUENCER_DEFAULT_ROWS,
@@ -58,6 +59,11 @@ export const DSP_OP = {
   Compress: 38,
   Limiter: 39,
   Quantise: 40,
+  BlockLatch: 41,
+  SpreadBegin: 42,
+  SpreadIndex: 43,
+  SpreadCollect: 44,
+  SpreadEnd: 45,
 } as const;
 
 export interface DspProgram {
@@ -111,7 +117,7 @@ export interface DspStateBinding {
   id: string;
   state: number;
   count: number;
-  kind: 'oscillator' | 'filter' | 'feedback' | 'selector' | 'effect' | 'sequencer';
+  kind: 'oscillator' | 'filter' | 'feedback' | 'selector' | 'effect' | 'sequencer' | 'spread';
   nodeId: string;
 }
 
@@ -192,6 +198,8 @@ interface CompileContext {
   customWaveBindings: DspCustomWaveBinding[];
   fftBindings: DspFftBinding[];
   fftBindingByNodeId: Map<string, DspFftBinding>;
+  spreadCountRegisterById: Map<string, number>;
+  spreadBoundaryRegisterByLink: Map<PatchLink, number>;
   usesMidiNote: boolean;
   usesMidiClock: boolean;
   maxVoices: number;
@@ -200,6 +208,10 @@ interface CompileContext {
 }
 
 const BUTTON_GATE_FADE_SECONDS = 0.008;
+const MAX_DSP_OPS = 4096;
+const MAX_DSP_REGISTERS = 2048;
+const MAX_DSP_VALUES = 2048;
+const MAX_DSP_STATE = 4096;
 
 const OSC_WAVES: Partial<Record<NodeType, number>> = {
   SineOsc: 0,
@@ -246,16 +258,20 @@ const EXPRESSION_FUNCTIONS: Record<string, { id: number; minArgs: number; maxArg
 };
 
 export function compilePatchToDspProgram(patch: Patch): DspProgram {
-  const expandedPatch = expandGroups(patch);
+  const spreadExpansion = expandSpreads(patch);
+  const expandedPatch = expandGroups(spreadExpansion.patch);
   const context = createContext(expandedPatch);
-  const audioOutNodes = expandedPatch.nodes.filter((node) => node.type === 'AudioOut');
-  const monitorNodes = expandedPatch.nodes.filter((node) => node.type === 'Meter' || node.type === 'Scope' || node.type === 'FFT');
-  const sliderMonitorNodes = expandedPatch.nodes.filter((node) => node.type === 'Slider');
-  const sequencerMonitorNodes = expandedPatch.nodes.filter((node) => node.type === 'Sequencer');
-  const imagePreviewNodes = expandedPatch.nodes.filter((node) => node.type === 'Image');
-  const samplePreviewNodes = expandedPatch.nodes.filter((node) => node.type === 'SamplePlayer');
+  context.errors.push(...spreadExpansion.errors);
+  const ordinaryNodes = expandedPatch.nodes.filter((node) => !node.runtimeSpread);
+  const audioOutNodes = ordinaryNodes.filter((node) => node.type === 'AudioOut');
+  const monitorNodes = ordinaryNodes.filter((node) => node.type === 'Meter' || node.type === 'Scope' || node.type === 'FFT');
+  const sliderMonitorNodes = ordinaryNodes.filter((node) => node.type === 'Slider');
+  const sequencerMonitorNodes = ordinaryNodes.filter((node) => node.type === 'Sequencer');
+  const imagePreviewNodes = ordinaryNodes.filter((node) => node.type === 'Image');
+  const samplePreviewNodes = ordinaryNodes.filter((node) => node.type === 'SamplePlayer');
 
   validatePatchLinks(context);
+  compileSpreadTemplates(context);
 
   if (audioOutNodes.length === 0 && monitorNodes.length === 0 && sequencerMonitorNodes.length === 0 && imagePreviewNodes.length === 0) {
     context.errors.push('Patch needs an Audio Out node.');
@@ -293,6 +309,19 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
   // linked region and envelope controls can still drive the node preview.
   for (const node of samplePreviewNodes) {
     resolveOutput(node, 'signal', context);
+  }
+
+  if (context.ops.length > MAX_DSP_OPS) {
+    context.errors.push(`DSP program needs ${context.ops.length} operations; the engine limit is ${MAX_DSP_OPS}. Reduce the nodes inside Spreads.`);
+  }
+  if (context.registerCount > MAX_DSP_REGISTERS) {
+    context.errors.push(`DSP program needs ${context.registerCount} registers; the engine limit is ${MAX_DSP_REGISTERS}. Reduce the nodes inside Spreads.`);
+  }
+  if (context.values.length > MAX_DSP_VALUES) {
+    context.errors.push(`DSP program needs ${context.values.length} values; the engine limit is ${MAX_DSP_VALUES}. Reduce the nodes inside Spreads.`);
+  }
+  if (context.stateCount > MAX_DSP_STATE) {
+    context.errors.push(`DSP program needs ${context.stateCount} state slots; the engine limit is ${MAX_DSP_STATE}. Reduce the nodes inside Spreads.`);
   }
 
   if (context.errors.length > 0) {
@@ -384,12 +413,99 @@ function createContext(patch: Patch): CompileContext {
     customWaveBindings: [],
     fftBindings: [],
     fftBindingByNodeId: new Map(),
+    spreadCountRegisterById: new Map(),
+    spreadBoundaryRegisterByLink: new Map(),
     usesMidiNote: false,
     usesMidiClock: false,
     maxVoices: 1,
     registerCount: 0,
     stateCount: 0,
   };
+}
+
+function compileSpreadTemplates(context: CompileContext): void {
+  const spreads = context.patch.nodes.filter((node) => node.type === 'Spread');
+
+  for (let spreadSlot = 0; spreadSlot < spreads.length; spreadSlot += 1) {
+    const spread = spreads[spreadSlot];
+    const templateNodes = context.patch.nodes.filter((node) => node.runtimeSpread?.spreadId === spread.id);
+    const templateIds = new Set(templateNodes.map((node) => node.id));
+
+    // Compile every signal entering the template before its repeat bracket so
+    // external stateful nodes run once per sample, not once per Spread item.
+    for (const link of context.patch.links) {
+      if (link.enabled === false || !templateIds.has(link.to.node) || templateIds.has(link.from.node)) continue;
+      const source = context.nodeById.get(link.from.node);
+      if (source) resolveOutput(source, link.from.port, context);
+    }
+
+    const countRegister = ensureSpreadCountRegister(spread, context);
+    const stateStart = context.stateCount;
+    const begin: DspOp = {
+      opcode: DSP_OP.SpreadBegin,
+      a: countRegister,
+      b: -1,
+      state: stateStart,
+      value: spreadSlot,
+      value2: 0,
+    };
+    context.ops.push(begin);
+
+    // Sinks and previews contained by the Spread are part of the repeated
+    // template even when they do not lead to an external output link.
+    for (const node of templateNodes) {
+      if (node.type === 'AudioOut') compileAudioOut(node, context);
+      else if (node.type === 'FFT') ensureFftBinding(node, context);
+      else if (node.type === 'Meter' || node.type === 'Scope') resolveOutput(node, 'signal', context);
+      else if (node.type === 'SamplePlayer') resolveOutput(node, 'signal', context);
+    }
+
+    for (const link of context.patch.links) {
+      if (link.enabled === false || !templateIds.has(link.from.node) || templateIds.has(link.to.node)) continue;
+      const source = context.nodeById.get(link.from.node);
+      if (!source) continue;
+      const sourceRegister = resolveOutput(source, link.from.port, context);
+      if (sourceRegister === null) continue;
+      const weightedRegister = emitBinary(
+        DSP_OP.Mul,
+        sourceRegister,
+        valueRegisterForLinkWeight(link, context),
+        context,
+      );
+      const aggregateRegister = nextRegister(context);
+      context.ops.push({
+        opcode: DSP_OP.SpreadCollect,
+        out: aggregateRegister,
+        a: weightedRegister,
+        b: (link.mode ?? 'set') === 'multiply' ? 1 : 0,
+      });
+      context.spreadBoundaryRegisterByLink.set(link, aggregateRegister);
+    }
+
+    const endIndex = context.ops.length;
+    context.ops.push({ opcode: DSP_OP.SpreadEnd, value: spreadSlot });
+    begin.b = endIndex;
+    begin.value2 = context.stateCount - stateStart;
+  }
+}
+
+function ensureSpreadCountRegister(spread: PatchNode, context: CompileContext): number {
+  const existing = context.spreadCountRegisterById.get(spread.id);
+  if (existing !== undefined) return existing;
+
+  const liveCount = resolveInput(spread, 'count', 1, context, 'immediate');
+  const countRegister = nextRegister(context);
+  const state = nextState(context, 1);
+  context.ops.push({ opcode: DSP_OP.BlockLatch, out: countRegister, a: liveCount, state });
+  context.stateBindings.push({
+    id: `${spread.id}:count`,
+    state,
+    count: 1,
+    kind: 'spread',
+    nodeId: spread.id,
+  });
+  context.spreadCountRegisterById.set(spread.id, countRegister);
+  return countRegister;
 }
 
 function compileAudioOut(node: PatchNode, context: CompileContext): void {
@@ -464,14 +580,18 @@ function resolveInput(
   valueMode: 'smoothed' | 'immediate' = 'smoothed',
 ): number {
   const links = context.incomingByInput.get(inputKey(node.id, port)) ?? [];
-  if (links.length === 0) return valueRegisterForNodeParam(node, port, fallback, context, valueMode);
+  if (links.length === 0) {
+    return valueRegisterForNodeParam(node, port, fallback, context, valueMode);
+  }
 
   const setRegisters: number[] = [];
+  const setSpreadGroups = new Map<string, number>();
+  let ordinarySetCount = 0;
   const addRegisters: number[] = [];
   const multiplyRegisters: number[] = [];
 
   for (const link of links) {
-    const register = resolveLinkValue(link, context);
+    let register = resolveLinkValue(link, context);
     if (register === null) continue;
 
     switch (link.mode ?? 'set') {
@@ -483,12 +603,37 @@ function resolveInput(
         break;
       case 'set':
         setRegisters.push(register);
+        {
+          const source = context.nodeById.get(link.from.node);
+          const spread = source?.runtimeSpread;
+          const targetSpread = node.runtimeSpread;
+          if (spread && spread.spreadId !== targetSpread?.spreadId) {
+            const countRegister = context.spreadCountRegisterById.get(spread.spreadId);
+            if (countRegister !== undefined) {
+              setSpreadGroups.set(
+                `${spread.spreadId}:${spread.originalNodeId}:${link.from.port}`,
+                countRegister,
+              );
+            }
+          } else {
+            ordinarySetCount += 1;
+          }
+        }
         break;
     }
   }
 
+  const setDenominatorRegisters = [
+    ...(ordinarySetCount > 0 ? [constantRegister(ordinarySetCount, context)] : []),
+    ...setSpreadGroups.values(),
+  ];
   let result = setRegisters.length > 0
-    ? averageRegisters(setRegisters, context)
+    ? emitBinary(
+        DSP_OP.Div,
+        sumRegisters(setRegisters, context),
+        sumRegisters(setDenominatorRegisters, context),
+        context,
+      )
     : valueRegisterForNodeParam(node, port, fallback, context, valueMode);
 
   for (const register of addRegisters) {
@@ -507,6 +652,9 @@ function hasInput(node: PatchNode, port: string, context: CompileContext): boole
 }
 
 function resolveLinkValue(link: PatchLink, context: CompileContext): number | null {
+  const spreadBoundaryRegister = context.spreadBoundaryRegisterByLink.get(link);
+  if (spreadBoundaryRegister !== undefined) return spreadBoundaryRegister;
+
   const source = context.nodeById.get(link.from.node);
   if (!source) {
     context.errors.push(`Link source node "${link.from.node}" does not exist.`);
@@ -541,6 +689,7 @@ function resolveOutput(node: PatchNode, port: string, context: CompileContext): 
   if (register !== null) {
     context.outputCache.set(key, register);
     emitFeedbackWriteIfNeeded(key, register, context);
+    return register;
   }
   return register;
 }
@@ -573,7 +722,16 @@ function emitFeedbackWriteIfNeeded(key: string, register: number, context: Compi
 }
 
 function compileNodeOutput(node: PatchNode, port: string, context: CompileContext): number | null {
+  if (node.type === 'Spread') {
+    context.errors.push(`Spread "${node.id}" item index can only link to nodes inside that Spread.`);
+    return null;
+  }
   if (node.type === 'Constant') {
+    if (node.runtimeSpread?.originalNodeId === '__item_index__') {
+      const output = nextRegister(context);
+      context.ops.push({ opcode: DSP_OP.SpreadIndex, out: output });
+      return output;
+    }
     return resolveInput(node, 'value', 1, context);
   }
 

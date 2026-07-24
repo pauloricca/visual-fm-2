@@ -27,6 +27,7 @@ Most node types are available from the node picker. `Ins` and `Outs` appear whil
 
 - `Expression`: evaluates a typed expression and outputs the result as a signal/control value.
 - `Group`: wraps a subpatch so a reusable patch can live inside a single node.
+- `Spread`: repeats the nodes placed inside its resizable area at runtime.
 - `Ins`: exposes subpatch input ports while editing a subpatch.
 - `Outs`: exposes subpatch output ports while editing a subpatch.
 - `Audio Out`: sends mono graph signals to the stereo hardware output via `both`, `left`, or `right`, with a final `level` control.
@@ -96,6 +97,7 @@ The signature notation below is `inputs -> outputs`. Port names are the names us
 | --- | --- | --- |
 | Expression | dynamic expression variables | `value` |
 | Group | dynamic subpatch inputs | dynamic subpatch outputs |
+| Spread | count | item index |
 | Ins | — | dynamic subpatch inputs |
 | Outs | dynamic subpatch outputs | — |
 | Audio Out | `both`, `left`, `right`, `level` | — |
@@ -195,7 +197,19 @@ Static values from nodes like `Constant` and static `Expression` outputs are fol
 
 ## Areas
 
-Create a visual area by Cmd/Ctrl-dragging on the canvas. Drag it by any empty part of its header or by its title. Click its title without dragging to edit it and select the whole name, ready to replace; double-clicking the title also selects its text without collapsing the area, and leaving an empty title when editing finishes restores `Area`. An area or node belongs inside another area only when its top-left corner is inside it, so touching edges and other partial overlaps do not link their movement. Drag the lower edge of an expanded area header to make a dashed UI section for user-facing controls such as sliders and sequencers. When the area is collapsed, that UI section remains visible and usable, while the lower functional section is hidden. UI nodes become display-only: their pins, node editing, moving, and resizing are disabled, and their external cables are presented at the area header instead.
+Create a visual area by Cmd/Ctrl-dragging on the canvas, or choose `Area` from a node's type dropdown to replace that node with an area at the same position and size. This conversion removes the node's links and is one-way because areas do not have node type dropdowns. Drag an area by any empty part of its header or by its title. Click its title without dragging to edit it and select the whole name, ready to replace; double-clicking the title also selects its text without collapsing the area, and leaving an empty title when editing finishes restores `Area`. An area or node belongs inside another area only when its top-left corner is inside it, so touching edges and other partial overlaps do not link their movement. Drag the lower edge of an expanded area header to make a dashed UI section for user-facing controls such as sliders and sequencers. When the area is collapsed, that UI section remains visible and usable, while the lower functional section is hidden. UI nodes become display-only: their pins, node editing, moving, and resizing are disabled, and their external cables are presented at the area header instead.
+
+## Spreads
+
+Choose `Spread` from a node's type picker to create a functional area. A Spread uses the same header, title editing, lock, collapse, resizing, nesting, membership, and movement interactions as an Area. Its fixed control strip sits immediately below the header: `count` uses a normal boundary input on the left, and the inward-facing `item index` pin follows immediately after the count editor on the same row. The control strip remains visible when the Spread is collapsed.
+
+A node is part of an unlocked Spread when its top-left corner is inside the functional body below the control strip. Locking the Spread preserves the same membership snapshot used by Areas, including after a member is moved outside the visible bounds. Unlike a visual Area, a Spread changes the DSP graph:
+
+- `count` selects how many items are active. It is a non-negative integer with no Spread-specific maximum and may be linked like any other input.
+- `item index` produces the user-facing, one-based index of each active item (`1` through `count`). It may only be linked to nodes inside that Spread.
+- Links between two contained nodes are copied within each item. Links entering the Spread are copied to every item, and links leaving it contribute one signal per active item using the link's existing `set`, `add`, or `multiply` behavior.
+
+The compiler emits the contained graph once as a repeatable DSP template. The WASM engine floors the `count` signal at zero, samples it once at the start of each audio buffer, and runs that template only for the active items. Each item keeps independent DSP state, allocated as the runtime count grows; there is no Spread count ceiling, so very large values can exhaust CPU or memory. Group and nested Spread nodes are not currently supported inside a Spread; place their underlying nodes directly in the Spread instead.
 
 ## Editor controls and shortcuts
 
