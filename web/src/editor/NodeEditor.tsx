@@ -471,7 +471,7 @@ function NodeEditorInner() {
     setNodes((current) => {
       let changed = false;
       const next = current.map((node) => {
-        if (node.data.patchNode.type !== 'Spread') return node;
+        if (node.data.patchNode.type !== 'Spread' && node.data.patchNode.type !== 'Spawn') return node;
         const area = areas.find((candidate) => candidate.kind === 'spread' && candidate.spreadNodeId === node.id);
         const spreadNodeIds = area?.locked ? [...(area.nodeIds ?? [])] : undefined;
         if (optionalStringArraysEqual(node.data.patchNode.spreadNodeIds, spreadNodeIds)) return node;
@@ -1261,7 +1261,7 @@ function NodeEditorInner() {
               ...(type === 'CustomWave' ? {
                 customWave: normalizeCustomWave(node.data.patchNode.customWave, node.data.patchNode.params),
               } : {}),
-              ...(type === 'Spread' ? { scopeSize: { ...DEFAULT_SPREAD_SIZE } } : {}),
+              ...((type === 'Spread' || type === 'Spawn') ? { scopeSize: { ...DEFAULT_SPREAD_SIZE } } : {}),
               params: nextParams,
               position: node.position,
               ...(expressionInputs ? { inputs: expressionInputs } : {}),
@@ -1277,7 +1277,7 @@ function NodeEditorInner() {
     })));
     setAreas((current) => {
       const withoutPreviousSpread = current.filter((area) => area.spreadNodeId !== nodeId);
-      if (type !== 'Spread') return withoutPreviousSpread;
+      if (type !== 'Spread' && type !== 'Spawn') return withoutPreviousSpread;
       return [...withoutPreviousSpread, spreadAreaForNode({
         ...relatedNode,
         id: nextId,
@@ -1286,7 +1286,7 @@ function NodeEditorInner() {
           patchNode: {
             ...relatedNode.data.patchNode,
             id: nextId,
-            type: 'Spread',
+            type,
             scopeSize: { ...DEFAULT_SPREAD_SIZE },
           },
         },
@@ -1438,13 +1438,14 @@ function NodeEditorInner() {
         relatedNode.data.patchNode.type !== 'Button' &&
         relatedNode.data.patchNode.type !== 'Keys' &&
         relatedNode.data.patchNode.type !== 'Sequencer' &&
-        relatedNode.data.patchNode.type !== 'Spread'
+        relatedNode.data.patchNode.type !== 'Spread' &&
+        relatedNode.data.patchNode.type !== 'Spawn'
       )
     ) {
       return;
     }
 
-    const nextSize = relatedNode.data.patchNode.type === 'Spread'
+    const nextSize = relatedNode.data.patchNode.type === 'Spread' || relatedNode.data.patchNode.type === 'Spawn'
       ? { width: Math.max(240, Math.round(size.width)), height: Math.max(140, Math.round(size.height)) }
       : relatedNode.data.patchNode.type === 'Sequencer'
       ? (() => {
@@ -1473,7 +1474,7 @@ function NodeEditorInner() {
       if (node.id !== nodeId) return node;
 
       const currentSize = node.data.patchNode.scopeSize ?? (
-        node.data.patchNode.type === 'Spread'
+        node.data.patchNode.type === 'Spread' || node.data.patchNode.type === 'Spawn'
           ? DEFAULT_SPREAD_SIZE
         : node.data.patchNode.type === 'Sequencer'
           ? clampSequencerNodeSize(
@@ -2145,8 +2146,8 @@ function NodeEditorInner() {
 
     return {
       ...node,
-      ...(node.data.patchNode.type === 'Spread' ? { draggable: false, selectable: false } : {}),
-      zIndex: node.data.patchNode.type === 'Spread'
+      ...((node.data.patchNode.type === 'Spread' || node.data.patchNode.type === 'Spawn') ? { draggable: false, selectable: false } : {}),
+      zIndex: node.data.patchNode.type === 'Spread' || node.data.patchNode.type === 'Spawn'
         ? 0
         : 1 + nodeZIndex(
             node.selected === true || selectedAreaNodeIds.has(node.id),
@@ -2400,7 +2401,7 @@ function NodeEditorInner() {
       selected: false,
       draggable: false,
       selectable: false,
-      connectable: node.data.patchNode.type === 'Spread',
+      connectable: node.data.patchNode.type === 'Spread' || node.data.patchNode.type === 'Spawn',
       data: { ...node.data, isAreaUiCollapsedPresentation: true },
     } : node
   )), [collapsedAreaByNode, collapsedUiAreaByNode, renderedNodes]);
@@ -2412,6 +2413,13 @@ function NodeEditorInner() {
       containedSourceArea?.kind === 'spread'
       && containedSourceArea.spreadNodeId === edge.source
       && containedSourceArea.id === containedTargetArea?.id
+    ) {
+      return [];
+    }
+    if (
+      containedTargetArea?.kind === 'spread'
+      && containedTargetArea.spreadNodeId === edge.target
+      && containedTargetArea.id === containedSourceArea?.id
     ) {
       return [];
     }
@@ -2772,6 +2780,27 @@ function NodeEditorInner() {
       setPendingBoundaryPort(null);
       return;
     }
+    const spawnTarget = nodesRef.current.find((node) => (
+      node.id === link.to.node
+      && node.data.patchNode.type === 'Spawn'
+      && link.to.port === 'kill trigger'
+    ));
+    const sourceNode = nodesRef.current.find((node) => node.id === link.from.node);
+    if (spawnTarget && (!sourceNode || !flowNodeIsInsideSpread(spawnTarget, sourceNode))) {
+      setPendingBoundaryPort(null);
+      return;
+    }
+    const runtimeControlTarget = nodesRef.current.find((node) => (
+      node.id === link.to.node
+      && (
+        (node.data.patchNode.type === 'Spread' && link.to.port === 'count')
+        || (node.data.patchNode.type === 'Spawn' && link.to.port === 'trigger')
+      )
+    ));
+    if (runtimeControlTarget && sourceNode && flowNodeIsInsideSpread(runtimeControlTarget, sourceNode)) {
+      setPendingBoundaryPort(null);
+      return;
+    }
 
     commitHistory();
     const edge = edgeFromLink(link, updateEdgeWeight, updateEdgeMode, insertNodeOnEdge);
@@ -2935,6 +2964,7 @@ function NodeEditorInner() {
     };
     const link = linkFromEdge(candidate);
     if (!link) return;
+    if (!runtimeContainerLinkIsAllowed(link, nodesRef.current)) return;
 
     const oldLink = linkFromEdge(oldEdge);
     const weight = oldEdge.data?.weight ?? oldLink?.weight ?? 1;
@@ -3899,7 +3929,14 @@ function NodeEditorInner() {
   const finishAreaRename = useCallback((areaId: string) => {
     setAreas((current) => current.map((area) => (
       area.id === areaId && !area.title
-        ? { ...area, title: area.kind === 'spread' ? 'Spread' : 'Area' }
+        ? {
+            ...area,
+            title: area.kind === 'spread'
+              ? nodesRef.current.find((node) => node.id === area.spreadNodeId)?.data.patchNode.type === 'Spawn'
+                ? 'Spawn'
+                : 'Spread'
+              : 'Area',
+          }
         : area
     )));
     setEditingAreaId(null);
@@ -4239,7 +4276,11 @@ function NodeEditorInner() {
                           ref={areaTitleInputRef}
                           className="canvas-area-title-input"
                           value={area.title}
-                          aria-label={area.kind === 'spread' ? 'Spread name' : 'Area name'}
+                          aria-label={area.kind === 'spread'
+                            ? nodesRef.current.find((node) => node.id === area.spreadNodeId)?.data.patchNode.type === 'Spawn'
+                              ? 'Spawn name'
+                              : 'Spread name'
+                            : 'Area name'}
                           onPointerDown={(event) => event.stopPropagation()}
                           onDoubleClick={(event) => {
                             event.stopPropagation();
@@ -6318,7 +6359,7 @@ function viewportNodeSize(node: ShaderFlowNode): { width: number; height: number
     return { width: size.width, height: size.height + NODE_HEADER_HEIGHT };
   }
 
-  if (patchNode.type === 'Spread') {
+  if (patchNode.type === 'Spread' || patchNode.type === 'Spawn') {
     const size = patchNode.scopeSize ?? DEFAULT_SPREAD_SIZE;
     return { width: size.width, height: size.height + NODE_HEADER_HEIGHT };
   }
@@ -6397,7 +6438,10 @@ function lockedAreaNodeBounds(
 }
 
 function flowNodeIsInsideSpread(spread: ShaderFlowNode, node: ShaderFlowNode): boolean {
-  if (spread.data.patchNode.type !== 'Spread' || node.id === spread.id) return false;
+  if (
+    (spread.data.patchNode.type !== 'Spread' && spread.data.patchNode.type !== 'Spawn')
+    || node.id === spread.id
+  ) return false;
   if (spread.data.patchNode.spreadNodeIds) {
     return spread.data.patchNode.spreadNodeIds.includes(node.id);
   }
@@ -6408,6 +6452,38 @@ function flowNodeIsInsideSpread(spread: ShaderFlowNode, node: ShaderFlowNode): b
     && node.position.y >= spread.position.y + NODE_HEADER_HEIGHT + SPREAD_PORTS_HEIGHT
     && node.position.y < spread.position.y + NODE_HEADER_HEIGHT + size.height
   );
+}
+
+function runtimeContainerLinkIsAllowed(link: PatchLink, nodes: ShaderFlowNode[]): boolean {
+  const sourceNode = nodes.find((node) => node.id === link.from.node);
+  const targetNode = nodes.find((node) => node.id === link.to.node);
+
+  if (
+    sourceNode?.data.patchNode.type === 'Spread'
+    && link.from.port === 'item index'
+    && (!targetNode || !flowNodeIsInsideSpread(sourceNode, targetNode))
+  ) {
+    return false;
+  }
+  if (
+    targetNode?.data.patchNode.type === 'Spawn'
+    && link.to.port === 'kill trigger'
+    && (!sourceNode || !flowNodeIsInsideSpread(targetNode, sourceNode))
+  ) {
+    return false;
+  }
+  if (
+    targetNode
+    && sourceNode
+    && (
+      (targetNode.data.patchNode.type === 'Spread' && link.to.port === 'count')
+      || (targetNode.data.patchNode.type === 'Spawn' && link.to.port === 'trigger')
+    )
+    && flowNodeIsInsideSpread(targetNode, sourceNode)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function normalizedViewportZoom(zoom: number): number {
@@ -6511,11 +6587,12 @@ function promoteNodeIdsInStackOrder(
 
 function spreadAreaForNode(node: ShaderFlowNode): EditorArea {
   const size = node.data.patchNode.scopeSize ?? DEFAULT_SPREAD_SIZE;
+  const title = node.data.patchNode.type === 'Spawn' ? 'Spawn' : 'Spread';
   return {
     id: `spread-area:${node.id}`,
     kind: 'spread',
     spreadNodeId: node.id,
-    title: 'Spread',
+    title,
     position: { ...node.position },
     size: {
       width: Math.max(240, size.width),
@@ -6530,7 +6607,9 @@ function spreadAreaForNode(node: ShaderFlowNode): EditorArea {
 }
 
 function reconcileSpreadAreas(areas: EditorArea[], nodes: ShaderFlowNode[]): EditorArea[] {
-  const spreadNodes = nodes.filter((node) => node.data.patchNode.type === 'Spread');
+  const spreadNodes = nodes.filter((node) => (
+    node.data.patchNode.type === 'Spread' || node.data.patchNode.type === 'Spawn'
+  ));
   const spreadNodeIds = new Set(spreadNodes.map((node) => node.id));
   const retained = areas.filter((area) => (
     area.kind !== 'spread'

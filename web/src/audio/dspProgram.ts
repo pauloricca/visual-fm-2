@@ -64,6 +64,9 @@ export const DSP_OP = {
   SpreadIndex: 43,
   SpreadCollect: 44,
   SpreadEnd: 45,
+  SpawnBegin: 46,
+  SpawnEnd: 47,
+  EndTrigger: 48,
 } as const;
 
 export interface DspProgram {
@@ -199,6 +202,7 @@ interface CompileContext {
   fftBindings: DspFftBinding[];
   fftBindingByNodeId: Map<string, DspFftBinding>;
   spreadCountRegisterById: Map<string, number>;
+  spawnActiveCountRegisterById: Map<string, number>;
   spreadBoundaryRegisterByLink: Map<PatchLink, number>;
   usesMidiNote: boolean;
   usesMidiClock: boolean;
@@ -264,6 +268,7 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
   context.errors.push(...spreadExpansion.errors);
   const ordinaryNodes = expandedPatch.nodes.filter((node) => !node.runtimeSpread);
   const audioOutNodes = ordinaryNodes.filter((node) => node.type === 'AudioOut');
+  const hasRuntimeAudioOut = expandedPatch.nodes.some((node) => node.runtimeSpread && node.type === 'AudioOut');
   const monitorNodes = ordinaryNodes.filter((node) => node.type === 'Meter' || node.type === 'Scope' || node.type === 'FFT');
   const sliderMonitorNodes = ordinaryNodes.filter((node) => node.type === 'Slider');
   const sequencerMonitorNodes = ordinaryNodes.filter((node) => node.type === 'Sequencer');
@@ -273,7 +278,7 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
   validatePatchLinks(context);
   compileSpreadTemplates(context);
 
-  if (audioOutNodes.length === 0 && monitorNodes.length === 0 && sequencerMonitorNodes.length === 0 && imagePreviewNodes.length === 0) {
+  if (audioOutNodes.length === 0 && !hasRuntimeAudioOut && monitorNodes.length === 0 && sequencerMonitorNodes.length === 0 && imagePreviewNodes.length === 0) {
     context.errors.push('Patch needs an Audio Out node.');
   }
 
@@ -414,6 +419,7 @@ function createContext(patch: Patch): CompileContext {
     fftBindings: [],
     fftBindingByNodeId: new Map(),
     spreadCountRegisterById: new Map(),
+    spawnActiveCountRegisterById: new Map(),
     spreadBoundaryRegisterByLink: new Map(),
     usesMidiNote: false,
     usesMidiClock: false,
@@ -424,7 +430,7 @@ function createContext(patch: Patch): CompileContext {
 }
 
 function compileSpreadTemplates(context: CompileContext): void {
-  const spreads = context.patch.nodes.filter((node) => node.type === 'Spread');
+  const spreads = context.patch.nodes.filter((node) => node.type === 'Spread' || node.type === 'Spawn');
 
   for (let spreadSlot = 0; spreadSlot < spreads.length; spreadSlot += 1) {
     const spread = spreads[spreadSlot];
@@ -439,17 +445,27 @@ function compileSpreadTemplates(context: CompileContext): void {
       if (source) resolveOutput(source, link.from.port, context);
     }
 
-    const countRegister = ensureSpreadCountRegister(spread, context);
+    const countRegister = spread.type === 'Spread'
+      ? ensureSpreadCountRegister(spread, context)
+      : nextRegister(context);
+    const triggerRegister = spread.type === 'Spawn'
+      ? resolveInput(spread, 'trigger', 0, context, 'immediate')
+      : -1;
     const stateStart = context.stateCount;
     const begin: DspOp = {
-      opcode: DSP_OP.SpreadBegin,
-      a: countRegister,
+      opcode: spread.type === 'Spawn' ? DSP_OP.SpawnBegin : DSP_OP.SpreadBegin,
+      out: spread.type === 'Spawn' ? countRegister : -1,
+      a: spread.type === 'Spawn' ? triggerRegister : countRegister,
       b: -1,
+      c: -1,
       state: stateStart,
       value: spreadSlot,
       value2: 0,
     };
     context.ops.push(begin);
+    if (spread.type === 'Spawn') {
+      context.spawnActiveCountRegisterById.set(spread.id, countRegister);
+    }
 
     // Sinks and previews contained by the Spread are part of the repeated
     // template even when they do not lead to an external output link.
@@ -462,6 +478,7 @@ function compileSpreadTemplates(context: CompileContext): void {
 
     for (const link of context.patch.links) {
       if (link.enabled === false || !templateIds.has(link.from.node) || templateIds.has(link.to.node)) continue;
+      if (spread.type === 'Spawn' && link.to.node === spread.id && link.to.port === 'kill trigger') continue;
       const source = context.nodeById.get(link.from.node);
       if (!source) continue;
       const sourceRegister = resolveOutput(source, link.from.port, context);
@@ -482,8 +499,14 @@ function compileSpreadTemplates(context: CompileContext): void {
       context.spreadBoundaryRegisterByLink.set(link, aggregateRegister);
     }
 
+    if (spread.type === 'Spawn' && hasInput(spread, 'kill trigger', context)) {
+      begin.c = resolveInput(spread, 'kill trigger', 0, context, 'immediate', spread.id);
+    }
     const endIndex = context.ops.length;
-    context.ops.push({ opcode: DSP_OP.SpreadEnd, value: spreadSlot });
+    context.ops.push({
+      opcode: spread.type === 'Spawn' ? DSP_OP.SpawnEnd : DSP_OP.SpreadEnd,
+      value: spreadSlot,
+    });
     begin.b = endIndex;
     begin.value2 = context.stateCount - stateStart;
   }
@@ -578,6 +601,7 @@ function resolveInput(
   fallback: number,
   context: CompileContext,
   valueMode: 'smoothed' | 'immediate' = 'smoothed',
+  runtimeTargetSpreadId?: string,
 ): number {
   const links = context.incomingByInput.get(inputKey(node.id, port)) ?? [];
   if (links.length === 0) {
@@ -606,9 +630,10 @@ function resolveInput(
         {
           const source = context.nodeById.get(link.from.node);
           const spread = source?.runtimeSpread;
-          const targetSpread = node.runtimeSpread;
-          if (spread && spread.spreadId !== targetSpread?.spreadId) {
-            const countRegister = context.spreadCountRegisterById.get(spread.spreadId);
+          const targetSpreadId = node.runtimeSpread?.spreadId ?? runtimeTargetSpreadId;
+          if (spread && spread.spreadId !== targetSpreadId) {
+            const countRegister = context.spreadCountRegisterById.get(spread.spreadId)
+              ?? context.spawnActiveCountRegisterById.get(spread.spreadId);
             if (countRegister !== undefined) {
               setSpreadGroups.set(
                 `${spread.spreadId}:${spread.originalNodeId}:${link.from.port}`,
@@ -733,8 +758,8 @@ function emitFeedbackWriteIfNeeded(key: string, register: number, context: Compi
 }
 
 function compileNodeOutput(node: PatchNode, port: string, context: CompileContext): number | null {
-  if (node.type === 'Spread') {
-    context.errors.push(`Spread "${node.id}" item index can only link to nodes inside that Spread.`);
+  if (node.type === 'Spread' || node.type === 'Spawn') {
+    context.errors.push(`${node.type} "${node.id}" does not expose that output.`);
     return null;
   }
   if (node.type === 'Constant') {
@@ -748,6 +773,41 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
 
   if (node.type === 'Pass') {
     return resolveInput(node, 'signal', 0, context);
+  }
+
+  if ((node.type === 'Envelope' || node.type === 'CustomWave') && port === 'end trigger') {
+    // Compile the primary output first so the end trigger can observe the
+    // exact engine state used to render this node, even when only the trigger
+    // output is connected.
+    resolveOutput(node, 'signal', context);
+    const bindingId = node.type === 'Envelope'
+      ? `${node.id}:envelope`
+      : `${node.id}:oscillator`;
+    const sourceState = context.stateBindings.find((binding) => binding.id === bindingId)?.state;
+    if (sourceState === undefined) {
+      context.errors.push(`Could not compile end trigger for node "${node.id}".`);
+      return null;
+    }
+    const output = nextRegister(context);
+    const state = nextState(context, node.type === 'Envelope' ? 1 : 5);
+    context.stateBindings.push({
+      id: `${node.id}:end-trigger`,
+      state,
+      count: node.type === 'Envelope' ? 1 : 5,
+      kind: 'effect',
+      nodeId: node.id,
+    });
+    context.ops.push({
+      opcode: DSP_OP.EndTrigger,
+      out: output,
+      a: sourceState,
+      b: node.type === 'CustomWave'
+        ? context.customWaveBindings.findIndex((binding) => binding.nodeId === node.id)
+        : -1,
+      state,
+      value: node.type === 'CustomWave' ? 1 : 0,
+    });
+    return output;
   }
 
   if (node.type === 'FFT') {

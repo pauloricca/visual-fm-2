@@ -28,6 +28,7 @@ Most node types are available from the node picker. `Ins` and `Outs` appear whil
 - `Expression`: evaluates a typed expression and outputs the result as a signal/control value.
 - `Group`: wraps a subpatch so a reusable patch can live inside a single node.
 - `Spread`: repeats the nodes placed inside its resizable area at runtime.
+- `Spawn`: creates a new, independent runtime copy of the nodes inside its resizable area on each trigger.
 - `Ins`: exposes subpatch input ports while editing a subpatch.
 - `Outs`: exposes subpatch output ports while editing a subpatch.
 - `Audio Out`: sends mono graph signals to the stereo hardware output via `both`, `left`, or `right`, with a final `level` control.
@@ -40,7 +41,7 @@ Most node types are available from the node picker. `Ins` and `Outs` appear whil
 - `Perlin Noise`: generates smooth noise at a controllable speed.
 - `Noise`: generates raw noise.
 - `Audio Input`: brings a microphone or input device into the patch with gain/level controls.
-- `Custom Wave`: generates an editable breakpoint waveform with loop, one-shot, ping-pong, and sustain modes. Its `baseLevel` input (default `0`) sets the locked start/end points and the value held while a one-shot is idle or complete, clamping to the configured output range when necessary. Its scope-style grid shows that range; zooming into the canvas reveals denser grid divisions and more scale labels while the grid stays screen-thin, the waveform stroke scales with canvas zoom like a cable, and labels stay screen-relative with a small capped size increase at high zoom for legibility. Edit points retain their screen-relative size down to 70% canvas zoom, then progressively shrink to avoid overwhelming the waveform when zoomed farther out. Hovering or dragging an edit point shows its value in the configured Y-axis range. Saved curve points remain normalized and range-independent. Point drags update the live DSP at a limited rate, morph smoothly between curve revisions without rebuilding the graph, and always commit the final position after release.
+- `Custom Wave`: generates an editable breakpoint waveform with loop, one-shot, ping-pong, and sustain modes. Its `end trigger` output emits a one-sample pulse when playback completes: at each wrap in loop modes, after the return trip in ping-pong modes, at the hold point in sustain mode, and at the endpoint in one-shot mode. Retriggering resets playback without producing an end pulse. Its `baseLevel` input (default `0`) sets the locked start/end points and the value held while a one-shot is idle or complete, clamping to the configured output range when necessary. Its scope-style grid shows that range; zooming into the canvas reveals denser grid divisions and more scale labels while the grid stays screen-thin, the waveform stroke scales with canvas zoom like a cable, and labels stay screen-relative with a small capped size increase at high zoom for legibility. Edit points retain their screen-relative size down to 70% canvas zoom, then progressively shrink to avoid overwhelming the waveform when zoomed farther out. Hovering or dragging an edit point shows its value in the configured Y-axis range. Saved curve points remain normalized and range-independent. Point drags update the live DSP at a limited rate, morph smoothly between curve revisions without rebuilding the graph, and always commit the final position after release.
 - `Sample`: plays a selected, uploaded, or microphone-recorded sample with frequency/original-frequency pitch tracking, trigger, polyphony, region, envelope, stretch, granular-style mode, and level controls. Positive frequency plays forward, negative frequency plays backward, and zero pauses the playhead. With `voices` set to `1`, playback follows live parameter changes; with more than one voice, each voice keeps the parameter values captured by its trigger. The sample picker can record from the microphone; stopping converts the capture to PCM WAV, prompts for a name, saves the `.wav` file in `samples/`, and selects it for the node.
 - `Image`: samples brightness, RGB, hue, and saturation from an uploaded image at an `x`/`y` position.
 - `Buffer`: records and plays a rolling audio buffer from signal, playhead, record-head, and length controls.
@@ -69,7 +70,7 @@ Most node types are available from the node picker. `Ins` and `Outs` appear whil
 - `Reverb`: applies a reverb effect with size, decay, mix controls, and `left`/`right` outputs.
 - `Compress`: applies dynamics compression with optional sidechain, threshold, ratio, attack, release, knee, and makeup controls.
 - `Limiter`: applies lookahead limiting with input gain, ceiling, release, and lookahead controls.
-- `Envelope`: creates an envelope with trigger/gate inputs and delay, attack, decay, sustain, gate-length, and release controls.
+- `Envelope`: creates an envelope with trigger/gate inputs and delay, attack, decay, sustain, gate-length, and release controls. Its `end trigger` output emits a one-sample pulse when the release stage finishes.
 - `Follower`: follows the amplitude contour of a signal with attack/release smoothing.
 - `Ring Mod`: multiplies a signal by a modulation amount for ring-mod-style tones.
 - `Fold`: folds a signal back on itself for wavefolding.
@@ -91,13 +92,14 @@ Most node types are available from the node picker. `Ins` and `Outs` appear whil
 
 ### Node signatures
 
-The signature notation below is `inputs -> outputs`. Port names are the names used by patch links. `Expression`, `Group`, `Ins`, and `Outs` have patch-defined ports; Sequencer row outputs and Selector value inputs also expand dynamically.
+The signature notation below is `inputs -> outputs`. Port names are the names used by patch links. On standard nodes, an output named `signal` stays on the header even when the node has additional outputs; those additional outputs remain in the body. `Expression`, `Group`, `Ins`, and `Outs` have patch-defined ports; Sequencer row outputs and Selector value inputs also expand dynamically.
 
 | Node | Inputs | Outputs |
 | --- | --- | --- |
 | Expression | dynamic expression variables | `value` |
 | Group | dynamic subpatch inputs | dynamic subpatch outputs |
 | Spread | count | item index |
+| Spawn | `trigger`, internal-only `kill trigger` | none |
 | Ins | — | dynamic subpatch inputs |
 | Outs | dynamic subpatch outputs | — |
 | Audio Out | `both`, `left`, `right`, `level` | — |
@@ -110,7 +112,7 @@ The signature notation below is `inputs -> outputs`. Port names are the names us
 | Perlin Noise | `speed`, `rangeMin`, `rangeMax` | `signal` |
 | Noise | `rangeMin`, `rangeMax` | `signal` |
 | Audio Input | `gain`, `level` | `signal` |
-| Custom Wave | `frequency`, `phase`, `trigger`, `baseLevel`, `rangeMin`, `rangeMax` | `signal` |
+| Custom Wave | `frequency`, `phase`, `trigger`, `baseLevel`, `rangeMin`, `rangeMax` | `signal`, `end trigger` |
 | Sample | `frequency`, `originalFrequency`, `trigger`, `voices`, `start`, `end`, `attack`, `release`, `stretch`, `cycleLength`, `overlapRatio`, `mode`, `level` | `signal` |
 | Image | `x`, `y` | `brightness`, `r`, `g`, `b`, `hue`, `saturation` |
 | Buffer | `signal`, `playhead`, `recordHead`, `length` | `signal` |
@@ -139,7 +141,7 @@ The signature notation below is `inputs -> outputs`. Port names are the names us
 | Reverb | `signal`, `size`, `decay`, `mix` | `left`, `right` |
 | Compress | `signal`, `sidechain`, `threshold`, `ratio`, `attack`, `release`, `knee`, `makeup` | `signal` |
 | Limiter | `signal`, `inputGain`, `ceiling`, `release`, `lookahead` | `signal` |
-| Envelope | `signal`, `trigger`, `gate`, `delay`, `attack`, `decay`, `sustain`, `gateLength`, `release` | `signal` |
+| Envelope | `signal`, `trigger`, `gate`, `delay`, `attack`, `decay`, `sustain`, `gateLength`, `release` | `signal`, `end trigger` |
 | Follower | `signal`, `attack`, `release` | `signal` |
 | Ring Mod | `signal`, `amount` | `signal` |
 | Fold | `signal`, `amount` | `signal` |
@@ -197,7 +199,7 @@ Static values from nodes like `Constant` and static `Expression` outputs are fol
 
 ## Areas
 
-Create a visual area by Cmd/Ctrl-dragging on the canvas, or choose `Area` from a node's type dropdown to replace that node with an area at the same position and size. This conversion removes the node's links and is one-way because areas do not have node type dropdowns. Drag an area by any empty part of its header or by its title. Click its title without dragging to edit it and select the whole name, ready to replace; double-clicking the title also selects its text without collapsing the area, and leaving an empty title when editing finishes restores `Area`. Selecting, moving, or interacting with an Area or Spread raises all of its contained nodes together while preserving their internal layer order. An area or node belongs inside another area only when its top-left corner is inside it, so touching edges and other partial overlaps do not link their movement. Locking an Area or Spread freezes that membership and prevents its resize handles from crossing the full visual bounds of its member nodes; unlocked containers retain unrestricted resizing. Drag the lower edge of an expanded area header to make a dashed UI section for user-facing controls such as sliders and sequencers. When the area is collapsed, that UI section remains visible and usable, while the lower functional section is hidden. UI nodes become display-only: their pins, node editing, moving, and resizing are disabled, and their external cables are presented at the area header instead.
+Create a visual area by Cmd/Ctrl-dragging on the canvas, or choose `Area` from a node's type dropdown to replace that node with an area at the same position and size. This conversion removes the node's links and is one-way because areas do not have node type dropdowns. Drag an area by any empty part of its header or by its title. Click its title without dragging to edit it and select the whole name, ready to replace; double-clicking the title also selects its text without collapsing the area, and leaving an empty title when editing finishes restores `Area`. Selecting, moving, or interacting with an Area, Spread, or Spawn raises all of its contained nodes together while preserving their internal layer order. An area or node belongs inside another area only when its top-left corner is inside it, so touching edges and other partial overlaps do not link their movement. Locking an Area, Spread, or Spawn freezes that membership and prevents its resize handles from crossing the full visual bounds of its member nodes; unlocked containers retain unrestricted resizing. Drag the lower edge of an expanded area header to make a dashed UI section for user-facing controls such as sliders and sequencers. When the area is collapsed, that UI section remains visible and usable, while the lower functional section is hidden. UI nodes become display-only: their pins, node editing, moving, and resizing are disabled, and their external cables are presented at the area header instead.
 
 ## Spreads
 
@@ -209,7 +211,18 @@ A node is part of an unlocked Spread when its top-left corner is inside the func
 - `item index` produces the user-facing, one-based index of each active item (`1` through `count`). It may only be linked to nodes inside that Spread.
 - Links between two contained nodes are copied within each item. Links entering the Spread are copied to every item, and links leaving it contribute one signal per active item using the link's existing `set`, `add`, or `multiply` behavior.
 
-The compiler emits the contained graph once as a repeatable DSP template. The WASM engine floors the `count` signal at zero, samples it once at the start of each audio buffer, and runs that template only for the active items. Each item keeps independent DSP state, allocated as the runtime count grows; there is no Spread count ceiling, so very large values can exhaust CPU or memory. Group and nested Spread nodes are not currently supported inside a Spread; place their underlying nodes directly in the Spread instead.
+The compiler emits the contained graph once as a repeatable DSP template. The WASM engine floors the `count` signal at zero, samples it once at the start of each audio buffer, and runs that template only for the active items. Each item keeps independent DSP state, allocated as the runtime count grows; there is no Spread count ceiling, so very large values can exhaust CPU or memory. Group, Spawn, and nested Spread nodes are not currently supported inside a Spread; place their underlying nodes directly in the Spread instead.
+
+## Spawns
+
+Choose `Spawn` from a node's type picker to create an event-driven functional area with the same header, resizing, nesting, membership, movement, lock, and collapse interactions as a Spread. Its control strip has no output pins: `trigger` is a normal boundary input on the left, while the inward-facing `kill trigger` input is visible only when the Spawn is expanded.
+
+- A rising edge on `trigger` creates a new runtime instance of every contained node. Existing instances continue independently, so retriggering does not reset or replace them.
+- `kill trigger` may only be driven by a node inside that Spawn. A rising edge produced by an instance removes that instance and its complete contained-node state without affecting the other live instances.
+- Links between contained nodes are copied within each instance. Links entering the Spawn are shared with every live instance, while links leaving it combine one signal from each live instance using the link's existing `set`, `add`, or `multiply` behavior.
+- A Spawn has no fixed voice limit. Instances remain alive until their own kill trigger fires, so a missing kill path or a very fast trigger can consume increasing CPU and memory.
+
+The compiler emits the contained graph once as a reusable DSP template, and the WASM engine allocates a fresh state set for each trigger. Group, Spread, and nested Spawn nodes are not currently supported inside a Spawn; place their underlying nodes directly in the Spawn instead.
 
 ## Editor controls and shortcuts
 

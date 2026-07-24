@@ -118,6 +118,8 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const isExpression = node.type === 'Expression';
   const isGroup = node.type === 'Group';
   const isSpread = node.type === 'Spread';
+  const isSpawn = node.type === 'Spawn';
+  const isRuntimeContainer = isSpread || isSpawn;
   const isAreaCollapsedPresentation = data.isAreaCollapsedPresentation === true;
   const isAreaUiCollapsedPresentation = data.isAreaUiCollapsedPresentation === true;
   const isSelector = node.type === 'Selector';
@@ -145,7 +147,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const showTopGraphic = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay;
   const imageX = centeredCoordinateToUnit(data.audioImagePosition?.x ?? node.params.x ?? 0);
   const imageY = centeredCoordinateToUnit(data.audioImagePosition?.y ?? node.params.y ?? 0);
-  const showResizableDisplay = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay || showSequencerDisplay || isSpread;
+  const showResizableDisplay = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay || showSequencerDisplay || isRuntimeContainer;
   const customWave = showCustomWaveEditor ? normalizeCustomWave(node.customWave, node.params) : null;
   const customWavePlayhead = clamp(data.audioPlayheads?.[0] ?? normalizeUnitInterval(node.params.phase ?? 0), 0, 1);
   const sequencer = showSequencerDisplay ? sequencerShape(node.params) : null;
@@ -180,7 +182,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
         sequencer.rows,
       )
     : DEFAULT_SCOPE_NODE_SIZE;
-  const displaySize = isSpread
+  const displaySize = isRuntimeContainer
     ? {
         width: Math.max(240, node.scopeSize?.width ?? DEFAULT_SPREAD_SIZE.width),
         height: Math.max(140, node.scopeSize?.height ?? DEFAULT_SPREAD_SIZE.height),
@@ -244,8 +246,11 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     && previewInputPort !== 'signal',
   );
   const headerInputPort = showHeaderInput ? 'signal' : null;
-  const showHeaderOutput = node.type !== 'Ins' && node.type !== 'Sequencer' && outputCount === 1 && !previewAddsOutput;
-  const headerOutputPort = showHeaderOutput && definition ? definition.outputs[0]?.name ?? null : null;
+  const canShowHeaderOutput = node.type !== 'Ins' && node.type !== 'Sequencer';
+  const signalOutputPort = definition?.outputs.find((output) => output.name === 'signal')?.name ?? null;
+  const headerOutputPort = canShowHeaderOutput
+    ? signalOutputPort ?? (outputCount === 1 && !previewAddsOutput ? definition?.outputs[0]?.name ?? null : null)
+    : null;
   const showHeaderInputPort = Boolean(headerInputPort);
   const showHeaderOutputPort = Boolean(headerOutputPort);
   const selectedLinkInputs = data.selectedLinkPorts?.inputs ?? [];
@@ -285,7 +290,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     showImageDisplay ? 'shader-node-image' : '',
     showAudioInputDisplay ? 'shader-node-audio-input' : '',
     showMidiNoteDisplay ? 'shader-node-midi-note' : '',
-    isSpread ? 'shader-node-spread' : '',
+    isRuntimeContainer ? 'shader-node-spread' : '',
     showCustomWaveEditor ? 'shader-node-custom-wave' : '',
     isExpression ? 'shader-node-expression' : '',
     isGroup ? 'shader-node-group' : '',
@@ -782,7 +787,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     removeCustomWavePoint(Number(target.dataset.index));
   }
 
-  if (isSpread) {
+  if (isRuntimeContainer) {
     return (
       <div
         className={`spread-port-panel${isAreaUiCollapsedPresentation ? ' spread-port-panel-collapsed' : ''}`}
@@ -794,32 +799,36 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
       >
         <div className="spread-port-input">
           <Handle
-            id="in:count"
+            id={`in:${isSpawn ? 'trigger' : 'count'}`}
             type="target"
             position={Position.Left}
             className={[
               'shader-handle shader-handle-input spread-count-handle',
-              selectedLinkInputs.includes('count') ? 'shader-handle-selected-link' : '',
+              selectedLinkInputs.includes(isSpawn ? 'trigger' : 'count') ? 'shader-handle-selected-link' : '',
             ].filter(Boolean).join(' ')}
           />
-          <span>count</span>
-          <NumericScrubber
-            value={node.params.count ?? 1}
-            min={0}
-            integer
-            onChange={(value) => data.onParamChange(node.id, 'count', value)}
-          />
+          <span>{isSpawn ? 'trigger' : 'count'}</span>
+          {!isSpawn ? (
+            <NumericScrubber
+              value={node.params.count ?? 1}
+              min={0}
+              integer
+              onChange={(value) => data.onParamChange(node.id, 'count', value)}
+            />
+          ) : null}
         </div>
         {!isAreaUiCollapsedPresentation ? (
           <div className="spread-port-output">
-            <span>item index</span>
+            <span>{isSpawn ? 'kill trigger' : 'item index'}</span>
             <Handle
-              id="out:item index"
-              type="source"
+              id={isSpawn ? 'in:kill trigger' : 'out:item index'}
+              type={isSpawn ? 'target' : 'source'}
               position={Position.Right}
               className={[
-                'shader-handle shader-handle-output spread-item-index-handle',
-                selectedLinkOutputs.includes('item index') ? 'shader-handle-selected-link' : '',
+                `shader-handle ${isSpawn ? 'shader-handle-input' : 'shader-handle-output'} spread-item-index-handle`,
+                (isSpawn
+                  ? selectedLinkInputs.includes('kill trigger')
+                  : selectedLinkOutputs.includes('item index')) ? 'shader-handle-selected-link' : '',
               ].filter(Boolean).join(' ')}
             />
           </div>
@@ -947,7 +956,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           ));
           const normalOutputPorts = showSequencerDisplay
             ? visibleOutputPorts.filter((output) => output.name === SEQUENCER_INDEX_OUTPUT)
-            : visibleOutputPorts;
+            : visibleOutputPorts.filter((output) => output.name !== headerOutputPort);
           const showBody = !compactPorts
             || isExpression
             || showSampleUpload
@@ -963,11 +972,11 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             || showAccumulatorDisplay
             || showAudioOutputDisplay
             || visibleInputPorts.length > 0
-            || (normalOutputPorts.length > 0 && !showHeaderOutputPort)
+            || normalOutputPorts.length > 0
             || showMeterDisplay
             || showScopeDisplay
             || showFftDisplay
-            || isSpread;
+            || isRuntimeContainer;
 
           if (!showBody) return null;
 
@@ -980,9 +989,9 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           showAudioOutputDisplay ? 'shader-node-body-audio-out' : '',
           showAudioInputDisplay ? 'shader-node-body-audio-input' : '',
           showMidiNoteDisplay ? 'shader-node-body-midi-note' : '',
-          isSpread ? 'shader-node-body-spread' : '',
+          isRuntimeContainer ? 'shader-node-body-spread' : '',
           showTopGraphic ? 'shader-node-body-graphic' : '',
-          !showSequencerDisplay && (visibleOutputPorts.length === 0 || showHeaderOutputPort) ? 'shader-node-body-no-outputs' : '',
+          !showSequencerDisplay && normalOutputPorts.length === 0 ? 'shader-node-body-no-outputs' : '',
         ].filter(Boolean).join(' ')}>
           {isExpression ? (
             <input
@@ -1013,7 +1022,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             />
           ) : null}
           <div className={showTopGraphic ? 'shader-node-content-graphic' : 'shader-node-content-graphic-empty'}>
-          {isSpread ? <div className="spread-node-fill" aria-hidden="true" /> : null}
+          {isRuntimeContainer ? <div className="spread-node-fill" aria-hidden="true" /> : null}
           {showSampleUpload ? (
             <SampleWaveformDisplay
               sampleUrl={node.sample?.url}
@@ -1242,7 +1251,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           ) : null}
           <div className={[
             showTopGraphic ? 'shader-node-content-ports' : 'shader-node-content-ports-empty',
-            visibleOutputPorts.length === 0 || showHeaderOutputPort ? 'shader-node-content-ports-no-outputs' : '',
+            normalOutputPorts.length === 0 ? 'shader-node-content-ports-no-outputs' : '',
           ].filter(Boolean).join(' ')}>
           <div className="shader-ports shader-inputs" style={inputStyle}>
             {visibleInputPorts.map((input) => (
@@ -1702,7 +1711,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               </button>
             ) : null}
           </div>
-          {normalOutputPorts.length > 0 && !showHeaderOutputPort ? (
+          {normalOutputPorts.length > 0 ? (
             <div className="shader-ports shader-outputs">
               {normalOutputPorts.map((output) => (
               <div

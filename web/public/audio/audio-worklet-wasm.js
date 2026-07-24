@@ -973,11 +973,14 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       const opValue = op.opcode === 3 && op.a === 9
         ? customWaveNodeIndexes[Math.trunc(op.value)] ?? -1
         : op.value;
+      const opB = op.opcode === 48 && op.value >= 0.5
+        ? customWaveNodeIndexes[Math.trunc(op.b)] ?? -1
+        : op.b;
       this.wasm.addDspOp?.(
         op.opcode,
         op.out,
         op.a,
-        op.b,
+        opB,
         op.c,
         op.d,
         op.e,

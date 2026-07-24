@@ -142,6 +142,9 @@ const DSP_OP_SPREAD_BEGIN: i32 = 42;
 const DSP_OP_SPREAD_INDEX: i32 = 43;
 const DSP_OP_SPREAD_COLLECT: i32 = 44;
 const DSP_OP_SPREAD_END: i32 = 45;
+const DSP_OP_SPAWN_BEGIN: i32 = 46;
+const DSP_OP_SPAWN_END: i32 = 47;
+const DSP_OP_END_TRIGGER: i32 = 48;
 const MIN_ENVELOPE_ATTACK_SECONDS: f64 = 0.001;
 const MAX_DSP_TEMPO_SOURCES: usize = 129;
 const TEMPO_OUTPUT_COUNT: i32 = 10;
@@ -255,6 +258,25 @@ impl DspSpreadRuntime {
     fn new() -> Self {
         Self {
             states_by_context: (0..=MAX_VOICE_SLOTS).map(|_| Vec::new()).collect(),
+        }
+    }
+}
+
+struct DspSpawnInstance {
+    states: Vec<f64>,
+    kill_triggered: bool,
+}
+
+struct DspSpawnRuntime {
+    instances_by_context: Vec<Vec<DspSpawnInstance>>,
+    previous_trigger_by_context: Vec<bool>,
+}
+
+impl DspSpawnRuntime {
+    fn new() -> Self {
+        Self {
+            instances_by_context: (0..=MAX_VOICE_SLOTS).map(|_| Vec::new()).collect(),
+            previous_trigger_by_context: vec![false; MAX_VOICE_SLOTS + 1],
         }
     }
 }
@@ -537,6 +559,8 @@ static mut DSP_DERIVED_VALUE_CACHES:
     [DspDerivedValueCache; MAX_DSP_STATE * DSP_DERIVED_CACHE_VALUES_PER_STATE] =
     [EMPTY_DSP_DERIVED_VALUE_CACHE; MAX_DSP_STATE * DSP_DERIVED_CACHE_VALUES_PER_STATE];
 static mut DSP_SPREAD_RUNTIMES: [Option<DspSpreadRuntime>; MAX_DSP_SPREADS] =
+    [const { None }; MAX_DSP_SPREADS];
+static mut DSP_SPAWN_RUNTIMES: [Option<DspSpawnRuntime>; MAX_DSP_SPREADS] =
     [const { None }; MAX_DSP_SPREADS];
 static mut DSP_SPREAD_ITEM_INDEX: usize = 0;
 static mut DSP_SPREAD_CONTEXT: usize = 0;
@@ -1111,6 +1135,7 @@ pub extern "C" fn clearDspProgram() {
         DSP_OP_COUNT = 0;
         for slot in 0..MAX_DSP_SPREADS {
             DSP_SPREAD_RUNTIMES[slot] = None;
+            DSP_SPAWN_RUNTIMES[slot] = None;
         }
         DSP_VALUE_ACTIVE_COUNT = 0;
         for index in 0..MAX_DSP_REGS {
@@ -1154,6 +1179,10 @@ pub extern "C" fn resetDspVoiceState(slot: u32) {
             if let Some(runtime) = DSP_SPREAD_RUNTIMES[spread_slot].as_mut() {
                 runtime.states_by_context[slot + 1].clear();
             }
+            if let Some(runtime) = DSP_SPAWN_RUNTIMES[spread_slot].as_mut() {
+                runtime.instances_by_context[slot + 1].clear();
+                runtime.previous_trigger_by_context[slot + 1] = false;
+            }
         }
     }
 }
@@ -1176,6 +1205,12 @@ pub extern "C" fn resetDspRuntimeState() {
             if let Some(runtime) = DSP_SPREAD_RUNTIMES[spread_slot].as_mut() {
                 for context in 0..runtime.states_by_context.len() {
                     runtime.states_by_context[context].fill(0.0);
+                }
+            }
+            if let Some(runtime) = DSP_SPAWN_RUNTIMES[spread_slot].as_mut() {
+                for context in 0..runtime.instances_by_context.len() {
+                    runtime.instances_by_context[context].clear();
+                    runtime.previous_trigger_by_context[context] = false;
                 }
             }
         }
@@ -1561,6 +1596,7 @@ fn valid_hot_dsp_op(
     d: i32,
     e: i32,
     state: i32,
+    value: f64,
     value2: f64,
     value3: f64,
     value4: f64,
@@ -1604,6 +1640,14 @@ fn valid_hot_dsp_op(
                 && state_is_valid
                 && range_is_valid
         }
+        DSP_OP_END_TRIGGER => {
+            let is_custom_wave = value >= 0.5;
+            let source_state_count = if is_custom_wave { 6 } else { 7 };
+            valid_dsp_register(out)
+                && valid_dsp_state_range(a, source_state_count)
+                && valid_dsp_state_range(state, if is_custom_wave { 5 } else { 1 })
+                && (!is_custom_wave || (b >= 0 && (b as usize) < MAX_NODES))
+        }
         _ => true,
     }
 }
@@ -1628,7 +1672,7 @@ pub extern "C" fn addDspOp(
             return -1;
         }
         if !valid_hot_dsp_op(
-            opcode, out, a, b, c, d, e, state, value2, value3, value4,
+            opcode, out, a, b, c, d, e, state, value, value2, value3, value4,
         ) {
             return -1;
         }
@@ -6652,6 +6696,75 @@ fn render_dsp_button(op: DspOp) -> f64 {
     }
 }
 
+fn render_dsp_end_trigger(op: DspOp) -> f64 {
+    unsafe {
+        if op.state < 0 || op.a < 0 {
+            return 0.0;
+        }
+        let state_index = op.state as usize;
+        let source_index = op.a as usize;
+        let is_custom_wave = op.value >= 0.5;
+
+        if !is_custom_wave {
+            if state_index >= MAX_DSP_STATE || source_index + 2 >= MAX_DSP_STATE {
+                return 0.0;
+            }
+            let active = DSP_STATE[state_index] >= 0.5;
+            let envelope_stage = DSP_STATE[source_index + 2].round() as i32;
+            let ended = active && envelope_stage == 0;
+            DSP_STATE[state_index] = if envelope_stage != 0 { 1.0 } else { 0.0 };
+            return if ended { 1.0 } else { 0.0 };
+        }
+
+        if state_index + 4 >= MAX_DSP_STATE
+            || source_index + 3 >= MAX_DSP_STATE
+            || op.b < 0
+            || op.b as usize >= MAX_NODES
+        {
+            return 0.0;
+        }
+
+        let node = NODES[op.b as usize];
+        let phase = DSP_STATE[source_index].clamp(0.0, 1.0);
+        let reset = DSP_STATE[source_index + 1] >= ENVELOPE_TRIGGER_THRESHOLD;
+        let direction = DSP_STATE[source_index + 2];
+        let done = DSP_STATE[source_index + 3] >= 0.5;
+        let previous_phase = DSP_STATE[state_index].clamp(0.0, 1.0);
+        let previous_direction = DSP_STATE[state_index + 1];
+        let previous_done = DSP_STATE[state_index + 2] >= 0.5;
+        let previous_reset = DSP_STATE[state_index + 3] >= 0.5;
+        let initialized = DSP_STATE[state_index + 4] >= 0.5;
+        let reset_edge = reset && !previous_reset;
+
+        let ended = if reset_edge {
+            false
+        } else {
+            match node.custom_mode {
+                CUSTOM_MODE_ONCE => done && (!initialized || !previous_done),
+                CUSTOM_MODE_PING_PONG | CUSTOM_MODE_SUSTAIN_PING_PONG => {
+                    initialized && previous_direction < 0.0 && direction >= 0.0
+                }
+                CUSTOM_MODE_SUSTAIN => {
+                    let sustain_start = node.custom_sustain_start.clamp(0.0, 0.999);
+                    phase >= sustain_start
+                        && (!initialized || previous_phase < sustain_start)
+                }
+                CUSTOM_MODE_LOOP | CUSTOM_MODE_SUSTAIN_LOOP => {
+                    initialized && phase < previous_phase
+                }
+                _ => false,
+            }
+        };
+
+        DSP_STATE[state_index] = phase;
+        DSP_STATE[state_index + 1] = direction;
+        DSP_STATE[state_index + 2] = if done { 1.0 } else { 0.0 };
+        DSP_STATE[state_index + 3] = if reset { 1.0 } else { 0.0 };
+        DSP_STATE[state_index + 4] = 1.0;
+        if ended { 1.0 } else { 0.0 }
+    }
+}
+
 fn render_dsp_phase_oscillator_output(
     op: DspOp,
     render_phase: f64,
@@ -7062,6 +7175,7 @@ fn render_dsp_op(
         DSP_OP_ACCUMULATOR => set_dsp_reg(op.out, render_dsp_accumulator(op)),
         DSP_OP_SEQUENCER => set_dsp_reg(op.out, render_dsp_sequencer(op, frame)),
         DSP_OP_BUTTON => set_dsp_reg(op.out, render_dsp_button(op)),
+        DSP_OP_END_TRIGGER => set_dsp_reg(op.out, render_dsp_end_trigger(op)),
         DSP_OP_SLEW => set_dsp_reg(op.out, render_dsp_slew(op, sample_rate)),
         DSP_OP_PLAYHEAD => set_dsp_reg(op.out, render_dsp_playhead(op, sample_rate)),
         DSP_OP_TIME => set_dsp_reg(op.out, render_dsp_time(op, sample_rate)),
@@ -7092,7 +7206,7 @@ fn render_dsp_op(
             let item = dsp_reg(op.a);
             set_dsp_reg(op.out, if op.b == 1 { current * item } else { current + item });
         }
-        DSP_OP_SPREAD_BEGIN | DSP_OP_SPREAD_END => {}
+        DSP_OP_SPREAD_BEGIN | DSP_OP_SPREAD_END | DSP_OP_SPAWN_BEGIN | DSP_OP_SPAWN_END => {}
         DSP_OP_BUFFER => set_dsp_reg(op.out, render_dsp_buffer(op, sample_rate)),
         DSP_OP_IMAGE => set_dsp_reg(op.out, render_dsp_image(op)),
         _ => {}
@@ -7270,7 +7384,7 @@ unsafe fn render_dsp_ops(
     let mut op_index = 0;
     while op_index < DSP_OP_COUNT {
         let op = DSP_OPS[op_index];
-        if op.opcode != DSP_OP_SPREAD_BEGIN {
+        if op.opcode != DSP_OP_SPREAD_BEGIN && op.opcode != DSP_OP_SPAWN_BEGIN {
             render_dsp_op(op, frame, sample_rate, left_sample, right_sample);
             op_index += 1;
             continue;
@@ -7296,6 +7410,70 @@ unsafe fn render_dsp_ops(
             if template_op.opcode == DSP_OP_SPREAD_COLLECT {
                 set_dsp_reg(template_op.out, if template_op.b == 1 { 1.0 } else { 0.0 });
             }
+        }
+
+        if op.opcode == DSP_OP_SPAWN_BEGIN {
+            let mut runtime = DSP_SPAWN_RUNTIMES[spread_slot]
+                .take()
+                .unwrap_or_else(DspSpawnRuntime::new);
+            let context = DSP_SPREAD_CONTEXT.min(MAX_VOICE_SLOTS);
+            let trigger = dsp_reg(op.a) >= ENVELOPE_TRIGGER_THRESHOLD;
+            if trigger && !runtime.previous_trigger_by_context[context] {
+                runtime.instances_by_context[context].push(DspSpawnInstance {
+                    states: vec![0.0; state_count],
+                    kill_triggered: false,
+                });
+            }
+            runtime.previous_trigger_by_context[context] = trigger;
+
+            let instances = &mut runtime.instances_by_context[context];
+            set_dsp_reg(op.out, instances.len() as f64);
+            let dsp_state_ptr = core::ptr::addr_of_mut!(DSP_STATE)
+                .cast::<f64>()
+                .add(state_start);
+            let mut instance_index = 0;
+            while instance_index < instances.len() {
+                let instance = &mut instances[instance_index];
+                if state_count > 0 {
+                    core::ptr::copy_nonoverlapping(
+                        instance.states.as_ptr(),
+                        dsp_state_ptr,
+                        state_count,
+                    );
+                }
+                if op.c >= 0 {
+                    set_dsp_reg(op.c, 0.0);
+                }
+                DSP_SPREAD_ITEM_INDEX = instance_index;
+                for template_index in (op_index + 1)..end_index {
+                    render_dsp_op(
+                        DSP_OPS[template_index],
+                        frame,
+                        sample_rate,
+                        left_sample,
+                        right_sample,
+                    );
+                }
+                if state_count > 0 {
+                    core::ptr::copy_nonoverlapping(
+                        dsp_state_ptr,
+                        instance.states.as_mut_ptr(),
+                        state_count,
+                    );
+                }
+                let kill_trigger = op.c >= 0
+                    && dsp_reg(op.c) >= ENVELOPE_TRIGGER_THRESHOLD;
+                let kill_edge = kill_trigger && !instance.kill_triggered;
+                instance.kill_triggered = kill_trigger;
+                if kill_edge {
+                    instances.remove(instance_index);
+                } else {
+                    instance_index += 1;
+                }
+            }
+            DSP_SPAWN_RUNTIMES[spread_slot] = Some(runtime);
+            op_index = end_index + 1;
+            continue;
         }
 
         if state_count == 0 {

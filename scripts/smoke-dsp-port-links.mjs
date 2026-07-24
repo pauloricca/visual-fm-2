@@ -89,6 +89,15 @@ const compressorSidechain = getDefinition('Compress').inputs.find((entry) => ent
 assert(compressorSidechain, 'Compress.sidechain is missing from node metadata.');
 assert(compressorSidechain.connectable !== false, 'Compress.sidechain should be connectable.');
 assert(compressorSidechain.valueEditor === false, 'Compress.sidechain should only accept a linked signal.');
+const spawnDefinition = getDefinition('Spawn');
+assert(
+  spawnDefinition.outputs.length === 0,
+  'Spawn should not expose any output pins.',
+);
+assert(
+  spawnDefinition.inputs.map((input) => input.name).join(',') === 'trigger,kill trigger',
+  'Spawn should expose trigger and internal kill trigger inputs.',
+);
 for (const port of ['inputGain', 'ceiling', 'release', 'lookahead']) {
   const input = getDefinition('Limiter').inputs.find((entry) => entry.name === port);
   assert(input, `Limiter.${port} is missing from node metadata.`);
@@ -186,6 +195,44 @@ assert(dspProgram.errors.length === 0, `DSP compile failed: ${dspProgram.errors.
 assert(
   dspProgram.ops.some((op) => op.opcode === 29 && op.value === 1),
   'Accumulator continuous mode should be encoded in the DSP operation.',
+);
+
+const spawnProgram = compilePatchToDspProgram({
+  nodes: [
+    { ...node('spawn', 'Spawn', { trigger: 0 }), position: { x: 0, y: 0 }, scopeSize: { width: 320, height: 220 } },
+    { ...node('spawn_trigger', 'Constant', { value: 0 }), position: { x: -140, y: 0 } },
+    { ...node('voice', 'Constant', { value: 0.25 }), position: { x: 20, y: 100 } },
+    { ...node('voice_out', 'AudioOut', { level: 1 }), position: { x: 140, y: 100 } },
+  ],
+  links: [
+    link('spawn_trigger', 'signal', 'spawn', 'trigger'),
+    link('voice', 'signal', 'voice_out', 'both'),
+    link('voice', 'signal', 'spawn', 'kill trigger'),
+  ],
+});
+assert(spawnProgram.errors.length === 0, `Spawn DSP compile failed: ${spawnProgram.errors.join('; ')}`);
+const spawnBeginIndex = spawnProgram.ops.findIndex((op) => op.opcode === 46);
+assert(spawnBeginIndex >= 0, 'Spawn should compile a SpawnBegin operation.');
+const spawnBegin = spawnProgram.ops[spawnBeginIndex];
+assert(spawnBegin.c >= 0, 'Spawn should compile its internal kill trigger register.');
+assert(
+  spawnProgram.ops[spawnBegin.b]?.opcode === 47,
+  'SpawnBegin should point to its matching SpawnEnd operation.',
+);
+const invalidSpawnKillProgram = compilePatchToDspProgram({
+  nodes: [
+    { ...node('spawn', 'Spawn', { trigger: 0 }), position: { x: 0, y: 0 }, scopeSize: { width: 320, height: 220 } },
+    { ...node('external_kill', 'Constant', { value: 1 }), position: { x: -140, y: 80 } },
+    { ...node('out', 'AudioOut', { level: 1 }), position: { x: 400, y: 0 } },
+  ],
+  links: [
+    link('external_kill', 'signal', 'spawn', 'kill trigger'),
+    link('external_kill', 'signal', 'out', 'both'),
+  ],
+});
+assert(
+  invalidSpawnKillProgram.errors.some((error) => error.includes('kill trigger can only be driven by a node inside that Spawn')),
+  `External Spawn kill trigger error missing: ${invalidSpawnKillProgram.errors.join('; ')}`,
 );
 
 const timeProgram = compilePatchToDspProgram({

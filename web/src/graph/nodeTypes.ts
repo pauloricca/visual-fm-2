@@ -26,6 +26,14 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     inputs: [{ name: 'count', defaultValue: 1, min: 0, integer: true }],
     outputs: [{ name: 'item index' }],
   },
+  Spawn: {
+    type: 'Spawn',
+    inputs: [
+      { name: 'trigger', defaultValue: 0 },
+      { name: 'kill trigger', defaultValue: 0, valueEditor: false },
+    ],
+    outputs: [],
+  },
   Ins: {
     type: 'Ins',
     inputs: [],
@@ -94,7 +102,10 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
       { name: 'rangeMin', defaultValue: -1 },
       { name: 'rangeMax', defaultValue: 1 },
     ],
-    outputs: [{ name: 'signal' }],
+    outputs: [
+      { name: 'signal' },
+      { name: 'end trigger' },
+    ],
   },
   SamplePlayer: {
     type: 'SamplePlayer',
@@ -358,16 +369,24 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     { name: 'release', defaultValue: 0.05, min: 0.001, max: 3, step: 0.001 },
     { name: 'lookahead', defaultValue: 0.005, min: 0, max: 0.02, step: 0.001 },
   ]),
-  Envelope: processor('Envelope', [
-    { name: 'trigger', valueEditor: false },
-    { name: 'gate', valueEditor: false },
-    { name: 'delay', defaultValue: 0, min: 0 },
-    { name: 'attack', defaultValue: 0.01, min: 0 },
-    { name: 'decay', defaultValue: 0.16, min: 0 },
-    { name: 'sustain', defaultValue: 0.72 },
-    { name: 'gateLength', defaultValue: 0, min: 0 },
-    { name: 'release', defaultValue: 0.24, min: 0 },
-  ]),
+  Envelope: {
+    type: 'Envelope',
+    inputs: [
+      { name: 'signal', valueEditor: false },
+      { name: 'trigger', valueEditor: false },
+      { name: 'gate', valueEditor: false },
+      { name: 'delay', defaultValue: 0, min: 0 },
+      { name: 'attack', defaultValue: 0.01, min: 0 },
+      { name: 'decay', defaultValue: 0.16, min: 0 },
+      { name: 'sustain', defaultValue: 0.72 },
+      { name: 'gateLength', defaultValue: 0, min: 0 },
+      { name: 'release', defaultValue: 0.24, min: 0 },
+    ],
+    outputs: [
+      { name: 'signal' },
+      { name: 'end trigger' },
+    ],
+  },
   Follower: processor('Follower', [
     { name: 'attack', defaultValue: 0.01, min: 0 },
     { name: 'release', defaultValue: 0.12, min: 0 },
@@ -432,6 +451,7 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   Expression: 'Expression',
   Group: 'Group',
   Spread: 'Spread',
+  Spawn: 'Spawn',
   Ins: 'Ins',
   Outs: 'Outs',
   AudioOut: 'Audio Out',

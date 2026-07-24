@@ -2,6 +2,7 @@ export type NodeType =
   | 'Expression'
   | 'Group'
   | 'Spread'
+  | 'Spawn'
   | 'Ins'
   | 'Outs'
   | 'AudioOut'
@@ -93,9 +94,9 @@ export interface PatchNode {
   outputs?: PortDefinition[];
   subpatch?: Patch;
   compactPorts?: boolean;
-  /** Locked Spread membership, mirroring an area's node snapshot. */
+  /** Locked Spread/Spawn membership, mirroring an area's node snapshot. */
   spreadNodeIds?: string[];
-  /** Compiler-only metadata attached to nodes cloned from a Spread. */
+  /** Compiler-only metadata attached to nodes cloned from a Spread or Spawn. */
   runtimeSpread?: {
     spreadId: string;
     itemIndex: number;

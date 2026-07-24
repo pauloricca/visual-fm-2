@@ -1307,7 +1307,7 @@ button:hover {
 }
 
 .shader-node-content-ports .shader-port-output {
-  width: max-content;
+  width: 100%;
 }
 
 .shader-node-body-expression {

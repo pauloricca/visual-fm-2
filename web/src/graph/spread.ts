@@ -12,7 +12,7 @@ export interface SpreadExpansion {
 export function expandSpreads(patch: Patch): SpreadExpansion {
   let expanded = patch;
   const errors: string[] = [];
-  const spreads = patch.nodes.filter((node) => node.type === 'Spread');
+  const spreads = patch.nodes.filter(isRuntimeContainer);
   const memberships = new Map<string, string[]>();
 
   for (const spread of spreads) {
@@ -23,7 +23,7 @@ export function expandSpreads(patch: Patch): SpreadExpansion {
   }
   for (const [nodeId, spreadIds] of memberships) {
     if (spreadIds.length > 1) {
-      errors.push(`Node "${nodeId}" is inside multiple Spreads (${spreadIds.join(', ')}). Move it into exactly one Spread.`);
+      errors.push(`Node "${nodeId}" is inside multiple Spread/Spawn containers (${spreadIds.join(', ')}). Move it into exactly one container.`);
     }
   }
   if (errors.length > 0) return { patch, errors };
@@ -38,7 +38,7 @@ export function expandSpreads(patch: Patch): SpreadExpansion {
 }
 
 export function nodeIsInsideSpread(spread: PatchNode, node: PatchNode): boolean {
-  if (spread.type !== 'Spread' || node.id === spread.id) return false;
+  if (!isRuntimeContainer(spread) || node.id === spread.id) return false;
   if (spread.spreadNodeIds) return spread.spreadNodeIds.includes(node.id);
   if (!spread.position || !node.position) return false;
   const size = spread.scopeSize ?? DEFAULT_SPREAD_SIZE;
@@ -51,7 +51,7 @@ export function nodeIsInsideSpread(spread: PatchNode, node: PatchNode): boolean 
 }
 
 function expandOneSpread(patch: Patch, spreadId: string): SpreadExpansion {
-  const spread = patch.nodes.find((node) => node.id === spreadId && node.type === 'Spread');
+  const spread = patch.nodes.find((node) => node.id === spreadId && isRuntimeContainer(node));
   if (!spread) return { patch, errors: [] };
 
   const internalNodes = patch.nodes.filter((node) => nodeIsInsideSpread(spread, node));
@@ -59,38 +59,47 @@ function expandOneSpread(patch: Patch, spreadId: string): SpreadExpansion {
   const errors: string[] = [];
 
   for (const node of internalNodes) {
-    if (node.type === 'Spread') {
-      errors.push(`Spread "${spread.id}" cannot contain another Spread "${node.id}".`);
+    if (isRuntimeContainer(node)) {
+      errors.push(`${spread.type} "${spread.id}" cannot contain ${node.type} "${node.id}".`);
     } else if (node.type === 'Group') {
-      errors.push(`Spread "${spread.id}" cannot contain Group node "${node.id}" yet; place the Group's nodes directly in the Spread.`);
+      errors.push(`${spread.type} "${spread.id}" cannot contain Group node "${node.id}" yet; place the Group's nodes directly in the ${spread.type}.`);
     }
   }
 
   const clonedNodes: PatchNode[] = [];
   for (const node of internalNodes) {
-    if (node.type === 'Spread' || node.type === 'Group') continue;
+    if (isRuntimeContainer(node) || node.type === 'Group') continue;
     clonedNodes.push(cloneSpreadNode(node, spread.id, 0));
   }
-  clonedNodes.push({
-    id: spreadIndexNodeId(spread.id, 0),
-    type: 'Constant',
-    params: { value: 1 },
-    runtimeSpread: { spreadId: spread.id, itemIndex: 0, originalNodeId: '__item_index__' },
-  });
+  if (spread.type === 'Spread') {
+    clonedNodes.push({
+      id: spreadIndexNodeId(spread.id, 0),
+      type: 'Constant',
+      params: { value: 1 },
+      runtimeSpread: { spreadId: spread.id, itemIndex: 0, originalNodeId: '__item_index__' },
+    });
+  }
 
   const links: PatchLink[] = [];
   for (const link of patch.links) {
     const sourceInternal = internalIds.has(link.from.node);
     const targetInternal = internalIds.has(link.to.node);
-    const isIndexLink = link.from.node === spread.id && link.from.port === 'item index';
-    const isInternalCountLink = sourceInternal && link.to.node === spread.id && link.to.port === 'count';
+    const isIndexLink = spread.type === 'Spread' && link.from.node === spread.id && link.from.port === 'item index';
+    const isInternalControlLink = sourceInternal
+      && link.to.node === spread.id
+      && link.to.port === (spread.type === 'Spread' ? 'count' : 'trigger');
+    const isKillLink = spread.type === 'Spawn' && link.to.node === spread.id && link.to.port === 'kill trigger';
 
     if (isIndexLink && !targetInternal) {
       errors.push(`Spread "${spread.id}" item index can only link to nodes inside that Spread.`);
       continue;
     }
-    if (isInternalCountLink) {
-      errors.push(`Spread "${spread.id}" count cannot be driven by a node inside the same Spread.`);
+    if (isInternalControlLink) {
+      errors.push(`${spread.type} "${spread.id}" ${spread.type === 'Spread' ? 'count' : 'trigger'} cannot be driven by a node inside the same ${spread.type}.`);
+      continue;
+    }
+    if (isKillLink && !sourceInternal) {
+      errors.push(`Spawn "${spread.id}" kill trigger can only be driven by a node inside that Spawn.`);
       continue;
     }
 
@@ -130,6 +139,10 @@ function expandOneSpread(patch: Patch, spreadId: string): SpreadExpansion {
     },
     errors,
   };
+}
+
+function isRuntimeContainer(node: PatchNode): boolean {
+  return node.type === 'Spread' || node.type === 'Spawn';
 }
 
 function cloneSpreadNode(node: PatchNode, spreadId: string, itemIndex: number): PatchNode {
