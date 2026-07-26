@@ -145,6 +145,7 @@ const DSP_OP_SPREAD_END: i32 = 45;
 const DSP_OP_SPAWN_BEGIN: i32 = 46;
 const DSP_OP_SPAWN_END: i32 = 47;
 const DSP_OP_END_TRIGGER: i32 = 48;
+const DSP_OP_RANDOM: i32 = 49;
 const MIN_ENVELOPE_ATTACK_SECONDS: f64 = 0.001;
 const MAX_DSP_TEMPO_SOURCES: usize = 129;
 const TEMPO_OUTPUT_COUNT: i32 = 10;
@@ -691,6 +692,7 @@ static mut RNG_STATES: [u32; MAX_VOICE_SLOTS] = [
     0x1020_3040,
     0x5060_7080,
 ];
+static mut DSP_RANDOM_SEED_STREAM: u32 = 0x6d2b_79f5;
 static mut FREQUENCY_MODS: [f64; MAX_NODES] = [0.0; MAX_NODES];
 static mut FREQUENCY_MOD_ACTIVE: [bool; MAX_NODES] = [false; MAX_NODES];
 static mut RENDER_CACHE: [f64; MAX_NODES] = [0.0; MAX_NODES];
@@ -1225,6 +1227,13 @@ pub extern "C" fn resetDspRuntimeState() {
     }
 }
 
+#[no_mangle]
+pub extern "C" fn seedDspRandom(seed: u32) {
+    unsafe {
+        DSP_RANDOM_SEED_STREAM = if seed == 0 { 0x6d2b_79f5 } else { seed };
+    }
+}
+
 fn reset_dsp_tempo_clocks() {
     unsafe {
         for index in 0..MAX_DSP_TEMPO_SOURCES {
@@ -1647,6 +1656,13 @@ fn valid_hot_dsp_op(
                 && valid_dsp_state_range(a, source_state_count)
                 && valid_dsp_state_range(state, if is_custom_wave { 5 } else { 1 })
                 && (!is_custom_wave || (b >= 0 && (b as usize) < MAX_NODES))
+        }
+        DSP_OP_RANDOM => {
+            valid_dsp_register(out)
+                && valid_optional_dsp_register(a)
+                && valid_dsp_register(b)
+                && valid_dsp_register(c)
+                && valid_dsp_state_range(state, 4)
         }
         _ => true,
     }
@@ -3654,6 +3670,49 @@ fn random_unit(voice_slot: usize) -> f64 {
 
 fn random_bipolar(voice_slot: usize) -> f64 {
     random_unit(voice_slot) * 2.0 - 1.0
+}
+
+fn advance_random_state(state: u32) -> u32 {
+    state
+        .wrapping_mul(1_664_525)
+        .wrapping_add(1_013_904_223)
+}
+
+fn next_dsp_random_seed() -> u32 {
+    unsafe {
+        DSP_RANDOM_SEED_STREAM = advance_random_state(DSP_RANDOM_SEED_STREAM);
+        DSP_RANDOM_SEED_STREAM
+    }
+}
+
+fn random_unit_from_state(state: &mut u32) -> f64 {
+    *state = advance_random_state(*state);
+    *state as f64 / u32::MAX as f64
+}
+
+#[cfg(test)]
+mod random_tests {
+    use super::{advance_random_state, random_unit_from_state};
+
+    #[test]
+    fn separate_seeds_produce_separate_sequences() {
+        let mut first = advance_random_state(1);
+        let mut second = advance_random_state(2);
+        assert_ne!(
+            random_unit_from_state(&mut first),
+            random_unit_from_state(&mut second)
+        );
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn generator_advances_only_when_called() {
+        let mut state = advance_random_state(123);
+        let held_state = state;
+        let _ = random_unit_from_state(&mut state);
+        assert_eq!(held_state, advance_random_state(123));
+        assert_ne!(state, held_state);
+    }
 }
 
 fn apply_link_noise(sample: f64, link: Link, voice_slot: usize) -> f64 {
@@ -6245,6 +6304,69 @@ fn render_dsp_function(op: DspOp) -> f64 {
         }
         17 => x - x.floor(),
         18 => x + (y - x) * z,
+        19 => {
+            if x < y {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        20 => {
+            if x <= y {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        21 => {
+            if x > y {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        22 => {
+            if x >= y {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        23 => {
+            if x == y {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        24 => {
+            if x != y {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        25 => {
+            if x != 0.0 && y != 0.0 {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        26 => {
+            if x != 0.0 || y != 0.0 {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        27 => {
+            if x == 0.0 {
+                1.0
+            } else {
+                0.0
+            }
+        }
         _ => 0.0,
     };
     sanitize_control_value(output)
@@ -6506,6 +6628,41 @@ fn render_dsp_accumulator(op: DspOp) -> f64 {
         DSP_STATE[state_index + 1] = if trigger { 1.0 } else { 0.0 };
         DSP_STATE[state_index + 2] = if reset { 1.0 } else { 0.0 };
         DSP_STATE[state_index]
+    }
+}
+
+fn render_dsp_random(op: DspOp) -> f64 {
+    unsafe {
+        if op.state < 0 || (op.state as usize + 3) >= MAX_DSP_STATE {
+            return 0.0;
+        }
+
+        let state_index = op.state as usize;
+        let trigger = op.a >= 0 && dsp_reg(op.a) >= ENVELOPE_TRIGGER_THRESHOLD;
+        let initialized = DSP_STATE[state_index + 3] >= 0.5;
+        let previous_trigger = DSP_STATE[state_index + 1] >= ENVELOPE_TRIGGER_THRESHOLD;
+
+        if !initialized {
+            let mut random_state = next_dsp_random_seed();
+            DSP_STATE[state_index] = random_unit_from_state(&mut random_state);
+            DSP_STATE[state_index + 1] = if trigger { 1.0 } else { 0.0 };
+            DSP_STATE[state_index + 2] = random_state as f64;
+            DSP_STATE[state_index + 3] = 1.0;
+        } else {
+            if trigger && !previous_trigger {
+                let mut random_state = DSP_STATE[state_index + 2]
+                    .round()
+                    .clamp(0.0, u32::MAX as f64) as u32;
+                DSP_STATE[state_index] = random_unit_from_state(&mut random_state);
+                DSP_STATE[state_index + 2] = random_state as f64;
+            }
+            DSP_STATE[state_index + 1] = if trigger { 1.0 } else { 0.0 };
+        }
+
+        let unit = DSP_STATE[state_index].clamp(0.0, 1.0);
+        let range_min = dsp_reg(op.b);
+        let range_max = dsp_reg(op.c);
+        sanitize_control_value(range_min + (range_max - range_min) * unit)
     }
 }
 
@@ -7173,6 +7330,7 @@ fn render_dsp_op(
         DSP_OP_MIDI_CC => set_dsp_reg(op.out, render_dsp_midi_cc(op)),
         DSP_OP_TEMPO => set_dsp_reg(op.out, render_dsp_tempo(op, frame, sample_rate)),
         DSP_OP_ACCUMULATOR => set_dsp_reg(op.out, render_dsp_accumulator(op)),
+        DSP_OP_RANDOM => set_dsp_reg(op.out, render_dsp_random(op)),
         DSP_OP_SEQUENCER => set_dsp_reg(op.out, render_dsp_sequencer(op, frame)),
         DSP_OP_BUTTON => set_dsp_reg(op.out, render_dsp_button(op)),
         DSP_OP_END_TRIGGER => set_dsp_reg(op.out, render_dsp_end_trigger(op)),

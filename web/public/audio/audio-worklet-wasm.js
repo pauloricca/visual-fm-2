@@ -175,6 +175,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.cpuDeadlineMs = 0;
     this.nextCpuLoadPostTime = 0;
     this.outputLifecycleGain = 0;
+    this.dspRandomSeed = (Math.random() * 0x1_0000_0000) >>> 0;
     this.ready = false;
     this.muted = false;
     this.zeroVoicePhasesOnStart = false;
@@ -375,6 +376,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       this.wasm = instance.exports;
       this.refreshWasmViews(false);
       this.wasm.resetPhases();
+      this.wasm.seedDspRandom?.(this.dspRandomSeed || 1);
       this.ready = true;
       this.syncDspProgram();
       this.refreshWasmViews(true);
@@ -1843,6 +1845,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.inputDcBlockers = [this.createDcBlocker(), this.createDcBlocker()];
     this.outputDcBlockers = [this.createDcBlocker(), this.createDcBlocker()];
     if (this.wasm) this.wasm.resetPhases();
+    this.dspRandomSeed = (this.dspRandomSeed + 0x9e37_79b9) >>> 0;
+    this.wasm?.seedDspRandom?.(this.dspRandomSeed || 1);
     this.wasm?.resetDspRuntimeState?.();
     this.armDspCustomWaveOneShots();
     this.wasm?.clearLinkMeters?.();

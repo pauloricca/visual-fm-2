@@ -25,7 +25,7 @@ Cables do not contain filters, distortion, delay, envelopes, or other processors
 
 Most node types are available from the node picker. `Ins` and `Outs` appear while editing subpatches.
 
-- `Expression`: evaluates a typed expression and outputs the result as a signal/control value.
+- `Expression`: evaluates a typed expression and outputs the result as a signal/control value. It supports arithmetic (`+`, `-`, `*`, `/`), comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`), logical operators (`&&`, `||`, `!`), and numeric booleans: `true` and successful conditions output `1`, while `false` and failed conditions output `0`. Any nonzero signal is truthy in a logical expression.
 - `Group`: wraps a subpatch so a reusable patch can live inside a single node.
 - `Spread`: repeats the nodes placed inside its resizable area at runtime.
 - `Spawn`: creates a new, independent runtime copy of the nodes inside its resizable area on each trigger.
@@ -40,6 +40,7 @@ Most node types are available from the node picker. `Ins` and `Outs` appear whil
 - `Sample Hold`: samples an incoming signal when triggered and holds that value.
 - `Perlin Noise`: generates smooth noise at a controllable speed.
 - `Noise`: generates raw noise.
+- `Random`: generates and holds an independent random value when playback starts, then generates a new value on each rising edge at `trigger`. Each node has its own random sequence, and playback restarts reseed all Random nodes. `rangeMin` and `rangeMax` map the held value to the requested range.
 - `Audio Input`: brings a microphone or input device into the patch with gain/level controls.
 - `Custom Wave`: generates an editable breakpoint waveform with loop, one-shot, ping-pong, and sustain modes. Its `end trigger` output emits a one-sample pulse when playback completes: at each wrap in loop modes, after the return trip in ping-pong modes, at the hold point in sustain mode, and at the endpoint in one-shot mode. Retriggering resets playback without producing an end pulse. Its `baseLevel` input (default `0`) sets the locked start/end points and the value held while a one-shot is idle or complete, clamping to the configured output range when necessary. Its scope-style grid shows that range; zooming into the canvas reveals denser grid divisions and more scale labels while the grid stays screen-thin, the waveform stroke scales with canvas zoom like a cable, and labels stay screen-relative with a small capped size increase at high zoom for legibility. Edit points retain their screen-relative size down to 70% canvas zoom, then progressively shrink to avoid overwhelming the waveform when zoomed farther out. Hovering or dragging an edit point shows its value in the configured Y-axis range. Saved curve points remain normalized and range-independent. Point drags update the live DSP at a limited rate, morph smoothly between curve revisions without rebuilding the graph, and always commit the final position after release.
 - `Sample`: plays a selected, uploaded, or microphone-recorded sample with frequency/original-frequency pitch tracking, trigger, polyphony, region, envelope, stretch, granular-style mode, and level controls. Positive frequency plays forward, negative frequency plays backward, and zero pauses the playhead. With `voices` set to `1`, playback follows live parameter changes; with more than one voice, each voice keeps the parameter values captured by its trigger. The sample picker can record from the microphone; stopping converts the capture to PCM WAV, prompts for a name, saves the `.wav` file in `samples/`, and selects it for the node.
@@ -70,7 +71,7 @@ Most node types are available from the node picker. `Ins` and `Outs` appear whil
 - `Reverb`: applies a reverb effect with size, decay, mix controls, and `left`/`right` outputs.
 - `Compress`: applies dynamics compression with optional sidechain, threshold, ratio, attack, release, knee, and makeup controls.
 - `Limiter`: applies lookahead limiting with input gain, ceiling, release, and lookahead controls.
-- `Envelope`: creates an envelope with trigger/gate inputs and delay, attack, decay, sustain, gate-length, and release controls. Its `end trigger` output emits a one-sample pulse when the release stage finishes.
+- `Envelope`: creates an envelope with trigger/gate inputs and delay, attack, decay, sustain, gate-length, and release controls. It stays closed while both event inputs are idle or unconnected, opens on a trigger or gate, and its `end trigger` output emits a one-sample pulse when the release stage finishes.
 - `Follower`: follows the amplitude contour of a signal with attack/release smoothing.
 - `Ring Mod`: multiplies a signal by a modulation amount for ring-mod-style tones.
 - `Fold`: folds a signal back on itself for wavefolding.
@@ -111,6 +112,7 @@ The signature notation below is `inputs -> outputs`. Port names are the names us
 | Sample Hold | `signal`, `trigger` | `signal` |
 | Perlin Noise | `speed`, `rangeMin`, `rangeMax` | `signal` |
 | Noise | `rangeMin`, `rangeMax` | `signal` |
+| Random | `trigger`, `rangeMin`, `rangeMax` | `signal` |
 | Audio Input | `gain`, `level` | `signal` |
 | Custom Wave | `frequency`, `phase`, `trigger`, `baseLevel`, `rangeMin`, `rangeMax` | `signal`, `end trigger` |
 | Sample | `frequency`, `originalFrequency`, `trigger`, `voices`, `start`, `end`, `attack`, `release`, `stretch`, `cycleLength`, `overlapRatio`, `mode`, `level` | `signal` |

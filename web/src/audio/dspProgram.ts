@@ -67,6 +67,7 @@ export const DSP_OP = {
   SpawnBegin: 46,
   SpawnEnd: 47,
   EndTrigger: 48,
+  Random: 49,
 } as const;
 
 export interface DspProgram {
@@ -260,6 +261,18 @@ const EXPRESSION_FUNCTIONS: Record<string, { id: number; minArgs: number; maxArg
   fract: { id: 17, minArgs: 1, maxArgs: 1 },
   mix: { id: 18, minArgs: 3, maxArgs: 3 },
 };
+
+const EXPRESSION_LOGIC_FUNCTIONS = {
+  less: 19,
+  lessEqual: 20,
+  greater: 21,
+  greaterEqual: 22,
+  equal: 23,
+  notEqual: 24,
+  and: 25,
+  or: 26,
+  not: 27,
+} as const;
 
 export function compilePatchToDspProgram(patch: Patch): DspProgram {
   const spreadExpansion = expandSpreads(patch);
@@ -929,6 +942,27 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     return output;
   }
 
+  if (node.type === 'Random') {
+    const output = nextRegister(context);
+    const state = nextState(context, 4);
+    context.stateBindings.push({
+      id: `${node.id}:random`,
+      state,
+      count: 4,
+      kind: 'effect',
+      nodeId: node.id,
+    });
+    context.ops.push({
+      opcode: DSP_OP.Random,
+      out: output,
+      a: resolveOptionalZeroInput(node, 'trigger', context),
+      b: resolveInput(node, 'rangeMin', -1, context),
+      c: resolveInput(node, 'rangeMax', 1, context),
+      state,
+    });
+    return output;
+  }
+
   const wave = OSC_WAVES[node.type];
   if (wave !== undefined) {
     const frequency = wave === 5 ? -1 : resolveInput(node, 'frequency', 220, context);
@@ -1211,6 +1245,15 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
   if (node.type === 'Envelope') {
     const envelope = nextRegister(context);
     const state = nextState(context, 7);
+    // Trigger and gate are event inputs, not editable node parameters. Older
+    // patches can still contain saved values for them, so force an unconnected
+    // port low instead of letting a stale value hold the envelope open.
+    const trigger = hasInput(node, 'trigger', context)
+      ? resolveInput(node, 'trigger', 0, context)
+      : constantRegister(0, context);
+    const gate = hasInput(node, 'gate', context)
+      ? resolveInput(node, 'gate', 0, context)
+      : constantRegister(0, context);
     const sustain = resolveInput(node, 'sustain', 0.72, context);
     const gateLength = resolveInput(node, 'gateLength', 0, context);
     const release = resolveInput(node, 'release', 0.24, context);
@@ -1224,8 +1267,8 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     context.ops.push({
       opcode: DSP_OP.Envelope,
       out: envelope,
-      a: resolveInput(node, 'trigger', 0, context),
-      b: resolveInput(node, 'gate', 0, context),
+      a: trigger,
+      b: gate,
       c: resolveInput(node, 'delay', 0, context),
       d: resolveInput(node, 'attack', 0.01, context),
       e: resolveInput(node, 'decay', 0.16, context),
@@ -2008,7 +2051,15 @@ function compileReverb(node: PatchNode, port: string, context: CompileContext): 
 type ExpressionToken =
   | { type: 'number'; value: number }
   | { type: 'identifier'; value: string }
-  | { type: 'operator'; value: '+' | '-' | '*' | '/' | '(' | ')' | ',' };
+  | {
+      type: 'operator';
+      value:
+        | '+' | '-' | '*' | '/'
+        | '<' | '<=' | '>' | '>=' | '==' | '!='
+        | '&&' | '||' | '!'
+        | '(' | ')' | ',';
+    }
+  | { type: 'invalid'; value: string };
 
 function compileExpression(node: PatchNode, context: CompileContext): number {
   const source = typeof node.expression === 'string' && node.expression.trim()
@@ -2028,12 +2079,64 @@ class ExpressionParser {
   ) {}
 
   parse(): number {
-    const register = this.parseAdditive();
+    const register = this.parseLogicalOr();
     if (!this.isAtEnd()) {
       this.context.errors.push(`Expression node "${this.node.id}" has unsupported syntax near "${this.peekLabel()}".`);
       return constantRegister(0, this.context);
     }
     return register;
+  }
+
+  private parseLogicalOr(): number {
+    let left = this.parseLogicalAnd();
+    while (this.matchOperator('||')) {
+      left = this.emitLogicFunction(EXPRESSION_LOGIC_FUNCTIONS.or, left, this.parseLogicalAnd());
+    }
+    return left;
+  }
+
+  private parseLogicalAnd(): number {
+    let left = this.parseEquality();
+    while (this.matchOperator('&&')) {
+      left = this.emitLogicFunction(EXPRESSION_LOGIC_FUNCTIONS.and, left, this.parseEquality());
+    }
+    return left;
+  }
+
+  private parseEquality(): number {
+    let left = this.parseComparison();
+    while (this.matchOperator('==') || this.matchOperator('!=')) {
+      const operator = this.previous().value;
+      const right = this.parseComparison();
+      left = this.emitLogicFunction(
+        operator === '==' ? EXPRESSION_LOGIC_FUNCTIONS.equal : EXPRESSION_LOGIC_FUNCTIONS.notEqual,
+        left,
+        right,
+      );
+    }
+    return left;
+  }
+
+  private parseComparison(): number {
+    let left = this.parseAdditive();
+    while (
+      this.matchOperator('<')
+      || this.matchOperator('<=')
+      || this.matchOperator('>')
+      || this.matchOperator('>=')
+    ) {
+      const operator = this.previous().value;
+      const right = this.parseAdditive();
+      const functionId = operator === '<'
+        ? EXPRESSION_LOGIC_FUNCTIONS.less
+        : operator === '<='
+          ? EXPRESSION_LOGIC_FUNCTIONS.lessEqual
+          : operator === '>'
+            ? EXPRESSION_LOGIC_FUNCTIONS.greater
+            : EXPRESSION_LOGIC_FUNCTIONS.greaterEqual;
+      left = this.emitLogicFunction(functionId, left, right);
+    }
+    return left;
   }
 
   private parseAdditive(): number {
@@ -2057,6 +2160,9 @@ class ExpressionParser {
   }
 
   private parseUnary(): number {
+    if (this.matchOperator('!')) {
+      return this.emitLogicFunction(EXPRESSION_LOGIC_FUNCTIONS.not, this.parseUnary());
+    }
     if (this.matchOperator('-')) {
       const output = nextRegister(this.context);
       this.context.ops.push({ opcode: DSP_OP.Neg, out: output, a: this.parseUnary() });
@@ -2079,10 +2185,12 @@ class ExpressionParser {
       if (this.matchOperator('(')) {
         return this.parseFunctionCall(name);
       }
+      if (name === 'true') return constantRegister(1, this.context);
+      if (name === 'false') return constantRegister(0, this.context);
       return resolveInput(this.node, name, 0, this.context);
     }
     if (this.matchOperator('(')) {
-      const register = this.parseAdditive();
+      const register = this.parseLogicalOr();
       if (!this.matchOperator(')')) {
         this.context.errors.push(`Expression node "${this.node.id}" is missing a closing parenthesis.`);
         return constantRegister(0, this.context);
@@ -2099,7 +2207,7 @@ class ExpressionParser {
     const args: number[] = [];
     if (!this.matchOperator(')')) {
       do {
-        args.push(this.parseAdditive());
+        args.push(this.parseLogicalOr());
         if (this.matchOperator(')')) break;
         if (!this.matchOperator(',')) {
           this.context.errors.push(`Expression node "${this.node.id}" is missing a comma or closing parenthesis in "${name}(...)"`);
@@ -2129,6 +2237,20 @@ class ExpressionParser {
       c: paddedArgs[1],
       d: paddedArgs[2],
       value: args.length,
+    });
+    return output;
+  }
+
+  private emitLogicFunction(functionId: number, left: number, right?: number): number {
+    const output = nextRegister(this.context);
+    this.context.ops.push({
+      opcode: DSP_OP.Function,
+      out: output,
+      a: functionId,
+      b: left,
+      c: right ?? constantRegister(0, this.context),
+      d: constantRegister(0, this.context),
+      value: right === undefined ? 1 : 2,
     });
     return output;
   }
@@ -2181,7 +2303,17 @@ function tokenizeExpression(source: string): ExpressionToken[] {
       continue;
     }
 
-    if (/[+\-*/(),]/.test(char)) {
+    const compoundOperator = source.slice(index, index + 2);
+    if (['<=', '>=', '==', '!=', '&&', '||'].includes(compoundOperator)) {
+      tokens.push({
+        type: 'operator',
+        value: compoundOperator as Extract<ExpressionToken, { type: 'operator' }>['value'],
+      });
+      index += 2;
+      continue;
+    }
+
+    if (/[+\-*/(),<>!]/.test(char)) {
       tokens.push({ type: 'operator', value: char as Extract<ExpressionToken, { type: 'operator' }>['value'] });
       index += 1;
       continue;
@@ -2201,7 +2333,7 @@ function tokenizeExpression(source: string): ExpressionToken[] {
       continue;
     }
 
-    tokens.push({ type: 'operator', value: '+' });
+    tokens.push({ type: 'invalid', value: char });
     index += 1;
   }
 

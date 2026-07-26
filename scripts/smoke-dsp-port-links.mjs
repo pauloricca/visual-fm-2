@@ -197,6 +197,40 @@ assert(
   'Accumulator continuous mode should be encoded in the DSP operation.',
 );
 
+const idleEnvelopeProgram = compilePatchToDspProgram({
+  nodes: [
+    node('source', 'Constant', { value: 1 }),
+    node('envelope', 'Envelope', {
+      trigger: 1,
+      gate: 1,
+      delay: 0,
+      attack: 0.01,
+      decay: 0.16,
+      sustain: 0.72,
+      gateLength: 0,
+      release: 0.24,
+    }),
+    node('out', 'AudioOut', { level: 1 }),
+  ],
+  links: [
+    link('source', 'signal', 'envelope', 'signal'),
+    link('envelope', 'signal', 'out', 'both'),
+  ],
+});
+assert(
+  idleEnvelopeProgram.errors.length === 0,
+  `Idle Envelope DSP compile failed: ${idleEnvelopeProgram.errors.join('; ')}`,
+);
+const idleEnvelopeOp = idleEnvelopeProgram.ops.find((op) => op.opcode === 19);
+assert(idleEnvelopeOp, 'Envelope should compile an Envelope operation.');
+for (const register of [idleEnvelopeOp.a, idleEnvelopeOp.b]) {
+  const valueOp = idleEnvelopeProgram.ops.find((op) => op.opcode === 0 && op.out === register);
+  assert(
+    valueOp && idleEnvelopeProgram.values[valueOp.a] === 0,
+    'Unconnected Envelope trigger and gate ports should compile as zero even when stale saved values are present.',
+  );
+}
+
 const spawnProgram = compilePatchToDspProgram({
   nodes: [
     { ...node('spawn', 'Spawn', { trigger: 0 }), position: { x: 0, y: 0 }, scopeSize: { width: 320, height: 220 } },
@@ -569,6 +603,40 @@ const invalidExpressionProgram = compilePatchToDspProgram({
 assert(
   invalidExpressionProgram.errors.some((error) => error.includes('Expression node "expr_bad" uses unsupported function "spline"')),
   `Invalid expression error missing: ${invalidExpressionProgram.errors.join('; ')}`,
+);
+
+const logicalExpressionProgram = compilePatchToDspProgram({
+  nodes: [
+    { ...node('expr_logic', 'Expression', { a: 0, b: 0 }), expression: 'a > 0.5 && (b <= 1 || !false)' },
+    node('out', 'AudioOut', { level: 0.75 }),
+  ],
+  links: [
+    link('expr_logic', 'value', 'out', 'both'),
+  ],
+});
+assert(
+  logicalExpressionProgram.errors.length === 0,
+  `Logical expression compile failed: ${logicalExpressionProgram.errors.join('; ')}`,
+);
+for (const functionId of [20, 21, 26, 27, 25]) {
+  assert(
+    logicalExpressionProgram.ops.some((op) => op.opcode === 26 && op.a === functionId),
+    `Logical expression should emit function ${functionId}.`,
+  );
+}
+
+const invalidOperatorProgram = compilePatchToDspProgram({
+  nodes: [
+    { ...node('expr_invalid_operator', 'Expression', { a: 0 }), expression: 'a = 0.5' },
+    node('out', 'AudioOut', { level: 0.75 }),
+  ],
+  links: [
+    link('expr_invalid_operator', 'value', 'out', 'both'),
+  ],
+});
+assert(
+  invalidOperatorProgram.errors.some((error) => error.includes('unsupported syntax near "="')),
+  `Invalid operator should not be converted to addition: ${invalidOperatorProgram.errors.join('; ')}`,
 );
 
 const badLinkProgram = compilePatchToDspProgram({

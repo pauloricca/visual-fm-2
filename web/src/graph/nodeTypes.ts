@@ -84,6 +84,15 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     ],
     outputs: [{ name: 'signal' }],
   },
+  Random: {
+    type: 'Random',
+    inputs: [
+      { name: 'trigger', defaultValue: 0 },
+      { name: 'rangeMin', defaultValue: -1 },
+      { name: 'rangeMax', defaultValue: 1 },
+    ],
+    outputs: [{ name: 'signal' }],
+  },
   AudioInput: {
     type: 'AudioInput',
     inputs: [
@@ -463,6 +472,7 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   SampleHoldOsc: 'Sample Hold',
   PerlinNoise: 'Perlin Noise',
   Noise: 'Noise',
+  Random: 'Random',
   AudioInput: 'Audio Input',
   CustomWave: 'Custom Wave',
   SamplePlayer: 'Sample',

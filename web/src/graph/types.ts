@@ -14,6 +14,7 @@ export type NodeType =
   | 'SampleHoldOsc'
   | 'PerlinNoise'
   | 'Noise'
+  | 'Random'
   | 'AudioInput'
   | 'CustomWave'
   | 'SamplePlayer'
