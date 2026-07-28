@@ -11,6 +11,7 @@ export interface ScopeNodeSize {
 }
 
 export const DEFAULT_SCOPE_NODE_SIZE: ScopeNodeSize = { width: 224, height: 48 };
+export const DEFAULT_JOYSTICK_NODE_SIZE: ScopeNodeSize = { width: 160, height: 120 };
 export const DEFAULT_FFT_NODE_SIZE: ScopeNodeSize = { width: 420, height: 96 };
 export const DEFAULT_KEYS_NODE_SIZE: ScopeNodeSize = { width: 372, height: 120 };
 export const DEFAULT_CUSTOM_WAVE_NODE_SIZE: ScopeNodeSize = { width: 372, height: 128 };
@@ -58,6 +59,10 @@ export interface ShaderNodeData extends Record<string, unknown> {
     release: number;
   }>;
   midiSliderValue?: number;
+  midiJoystickPosition?: {
+    x?: number;
+    y?: number;
+  };
   midiButtonPressed?: number;
   audioInput?: AudioInputState;
   midiInput?: MidiInputState;

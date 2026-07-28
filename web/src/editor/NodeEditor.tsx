@@ -44,6 +44,7 @@ import {
   clampScopeNodeSize,
   DEFAULT_CUSTOM_WAVE_NODE_SIZE,
   DEFAULT_FFT_NODE_SIZE,
+  DEFAULT_JOYSTICK_NODE_SIZE,
   DEFAULT_KEYS_NODE_SIZE,
   DEFAULT_SEQUENCER_NODE_SIZE,
   DEFAULT_SCOPE_NODE_SIZE,
@@ -275,6 +276,8 @@ interface LocalSubpatchImportState {
 
 interface MidiControlVisualState {
   sliderValue?: number;
+  joystickX?: number;
+  joystickY?: number;
   buttonPressed?: number;
   lastRawValue?: number;
 }
@@ -560,6 +563,13 @@ function NodeEditorInner() {
   const updateNodeParam = useCallback((nodeId: string, port: string, value: number) => {
     commitHistory(`param:${nodeId}:${port}`);
     const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
+    if (relatedNode?.data.patchNode.type === 'Joystick') {
+      const clearX = port === 'xMidiChannel' || port === 'xMidiCc';
+      const clearY = port === 'yMidiChannel' || port === 'yMidiCc';
+      if (clearX || clearY) {
+        setMidiControlVisuals((current) => clearJoystickMidiVisual(current, nodeId, clearX, clearY));
+      }
+    }
     const nextPatchNode = relatedNode?.data.patchNode.type === 'Sequencer'
       ? {
           ...relatedNode.data.patchNode,
@@ -595,6 +605,14 @@ function NodeEditorInner() {
   const updateNodeParams = useCallback((nodeId: string, values: Record<string, number>) => {
     if (Object.keys(values).length === 0) return;
     commitHistory(`params:${nodeId}`);
+    const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
+    if (relatedNode?.data.patchNode.type === 'Joystick') {
+      const clearX = Object.hasOwn(values, 'x');
+      const clearY = Object.hasOwn(values, 'y');
+      if (clearX || clearY) {
+        setMidiControlVisuals((current) => clearJoystickMidiVisual(current, nodeId, clearX, clearY));
+      }
+    }
     setNodes((current) => current.map((node) => node.id === nodeId
       ? {
           ...node,
@@ -1435,6 +1453,7 @@ function NodeEditorInner() {
         relatedNode.data.patchNode.type !== 'SamplePlayer' &&
         relatedNode.data.patchNode.type !== 'Image' &&
         relatedNode.data.patchNode.type !== 'Slider' &&
+        relatedNode.data.patchNode.type !== 'Joystick' &&
         relatedNode.data.patchNode.type !== 'Button' &&
         relatedNode.data.patchNode.type !== 'Keys' &&
         relatedNode.data.patchNode.type !== 'Sequencer' &&
@@ -1458,7 +1477,7 @@ function NodeEditorInner() {
       ? clampCustomWaveNodeSize(size)
       : relatedNode.data.patchNode.type === 'Keys'
         ? clampKeysNodeSize(size)
-      : relatedNode.data.patchNode.type === 'Slider' || relatedNode.data.patchNode.type === 'Button'
+      : relatedNode.data.patchNode.type === 'Slider' || relatedNode.data.patchNode.type === 'Joystick' || relatedNode.data.patchNode.type === 'Button'
         ? clampControlNodeSize(size)
         : clampScopeNodeSize(size);
     const previousSize = relatedNode.data.patchNode.scopeSize;
@@ -1488,6 +1507,8 @@ function NodeEditorInner() {
           ? DEFAULT_FFT_NODE_SIZE
         : node.data.patchNode.type === 'CustomWave' || node.data.patchNode.type === 'SamplePlayer' || node.data.patchNode.type === 'Image'
           ? DEFAULT_CUSTOM_WAVE_NODE_SIZE
+        : node.data.patchNode.type === 'Joystick'
+          ? DEFAULT_JOYSTICK_NODE_SIZE
           : DEFAULT_SCOPE_NODE_SIZE
       );
       const positionDeltaX = anchor === 'left' ? currentSize.width - nextSize.width : 0;
@@ -2190,6 +2211,7 @@ function NodeEditorInner() {
         ...(node.data.patchNode.type === 'MidiNote'
           || node.data.patchNode.type === 'MidiCc'
           || node.data.patchNode.type === 'Slider'
+          || node.data.patchNode.type === 'Joystick'
           || node.data.patchNode.type === 'Button'
           || node.data.patchNode.type === 'Tempo'
           ? { midiInput: audio.midiInput }
@@ -2354,6 +2376,14 @@ function NodeEditorInner() {
         ...(audioPlayheads !== undefined ? { audioPlayheads } : {}),
         ...(audioSampleParams ? { audioSampleParams } : {}),
         ...(midiControlVisual?.sliderValue !== undefined ? { midiSliderValue: midiControlVisual.sliderValue } : {}),
+        ...(midiControlVisual?.joystickX !== undefined || midiControlVisual?.joystickY !== undefined
+          ? {
+              midiJoystickPosition: {
+                ...(midiControlVisual.joystickX !== undefined ? { x: midiControlVisual.joystickX } : {}),
+                ...(midiControlVisual.joystickY !== undefined ? { y: midiControlVisual.joystickY } : {}),
+              },
+            }
+          : {}),
         ...(midiControlVisual?.buttonPressed !== undefined ? { midiButtonPressed: midiControlVisual.buttonPressed } : {}),
       },
     };
@@ -5504,7 +5534,7 @@ function parseNodeDisplaySize(value: unknown, nodeId: string, type: NodeType): S
   const size = { width: value.width, height: value.height };
   if (type === 'Image') return clampImageNodeSize(size, size.width / Math.max(1, size.height));
   if (type === 'CustomWave' || type === 'SamplePlayer') return clampCustomWaveNodeSize(size);
-  if (type === 'Slider' || type === 'Button') return clampControlNodeSize(size);
+  if (type === 'Slider' || type === 'Joystick' || type === 'Button') return clampControlNodeSize(size);
   return clampScopeNodeSize(size);
 }
 
@@ -5689,6 +5719,18 @@ function patchWithMidiControlVisuals(patch: Patch, visuals: Record<string, MidiC
       };
     }
 
+    if (node.type === 'Joystick' && (visual.joystickX !== undefined || visual.joystickY !== undefined)) {
+      changed = true;
+      return {
+        ...node,
+        params: {
+          ...node.params,
+          ...(visual.joystickX !== undefined ? { x: clampNumber(visual.joystickX, 0, 1) } : {}),
+          ...(visual.joystickY !== undefined ? { y: clampNumber(visual.joystickY, 0, 1) } : {}),
+        },
+      };
+    }
+
     if (node.type === 'Button' && visual.buttonPressed !== undefined) {
       const mode = clampInteger(node.params.mode ?? 0, 0, 2);
       if (mode === 1) return node;
@@ -5718,7 +5760,26 @@ function midiControlVisualsForChange(
 
   for (const node of nodes) {
     const patchNode = node.data.patchNode;
-    if (patchNode.type !== 'Slider' && patchNode.type !== 'Button') continue;
+    if (patchNode.type !== 'Slider' && patchNode.type !== 'Joystick' && patchNode.type !== 'Button') continue;
+
+    if (patchNode.type === 'Joystick') {
+      const previous = next[patchNode.id] ?? {};
+      const xMatches = (
+        clampInteger(patchNode.params.xMidiChannel ?? 0, 0, 16) === controlChange.channel
+        && clampInteger(patchNode.params.xMidiCc ?? 1, 0, 127) === controlChange.cc
+      );
+      const yMatches = (
+        clampInteger(patchNode.params.yMidiChannel ?? 0, 0, 16) === controlChange.channel
+        && clampInteger(patchNode.params.yMidiCc ?? 2, 0, 127) === controlChange.cc
+      );
+      if (!xMatches && !yMatches) continue;
+      next = setMidiControlVisual(next, patchNode.id, {
+        ...previous,
+        ...(xMatches ? { joystickX: clampNumber(controlChange.value, 0, 1) } : {}),
+        ...(yMatches ? { joystickY: clampNumber(controlChange.value, 0, 1) } : {}),
+      });
+      continue;
+    }
 
     const channel = clampInteger(patchNode.params.midiChannel ?? 0, 0, 16);
     const cc = clampInteger(patchNode.params.midiCc ?? 1, 0, 127);
@@ -5765,12 +5826,28 @@ function setMidiControlVisual(
   const previous = current[nodeId];
   if (
     previous?.sliderValue === visual.sliderValue &&
+    previous?.joystickX === visual.joystickX &&
+    previous?.joystickY === visual.joystickY &&
     previous?.buttonPressed === visual.buttonPressed &&
     previous?.lastRawValue === visual.lastRawValue
   ) {
     return current;
   }
   return { ...current, [nodeId]: visual };
+}
+
+function clearJoystickMidiVisual(
+  current: Record<string, MidiControlVisualState>,
+  nodeId: string,
+  clearX: boolean,
+  clearY: boolean,
+): Record<string, MidiControlVisualState> {
+  const visual = current[nodeId];
+  if (!visual) return current;
+  const nextVisual = { ...visual };
+  if (clearX) delete nextVisual.joystickX;
+  if (clearY) delete nextVisual.joystickY;
+  return { ...current, [nodeId]: nextVisual };
 }
 
 function nodeInputIsConnected(edges: ShaderFlowEdge[], nodeId: string, port: string): boolean {
@@ -6354,8 +6431,10 @@ function viewportNodeSize(node: ShaderFlowNode): { width: number; height: number
   }
 
   const patchNode = node.data.patchNode;
-  if (patchNode.type === 'Slider' || patchNode.type === 'Button') {
-    const size = clampControlNodeSize(patchNode.scopeSize ?? DEFAULT_SCOPE_NODE_SIZE);
+  if (patchNode.type === 'Slider' || patchNode.type === 'Joystick' || patchNode.type === 'Button') {
+    const size = clampControlNodeSize(
+      patchNode.scopeSize ?? (patchNode.type === 'Joystick' ? DEFAULT_JOYSTICK_NODE_SIZE : DEFAULT_SCOPE_NODE_SIZE),
+    );
     return { width: size.width, height: size.height + NODE_HEADER_HEIGHT };
   }
 

@@ -54,6 +54,7 @@ import {
   DEFAULT_IMAGE_ASPECT_RATIO,
   DEFAULT_CUSTOM_WAVE_NODE_SIZE,
   DEFAULT_FFT_NODE_SIZE,
+  DEFAULT_JOYSTICK_NODE_SIZE,
   DEFAULT_KEYS_NODE_SIZE,
   DEFAULT_SCOPE_NODE_SIZE,
   type ScopeNodeSize,
@@ -132,6 +133,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const showScopeDisplay = node.type === 'Scope';
   const showFftDisplay = node.type === 'FFT';
   const showSliderDisplay = node.type === 'Slider';
+  const showJoystickDisplay = node.type === 'Joystick';
   const showButtonDisplay = node.type === 'Button';
   const showKeysDisplay = node.type === 'Keys';
   const showAccumulatorDisplay = node.type === 'Accumulator';
@@ -144,10 +146,10 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const showCustomWaveEditor = node.type === 'CustomWave';
   const showSampleUpload = node.type === 'SamplePlayer';
   const showImageDisplay = node.type === 'Image';
-  const showTopGraphic = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay;
+  const showTopGraphic = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showJoystickDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay;
   const imageX = centeredCoordinateToUnit(data.audioImagePosition?.x ?? node.params.x ?? 0);
   const imageY = centeredCoordinateToUnit(data.audioImagePosition?.y ?? node.params.y ?? 0);
-  const showResizableDisplay = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay || showSequencerDisplay || isRuntimeContainer;
+  const showResizableDisplay = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showJoystickDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay || showSequencerDisplay || isRuntimeContainer;
   const customWave = showCustomWaveEditor ? normalizeCustomWave(node.customWave, node.params) : null;
   const customWavePlayhead = clamp(data.audioPlayheads?.[0] ?? normalizeUnitInterval(node.params.phase ?? 0), 0, 1);
   const sequencer = showSequencerDisplay ? sequencerShape(node.params) : null;
@@ -165,8 +167,8 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const scopePath = showScopeDisplay ? samplesToScopePath(data.audioScope?.samples ?? [], amplitudeRange, scopeMode) : '';
   const scopeSize = showKeysDisplay
     ? clampKeysNodeSize(node.scopeSize ?? DEFAULT_KEYS_NODE_SIZE)
-    : showSliderDisplay || showButtonDisplay
-    ? clampControlNodeSize(node.scopeSize ?? DEFAULT_SCOPE_NODE_SIZE)
+    : showSliderDisplay || showJoystickDisplay || showButtonDisplay
+    ? clampControlNodeSize(node.scopeSize ?? (showJoystickDisplay ? DEFAULT_JOYSTICK_NODE_SIZE : DEFAULT_SCOPE_NODE_SIZE))
     : showMeterDisplay || showScopeDisplay || showFftDisplay
       ? clampScopeNodeSize(node.scopeSize ?? (showFftDisplay ? DEFAULT_FFT_NODE_SIZE : DEFAULT_SCOPE_NODE_SIZE))
     : DEFAULT_SCOPE_NODE_SIZE;
@@ -280,6 +282,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     showScopeDisplay ? 'shader-node-scope' : '',
     showFftDisplay ? 'shader-node-fft' : '',
     showSliderDisplay ? 'shader-node-slider' : '',
+    showJoystickDisplay ? 'shader-node-joystick' : '',
     showButtonDisplay ? 'shader-node-button' : '',
     showKeysDisplay ? 'shader-node-keys' : '',
     showAccumulatorDisplay ? 'shader-node-accumulator' : '',
@@ -458,7 +461,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
         ? clampCustomWaveNodeSize(rawNextSize)
         : showKeysDisplay
           ? clampKeysNodeSize(rawNextSize)
-        : showSliderDisplay || showButtonDisplay
+        : showSliderDisplay || showJoystickDisplay || showButtonDisplay
           ? clampControlNodeSize(rawNextSize)
           : clampScopeNodeSize(rawNextSize);
       data.onScopeResize(node.id, nextSize, resize.corner === 'bottom-left' ? 'left' : 'right');
@@ -488,7 +491,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('pointercancel', handlePointerCancel);
     };
-  }, [data, imageAspectRatio, node.id, reactFlow, sequencer, showCustomWaveEditor, showSampleUpload, showImageDisplay, showSequencerDisplay, showSliderDisplay, showButtonDisplay, showKeysDisplay]);
+  }, [data, imageAspectRatio, node.id, reactFlow, sequencer, showCustomWaveEditor, showSampleUpload, showImageDisplay, showSequencerDisplay, showSliderDisplay, showJoystickDisplay, showButtonDisplay, showKeysDisplay]);
 
   useEffect(() => {
     setImageAspectRatio(DEFAULT_IMAGE_ASPECT_RATIO);
@@ -967,6 +970,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             || showSequencerDisplay
             || showCustomWaveEditor
             || showSliderDisplay
+            || showJoystickDisplay
             || showButtonDisplay
             || showKeysDisplay
             || showAccumulatorDisplay
@@ -1110,6 +1114,14 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               displayValue={data.midiSliderValue ?? data.audioSliderValue}
               direction={Math.round(node.params.direction ?? 0) === 1 ? 'vertical' : 'horizontal'}
               onChange={(value) => data.onParamChange(node.id, 'value', value)}
+            />
+          ) : null}
+          {showJoystickDisplay ? (
+            <JoystickDisplay
+              x={data.midiJoystickPosition?.x ?? node.params.x ?? 0.5}
+              y={data.midiJoystickPosition?.y ?? node.params.y ?? 0.5}
+              elasticity={node.params.elasticity ?? 0}
+              onChange={(x, y) => data.onParamsChange(node.id, { x, y })}
             />
           ) : null}
           {showButtonDisplay ? (
@@ -1685,6 +1697,8 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                     data.onParamChange(node.id, input.name, event.cc);
                     if (node.type === 'Slider' || node.type === 'Button') {
                       data.onParamChange(node.id, 'midiChannel', event.channel);
+                    } else if (node.type === 'Joystick') {
+                      data.onParamChange(node.id, input.name === 'xMidiCc' ? 'xMidiChannel' : 'yMidiChannel', event.channel);
                     } else if (node.type === 'MidiCc') {
                       data.onParamChange(node.id, 'channel', event.channel);
                     }
@@ -1779,7 +1793,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   'audio-node-scope-resize-handle audio-node-scope-resize-handle-left nodrag nopan',
                   scopeResizeCorner === 'bottom-left' ? 'audio-node-scope-resize-handle-active' : '',
                 ].filter(Boolean).join(' ')}
-                title={showSequencerDisplay ? 'Resize sequencer' : showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showImageDisplay ? 'Resize image' : showKeysDisplay ? 'Resize keys' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : showFftDisplay ? 'Resize FFT' : 'Resize scope'}
+                title={showSequencerDisplay ? 'Resize sequencer' : showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showImageDisplay ? 'Resize image' : showKeysDisplay ? 'Resize keys' : showSliderDisplay ? 'Resize slider' : showJoystickDisplay ? 'Resize joystick' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : showFftDisplay ? 'Resize FFT' : 'Resize scope'}
                 onPointerDown={(event) => handleScopeResizePointerDown(event, 'bottom-left')}
                 onClick={handleScopeResizeClick}
                 onDoubleClick={(event) => event.stopPropagation()}
@@ -1789,7 +1803,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   'audio-node-scope-resize-handle audio-node-scope-resize-handle-right nodrag nopan',
                   scopeResizeCorner === 'bottom-right' ? 'audio-node-scope-resize-handle-active' : '',
                 ].filter(Boolean).join(' ')}
-                title={showSequencerDisplay ? 'Resize sequencer' : showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showImageDisplay ? 'Resize image' : showKeysDisplay ? 'Resize keys' : showSliderDisplay ? 'Resize slider' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : showFftDisplay ? 'Resize FFT' : 'Resize scope'}
+                title={showSequencerDisplay ? 'Resize sequencer' : showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showImageDisplay ? 'Resize image' : showKeysDisplay ? 'Resize keys' : showSliderDisplay ? 'Resize slider' : showJoystickDisplay ? 'Resize joystick' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : showFftDisplay ? 'Resize FFT' : 'Resize scope'}
                 onPointerDown={(event) => handleScopeResizePointerDown(event, 'bottom-right')}
                 onClick={handleScopeResizeClick}
                 onDoubleClick={(event) => event.stopPropagation()}
@@ -2384,6 +2398,147 @@ function SliderDisplay({ value, displayValue, direction, onChange }: SliderDispl
           event.currentTarget.blur();
         }}
         onDoubleClick={(event) => event.stopPropagation()}
+      />
+    </div>
+  );
+}
+
+interface JoystickDisplayProps {
+  x: number;
+  y: number;
+  elasticity: number;
+  onChange: (x: number, y: number) => void;
+}
+
+function JoystickDisplay({ x, y, elasticity, onChange }: JoystickDisplayProps) {
+  const dragPointerRef = useRef<number | null>(null);
+  const returnFrameRef = useRef<number | null>(null);
+  const returnTimeRef = useRef(0);
+  const elasticityRef = useRef(elasticity);
+  const normalizedX = clamp(x, 0, 1);
+  const normalizedY = clamp(y, 0, 1);
+  const positionRef = useRef({ x: normalizedX, y: normalizedY });
+
+  elasticityRef.current = elasticity;
+  if (dragPointerRef.current === null && returnFrameRef.current === null) {
+    positionRef.current = { x: normalizedX, y: normalizedY };
+  }
+
+  useEffect(() => () => {
+    if (returnFrameRef.current !== null) {
+      window.cancelAnimationFrame(returnFrameRef.current);
+    }
+  }, []);
+
+  function stopReturn() {
+    if (returnFrameRef.current !== null) {
+      window.cancelAnimationFrame(returnFrameRef.current);
+      returnFrameRef.current = null;
+    }
+  }
+
+  function startReturn() {
+    stopReturn();
+    if (!(elasticityRef.current > 0)) return;
+    returnTimeRef.current = performance.now();
+
+    function stepReturn(timestamp: number) {
+      if (dragPointerRef.current !== null || !(elasticityRef.current > 0)) {
+        returnFrameRef.current = null;
+        return;
+      }
+
+      const elapsedSeconds = Math.min(0.05, Math.max(0, (timestamp - returnTimeRef.current) / 1000));
+      returnTimeRef.current = timestamp;
+      const current = positionRef.current;
+      const deltaX = 0.5 - current.x;
+      const deltaY = 0.5 - current.y;
+      const distance = Math.hypot(deltaX, deltaY);
+      const travel = elasticityRef.current * elapsedSeconds;
+
+      if (distance <= Math.max(0.0001, travel)) {
+        positionRef.current = { x: 0.5, y: 0.5 };
+        returnFrameRef.current = null;
+        onChange(0.5, 0.5);
+        return;
+      }
+
+      const scale = travel / distance;
+      const next = {
+        x: current.x + deltaX * scale,
+        y: current.y + deltaY * scale,
+      };
+      positionRef.current = next;
+      onChange(next.x, next.y);
+      returnFrameRef.current = window.requestAnimationFrame(stepReturn);
+    }
+
+    returnFrameRef.current = window.requestAnimationFrame(stepReturn);
+  }
+
+  function updateFromPointer(event: PointerEvent<HTMLDivElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const nextX = (event.clientX - bounds.left) / Math.max(1, bounds.width);
+    const nextY = 1 - ((event.clientY - bounds.top) / Math.max(1, bounds.height));
+    const next = { x: clamp(nextX, 0, 1), y: clamp(nextY, 0, 1) };
+    positionRef.current = next;
+    onChange(next.x, next.y);
+  }
+
+  return (
+    <div
+      className="audio-node-joystick-display nodrag nopan"
+      role="group"
+      aria-label="Joystick"
+      aria-valuetext={`X ${normalizedX.toFixed(3)}, Y ${normalizedY.toFixed(3)}`}
+      onPointerDown={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!event.isPrimary || event.button !== 0) return;
+        stopReturn();
+        dragPointerRef.current = event.pointerId;
+        event.currentTarget.setPointerCapture(event.pointerId);
+        updateFromPointer(event);
+      }}
+      onPointerMove={(event) => {
+        if (dragPointerRef.current !== event.pointerId) return;
+        event.preventDefault();
+        event.stopPropagation();
+        updateFromPointer(event);
+      }}
+      onPointerUp={(event) => {
+        event.stopPropagation();
+        if (dragPointerRef.current === event.pointerId) {
+          dragPointerRef.current = null;
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+          startReturn();
+        }
+      }}
+      onPointerCancel={(event) => {
+        event.stopPropagation();
+        if (dragPointerRef.current === event.pointerId) {
+          dragPointerRef.current = null;
+          startReturn();
+        }
+      }}
+      onLostPointerCapture={(event) => {
+        if (dragPointerRef.current === event.pointerId) {
+          dragPointerRef.current = null;
+          startReturn();
+        }
+      }}
+      onClick={(event) => event.stopPropagation()}
+      onDoubleClick={(event) => event.stopPropagation()}
+    >
+      <span
+        className="audio-node-joystick-handle"
+        style={{
+          left: `calc(${normalizedX} * (100% - var(--joystick-handle-size)))`,
+          top: `calc(${1 - normalizedY} * (100% - var(--joystick-handle-size)))`,
+        }}
+        aria-hidden="true"
       />
     </div>
   );
@@ -3814,6 +3969,14 @@ function displayPortName(name: string): string {
   if (name === 'gateLength') return 'gate length';
   if (name === 'midiChannel') return 'midi channel';
   if (name === 'midiCc') return 'midi cc';
+  if (name === 'xMin') return 'x min';
+  if (name === 'xMax') return 'x max';
+  if (name === 'xMidiChannel') return 'x midi channel';
+  if (name === 'xMidiCc') return 'x midi cc';
+  if (name === 'yMin') return 'y min';
+  if (name === 'yMax') return 'y max';
+  if (name === 'yMidiChannel') return 'y midi channel';
+  if (name === 'yMidiCc') return 'y midi cc';
   if (name === 'startNote') return 'start note';
   return name;
 }
@@ -3821,7 +3984,8 @@ function displayPortName(name: string): string {
 function canLearnMidiCc(nodeType: NodeType | null, inputName: string): boolean {
   return (
     (nodeType === 'MidiCc' && inputName === 'cc') ||
-    ((nodeType === 'Slider' || nodeType === 'Button') && inputName === 'midiCc')
+    ((nodeType === 'Slider' || nodeType === 'Button') && inputName === 'midiCc') ||
+    (nodeType === 'Joystick' && (inputName === 'xMidiCc' || inputName === 'yMidiCc'))
   );
 }
 

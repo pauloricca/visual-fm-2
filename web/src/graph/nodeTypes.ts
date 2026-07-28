@@ -196,6 +196,24 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     ],
     outputs: [{ name: 'signal' }],
   },
+  Joystick: {
+    type: 'Joystick',
+    inputs: [
+      { name: 'xMin', defaultValue: 0 },
+      { name: 'xMax', defaultValue: 1 },
+      { name: 'xMidiChannel', defaultValue: 0, min: 0, max: 16, integer: true, connectable: false },
+      { name: 'xMidiCc', defaultValue: 1, min: 0, max: 127, integer: true, connectable: false },
+      { name: 'yMin', defaultValue: 0 },
+      { name: 'yMax', defaultValue: 1 },
+      { name: 'yMidiChannel', defaultValue: 0, min: 0, max: 16, integer: true, connectable: false },
+      { name: 'yMidiCc', defaultValue: 2, min: 0, max: 127, integer: true, connectable: false },
+      { name: 'elasticity', defaultValue: 0, min: 0, connectable: false },
+    ],
+    outputs: [
+      { name: 'x' },
+      { name: 'y' },
+    ],
+  },
   Button: {
     type: 'Button',
     inputs: [
@@ -483,6 +501,7 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   Constant: 'Constant',
   Pass: 'Pass',
   Slider: 'Slider',
+  Joystick: 'Joystick',
   Button: 'Button',
   Keys: 'Keys',
   Sequencer: 'Sequencer',

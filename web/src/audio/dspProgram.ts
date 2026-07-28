@@ -842,6 +842,23 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     return emitBinary(DSP_OP.Add, min, emitBinary(DSP_OP.Mul, unitValue, emitBinary(DSP_OP.Sub, max, min, context), context), context);
   }
 
+  if (node.type === 'Joystick') {
+    const unitValueIndex = valueIndexForNodeParam(node, port, 0.5, context);
+    addMidiControlBinding(node, 'slider', unitValueIndex, context, {}, {
+      channel: `${port}MidiChannel`,
+      cc: `${port}MidiCc`,
+    });
+    const unitValue = emitValue(unitValueIndex, context);
+    const min = resolveInput(node, `${port}Min`, 0, context);
+    const max = resolveInput(node, `${port}Max`, 1, context);
+    return emitBinary(
+      DSP_OP.Add,
+      min,
+      emitBinary(DSP_OP.Mul, unitValue, emitBinary(DSP_OP.Sub, max, min, context), context),
+      context,
+    );
+  }
+
   if (node.type === 'Button') {
     const output = nextRegister(context);
     const state = nextState(context, 3);
@@ -1628,9 +1645,13 @@ function addMidiControlBinding(
   valueIndex: number,
   context: CompileContext,
   indexes: Pick<DspMidiControlBinding, 'modeValueIndex' | 'clicksValueIndex'> = {},
+  ports: { channel: string; cc: string } = { channel: 'midiChannel', cc: 'midiCc' },
 ): void {
-  const channel = clampInteger(node.params.midiChannel ?? 0, 0, 16);
-  const cc = clampInteger(node.params.midiCc ?? 1, 0, 127);
+  const definition = getNodeDefinition(node);
+  const channelDefault = definition.inputs.find((input) => input.name === ports.channel)?.defaultValue ?? 0;
+  const ccDefault = definition.inputs.find((input) => input.name === ports.cc)?.defaultValue ?? 1;
+  const channel = clampInteger(node.params[ports.channel] ?? channelDefault, 0, 16);
+  const cc = clampInteger(node.params[ports.cc] ?? ccDefault, 0, 127);
   if (channel === 0) return;
 
   context.midiControlBindings.push({

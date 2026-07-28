@@ -51,6 +51,7 @@ Most node types are available from the node picker. `Ins` and `Outs` appear whil
 - `Constant`: outputs a fixed numeric value.
 - `Pass`: passes a signal through unchanged.
 - `Slider`: provides a playable UI control, optionally driven by MIDI CC, that outputs a mapped signal.
+- `Joystick`: provides a resizable two-dimensional UI control whose draggable square outputs independently mapped `x` and `y` positions. Each axis has its own min/max range and optional MIDI channel/CC mapping; the square's normalized position runs from `0` at left/bottom to `1` at right/top. `elasticity` defaults to `0`, which leaves the square where it is released; positive values return it to the centre at that normalized-unit-per-second speed, with larger values returning faster.
 - `Button`: provides a playable UI button, optionally driven by MIDI CC, for gate/toggle/trigger-style control.
 - `Keys`: provides an on-canvas keyboard with configurable size and starting MIDI note, outputting MIDI note and frequency.
 - `Sequencer`: offers Trigger mode for the original clickable pulse grid and Gate mode for freely positioned, edge-resizable intervals; drag a step's top edge down to lower its velocity from `1` to a minimum of `0.1`, so the row output emits that smaller value when the step triggers or gates; `signal` advances the sequence, `reset` restarts it, each row has its own output, and `trigger index` emits the 1-based index of the first active row.
@@ -123,6 +124,7 @@ The signature notation below is `inputs -> outputs`. Port names are the names us
 | Constant | `value` | `signal` |
 | Pass | `signal` | `signal` |
 | Slider | `signal`, `value`, `min`, `max`, `direction`, `midiChannel`, `midiCc` | `signal` |
+| Joystick | `xMin`, `xMax`, `xMidiChannel`, `xMidiCc`, `yMin`, `yMax`, `yMidiChannel`, `yMidiCc`, `elasticity` | `x`, `y` |
 | Button | `signal`, `mode`, `midiChannel`, `midiCc` | `signal` |
 | Keys | `size`, `startNote` | `midi note`, `frequency` |
 | Sequencer | `steps`, `rows`, `beatLength`, `mode`, `signal`, `reset` | row outputs `1`…`16` (according to `rows`), `trigger index` |

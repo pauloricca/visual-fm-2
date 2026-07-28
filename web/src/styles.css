@@ -803,6 +803,12 @@ button:hover {
   background: var(--color-surface);
 }
 
+.shader-node-joystick {
+  width: var(--node-display-width, 160px);
+  min-width: 72px;
+  background: var(--color-surface);
+}
+
 .shader-node-button {
   width: var(--node-display-width, 224px);
   min-width: 72px;
@@ -826,6 +832,7 @@ button:hover {
 }
 
 .shader-node-slider:has(.shader-inputs:not(:empty)),
+.shader-node-joystick:has(.shader-inputs:not(:empty)),
 .shader-node-button:has(.shader-inputs:not(:empty)),
 .shader-node-keys:has(.shader-inputs:not(:empty)) {
   min-width: max(72px, calc(var(--input-label-width, 0ch) + 90px));
@@ -1237,6 +1244,7 @@ button:hover {
 .shader-node-content-graphic > .audio-node-scope-display,
 .shader-node-content-graphic > .audio-node-spectrum-display,
 .shader-node-content-graphic > .audio-node-slider-display,
+.shader-node-content-graphic > .audio-node-joystick-display,
 .shader-node-content-graphic > .audio-node-button-display,
 .shader-node-content-graphic > .keys-node-keyboard {
   min-width: 0;
@@ -2207,6 +2215,7 @@ button:hover {
 .audio-node-scope-display,
 .audio-node-spectrum-display,
 .audio-node-slider-display,
+.audio-node-joystick-display,
 .audio-node-button-display,
 .keys-node-keyboard {
   grid-column: 1 / -1;
@@ -2500,6 +2509,30 @@ button:hover {
   background: transparent;
   overflow: hidden;
   touch-action: none;
+}
+
+.audio-node-joystick-display {
+  --joystick-handle-size: 12px;
+  position: relative;
+  height: var(--node-display-height, 120px);
+  min-width: 0;
+  box-sizing: border-box;
+  border: calc(1px * var(--graph-stroke-scale, 1)) solid var(--color-foreground);
+  background: transparent;
+  cursor: crosshair;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+}
+
+.audio-node-joystick-handle {
+  position: absolute;
+  width: var(--joystick-handle-size);
+  height: var(--joystick-handle-size);
+  box-sizing: border-box;
+  border: calc(1px * var(--graph-stroke-scale, 1)) solid var(--color-foreground);
+  background: var(--color-accent);
+  pointer-events: none;
 }
 
 .audio-node-button-display {

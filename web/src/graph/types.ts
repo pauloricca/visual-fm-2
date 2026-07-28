@@ -25,6 +25,7 @@ export type NodeType =
   | 'Constant'
   | 'Pass'
   | 'Slider'
+  | 'Joystick'
   | 'Button'
   | 'Keys'
   | 'Sequencer'
