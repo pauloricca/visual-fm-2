@@ -38,6 +38,7 @@ import {
   sequencerOutputName,
   sequencerShape,
   sequencerStepVelocityParamName,
+  trimOverlappingSequencerGates,
   SEQUENCER_MIN_VELOCITY,
 } from '../graph/nodeTypes';
 import type { CustomWaveMode, CustomWavePoint, CustomWaveSettings, NodeDefinition, NodeType, PatchNode } from '../graph/types';
@@ -1372,11 +1373,16 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                           for (let stepIndex = 0; stepIndex < (sequencer?.steps ?? 0); stepIndex += 1) {
                             values[sequencerGateParamName(rowIndex, stepIndex, 'active')] = 0;
                           }
-                          for (const [slot, trigger] of triggers.entries()) {
+                          const convertedGates = trimOverlappingSequencerGates(triggers.map((trigger, slot) => {
                             const start = Math.min(sequencer?.steps ?? 0, trigger.position);
+                            return { slot, start, end: Math.min(sequencer?.steps ?? 0, start + 1), velocity: trigger.velocity };
+                          }));
+                          for (const gate of convertedGates) {
+                            const { slot, start, end } = gate;
                             values[sequencerGateParamName(rowIndex, slot, 'active')] = 1;
                             values[sequencerGateParamName(rowIndex, slot, 'start')] = start;
-                            values[sequencerGateParamName(rowIndex, slot, 'end')] = Math.min(sequencer?.steps ?? 0, start + 1);
+                            values[sequencerGateParamName(rowIndex, slot, 'end')] = end;
+                            values[sequencerStepVelocityParamName(rowIndex, slot)] = gate.velocity;
                           }
                         }
                       } else {
@@ -2909,12 +2915,16 @@ function SequencerGrid({
     return Math.max(0, Math.min(steps, ((event.clientX - row.left) / Math.max(1, row.width)) * steps));
   }
 
-  function beginGateCreate(event: PointerEvent<HTMLButtonElement>, rowIndex: number) {
+  function beginGateCreate(event: PointerEvent<HTMLButtonElement>, rowIndex: number, stepIndex: number) {
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
-    const start = positionInSequencerRow(event);
-    const end = Math.min(steps, start + 1);
+    const start = stepIndex;
+    const gates = sequencerGatesForRow(params, rowIndex, steps);
+    if (gates.some((gate) => start >= gate.start && start < gate.end)) return;
+    const nextStart = gates.find((gate) => gate.start > start)?.start ?? steps;
+    const end = Math.min(nextStart, start + 1);
+    if (end - start < 0.05) return;
     gateCreateRef.current = {
       pointerId: event.pointerId,
       rowIndex,
@@ -2932,8 +2942,10 @@ function SequencerGrid({
     if (!create || create.pointerId !== event.pointerId) return;
     if (Math.abs(event.clientX - create.anchorX) >= 3) create.moved = true;
     if (!create.moved) return;
+    const nextStart = sequencerGatesForRow(params, create.rowIndex, steps)
+      .find((gate) => gate.start > create.start)?.start ?? steps;
     create.end = Math.max(create.start + 0.05, positionInSequencerRow(event));
-    create.end = Math.min(steps, create.end);
+    create.end = Math.min(nextStart, create.end);
     setGateCreatePreview({ rowIndex: create.rowIndex, start: create.start, end: create.end });
   }
 
@@ -3050,14 +3062,22 @@ function SequencerGrid({
     const minimumLength = 0.05;
     let start = drag.anchorStart ?? 0;
     let end = drag.anchorEnd ?? start + 1;
+    const otherGates = sequencerGatesForRow(params, drag.rowIndex, steps)
+      .filter((gate) => gate.slot !== drag.slot);
+    const previousEnd = otherGates
+      .filter((gate) => gate.start < (drag.anchorStart ?? 0))
+      .reduce((boundary, gate) => Math.max(boundary, gate.end), 0);
+    const nextStart = otherGates
+      .filter((gate) => gate.start >= (drag.anchorEnd ?? 0))
+      .reduce((boundary, gate) => Math.min(boundary, gate.start), steps);
     if (drag.action === 'move') {
       const length = end - start;
-      start = Math.max(0, Math.min(steps - length, start + delta));
+      start = Math.max(previousEnd, Math.min(nextStart - length, start + delta));
       end = start + length;
     } else if (drag.action === 'resize-left') {
-      start = Math.max(0, Math.min(end - minimumLength, start + delta));
+      start = Math.max(previousEnd, Math.min(end - minimumLength, start + delta));
     } else {
-      end = Math.max(start + minimumLength, Math.min(steps, end + delta));
+      end = Math.max(start + minimumLength, Math.min(nextStart, end + delta));
     }
     onParamsChange({
       [sequencerGateParamName(drag.rowIndex, drag.slot, 'start')]: start,
@@ -3113,7 +3133,7 @@ function SequencerGrid({
                     aria-pressed={false}
                     title={`Row ${rowIndex + 1}, step ${stepIndex + 1}`}
                     onPointerDown={(event) => {
-                      if (gateMode) beginGateCreate(event, rowIndex);
+                      if (gateMode) beginGateCreate(event, rowIndex, stepIndex);
                       else beginTriggerPaint(event, rowIndex, stepIndex);
                     }}
                     onPointerMove={(event) => {

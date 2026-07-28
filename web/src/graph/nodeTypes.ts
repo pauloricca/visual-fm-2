@@ -670,6 +670,19 @@ export interface SequencerTrigger {
   velocity: number;
 }
 
+/**
+ * Gate rows are monophonic. Keep the later gate intact and shorten the end of
+ * an earlier gate when stored data (or a pattern-length change) overlaps it.
+ */
+export function trimOverlappingSequencerGates(gates: SequencerGate[]): SequencerGate[] {
+  const ordered = [...gates].sort((a, b) => a.start - b.start || a.slot - b.slot);
+  return ordered.flatMap((gate, index) => {
+    const nextStart = ordered[index + 1]?.start ?? Number.POSITIVE_INFINITY;
+    const end = Math.min(gate.end, nextStart);
+    return end > gate.start ? [{ ...gate, end }] : [];
+  });
+}
+
 export function sequencerUsesGateMode(params: Record<string, number>): boolean {
   return (params[SEQUENCER_GATE_MODE_PARAM] ?? params.gateMode ?? 0) >= 0.5;
 }
@@ -729,7 +742,7 @@ export function sequencerGatesForRow(
         legacy.push({ slot: stepIndex, start: stepIndex, end: stepIndex + 1, velocity: sequencerStepVelocity(params, rowIndex, stepIndex) });
       }
     }
-    return legacy;
+    return trimOverlappingSequencerGates(legacy);
   }
 
   const gates: SequencerGate[] = [];
@@ -739,7 +752,7 @@ export function sequencerGatesForRow(
     const end = Math.max(start, Math.min(steps, params[sequencerGateParamName(rowIndex, slot, 'end')] ?? start + 1));
     if (end > start) gates.push({ slot, start, end, velocity: sequencerStepVelocity(params, rowIndex, slot) });
   }
-  return gates;
+  return trimOverlappingSequencerGates(gates);
 }
 
 export function sequencerPatternValue(params: Record<string, number>, rowIndex: number, steps: number): [number, number, number, number] {
