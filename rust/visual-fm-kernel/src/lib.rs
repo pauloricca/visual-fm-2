@@ -463,8 +463,13 @@ impl DspRepeatResourceState {
         }
     }
 
+    fn sample_mut(&mut self, sample_index: usize) -> Option<&mut DspSamplePlaybackState> {
+        self.samples
+            .iter_mut()
+            .find(|state| state.sample_index == sample_index)
+    }
+
     unsafe fn load_into_workspace(&mut self) {
-        restore_dsp_sample_playback_states(&self.samples);
         for effect in &mut self.effect_buffers {
             core::mem::swap(&mut DSP_EFFECT_BUFFERS[effect.slot], &mut effect.buffer);
             core::mem::swap(&mut DSP_EFFECT_INDICES[effect.slot], &mut effect.index);
@@ -475,7 +480,6 @@ impl DspRepeatResourceState {
     }
 
     unsafe fn save_from_workspace(&mut self) {
-        capture_dsp_sample_playback_states(&mut self.samples);
         for effect in &mut self.effect_buffers {
             core::mem::swap(&mut DSP_EFFECT_BUFFERS[effect.slot], &mut effect.buffer);
             core::mem::swap(&mut DSP_EFFECT_INDICES[effect.slot], &mut effect.index);
@@ -850,6 +854,9 @@ static mut DSP_VALUE_INITIALIZED: [bool; MAX_DSP_VALUES] = [false; MAX_DSP_VALUE
 static mut DSP_VALUE_ACTIVE_COUNT: usize = 0;
 static mut DSP_REGS: [f64; MAX_DSP_REGS] = [0.0; MAX_DSP_REGS];
 static mut DSP_STATE: [f64; MAX_DSP_STATE] = [0.0; MAX_DSP_STATE];
+static mut DSP_REPEAT_STATE_PTR: *mut f64 = core::ptr::null_mut();
+static mut DSP_REPEAT_STATE_START: usize = 0;
+static mut DSP_REPEAT_STATE_COUNT: usize = 0;
 static mut DSP_VOICE_STATES: [[f64; MAX_DSP_STATE]; MAX_VOICE_SLOTS] =
     [[0.0; MAX_DSP_STATE]; MAX_VOICE_SLOTS];
 static mut DSP_BIQUAD_COEFFICIENT_CACHES: [DspBiquadCoefficientCache; MAX_DSP_STATE] =
@@ -1786,7 +1793,7 @@ pub extern "C" fn clearDspProgram() {
             DSP_REGS[index] = 0.0;
         }
         for index in 0..MAX_DSP_STATE {
-            DSP_STATE[index] = 0.0;
+            *dsp_state_ptr(index) = 0.0;
         }
         for slot in 0..MAX_VOICE_SLOTS {
             for index in 0..MAX_DSP_STATE {
@@ -1840,7 +1847,7 @@ pub extern "C" fn resetDspRuntimeState() {
             DSP_REGS[index] = 0.0;
         }
         for index in 0..MAX_DSP_STATE {
-            DSP_STATE[index] = 0.0;
+            *dsp_state_ptr(index) = 0.0;
         }
         for slot in 0..MAX_VOICE_SLOTS {
             for index in 0..MAX_DSP_STATE {
@@ -2349,7 +2356,7 @@ pub extern "C" fn getDspState(index: u32) -> f64 {
     unsafe {
         let index = index as usize;
         if index < MAX_DSP_STATE {
-            DSP_STATE[index]
+            *dsp_state_ptr(index)
         } else {
             0.0
         }
@@ -2361,7 +2368,7 @@ pub extern "C" fn setDspState(index: u32, value: f64) {
     unsafe {
         let index = index as usize;
         if index < MAX_DSP_STATE {
-            DSP_STATE[index] = if value.is_finite() {
+            *dsp_state_ptr(index) = if value.is_finite() {
                 value.clamp(-12_000.0, 12_000.0)
             } else {
                 0.0
@@ -5813,6 +5820,30 @@ fn advance_phases(voice_slot: usize, sample_rate: f64, note_frequency: f64, rele
     }
 }
 
+unsafe fn set_dsp_repeat_state(state_start: usize, state: &mut [f64]) {
+    DSP_REPEAT_STATE_PTR = state.as_mut_ptr();
+    DSP_REPEAT_STATE_START = state_start;
+    DSP_REPEAT_STATE_COUNT = state.len();
+}
+
+unsafe fn clear_dsp_repeat_state() {
+    DSP_REPEAT_STATE_PTR = core::ptr::null_mut();
+    DSP_REPEAT_STATE_START = 0;
+    DSP_REPEAT_STATE_COUNT = 0;
+}
+
+#[inline(always)]
+unsafe fn dsp_state_ptr(index: usize) -> *mut f64 {
+    if !DSP_REPEAT_STATE_PTR.is_null()
+        && index >= DSP_REPEAT_STATE_START
+        && index < DSP_REPEAT_STATE_START.saturating_add(DSP_REPEAT_STATE_COUNT)
+    {
+        DSP_REPEAT_STATE_PTR.add(index - DSP_REPEAT_STATE_START)
+    } else {
+        core::ptr::addr_of_mut!(DSP_STATE).cast::<f64>().add(index)
+    }
+}
+
 fn dsp_reg(index: i32) -> f64 {
     unsafe {
         if index < 0 || index as usize >= MAX_DSP_REGS {
@@ -6029,16 +6060,16 @@ fn render_dsp_biquad_state(
         }
 
         let (b0, b1, b2, a1, a2) = coefficients;
-        let x1 = DSP_STATE[state_index];
-        let x2 = DSP_STATE[state_index + 1];
-        let y1 = DSP_STATE[state_index + 2];
-        let y2 = DSP_STATE[state_index + 3];
+        let x1 = *dsp_state_ptr(state_index);
+        let x2 = *dsp_state_ptr(state_index + 1);
+        let y1 = *dsp_state_ptr(state_index + 2);
+        let y2 = *dsp_state_ptr(state_index + 3);
         let output = b0 * sample + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
 
-        DSP_STATE[state_index + 1] = sanitize_sample(x1, 4.0);
-        DSP_STATE[state_index] = sanitize_sample(sample, 4.0);
-        DSP_STATE[state_index + 3] = sanitize_sample(y1, 4.0);
-        DSP_STATE[state_index + 2] = sanitize_sample(output, 4.0);
+        *dsp_state_ptr(state_index + 1) = sanitize_sample(x1, 4.0);
+        *dsp_state_ptr(state_index) = sanitize_sample(sample, 4.0);
+        *dsp_state_ptr(state_index + 3) = sanitize_sample(y1, 4.0);
+        *dsp_state_ptr(state_index + 2) = sanitize_sample(output, 4.0);
         sanitize_sample(output, 4.0)
     }
 }
@@ -6177,48 +6208,48 @@ fn render_dsp_selector(op: DspOp, sample_rate: f64) -> f64 {
         // switch a selector without resetting it between pulses. The active
         // selection must still be rendered while the input is zero so its slide
         // can finish instead of advancing for a single sample only.
-        let previous_index = DSP_STATE[state_index + 1].round() as i32;
+        let previous_index = (*dsp_state_ptr(state_index + 1)).round() as i32;
         let has_new_selection =
             selected_index >= 1 && (selected_index as f64) <= max_index && selected_index == op.d;
         let continues_previous_selection =
             (selected_index < 1 || (selected_index as f64) > max_index) && previous_index == op.d;
         if has_new_selection || continues_previous_selection {
-            let uninitialized = DSP_STATE[state_index] == 0.0
-                && DSP_STATE[state_index + 1] == 0.0
-                && DSP_STATE[state_index + 2] == 0.0
-                && DSP_STATE[state_index + 3] == 0.0;
+            let uninitialized = *dsp_state_ptr(state_index) == 0.0
+                && *dsp_state_ptr(state_index + 1) == 0.0
+                && *dsp_state_ptr(state_index + 2) == 0.0
+                && *dsp_state_ptr(state_index + 3) == 0.0;
             let slide = dsp_reg(op.b).max(0.0);
             let sample_rate = sample_rate.max(1.0);
 
             if uninitialized {
-                DSP_STATE[state_index] = sanitize_control_value(input);
-                DSP_STATE[state_index + 1] = selected_index as f64;
-                DSP_STATE[state_index + 2] = sanitize_control_value(input);
-                DSP_STATE[state_index + 3] = slide;
+                *dsp_state_ptr(state_index) = sanitize_control_value(input);
+                *dsp_state_ptr(state_index + 1) = selected_index as f64;
+                *dsp_state_ptr(state_index + 2) = sanitize_control_value(input);
+                *dsp_state_ptr(state_index + 3) = slide;
             } else if has_new_selection && previous_index != selected_index {
-                DSP_STATE[state_index + 2] = DSP_STATE[state_index];
-                DSP_STATE[state_index + 3] = 0.0;
-                DSP_STATE[state_index + 1] = selected_index as f64;
+                *dsp_state_ptr(state_index + 2) = *dsp_state_ptr(state_index);
+                *dsp_state_ptr(state_index + 3) = 0.0;
+                *dsp_state_ptr(state_index + 1) = selected_index as f64;
             }
 
             if slide <= 0.0 {
-                DSP_STATE[state_index] = sanitize_control_value(input);
-                DSP_STATE[state_index + 3] = slide;
+                *dsp_state_ptr(state_index) = sanitize_control_value(input);
+                *dsp_state_ptr(state_index + 3) = slide;
             } else {
-                let elapsed = (DSP_STATE[state_index + 3] + (1.0 / sample_rate)).min(slide);
+                let elapsed = (*dsp_state_ptr(state_index + 3) + (1.0 / sample_rate)).min(slide);
                 let mix = (elapsed / slide).clamp(0.0, 1.0);
-                let start = DSP_STATE[state_index + 2];
+                let start = *dsp_state_ptr(state_index + 2);
                 let output = if mix >= 1.0 {
                     input
                 } else {
                     start + (input - start) * mix
                 };
-                DSP_STATE[state_index] = sanitize_control_value(output);
-                DSP_STATE[state_index + 3] = elapsed;
+                *dsp_state_ptr(state_index) = sanitize_control_value(output);
+                *dsp_state_ptr(state_index + 3) = elapsed;
             }
         }
 
-        sanitize_control_value(DSP_STATE[state_index])
+        sanitize_control_value(*dsp_state_ptr(state_index))
     }
 }
 
@@ -6317,10 +6348,10 @@ fn render_dsp_playhead(op: DspOp, sample_rate: f64) -> f64 {
         }
 
         let state_index = op.state as usize;
-        let relative_position = normalize_phase(DSP_STATE[state_index]);
+        let relative_position = normalize_phase(*dsp_state_ptr(state_index));
         let output = normalize_phase(dsp_reg(op.a) + relative_position);
         let step = dsp_reg(op.b) / sample_rate.max(1.0);
-        DSP_STATE[state_index] = normalize_phase(relative_position + step);
+        *dsp_state_ptr(state_index) = normalize_phase(relative_position + step);
         output
     }
 }
@@ -6332,8 +6363,8 @@ fn render_dsp_time(op: DspOp, sample_rate: f64) -> f64 {
         }
 
         let state_index = op.state as usize;
-        let output = DSP_STATE[state_index].max(0.0);
-        DSP_STATE[state_index] = output + 1.0 / sample_rate.max(1.0);
+        let output = (*dsp_state_ptr(state_index)).max(0.0);
+        *dsp_state_ptr(state_index) = output + 1.0 / sample_rate.max(1.0);
         output
     }
 }
@@ -6392,7 +6423,7 @@ fn render_dsp_chorus(op: DspOp, sample_rate: f64) -> f64 {
         let index = DSP_EFFECT_INDICES[slot];
         let phase_index = op.state as usize;
         let phase = if phase_index < MAX_DSP_STATE {
-            DSP_STATE[phase_index]
+            *dsp_state_ptr(phase_index)
         } else {
             0.0
         };
@@ -6402,7 +6433,7 @@ fn render_dsp_chorus(op: DspOp, sample_rate: f64) -> f64 {
         write_dsp_effect_buffer(slot, index, sample);
         DSP_EFFECT_INDICES[slot] = (index + 1) % MAX_DSP_DELAY_SAMPLES;
         if phase_index < MAX_DSP_STATE {
-            DSP_STATE[phase_index] = (phase + (TWO_PI * rate) / sample_rate.max(1.0)) % TWO_PI;
+            *dsp_state_ptr(phase_index) = (phase + (TWO_PI * rate) / sample_rate.max(1.0)) % TWO_PI;
         }
         sanitize_sample(sample * (1.0 - mix) + delayed * mix, 8.0)
     }
@@ -6447,8 +6478,8 @@ fn render_dsp_envelope(op: DspOp, sample_rate: f64) -> f64 {
         let state_index = op.state as usize;
         let trigger = dsp_reg(op.a) >= ENVELOPE_TRIGGER_THRESHOLD;
         let gate = dsp_reg(op.b) >= ENVELOPE_TRIGGER_THRESHOLD;
-        let was_triggered = DSP_STATE[state_index + 1] > 0.5;
-        let was_gated = DSP_STATE[state_index + 5] > 0.5;
+        let was_triggered = *dsp_state_ptr(state_index + 1) > 0.5;
+        let was_gated = *dsp_state_ptr(state_index + 5) > 0.5;
         let delay = dsp_reg(op.c).max(0.0);
         let attack = dsp_reg(op.d).max(0.0);
         let decay = dsp_reg(op.e).max(0.0);
@@ -6464,11 +6495,11 @@ fn render_dsp_envelope(op: DspOp, sample_rate: f64) -> f64 {
         };
         let release = dsp_reg(release_register).max(0.0);
         let dt = 1.0 / sample_rate.max(1.0);
-        let mut env = DSP_STATE[state_index].clamp(0.0, 1.0);
-        let mut stage = DSP_STATE[state_index + 2].round() as i32;
-        let mut stage_time = DSP_STATE[state_index + 3].max(0.0);
-        let mut release_start = DSP_STATE[state_index + 4].clamp(0.0, 1.0);
-        let mut attack_start = DSP_STATE[state_index + 6].clamp(0.0, 1.0);
+        let mut env = (*dsp_state_ptr(state_index)).clamp(0.0, 1.0);
+        let mut stage = (*dsp_state_ptr(state_index + 2)).round() as i32;
+        let mut stage_time = (*dsp_state_ptr(state_index + 3)).max(0.0);
+        let mut release_start = (*dsp_state_ptr(state_index + 4)).clamp(0.0, 1.0);
+        let mut attack_start = (*dsp_state_ptr(state_index + 6)).clamp(0.0, 1.0);
         let trigger_edge = trigger && !was_triggered;
         let gate_opened = gate && !was_gated;
         let gate_closed = !gate && was_gated;
@@ -6566,14 +6597,14 @@ fn render_dsp_envelope(op: DspOp, sample_rate: f64) -> f64 {
             }
         }
 
-        DSP_STATE[state_index] = sanitize_control_value(env).clamp(0.0, 1.0);
-        DSP_STATE[state_index + 1] = if trigger { 1.0 } else { 0.0 };
-        DSP_STATE[state_index + 2] = stage as f64;
-        DSP_STATE[state_index + 3] = stage_time;
-        DSP_STATE[state_index + 4] = release_start;
-        DSP_STATE[state_index + 5] = if gate { 1.0 } else { 0.0 };
-        DSP_STATE[state_index + 6] = attack_start;
-        DSP_STATE[state_index]
+        *dsp_state_ptr(state_index) = sanitize_control_value(env).clamp(0.0, 1.0);
+        *dsp_state_ptr(state_index + 1) = if trigger { 1.0 } else { 0.0 };
+        *dsp_state_ptr(state_index + 2) = stage as f64;
+        *dsp_state_ptr(state_index + 3) = stage_time;
+        *dsp_state_ptr(state_index + 4) = release_start;
+        *dsp_state_ptr(state_index + 5) = if gate { 1.0 } else { 0.0 };
+        *dsp_state_ptr(state_index + 6) = attack_start;
+        *dsp_state_ptr(state_index)
     }
 }
 
@@ -6585,7 +6616,7 @@ fn render_dsp_follower(op: DspOp, sample_rate: f64) -> f64 {
 
         let state_index = op.state as usize;
         let target = dsp_reg(op.a).abs();
-        let current = DSP_STATE[state_index].max(0.0);
+        let current = (*dsp_state_ptr(state_index)).max(0.0);
         let attack = dsp_reg(op.b).max(0.0);
         let release = dsp_reg(op.c).max(0.0);
         let coefficient = if target > current {
@@ -6599,8 +6630,8 @@ fn render_dsp_follower(op: DspOp, sample_rate: f64) -> f64 {
             )
         };
         let next = current + (target - current) * coefficient;
-        DSP_STATE[state_index] = sanitize_control_value(next).max(0.0);
-        DSP_STATE[state_index]
+        *dsp_state_ptr(state_index) = sanitize_control_value(next).max(0.0);
+        *dsp_state_ptr(state_index)
     }
 }
 
@@ -6620,7 +6651,7 @@ fn render_dsp_compressor(op: DspOp, sample_rate: f64) -> f64 {
             sample
         };
         let detector = detector_sample.abs();
-        let current = DSP_STATE[state_index].max(0.0);
+        let current = (*dsp_state_ptr(state_index)).max(0.0);
         let attack = dsp_reg(op.d).clamp(0.0, 1.0);
         let release = dsp_reg(op.e).clamp(0.0, 3.0);
         let coefficient = if detector > current {
@@ -6634,7 +6665,7 @@ fn render_dsp_compressor(op: DspOp, sample_rate: f64) -> f64 {
             )
         };
         let envelope = current + (detector - current) * coefficient;
-        DSP_STATE[state_index] = sanitize_control_value(envelope).max(0.0);
+        *dsp_state_ptr(state_index) = sanitize_control_value(envelope).max(0.0);
 
         let threshold = dsp_reg(op.b).clamp(-80.0, 0.0);
         let ratio = dsp_reg(op.c).clamp(1.0, 20.0);
@@ -6699,12 +6730,12 @@ fn render_dsp_limiter(op: DspOp, sample_rate: f64) -> f64 {
     } else {
         unsafe {
             let state_index = op.state as usize;
-            let current = if DSP_STATE[state_index] > 0.0 {
-                DSP_STATE[state_index].clamp(0.0, 1.0)
+            let current = if *dsp_state_ptr(state_index) > 0.0 {
+                (*dsp_state_ptr(state_index)).clamp(0.0, 1.0)
             } else {
                 1.0
             };
-            let hold_samples = DSP_STATE[state_index + 1].max(0.0);
+            let hold_samples = (*dsp_state_ptr(state_index + 1)).max(0.0);
             let (next, next_hold) = if required_gain < current {
                 (required_gain, lookahead_samples as f64)
             } else if hold_samples >= 1.0 {
@@ -6718,9 +6749,9 @@ fn render_dsp_limiter(op: DspOp, sample_rate: f64) -> f64 {
                 );
                 (current + (required_gain - current) * coefficient, 0.0)
             };
-            DSP_STATE[state_index] = sanitize_control_value(next).clamp(0.0, 1.0);
-            DSP_STATE[state_index + 1] = next_hold;
-            DSP_STATE[state_index]
+            *dsp_state_ptr(state_index) = sanitize_control_value(next).clamp(0.0, 1.0);
+            *dsp_state_ptr(state_index + 1) = next_hold;
+            *dsp_state_ptr(state_index)
         }
     };
 
@@ -6746,14 +6777,15 @@ fn render_dsp_limiter(op: DspOp, sample_rate: f64) -> f64 {
 #[cfg(test)]
 mod delay_tests {
     use super::{
-        ensure_dsp_effect_buffer, render_dsp_delay, DspOp, DSP_EFFECT_BUFFERS, DSP_EFFECT_INDICES,
-        DSP_REGS, MAX_DSP_EFFECT_SLOTS,
+        clear_dsp_resource_slots, prepare_dsp_effect_slot, render_dsp_delay, DspOp,
+        DSP_EFFECT_BUFFERS, DSP_EFFECT_INDICES, DSP_REGS,
     };
 
     #[test]
     fn zero_is_passthrough_and_positive_sub_sample_times_use_one_sample() {
-        let state = (MAX_DSP_EFFECT_SLOTS - 1) as i32;
-        let slot = state as usize;
+        clear_dsp_resource_slots();
+        let state = 63;
+        let slot = prepare_dsp_effect_slot(state).unwrap();
         let op = DspOp {
             opcode: 12,
             out: -1,
@@ -6768,8 +6800,6 @@ mod delay_tests {
             value3: 0.0,
             value4: 0.0,
         };
-
-        ensure_dsp_effect_buffer(slot);
         unsafe {
             DSP_EFFECT_INDICES[slot] = 0;
             DSP_EFFECT_BUFFERS[slot].as_mut().unwrap().fill(0.0);
@@ -6794,20 +6824,22 @@ mod delay_tests {
             DSP_REGS[0] = 0.25;
         }
         assert_eq!(render_dsp_delay(op, 48_000.0), 1.0);
+        clear_dsp_resource_slots();
     }
 }
 
 #[cfg(test)]
 mod limiter_tests {
     use super::{
-        ensure_dsp_effect_buffer, render_dsp_limiter, DspOp, DSP_EFFECT_BUFFERS,
-        DSP_EFFECT_INDICES, DSP_REGS, DSP_STATE, MAX_DSP_EFFECT_SLOTS,
+        clear_dsp_resource_slots, dsp_state_ptr, prepare_dsp_effect_slot, render_dsp_limiter,
+        DspOp, DSP_EFFECT_BUFFERS, DSP_EFFECT_INDICES, DSP_REGS,
     };
 
     #[test]
     fn lookahead_is_optional_and_output_respects_the_ceiling() {
+        clear_dsp_resource_slots();
         let state = 100;
-        let slot = state as usize % MAX_DSP_EFFECT_SLOTS;
+        let slot = prepare_dsp_effect_slot(state).unwrap();
         let op = DspOp {
             opcode: 39,
             out: -1,
@@ -6829,17 +6861,16 @@ mod limiter_tests {
             DSP_REGS[2] = -6.0;
             DSP_REGS[3] = 0.05;
             DSP_REGS[4] = 0.0;
-            DSP_STATE[state as usize] = 0.0;
-            DSP_STATE[state as usize + 1] = 0.0;
+            *dsp_state_ptr(state as usize) = 0.0;
+            *dsp_state_ptr(state as usize + 1) = 0.0;
         }
         let zero_latency = render_dsp_limiter(op, 48_000.0);
         assert!((zero_latency.abs() - 10.0_f64.powf(-6.0 / 20.0)).abs() < 0.000001);
 
-        ensure_dsp_effect_buffer(slot);
         unsafe {
             DSP_REGS[4] = 0.001;
-            DSP_STATE[state as usize] = 0.0;
-            DSP_STATE[state as usize + 1] = 0.0;
+            *dsp_state_ptr(state as usize) = 0.0;
+            *dsp_state_ptr(state as usize + 1) = 0.0;
             DSP_EFFECT_INDICES[slot] = 0;
             DSP_EFFECT_BUFFERS[slot].as_mut().unwrap().fill(0.0);
         }
@@ -6850,12 +6881,13 @@ mod limiter_tests {
             delayed_peak = render_dsp_limiter(op, 48_000.0);
         }
         assert!((delayed_peak.abs() - 10.0_f64.powf(-6.0 / 20.0)).abs() < 0.000001);
+        clear_dsp_resource_slots();
     }
 }
 
 #[cfg(test)]
 mod compressor_tests {
-    use super::{render_dsp_compressor, DspOp, DSP_REGS, DSP_STATE, MAX_DSP_REGS};
+    use super::{dsp_state_ptr, render_dsp_compressor, DspOp, DSP_REGS, MAX_DSP_REGS};
 
     #[test]
     fn linked_sidechain_drives_gain_reduction_instead_of_main_signal() {
@@ -6883,13 +6915,13 @@ mod compressor_tests {
             DSP_REGS[5] = 0.1;
             DSP_REGS[6] = 0.0;
             DSP_REGS[7] = 0.0;
-            DSP_STATE[0] = 0.0;
+            *dsp_state_ptr(0) = 0.0;
         }
         let sidechained = render_dsp_compressor(op, 48_000.0);
 
         op.value2 = -1.0;
         unsafe {
-            DSP_STATE[0] = 0.0;
+            *dsp_state_ptr(0) = 0.0;
         }
         let self_detected = render_dsp_compressor(op, 48_000.0);
 
@@ -7078,7 +7110,476 @@ fn snapshot_dsp_sample_voice(
     start_sample_player(node_index, voice_slot, node, 0.0, 0.0);
 }
 
-fn render_dsp_sample(op: DspOp, frame: usize, sample_rate: f64) -> f64 {
+fn select_repeated_sample_voice(state: &DspSamplePlaybackState, voice_count: usize) -> usize {
+    for voice in 0..voice_count {
+        if !state.playing[voice] {
+            return voice;
+        }
+    }
+
+    let mut selected_voice = 0;
+    let mut longest_age = f64::NEG_INFINITY;
+    for voice in 0..voice_count {
+        if state.playback_ages[voice] > longest_age {
+            longest_age = state.playback_ages[voice];
+            selected_voice = voice;
+        }
+    }
+    selected_voice
+}
+
+fn start_repeated_sample_player(
+    state: &mut DspSamplePlaybackState,
+    node_index: usize,
+    voice: usize,
+    node: Node,
+) {
+    let was_playing = state.playing[voice];
+    if was_playing {
+        state.retrigger_outputs[voice] = state.last_outputs[voice];
+        state.retrigger_fade_ages[voice] = 0.0;
+        state.retrigger_fade_durations[voice] = node.sample_attack.max(SAMPLE_EDGE_FADE_SECONDS);
+    } else {
+        state.retrigger_outputs[voice] = 0.0;
+        state.retrigger_fade_ages[voice] = -1.0;
+        state.retrigger_fade_durations[voice] = 0.0;
+        state.last_outputs[voice] = 0.0;
+    }
+    let Some((start_frame, end_frame, _, _, direction, _)) =
+        sample_range(node_index, node, 0.0, 0.0)
+    else {
+        state.playing[voice] = false;
+        return;
+    };
+    let Some(slot) = sample_slot_for_node(node_index) else {
+        state.playing[voice] = false;
+        return;
+    };
+    let frequency_direction = state.frequency_directions[voice];
+    let initial_position =
+        sample_player_start_boundary(start_frame, end_frame, frequency_direction);
+    let start_index =
+        (initial_position.round() as usize).min(unsafe { SAMPLE_LENGTHS[slot] }.saturating_sub(1));
+    state.playing[voice] = true;
+    state.positions[voice] = initial_position;
+    state.directions[voice] = direction * frequency_direction;
+    state.has_advanced[voice] = false;
+    state.playback_ages[voice] = 0.0;
+    state.release_ages[voice] = -1.0;
+    let Some(sample_data) = (unsafe { SAMPLE_DATA[slot].as_ref() }) else {
+        state.playing[voice] = false;
+        return;
+    };
+    state.start_values[voice] = sample_data.get(start_index).copied().unwrap_or(0.0) as f64;
+    state.stretch_phases[voice] = 0.0;
+    state.stretch_anchors[voice] = initial_position;
+}
+
+fn sync_repeated_sample_frequency_direction(
+    state: &mut DspSamplePlaybackState,
+    node_index: usize,
+    voice: usize,
+    node: Node,
+    frequency: f64,
+) {
+    if !frequency.is_finite() || frequency == 0.0 {
+        return;
+    }
+    let next_direction = if frequency < 0.0 { -1.0 } else { 1.0 };
+    let previous_direction = state.frequency_directions[voice];
+    if next_direction == previous_direction {
+        return;
+    }
+    state.frequency_directions[voice] = next_direction;
+    state.directions[voice] = -state.directions[voice];
+    if state.has_advanced[voice] {
+        return;
+    }
+    let Some((start_frame, end_frame, _, _, _, _)) = sample_range(node_index, node, 0.0, 0.0)
+    else {
+        return;
+    };
+    let initial_position = sample_player_start_boundary(start_frame, end_frame, next_direction);
+    state.positions[voice] = initial_position;
+    state.stretch_anchors[voice] = initial_position;
+    let Some(slot) = sample_slot_for_node(node_index) else {
+        return;
+    };
+    let Some(sample_data) = (unsafe { SAMPLE_DATA[slot].as_ref() }) else {
+        return;
+    };
+    let initial_index =
+        (initial_position.round() as usize).min(unsafe { SAMPLE_LENGTHS[slot] }.saturating_sub(1));
+    state.start_values[voice] = sample_data.get(initial_index).copied().unwrap_or(0.0) as f64;
+}
+
+fn finish_repeated_sample_boundary(
+    state: &mut DspSamplePlaybackState,
+    voice: usize,
+    node: Node,
+    start_frame: f64,
+    end_frame: f64,
+    first_frame: f64,
+    last_frame: f64,
+    direction: f64,
+) {
+    if node.sample_mode == SAMPLE_MODE_ONE_SHOT && state.release_ages[voice] >= 0.0 {
+        return;
+    }
+    let play_direction = state.directions[voice];
+    let boundary = if play_direction == direction {
+        end_frame
+    } else {
+        start_frame
+    };
+    let position = state.positions[voice];
+    if !sample_player_past_end(position, play_direction, boundary) {
+        return;
+    }
+    if node.sample_mode == SAMPLE_MODE_LOOP {
+        let span = (end_frame - start_frame).abs().max(1.0);
+        let wrapped = (position - boundary).abs() % span;
+        state.positions[voice] = if play_direction >= 0.0 {
+            first_frame + wrapped
+        } else {
+            last_frame - wrapped
+        };
+    } else if node.sample_mode == SAMPLE_MODE_PING_PONG {
+        let next_direction = -play_direction;
+        let overshoot = (position - boundary).abs();
+        state.directions[voice] = next_direction;
+        state.positions[voice] =
+            (boundary + overshoot * next_direction).clamp(first_frame, last_frame);
+    } else if node.sample_release > 0.0 && state.release_ages[voice] < 0.0 {
+        state.positions[voice] = boundary;
+        state.release_ages[voice] = 0.0;
+    } else {
+        state.playing[voice] = false;
+    }
+}
+
+fn repeated_sample_value(
+    state: &mut DspSamplePlaybackState,
+    node_index: usize,
+    voice: usize,
+    node: Node,
+    sample_rate: f64,
+) -> f64 {
+    if !state.playing[voice] {
+        return 0.0;
+    }
+    let Some(slot) = sample_slot_for_node(node_index) else {
+        state.playing[voice] = false;
+        return 0.0;
+    };
+    let Some(sample_data) = (unsafe { SAMPLE_DATA[slot].as_ref() }) else {
+        state.playing[voice] = false;
+        return 0.0;
+    };
+    let Some((start_frame, end_frame, first_frame, last_frame, direction, length)) =
+        sample_range(node_index, node, 0.0, 0.0)
+    else {
+        state.playing[voice] = false;
+        return 0.0;
+    };
+    let release_age = state.release_ages[voice];
+    if release_age >= node.sample_release.max(0.0) && release_age >= 0.0 {
+        state.playing[voice] = false;
+        return 0.0;
+    }
+    let playback_start =
+        sample_player_start_boundary(start_frame, end_frame, state.frequency_directions[voice]);
+    if sample_player_before_start(
+        state.positions[voice],
+        state.directions[voice],
+        playback_start,
+    ) {
+        start_repeated_sample_player(state, node_index, voice, node);
+    }
+    finish_repeated_sample_boundary(
+        state,
+        voice,
+        node,
+        start_frame,
+        end_frame,
+        first_frame,
+        last_frame,
+        direction,
+    );
+    if !state.playing[voice] {
+        return 0.0;
+    }
+
+    let current_release_age = state.release_ages[voice];
+    let release_active = current_release_age >= 0.0;
+    let stretch = node.sample_stretch.max(0.001);
+    let (position, next_position, mix) = if (stretch - 1.0).abs() < 0.001 {
+        (state.positions[voice], state.positions[voice], 0.0)
+    } else {
+        let grain_frames = node.sample_cycle_length.round().clamp(1.0, length.max(1.0));
+        let overlap_frames = if node.sample_overlap_ratio <= 0.0 {
+            0.0
+        } else {
+            (grain_frames * node.sample_overlap_ratio.clamp(0.0, 1.0))
+                .round()
+                .clamp(1.0, (grain_frames - 1.0).max(1.0))
+        };
+        let hop_frames = (grain_frames - overlap_frames).max(1.0);
+        let local = state.stretch_phases[voice].clamp(0.0, grain_frames);
+        let overlap_local = (local - hop_frames).max(0.0);
+        let mix = if overlap_frames > 0.0 && overlap_local > 0.0 {
+            smooth_step(overlap_local / overlap_frames)
+        } else {
+            0.0
+        };
+        let play_direction = state.directions[voice];
+        let next_anchor = state.stretch_anchors[voice] + (hop_frames / stretch) * play_direction;
+        (
+            state.stretch_anchors[voice] + local * play_direction,
+            next_anchor + overlap_local * play_direction,
+            mix,
+        )
+    };
+    let max_frame = unsafe { SAMPLE_LENGTHS[slot] }.saturating_sub(1) as f64;
+    let read_first_frame = if release_active { 0.0 } else { first_frame };
+    let read_last_frame = if release_active {
+        max_frame
+    } else {
+        last_frame
+    };
+    let position = position.clamp(read_first_frame, read_last_frame);
+    let sample_at = |read_position: f64| -> f64 {
+        let read_position = read_position.clamp(read_first_frame, read_last_frame);
+        let lower =
+            (read_position.floor() as usize).min(unsafe { SAMPLE_LENGTHS[slot] }.saturating_sub(1));
+        let upper = (lower + 1)
+            .min(unsafe { SAMPLE_LENGTHS[slot] }.saturating_sub(1))
+            .min(read_last_frame as usize);
+        let frac = read_position - lower as f64;
+        let a = sample_data[lower] as f64;
+        let b = sample_data[upper] as f64;
+        a + (b - a) * frac
+    };
+    let blended = if mix > 0.0 {
+        sample_at(position) * (1.0 - mix) + sample_at(next_position) * mix
+    } else {
+        sample_at(position)
+    };
+    let start_distance = (position - start_frame).abs();
+    let end_distance = (end_frame - position).abs();
+    let fade_frames = (unsafe { SAMPLE_RATES[slot] }.max(sample_rate) * SAMPLE_EDGE_FADE_SECONDS)
+        .round()
+        .clamp(1.0, (length * 0.5).max(1.0));
+    let end_edge = if node.sample_mode == SAMPLE_MODE_ONE_SHOT && node.sample_release > 0.0 {
+        1.0
+    } else {
+        smooth_step(end_distance / fade_frames)
+    };
+    let edge = smooth_step(start_distance / fade_frames) * end_edge;
+    let correction = state.start_values[voice] * (1.0 - smooth_step(start_distance / fade_frames));
+    let attack = if node.sample_attack > 0.0 {
+        smooth_step((state.playback_ages[voice] / node.sample_attack).clamp(0.0, 1.0))
+    } else {
+        1.0
+    };
+    let release = if current_release_age >= 0.0 && node.sample_release > 0.0 {
+        1.0 - smooth_step((current_release_age / node.sample_release).clamp(0.0, 1.0))
+    } else {
+        1.0
+    };
+    let restarted = sanitize_sample((blended - correction) * edge * attack * release, 4.0);
+    let fade_age = state.retrigger_fade_ages[voice];
+    let output = if fade_age >= 0.0 {
+        let duration = state.retrigger_fade_durations[voice].max(SAMPLE_EDGE_FADE_SECONDS);
+        let fade = smooth_step(fade_age / duration);
+        state.retrigger_outputs[voice] * (1.0 - fade) + restarted * fade
+    } else {
+        restarted
+    };
+    state.last_outputs[voice] = sanitize_sample(output, 4.0);
+    state.last_outputs[voice]
+}
+
+fn advance_repeated_sample_player(
+    state: &mut DspSamplePlaybackState,
+    node_index: usize,
+    voice: usize,
+    node: Node,
+    target_frequency: f64,
+    sample_rate: f64,
+) {
+    if !state.playing[voice] {
+        return;
+    }
+    let fade_age = state.retrigger_fade_ages[voice];
+    if fade_age >= 0.0 {
+        let duration = state.retrigger_fade_durations[voice].max(SAMPLE_EDGE_FADE_SECONDS);
+        let next_age = fade_age + 1.0 / sample_rate.max(1.0);
+        state.retrigger_fade_ages[voice] = if next_age >= duration { -1.0 } else { next_age };
+    }
+    let sample_step = sample_playback_step(
+        node_index,
+        node,
+        target_frequency,
+        target_frequency,
+        sample_rate,
+    )
+    .abs();
+    if sample_step > 0.0 {
+        state.has_advanced[voice] = true;
+    }
+    let stretch = node.sample_stretch.max(0.001);
+    state.playback_ages[voice] += 1.0 / sample_rate.max(1.0);
+    if state.release_ages[voice] >= 0.0 {
+        state.release_ages[voice] += 1.0 / sample_rate.max(1.0);
+        state.positions[voice] += (sample_step / stretch) * state.directions[voice];
+        return;
+    }
+    state.positions[voice] += (sample_step / stretch) * state.directions[voice];
+    if (stretch - 1.0).abs() < 0.001 {
+        state.stretch_phases[voice] = 0.0;
+        state.stretch_anchors[voice] = state.positions[voice];
+        return;
+    }
+    let (_, _, _, _, _, length) =
+        sample_range(node_index, node, 0.0, 0.0).unwrap_or((0.0, 0.0, 0.0, 0.0, 1.0, 512.0));
+    let grain_frames = node.sample_cycle_length.round().clamp(1.0, length.max(1.0));
+    let overlap_frames = if node.sample_overlap_ratio <= 0.0 {
+        0.0
+    } else {
+        (grain_frames * node.sample_overlap_ratio.clamp(0.0, 1.0))
+            .round()
+            .clamp(1.0, (grain_frames - 1.0).max(1.0))
+    };
+    let hop_frames = (grain_frames - overlap_frames).max(1.0);
+    state.stretch_phases[voice] += sample_step;
+    while state.stretch_phases[voice] >= grain_frames {
+        state.stretch_anchors[voice] += (hop_frames / stretch) * state.directions[voice];
+        state.stretch_phases[voice] -= hop_frames;
+    }
+}
+
+fn render_repeated_dsp_sample(
+    op: DspOp,
+    frame: usize,
+    sample_rate: f64,
+    state: &mut DspSamplePlaybackState,
+) -> f64 {
+    let Some(node_index) = dsp_sample_node_index(op.a) else {
+        return 0.0;
+    };
+    unsafe {
+        if op.state < 0 || (op.state as usize) >= MAX_DSP_STATE {
+            return 0.0;
+        }
+        let trigger = dsp_reg(op.c) >= ENVELOPE_TRIGGER_THRESHOLD;
+        let previous_trigger = *dsp_state_ptr(op.state as usize) >= ENVELOPE_TRIGGER_THRESHOLD;
+        let node = NODES[node_index];
+        let voice_count = dsp_sample_voice_count(dsp_reg(op.d));
+        if sample_slot_for_node(node_index).is_none() {
+            *dsp_state_ptr(op.state as usize) = 0.0;
+            return 0.0;
+        }
+        if trigger && !previous_trigger {
+            let voice = select_repeated_sample_voice(state, voice_count);
+            let level = if op.e >= 0 { dsp_reg(op.e) } else { 1.0 };
+            state.voice_settings[voice] = DspSampleVoiceSettings {
+                node,
+                frequency: if dsp_reg(op.b).is_finite() {
+                    dsp_reg(op.b)
+                } else {
+                    220.0
+                },
+                level: if level.is_finite() { level } else { 0.0 },
+            };
+            start_repeated_sample_player(state, node_index, voice, node);
+            if SAMPLE_TRIGGER_EVENT_COUNT < MAX_SAMPLE_TRIGGER_EVENTS {
+                if let Some(slot) = sample_slot_for_node(node_index) {
+                    let (start_frame, end_frame, _, _, _, _) =
+                        sample_range(node_index, node, 0.0, 0.0)
+                            .unwrap_or((0.0, 0.0, 0.0, 0.0, 0.0, 0.0));
+                    let source_rate = SAMPLE_RATES[slot].max(1.0);
+                    let speed = (dsp_reg(op.b) / node.sample_original_frequency.max(0.0001))
+                        / node.sample_stretch.max(0.001);
+                    SAMPLE_TRIGGER_EVENTS[SAMPLE_TRIGGER_EVENT_COUNT] = [
+                        op.a as f64,
+                        frame as f64,
+                        start_frame / source_rate * 1000.0,
+                        end_frame / source_rate * 1000.0,
+                        speed,
+                        level,
+                        node.sample_attack.max(0.0) * 1000.0,
+                        node.sample_release.max(0.0) * 1000.0,
+                    ];
+                    SAMPLE_TRIGGER_EVENT_COUNT += 1;
+                }
+            }
+        }
+        *dsp_state_ptr(op.state as usize) = if trigger { 1.0 } else { 0.0 };
+
+        let mut output = 0.0;
+        for voice in 0..MAX_DSP_SAMPLE_PLAYER_VOICES {
+            if !state.playing[voice] {
+                continue;
+            }
+            let voice_settings = state.voice_settings[voice];
+            let live_mono_voice = voice_count == 1 && voice == 0;
+            let playback_node = if live_mono_voice {
+                node
+            } else {
+                voice_settings.node
+            };
+            let playback_frequency = if live_mono_voice {
+                let frequency = dsp_reg(op.b);
+                if frequency.is_finite() {
+                    frequency
+                } else {
+                    220.0
+                }
+            } else {
+                voice_settings.frequency
+            };
+            let playback_level = if live_mono_voice {
+                let level = if op.e >= 0 { dsp_reg(op.e) } else { 1.0 };
+                if level.is_finite() {
+                    level
+                } else {
+                    0.0
+                }
+            } else {
+                voice_settings.level
+            };
+            sync_repeated_sample_frequency_direction(
+                state,
+                node_index,
+                voice,
+                playback_node,
+                playback_frequency,
+            );
+            output += repeated_sample_value(state, node_index, voice, playback_node, sample_rate)
+                * playback_level;
+            advance_repeated_sample_player(
+                state,
+                node_index,
+                voice,
+                playback_node,
+                playback_frequency,
+                sample_rate,
+            );
+        }
+        sanitize_sample(output, 4.0)
+    }
+}
+
+fn render_dsp_sample(
+    op: DspOp,
+    frame: usize,
+    sample_rate: f64,
+    repeated_state: Option<&mut DspSamplePlaybackState>,
+) -> f64 {
+    if let Some(state) = repeated_state {
+        return render_repeated_dsp_sample(op, frame, sample_rate, state);
+    }
     let Some(node_index) = dsp_sample_node_index(op.a) else {
         return 0.0;
     };
@@ -7089,13 +7590,13 @@ fn render_dsp_sample(op: DspOp, frame: usize, sample_rate: f64) -> f64 {
 
         let sample_index = op.a as usize;
         let trigger = dsp_reg(op.c) >= ENVELOPE_TRIGGER_THRESHOLD;
-        let previous_trigger = DSP_STATE[op.state as usize] >= ENVELOPE_TRIGGER_THRESHOLD;
+        let previous_trigger = *dsp_state_ptr(op.state as usize) >= ENVELOPE_TRIGGER_THRESHOLD;
         let node = NODES[node_index];
         let voice_count = dsp_sample_voice_count(dsp_reg(op.d));
         let has_sample = sample_slot_for_node(node_index).is_some();
 
         if !has_sample {
-            DSP_STATE[op.state as usize] = 0.0;
+            *dsp_state_ptr(op.state as usize) = 0.0;
             return 0.0;
         }
 
@@ -7135,7 +7636,7 @@ fn render_dsp_sample(op: DspOp, frame: usize, sample_rate: f64) -> f64 {
                 }
             }
         }
-        DSP_STATE[op.state as usize] = if trigger { 1.0 } else { 0.0 };
+        *dsp_state_ptr(op.state as usize) = if trigger { 1.0 } else { 0.0 };
 
         let mut output = 0.0;
         // Existing voices are allowed to finish if the voices input is reduced;
@@ -7614,18 +8115,18 @@ fn render_dsp_accumulator(op: DspOp) -> f64 {
 
         let state_index = op.state as usize;
         let trigger = dsp_reg(op.a) >= ENVELOPE_TRIGGER_THRESHOLD;
-        let previous_trigger = DSP_STATE[state_index + 1] >= ENVELOPE_TRIGGER_THRESHOLD;
+        let previous_trigger = *dsp_state_ptr(state_index + 1) >= ENVELOPE_TRIGGER_THRESHOLD;
         let reset = dsp_reg(op.e) >= ENVELOPE_TRIGGER_THRESHOLD;
-        let previous_reset = DSP_STATE[state_index + 2] >= ENVELOPE_TRIGGER_THRESHOLD;
+        let previous_reset = *dsp_state_ptr(state_index + 2) >= ENVELOPE_TRIGGER_THRESHOLD;
         let min = dsp_reg(op.b);
         let max = dsp_reg(op.c);
         let increment = dsp_reg(op.d);
         let continuous = op.value >= 0.5;
         let low = min.min(max);
         let high = min.max(max);
-        let mut value = DSP_STATE[state_index].clamp(low, high);
+        let mut value = (*dsp_state_ptr(state_index)).clamp(low, high);
 
-        if !DSP_STATE[state_index].is_finite() || (value == 0.0 && low > 0.0) {
+        if !(*dsp_state_ptr(state_index)).is_finite() || (value == 0.0 && low > 0.0) {
             value = low;
         }
 
@@ -7635,10 +8136,10 @@ fn render_dsp_accumulator(op: DspOp) -> f64 {
             value = advance_accumulator(value, increment, low, high);
         }
 
-        DSP_STATE[state_index] = sanitize_control_value(value);
-        DSP_STATE[state_index + 1] = if trigger { 1.0 } else { 0.0 };
-        DSP_STATE[state_index + 2] = if reset { 1.0 } else { 0.0 };
-        DSP_STATE[state_index]
+        *dsp_state_ptr(state_index) = sanitize_control_value(value);
+        *dsp_state_ptr(state_index + 1) = if trigger { 1.0 } else { 0.0 };
+        *dsp_state_ptr(state_index + 2) = if reset { 1.0 } else { 0.0 };
+        *dsp_state_ptr(state_index)
     }
 }
 
@@ -7650,27 +8151,27 @@ fn render_dsp_random(op: DspOp) -> f64 {
 
         let state_index = op.state as usize;
         let trigger = op.a >= 0 && dsp_reg(op.a) >= ENVELOPE_TRIGGER_THRESHOLD;
-        let initialized = DSP_STATE[state_index + 3] >= 0.5;
-        let previous_trigger = DSP_STATE[state_index + 1] >= ENVELOPE_TRIGGER_THRESHOLD;
+        let initialized = *dsp_state_ptr(state_index + 3) >= 0.5;
+        let previous_trigger = *dsp_state_ptr(state_index + 1) >= ENVELOPE_TRIGGER_THRESHOLD;
 
         if !initialized {
             let mut random_state = next_dsp_random_seed();
-            DSP_STATE[state_index] = random_unit_from_state(&mut random_state);
-            DSP_STATE[state_index + 1] = if trigger { 1.0 } else { 0.0 };
-            DSP_STATE[state_index + 2] = random_state as f64;
-            DSP_STATE[state_index + 3] = 1.0;
+            *dsp_state_ptr(state_index) = random_unit_from_state(&mut random_state);
+            *dsp_state_ptr(state_index + 1) = if trigger { 1.0 } else { 0.0 };
+            *dsp_state_ptr(state_index + 2) = random_state as f64;
+            *dsp_state_ptr(state_index + 3) = 1.0;
         } else {
             if trigger && !previous_trigger {
-                let mut random_state = DSP_STATE[state_index + 2]
+                let mut random_state = (*dsp_state_ptr(state_index + 2))
                     .round()
                     .clamp(0.0, u32::MAX as f64) as u32;
-                DSP_STATE[state_index] = random_unit_from_state(&mut random_state);
-                DSP_STATE[state_index + 2] = random_state as f64;
+                *dsp_state_ptr(state_index) = random_unit_from_state(&mut random_state);
+                *dsp_state_ptr(state_index + 2) = random_state as f64;
             }
-            DSP_STATE[state_index + 1] = if trigger { 1.0 } else { 0.0 };
+            *dsp_state_ptr(state_index + 1) = if trigger { 1.0 } else { 0.0 };
         }
 
-        let unit = DSP_STATE[state_index].clamp(0.0, 1.0);
+        let unit = (*dsp_state_ptr(state_index)).clamp(0.0, 1.0);
         let range_min = dsp_reg(op.b);
         let range_max = dsp_reg(op.c);
         sanitize_control_value(range_min + (range_max - range_min) * unit)
@@ -7716,30 +8217,30 @@ fn render_dsp_sequencer(op: DspOp, frame: usize) -> f64 {
         let state_index = op.state as usize;
         let frame_token =
             DSP_RENDER_QUANTUM_ID as f64 * (MAX_WASM_FRAMES as f64 + 1.0) + frame as f64;
-        if (DSP_STATE[state_index + 3] - frame_token).abs() >= 0.5 {
+        if (*dsp_state_ptr(state_index + 3) - frame_token).abs() >= 0.5 {
             let trigger = dsp_reg(op.a) >= ENVELOPE_TRIGGER_THRESHOLD;
-            let previous_trigger = DSP_STATE[state_index + 1] >= ENVELOPE_TRIGGER_THRESHOLD;
+            let previous_trigger = *dsp_state_ptr(state_index + 1) >= ENVELOPE_TRIGGER_THRESHOLD;
             let pulse = trigger && !previous_trigger;
             let reset = dsp_reg(op.e) >= ENVELOPE_TRIGGER_THRESHOLD;
-            let previous_reset = DSP_STATE[state_index + 5] >= ENVELOPE_TRIGGER_THRESHOLD;
+            let previous_reset = *dsp_state_ptr(state_index + 5) >= ENVELOPE_TRIGGER_THRESHOLD;
             let reset_pulse = reset && !previous_reset;
-            let mut pulse_count = DSP_STATE[state_index + 4].round() as i32;
-            if !DSP_STATE[state_index + 4].is_finite() || pulse_count < 0 {
+            let mut pulse_count = (*dsp_state_ptr(state_index + 4)).round() as i32;
+            if !(*dsp_state_ptr(state_index + 4)).is_finite() || pulse_count < 0 {
                 pulse_count = 0;
             }
             if reset_pulse {
                 pulse_count = 0;
-                DSP_STATE[state_index + 6] = 0.0;
+                *dsp_state_ptr(state_index + 6) = 0.0;
             }
             if pulse {
-                let elapsed_frames = DSP_STATE[state_index + 6];
+                let elapsed_frames = *dsp_state_ptr(state_index + 6);
                 if pulse_count > 0 && elapsed_frames >= 1.0 {
-                    DSP_STATE[state_index + 7] = elapsed_frames;
+                    *dsp_state_ptr(state_index + 7) = elapsed_frames;
                 }
-                DSP_STATE[state_index + 6] = 0.0;
+                *dsp_state_ptr(state_index + 6) = 0.0;
                 pulse_count += 1;
             } else if pulse_count > 0 {
-                DSP_STATE[state_index + 6] += 1.0;
+                *dsp_state_ptr(state_index + 6) += 1.0;
             }
             let initialized = pulse_count > 0;
             let step = if initialized {
@@ -7748,18 +8249,18 @@ fn render_dsp_sequencer(op: DspOp, frame: usize) -> f64 {
                 0
             };
 
-            DSP_STATE[state_index] = step as f64;
-            DSP_STATE[state_index + 1] = if trigger { 1.0 } else { 0.0 };
-            DSP_STATE[state_index + 2] = if pulse { 1.0 } else { 0.0 };
-            DSP_STATE[state_index + 3] = frame_token;
-            DSP_STATE[state_index + 4] = pulse_count as f64;
-            DSP_STATE[state_index + 5] = if reset { 1.0 } else { 0.0 };
+            *dsp_state_ptr(state_index) = step as f64;
+            *dsp_state_ptr(state_index + 1) = if trigger { 1.0 } else { 0.0 };
+            *dsp_state_ptr(state_index + 2) = if pulse { 1.0 } else { 0.0 };
+            *dsp_state_ptr(state_index + 3) = frame_token;
+            *dsp_state_ptr(state_index + 4) = pulse_count as f64;
+            *dsp_state_ptr(state_index + 5) = if reset { 1.0 } else { 0.0 };
         }
 
-        let step = DSP_STATE[state_index].round() as i32;
-        let interval_frames = DSP_STATE[state_index + 7];
+        let step = (*dsp_state_ptr(state_index)).round() as i32;
+        let interval_frames = *dsp_state_ptr(state_index + 7);
         let fractional_step = if interval_frames >= 1.0 {
-            (DSP_STATE[state_index + 6] / interval_frames).clamp(0.0, 0.999_999)
+            (*dsp_state_ptr(state_index + 6) / interval_frames).clamp(0.0, 0.999_999)
         } else {
             0.0
         };
@@ -7771,7 +8272,7 @@ fn render_dsp_sequencer(op: DspOp, frame: usize) -> f64 {
         else {
             return 0.0;
         };
-        if row == -1 && DSP_STATE[state_index + 4] >= 1.0 {
+        if row == -1 && *dsp_state_ptr(state_index + 4) >= 1.0 {
             return if config.gate_mode {
                 position
             } else {
@@ -7782,7 +8283,7 @@ fn render_dsp_sequencer(op: DspOp, frame: usize) -> f64 {
         if row < 0 || row >= rows || row as usize >= config.rows {
             return 0.0;
         }
-        if DSP_STATE[state_index + 4] < 1.0 {
+        if *dsp_state_ptr(state_index + 4) < 1.0 {
             return 0.0;
         }
         let row_start = row as usize * config.steps;
@@ -7794,11 +8295,11 @@ fn render_dsp_sequencer(op: DspOp, frame: usize) -> f64 {
                 .map_or(0.0, |event| event.velocity);
         }
 
-        let previous_position = if DSP_STATE[state_index + 2] >= 0.5 {
+        let previous_position = if *dsp_state_ptr(state_index + 2) >= 0.5 {
             step as f64 - 0.000_001
-        } else if interval_frames >= 1.0 && DSP_STATE[state_index + 6] >= 1.0 {
+        } else if interval_frames >= 1.0 && *dsp_state_ptr(state_index + 6) >= 1.0 {
             step.max(0) as f64
-                + ((DSP_STATE[state_index + 6] - 1.0) / interval_frames).clamp(0.0, 0.999_999)
+                + ((*dsp_state_ptr(state_index + 6) - 1.0) / interval_frames).clamp(0.0, 0.999_999)
         } else {
             position
         };
@@ -7831,9 +8332,9 @@ fn render_dsp_button(op: DspOp) -> f64 {
         let pressed = dsp_value_target(op.a) >= ENVELOPE_TRIGGER_THRESHOLD;
         let mode = dsp_value_target(op.b).round() as i32;
         let clicks = dsp_value_target(op.c).round();
-        let initialized = DSP_STATE[state_index + 2] >= 0.5;
+        let initialized = *dsp_state_ptr(state_index + 2) >= 0.5;
         let previous_clicks = if initialized {
-            DSP_STATE[state_index + 1].round()
+            (*dsp_state_ptr(state_index + 1)).round()
         } else {
             clicks
         };
@@ -7850,9 +8351,9 @@ fn render_dsp_button(op: DspOp) -> f64 {
             0.0
         };
 
-        DSP_STATE[state_index] = if pressed { 1.0 } else { 0.0 };
-        DSP_STATE[state_index + 1] = clicks;
-        DSP_STATE[state_index + 2] = 1.0;
+        *dsp_state_ptr(state_index) = if pressed { 1.0 } else { 0.0 };
+        *dsp_state_ptr(state_index + 1) = clicks;
+        *dsp_state_ptr(state_index + 2) = 1.0;
         output
     }
 }
@@ -7870,10 +8371,10 @@ fn render_dsp_end_trigger(op: DspOp) -> f64 {
             if state_index >= MAX_DSP_STATE || source_index + 2 >= MAX_DSP_STATE {
                 return 0.0;
             }
-            let active = DSP_STATE[state_index] >= 0.5;
-            let envelope_stage = DSP_STATE[source_index + 2].round() as i32;
+            let active = *dsp_state_ptr(state_index) >= 0.5;
+            let envelope_stage = (*dsp_state_ptr(source_index + 2)).round() as i32;
             let ended = active && envelope_stage == 0;
-            DSP_STATE[state_index] = if envelope_stage != 0 { 1.0 } else { 0.0 };
+            *dsp_state_ptr(state_index) = if envelope_stage != 0 { 1.0 } else { 0.0 };
             return if ended { 1.0 } else { 0.0 };
         }
 
@@ -7886,15 +8387,15 @@ fn render_dsp_end_trigger(op: DspOp) -> f64 {
         }
 
         let node = NODES[op.b as usize];
-        let phase = DSP_STATE[source_index].clamp(0.0, 1.0);
-        let reset = DSP_STATE[source_index + 1] >= ENVELOPE_TRIGGER_THRESHOLD;
-        let direction = DSP_STATE[source_index + 2];
-        let done = DSP_STATE[source_index + 3] >= 0.5;
-        let previous_phase = DSP_STATE[state_index].clamp(0.0, 1.0);
-        let previous_direction = DSP_STATE[state_index + 1];
-        let previous_done = DSP_STATE[state_index + 2] >= 0.5;
-        let previous_reset = DSP_STATE[state_index + 3] >= 0.5;
-        let initialized = DSP_STATE[state_index + 4] >= 0.5;
+        let phase = (*dsp_state_ptr(source_index)).clamp(0.0, 1.0);
+        let reset = *dsp_state_ptr(source_index + 1) >= ENVELOPE_TRIGGER_THRESHOLD;
+        let direction = *dsp_state_ptr(source_index + 2);
+        let done = *dsp_state_ptr(source_index + 3) >= 0.5;
+        let previous_phase = (*dsp_state_ptr(state_index)).clamp(0.0, 1.0);
+        let previous_direction = *dsp_state_ptr(state_index + 1);
+        let previous_done = *dsp_state_ptr(state_index + 2) >= 0.5;
+        let previous_reset = *dsp_state_ptr(state_index + 3) >= 0.5;
+        let initialized = *dsp_state_ptr(state_index + 4) >= 0.5;
         let reset_edge = reset && !previous_reset;
 
         let ended = if reset_edge {
@@ -7916,11 +8417,11 @@ fn render_dsp_end_trigger(op: DspOp) -> f64 {
             }
         };
 
-        DSP_STATE[state_index] = phase;
-        DSP_STATE[state_index + 1] = direction;
-        DSP_STATE[state_index + 2] = if done { 1.0 } else { 0.0 };
-        DSP_STATE[state_index + 3] = if reset { 1.0 } else { 0.0 };
-        DSP_STATE[state_index + 4] = 1.0;
+        *dsp_state_ptr(state_index) = phase;
+        *dsp_state_ptr(state_index + 1) = direction;
+        *dsp_state_ptr(state_index + 2) = if done { 1.0 } else { 0.0 };
+        *dsp_state_ptr(state_index + 3) = if reset { 1.0 } else { 0.0 };
+        *dsp_state_ptr(state_index + 4) = 1.0;
         if ended {
             1.0
         } else {
@@ -7941,15 +8442,15 @@ fn render_dsp_phase_oscillator_output(
             7 => {
                 if let Some(index) = state_index {
                     if index + 2 < MAX_DSP_STATE {
-                        if DSP_STATE[index + 1] == 0.0
-                            && DSP_STATE[index + 2] == 0.0
+                        if *dsp_state_ptr(index + 1) == 0.0
+                            && *dsp_state_ptr(index + 2) == 0.0
                             && render_phase == 0.0
                         {
-                            DSP_STATE[index + 1] = random_bipolar(DRONE_VOICE_SLOT);
-                            DSP_STATE[index + 2] = random_bipolar(DRONE_VOICE_SLOT);
+                            *dsp_state_ptr(index + 1) = random_bipolar(DRONE_VOICE_SLOT);
+                            *dsp_state_ptr(index + 2) = random_bipolar(DRONE_VOICE_SLOT);
                         }
-                        let current = DSP_STATE[index + 1];
-                        let next = DSP_STATE[index + 2];
+                        let current = *dsp_state_ptr(index + 1);
+                        let next = *dsp_state_ptr(index + 2);
                         current + (next - current) * smooth_step(render_phase)
                     } else {
                         0.0
@@ -7999,11 +8500,11 @@ fn render_dsp_slew(op: DspOp, sample_rate: f64) -> f64 {
         let state_index = op.state as usize;
         let seconds = op.value.max(0.0);
         if seconds <= 0.0 || sample_rate <= 0.0 {
-            DSP_STATE[state_index] = sanitize_control_value(target);
+            *dsp_state_ptr(state_index) = sanitize_control_value(target);
             return target;
         }
 
-        let mut current = DSP_STATE[state_index];
+        let mut current = *dsp_state_ptr(state_index);
         if !current.is_finite() {
             current = 0.0;
         }
@@ -8016,8 +8517,8 @@ fn render_dsp_slew(op: DspOp, sample_rate: f64) -> f64 {
             current + step.copysign(delta)
         };
 
-        DSP_STATE[state_index] = sanitize_control_value(current);
-        DSP_STATE[state_index]
+        *dsp_state_ptr(state_index) = sanitize_control_value(current);
+        *dsp_state_ptr(state_index)
     }
 }
 
@@ -8027,6 +8528,7 @@ fn render_dsp_op(
     sample_rate: f64,
     left_sample: &mut f64,
     right_sample: &mut f64,
+    mut repeated_resources: Option<&mut DspRepeatResourceState>,
 ) {
     let _ = op.value;
     match op.opcode {
@@ -8081,20 +8583,22 @@ fn render_dsp_op(
             };
             if op.a >= 0 && op.a <= 4 && op.d < 0 && op.e < 0 {
                 let index = op.state as usize;
-                let phase = DSP_STATE[index];
+                let phase = *dsp_state_ptr(index);
                 let output = map_dsp_oscillator_range(op, dsp_oscillator(op.a, phase));
                 set_dsp_reg_unchecked(op.out, output);
-                DSP_STATE[index] = normalize_phase(phase + frequency / sample_rate.max(1.0));
+                *dsp_state_ptr(index) = normalize_phase(phase + frequency / sample_rate.max(1.0));
                 return;
             }
-            let mut phase = state_index.map(|index| DSP_STATE[index]).unwrap_or(0.0);
+            let mut phase = state_index
+                .map(|index| *dsp_state_ptr(index))
+                .unwrap_or(0.0);
             let mut phase_reset_fade_started = false;
             if op.a != 5 && op.a != 7 && op.e >= 0 {
                 if let Some(index) = state_index {
                     if index + 1 < MAX_DSP_STATE && op.e >= 0 {
                         let reset_trigger = dsp_reg_unchecked(op.e) >= ENVELOPE_TRIGGER_THRESHOLD;
                         let previous_reset_trigger =
-                            DSP_STATE[index + 1] >= ENVELOPE_TRIGGER_THRESHOLD;
+                            *dsp_state_ptr(index + 1) >= ENVELOPE_TRIGGER_THRESHOLD;
                         if reset_trigger && !previous_reset_trigger {
                             let reset_fade_index = if op.a == 9 { index + 4 } else { index + 2 };
                             if reset_fade_index + 1 < MAX_DSP_STATE {
@@ -8103,23 +8607,24 @@ fn render_dsp_op(
                                 } else {
                                     phase
                                 };
-                                DSP_STATE[reset_fade_index] = render_dsp_phase_oscillator_output(
-                                    op,
-                                    previous_render_phase,
-                                    state_index,
-                                    frame,
-                                );
-                                DSP_STATE[reset_fade_index + 1] = 0.0;
+                                *dsp_state_ptr(reset_fade_index) =
+                                    render_dsp_phase_oscillator_output(
+                                        op,
+                                        previous_render_phase,
+                                        state_index,
+                                        frame,
+                                    );
+                                *dsp_state_ptr(reset_fade_index + 1) = 0.0;
                                 phase_reset_fade_started = true;
                             }
                             phase = 0.0;
-                            DSP_STATE[index] = 0.0;
+                            *dsp_state_ptr(index) = 0.0;
                             if op.a == 9 && index + 3 < MAX_DSP_STATE {
-                                DSP_STATE[index + 2] = 1.0;
-                                DSP_STATE[index + 3] = 0.0;
+                                *dsp_state_ptr(index + 2) = 1.0;
+                                *dsp_state_ptr(index + 3) = 0.0;
                             }
                         }
-                        DSP_STATE[index + 1] = if reset_trigger { 1.0 } else { 0.0 };
+                        *dsp_state_ptr(index + 1) = if reset_trigger { 1.0 } else { 0.0 };
                     }
                 }
             }
@@ -8130,7 +8635,7 @@ fn render_dsp_op(
             };
             let custom_wave_is_done = op.a == 9
                 && state_index
-                    .map(|index| index + 3 < MAX_DSP_STATE && DSP_STATE[index + 3] >= 0.5)
+                    .map(|index| index + 3 < MAX_DSP_STATE && *dsp_state_ptr(index + 3) >= 0.5)
                     .unwrap_or(false);
             let mut output = if custom_wave_is_done {
                 dsp_reg_unchecked(op.c).clamp(-1.0, 1.0)
@@ -8138,22 +8643,23 @@ fn render_dsp_op(
                 match op.a {
                     5 => {
                         if let Some(index) = state_index {
-                            if index + 2 < MAX_DSP_STATE && DSP_STATE[index + 2] == 0.0 {
-                                DSP_STATE[index + 1] = dsp_sample_hold_value(op.c);
-                                DSP_STATE[index + 2] = 1.0;
+                            if index + 2 < MAX_DSP_STATE && *dsp_state_ptr(index + 2) == 0.0 {
+                                *dsp_state_ptr(index + 1) = dsp_sample_hold_value(op.c);
+                                *dsp_state_ptr(index + 2) = 1.0;
                             }
                             let trigger = if op.d >= 0 {
                                 dsp_reg_unchecked(op.d) >= ENVELOPE_TRIGGER_THRESHOLD
                             } else {
                                 false
                             };
-                            let previous_trigger = DSP_STATE[index] >= ENVELOPE_TRIGGER_THRESHOLD;
+                            let previous_trigger =
+                                *dsp_state_ptr(index) >= ENVELOPE_TRIGGER_THRESHOLD;
                             if trigger && !previous_trigger {
-                                DSP_STATE[index + 1] = dsp_sample_hold_value(op.c);
+                                *dsp_state_ptr(index + 1) = dsp_sample_hold_value(op.c);
                             }
-                            DSP_STATE[index] = if trigger { 1.0 } else { 0.0 };
+                            *dsp_state_ptr(index) = if trigger { 1.0 } else { 0.0 };
                             if index + 1 < MAX_DSP_STATE {
-                                DSP_STATE[index + 1]
+                                *dsp_state_ptr(index + 1)
                             } else {
                                 0.0
                             }
@@ -8168,14 +8674,15 @@ fn render_dsp_op(
                 if let Some(index) = state_index {
                     let reset_fade_index = if op.a == 9 { index + 4 } else { index + 2 };
                     if reset_fade_index + 1 < MAX_DSP_STATE {
-                        let fade_age = DSP_STATE[reset_fade_index + 1].max(0.0);
+                        let fade_age = (*dsp_state_ptr(reset_fade_index + 1)).max(0.0);
                         if phase_reset_fade_started
                             || (fade_age > 0.0 && fade_age < PHASE_RESET_FADE_SECONDS)
                         {
                             let mix = smooth_step(fade_age / PHASE_RESET_FADE_SECONDS);
-                            let previous_output = DSP_STATE[reset_fade_index];
+                            let previous_output = *dsp_state_ptr(reset_fade_index);
                             output = previous_output + (output - previous_output) * mix;
-                            DSP_STATE[reset_fade_index + 1] = fade_age + 1.0 / sample_rate.max(1.0);
+                            *dsp_state_ptr(reset_fade_index + 1) =
+                                fade_age + 1.0 / sample_rate.max(1.0);
                         }
                     }
                 }
@@ -8185,8 +8692,8 @@ fn render_dsp_op(
             if let Some(index) = state_index {
                 let next_phase = phase + frequency / sample_rate.max(1.0);
                 if op.a == 7 && next_phase >= 1.0 && index + 2 < MAX_DSP_STATE {
-                    DSP_STATE[index + 1] = DSP_STATE[index + 2];
-                    DSP_STATE[index + 2] = random_bipolar(DRONE_VOICE_SLOT);
+                    *dsp_state_ptr(index + 1) = *dsp_state_ptr(index + 2);
+                    *dsp_state_ptr(index + 2) = random_bipolar(DRONE_VOICE_SLOT);
                 }
                 if op.a == 9 && index + 3 < MAX_DSP_STATE {
                     let node_index = op.value.round() as i32;
@@ -8195,13 +8702,13 @@ fn render_dsp_op(
                         let start = node.custom_sustain_start.clamp(0.0, 0.999);
                         let end = node.custom_sustain_end.clamp(start + 0.001, 1.0);
                         let length = (end - start).max(0.001);
-                        let mut direction = if DSP_STATE[index + 2] == 0.0 {
+                        let mut direction = if *dsp_state_ptr(index + 2) == 0.0 {
                             1.0
                         } else {
-                            DSP_STATE[index + 2]
+                            *dsp_state_ptr(index + 2)
                         };
                         let mut custom_next = next_phase;
-                        let mut done = DSP_STATE[index + 3] >= 0.5;
+                        let mut done = *dsp_state_ptr(index + 3) >= 0.5;
 
                         if done {
                             custom_next = phase;
@@ -8254,14 +8761,14 @@ fn render_dsp_op(
                             }
                         }
 
-                        DSP_STATE[index] = custom_next.clamp(0.0, 1.0);
-                        DSP_STATE[index + 2] = direction;
-                        DSP_STATE[index + 3] = if done { 1.0 } else { 0.0 };
+                        *dsp_state_ptr(index) = custom_next.clamp(0.0, 1.0);
+                        *dsp_state_ptr(index + 2) = direction;
+                        *dsp_state_ptr(index + 3) = if done { 1.0 } else { 0.0 };
                     } else {
-                        DSP_STATE[index] = normalize_phase(next_phase);
+                        *dsp_state_ptr(index) = normalize_phase(next_phase);
                     }
                 } else if op.a != 5 {
-                    DSP_STATE[index] = normalize_phase(next_phase);
+                    *dsp_state_ptr(index) = normalize_phase(next_phase);
                 }
             }
         },
@@ -8297,7 +8804,7 @@ fn render_dsp_op(
         }
         DSP_OP_FEEDBACK_READ => unsafe {
             let value = if op.state >= 0 && (op.state as usize) < MAX_DSP_STATE {
-                DSP_STATE[op.state as usize]
+                *dsp_state_ptr(op.state as usize)
             } else {
                 0.0
             };
@@ -8305,7 +8812,7 @@ fn render_dsp_op(
         },
         DSP_OP_FEEDBACK_WRITE => unsafe {
             if op.state >= 0 && (op.state as usize) < MAX_DSP_STATE {
-                DSP_STATE[op.state as usize] = sanitize_sample(dsp_reg(op.a), 8.0);
+                *dsp_state_ptr(op.state as usize) = sanitize_sample(dsp_reg(op.a), 8.0);
             }
         },
         DSP_OP_SELECT => set_dsp_reg(op.out, render_dsp_selector(op, sample_rate)),
@@ -8329,7 +8836,15 @@ fn render_dsp_op(
         }
         DSP_OP_DISTORTION => set_dsp_reg(op.out, render_dsp_distortion(op)),
         DSP_OP_SAMPLE_PARAM => render_dsp_sample_param(op),
-        DSP_OP_SAMPLE => set_dsp_reg(op.out, render_dsp_sample(op, frame, sample_rate)),
+        DSP_OP_SAMPLE => {
+            let repeated_sample = repeated_resources
+                .as_deref_mut()
+                .and_then(|resources| resources.sample_mut(op.a.max(0) as usize));
+            set_dsp_reg(
+                op.out,
+                render_dsp_sample(op, frame, sample_rate, repeated_sample),
+            );
+        }
         DSP_OP_FUNCTION => set_dsp_reg(op.out, render_dsp_function(op)),
         DSP_OP_MIDI_NOTE => set_dsp_reg(op.out, render_dsp_midi_note(op)),
         DSP_OP_MIDI_CC => set_dsp_reg(op.out, render_dsp_midi_cc(op)),
@@ -8352,9 +8867,9 @@ fn render_dsp_op(
             if op.state >= 0 && (op.state as usize) < MAX_DSP_STATE {
                 let state = op.state as usize;
                 if frame == 0 {
-                    DSP_STATE[state] = sanitize_control_value(dsp_reg(op.a)).floor().max(0.0);
+                    *dsp_state_ptr(state) = sanitize_control_value(dsp_reg(op.a)).floor().max(0.0);
                 }
-                set_dsp_reg(op.out, DSP_STATE[state]);
+                set_dsp_reg(op.out, *dsp_state_ptr(state));
             } else {
                 set_dsp_reg(op.out, sanitize_control_value(dsp_reg(op.a)));
             }
@@ -8588,75 +9103,18 @@ unsafe fn dsp_template_resource_layout(
     }
 }
 
-unsafe fn restore_dsp_sample_playback_states(states: &[DspSamplePlaybackState]) {
-    for state in states {
-        let sample_index = state.sample_index;
-        let Some(node_index) = dsp_sample_node_index(sample_index as i32) else {
-            continue;
-        };
-        DSP_SAMPLE_VOICE_SETTINGS[sample_index] = state.voice_settings;
-        for voice in 0..MAX_DSP_SAMPLE_PLAYER_VOICES {
-            let voice_slot = DSP_SAMPLE_VOICE_SLOT_START + voice;
-            SAMPLE_PLAYING[voice_slot][node_index] = state.playing[voice];
-            SAMPLE_POSITIONS[voice_slot][node_index] = state.positions[voice];
-            SAMPLE_DIRECTIONS[voice_slot][node_index] = state.directions[voice];
-            SAMPLE_FREQUENCY_DIRECTIONS[voice_slot][node_index] = state.frequency_directions[voice];
-            SAMPLE_HAS_ADVANCED[voice_slot][node_index] = state.has_advanced[voice];
-            SAMPLE_PLAYBACK_AGES[voice_slot][node_index] = state.playback_ages[voice];
-            SAMPLE_RELEASE_AGES[voice_slot][node_index] = state.release_ages[voice];
-            SAMPLE_START_VALUES[voice_slot][node_index] = state.start_values[voice];
-            SAMPLE_LAST_OUTPUTS[voice_slot][node_index] = state.last_outputs[voice];
-            SAMPLE_RETRIGGER_OUTPUTS[voice_slot][node_index] = state.retrigger_outputs[voice];
-            SAMPLE_RETRIGGER_FADE_AGES[voice_slot][node_index] = state.retrigger_fade_ages[voice];
-            SAMPLE_RETRIGGER_FADE_DURATIONS[voice_slot][node_index] =
-                state.retrigger_fade_durations[voice];
-            SAMPLE_STRETCH_PHASES[voice_slot][node_index] = state.stretch_phases[voice];
-            SAMPLE_STRETCH_ANCHORS[voice_slot][node_index] = state.stretch_anchors[voice];
-        }
-    }
-}
-
-unsafe fn capture_dsp_sample_playback_states(states: &mut [DspSamplePlaybackState]) {
-    for state in states {
-        let sample_index = state.sample_index;
-        let Some(node_index) = dsp_sample_node_index(sample_index as i32) else {
-            continue;
-        };
-        state.voice_settings = DSP_SAMPLE_VOICE_SETTINGS[sample_index];
-        for voice in 0..MAX_DSP_SAMPLE_PLAYER_VOICES {
-            let voice_slot = DSP_SAMPLE_VOICE_SLOT_START + voice;
-            state.playing[voice] = SAMPLE_PLAYING[voice_slot][node_index];
-            state.positions[voice] = SAMPLE_POSITIONS[voice_slot][node_index];
-            state.directions[voice] = SAMPLE_DIRECTIONS[voice_slot][node_index];
-            state.frequency_directions[voice] = SAMPLE_FREQUENCY_DIRECTIONS[voice_slot][node_index];
-            state.has_advanced[voice] = SAMPLE_HAS_ADVANCED[voice_slot][node_index];
-            state.playback_ages[voice] = SAMPLE_PLAYBACK_AGES[voice_slot][node_index];
-            state.release_ages[voice] = SAMPLE_RELEASE_AGES[voice_slot][node_index];
-            state.start_values[voice] = SAMPLE_START_VALUES[voice_slot][node_index];
-            state.last_outputs[voice] = SAMPLE_LAST_OUTPUTS[voice_slot][node_index];
-            state.retrigger_outputs[voice] = SAMPLE_RETRIGGER_OUTPUTS[voice_slot][node_index];
-            state.retrigger_fade_ages[voice] = SAMPLE_RETRIGGER_FADE_AGES[voice_slot][node_index];
-            state.retrigger_fade_durations[voice] =
-                SAMPLE_RETRIGGER_FADE_DURATIONS[voice_slot][node_index];
-            state.stretch_phases[voice] = SAMPLE_STRETCH_PHASES[voice_slot][node_index];
-            state.stretch_anchors[voice] = SAMPLE_STRETCH_ANCHORS[voice_slot][node_index];
-        }
-    }
-}
-
 #[cfg(test)]
 mod repeated_resource_state_tests {
     use super::{
-        clear_dsp_resource_slots, migrate_dsp_repeat_state, prepare_dsp_effect_slot,
-        DspRepeatMigrationPlan, DspRepeatResourceLayout, DspRepeatResourceState,
-        DSP_BUFFER_BUFFERS, DSP_EFFECT_BUFFERS, DSP_EFFECT_INDICES, DSP_SAMPLE_NODE_INDICES,
-        DSP_SAMPLE_VOICE_SLOT_START, SAMPLE_PLAYING, SAMPLE_POSITIONS,
+        clear_dsp_repeat_state, clear_dsp_resource_slots, dsp_state_ptr, migrate_dsp_repeat_state,
+        prepare_dsp_effect_slot, set_dsp_repeat_state, DspRepeatMigrationPlan,
+        DspRepeatResourceLayout, DspRepeatResourceState, DSP_BUFFER_BUFFERS, DSP_EFFECT_BUFFERS,
+        DSP_EFFECT_INDICES,
     };
 
     #[test]
-    fn repeated_instances_restore_independent_node_resources() {
+    fn repeated_instances_keep_sample_state_directly_owned() {
         unsafe {
-            DSP_SAMPLE_NODE_INDICES[0] = 0;
             let layout = DspRepeatResourceLayout {
                 state_start: 0,
                 state_count: 1,
@@ -8666,45 +9124,55 @@ mod repeated_resource_state_tests {
             };
             let mut first = DspRepeatResourceState::new(&layout);
             let mut second = DspRepeatResourceState::new(&layout);
-            let voice_slot = DSP_SAMPLE_VOICE_SLOT_START;
+
+            first.sample_mut(0).unwrap().playing[0] = true;
+            first.sample_mut(0).unwrap().positions[0] = 128.0;
+            second.sample_mut(0).unwrap().playing[0] = true;
+            second.sample_mut(0).unwrap().positions[0] = 32.0;
 
             first.load_into_workspace();
-            SAMPLE_PLAYING[voice_slot][0] = true;
-            SAMPLE_POSITIONS[voice_slot][0] = 128.0;
             DSP_EFFECT_BUFFERS[0].as_mut().unwrap()[0] = 0.75;
             DSP_EFFECT_INDICES[0] = 9;
             DSP_BUFFER_BUFFERS[0].as_mut().unwrap()[0] = 0.5;
             first.save_from_workspace();
 
             second.load_into_workspace();
-            assert!(!SAMPLE_PLAYING[voice_slot][0]);
-            assert_eq!(SAMPLE_POSITIONS[voice_slot][0], 0.0);
+            assert_eq!(first.sample_mut(0).unwrap().positions[0], 128.0);
+            assert_eq!(second.sample_mut(0).unwrap().positions[0], 32.0);
             assert_eq!(DSP_EFFECT_BUFFERS[0].as_ref().unwrap()[0], 0.0);
             assert_eq!(DSP_EFFECT_INDICES[0], 0);
             assert_eq!(DSP_BUFFER_BUFFERS[0].as_ref().unwrap()[0], 0.0);
-            SAMPLE_PLAYING[voice_slot][0] = true;
-            SAMPLE_POSITIONS[voice_slot][0] = 32.0;
             DSP_EFFECT_BUFFERS[0].as_mut().unwrap()[0] = 0.25;
             DSP_EFFECT_INDICES[0] = 3;
             DSP_BUFFER_BUFFERS[0].as_mut().unwrap()[0] = 0.125;
             second.save_from_workspace();
 
             first.load_into_workspace();
-            assert!(SAMPLE_PLAYING[voice_slot][0]);
-            assert_eq!(SAMPLE_POSITIONS[voice_slot][0], 128.0);
+            assert_eq!(first.sample_mut(0).unwrap().positions[0], 128.0);
             assert_eq!(DSP_EFFECT_BUFFERS[0].as_ref().unwrap()[0], 0.75);
             assert_eq!(DSP_EFFECT_INDICES[0], 9);
             assert_eq!(DSP_BUFFER_BUFFERS[0].as_ref().unwrap()[0], 0.5);
             first.save_from_workspace();
 
             second.load_into_workspace();
-            assert_eq!(SAMPLE_POSITIONS[voice_slot][0], 32.0);
+            assert_eq!(second.sample_mut(0).unwrap().positions[0], 32.0);
             assert_eq!(DSP_EFFECT_BUFFERS[0].as_ref().unwrap()[0], 0.25);
             assert_eq!(DSP_EFFECT_INDICES[0], 3);
             assert_eq!(DSP_BUFFER_BUFFERS[0].as_ref().unwrap()[0], 0.125);
             second.save_from_workspace();
+        }
+    }
 
-            DSP_SAMPLE_NODE_INDICES[0] = -1;
+    #[test]
+    fn repeated_scalar_state_is_mutated_through_a_direct_view() {
+        let mut instance_state = vec![10.0, 20.0, 30.0];
+        unsafe {
+            let previous_global = *dsp_state_ptr(101);
+            set_dsp_repeat_state(100, &mut instance_state);
+            *dsp_state_ptr(101) = 42.0;
+            assert_eq!(instance_state, vec![10.0, 42.0, 30.0]);
+            clear_dsp_repeat_state();
+            assert_eq!(*dsp_state_ptr(101), previous_global);
         }
     }
 
@@ -8739,7 +9207,7 @@ unsafe fn render_dsp_ops(
     while op_index < DSP_OP_COUNT {
         let op = DSP_OPS[op_index];
         if op.opcode != DSP_OP_SPREAD_BEGIN && op.opcode != DSP_OP_SPAWN_BEGIN {
-            render_dsp_op(op, frame, sample_rate, left_sample, right_sample);
+            render_dsp_op(op, frame, sample_rate, left_sample, right_sample, None);
             op_index += 1;
             continue;
         }
@@ -8804,23 +9272,14 @@ unsafe fn render_dsp_ops(
 
             let instances = &mut runtime.instances_by_context[context];
             set_dsp_reg(op.out, instances.len() as f64);
-            let dsp_state_ptr = core::ptr::addr_of_mut!(DSP_STATE)
-                .cast::<f64>()
-                .add(state_start);
             let mut instance_index = 0;
             while instance_index < instances.len() {
                 let instance = &mut instances[instance_index];
-                if state_count > 0 {
-                    core::ptr::copy_nonoverlapping(
-                        instance.states.as_ptr(),
-                        dsp_state_ptr,
-                        state_count,
-                    );
-                }
                 if op.c >= 0 {
                     set_dsp_reg(op.c, 0.0);
                 }
                 instance.resources.load_into_workspace();
+                set_dsp_repeat_state(state_start, &mut instance.states);
                 DSP_SPREAD_ITEM_INDEX = instance_index;
                 DSP_SPAWN_INSTANCE_GATE = if instance.gate { 1.0 } else { 0.0 };
                 for template_index in (op_index + 1)..end_index {
@@ -8830,19 +9289,14 @@ unsafe fn render_dsp_ops(
                         sample_rate,
                         left_sample,
                         right_sample,
-                    );
-                }
-                instance.resources.save_from_workspace();
-                if state_count > 0 {
-                    core::ptr::copy_nonoverlapping(
-                        dsp_state_ptr,
-                        instance.states.as_mut_ptr(),
-                        state_count,
+                        Some(&mut instance.resources),
                     );
                 }
                 let kill_trigger = op.c >= 0 && dsp_reg(op.c) >= ENVELOPE_TRIGGER_THRESHOLD;
                 let kill_edge = kill_trigger && !instance.kill_triggered;
                 instance.kill_triggered = kill_trigger;
+                clear_dsp_repeat_state();
+                instance.resources.save_from_workspace();
                 if kill_edge {
                     instances.remove(instance_index);
                 } else {
@@ -8864,6 +9318,7 @@ unsafe fn render_dsp_ops(
                         sample_rate,
                         left_sample,
                         right_sample,
+                        None,
                     );
                 }
             }
@@ -8885,16 +9340,12 @@ unsafe fn render_dsp_ops(
         let resources = &mut runtime.resources_by_context[context];
         resources.resize_with(count, || DspRepeatResourceState::new(resource_layout));
         resources.truncate(count);
-        let dsp_state_ptr = core::ptr::addr_of_mut!(DSP_STATE)
-            .cast::<f64>()
-            .add(state_start);
 
         if state_count == 1 {
             for item_index in 0..count {
                 DSP_SPREAD_ITEM_INDEX = item_index;
-                let item_state_ptr = states.as_mut_ptr().add(item_index);
-                *dsp_state_ptr = *item_state_ptr;
                 resources[item_index].load_into_workspace();
+                set_dsp_repeat_state(state_start, core::slice::from_mut(&mut states[item_index]));
                 for template_index in (op_index + 1)..end_index {
                     render_dsp_op(
                         DSP_OPS[template_index],
@@ -8902,18 +9353,21 @@ unsafe fn render_dsp_ops(
                         sample_rate,
                         left_sample,
                         right_sample,
+                        Some(&mut resources[item_index]),
                     );
                 }
+                clear_dsp_repeat_state();
                 resources[item_index].save_from_workspace();
-                *item_state_ptr = *dsp_state_ptr;
             }
         } else {
             for item_index in 0..count {
                 DSP_SPREAD_ITEM_INDEX = item_index;
                 let item_state_start = item_index.saturating_mul(state_count);
-                let item_state_ptr = states.as_mut_ptr().add(item_state_start);
-                core::ptr::copy_nonoverlapping(item_state_ptr, dsp_state_ptr, state_count);
                 resources[item_index].load_into_workspace();
+                set_dsp_repeat_state(
+                    state_start,
+                    &mut states[item_state_start..item_state_start + state_count],
+                );
                 for template_index in (op_index + 1)..end_index {
                     render_dsp_op(
                         DSP_OPS[template_index],
@@ -8921,10 +9375,11 @@ unsafe fn render_dsp_ops(
                         sample_rate,
                         left_sample,
                         right_sample,
+                        Some(&mut resources[item_index]),
                     );
                 }
+                clear_dsp_repeat_state();
                 resources[item_index].save_from_workspace();
-                core::ptr::copy_nonoverlapping(dsp_state_ptr, item_state_ptr, state_count);
             }
         }
         DSP_SPREAD_RUNTIMES[spread_slot] = Some(runtime);
@@ -8982,7 +9437,7 @@ pub extern "C" fn renderDspProgramVoice(
     unsafe {
         DSP_SPREAD_CONTEXT = voice_slot + 1;
         for index in 0..MAX_DSP_STATE {
-            DSP_STATE[index] = DSP_VOICE_STATES[voice_slot][index];
+            *dsp_state_ptr(index) = DSP_VOICE_STATES[voice_slot][index];
         }
 
         for frame in 0..frames {
@@ -9034,7 +9489,7 @@ pub extern "C" fn renderDspProgramVoice(
         }
 
         for index in 0..MAX_DSP_STATE {
-            DSP_VOICE_STATES[voice_slot][index] = DSP_STATE[index];
+            DSP_VOICE_STATES[voice_slot][index] = *dsp_state_ptr(index);
         }
     }
 }
