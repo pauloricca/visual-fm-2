@@ -152,7 +152,9 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const imageY = centeredCoordinateToUnit(data.audioImagePosition?.y ?? node.params.y ?? 0);
   const showResizableDisplay = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showJoystickDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay || showSequencerDisplay || isRuntimeContainer;
   const customWave = showCustomWaveEditor ? normalizeCustomWave(node.customWave, node.params) : null;
-  const customWavePlayhead = clamp(data.audioPlayheads?.[0] ?? normalizeUnitInterval(node.params.phase ?? 0), 0, 1);
+  const customWavePlayheads = data.audioPlayheads?.length
+    ? data.audioPlayheads.map((playhead) => clamp(playhead, 0, 1))
+    : [normalizeUnitInterval(node.params.phase ?? 0)];
   const sequencer = showSequencerDisplay ? sequencerShape(node.params) : null;
   const amplitudeRange = displayAmplitudeRange(node.params.range);
   const meterMode = monitorDisplayMode(node.params.mode, 'unipolar');
@@ -1085,7 +1087,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               baseLevel={node.params.baseLevel ?? 0}
               rangeMin={node.params.rangeMin ?? -1}
               rangeMax={node.params.rangeMax ?? 1}
-              playhead={customWavePlayhead}
+              playheads={customWavePlayheads}
               compact={!showAllPorts}
               displaySize={displaySize}
               graphZoomScale={graphZoomScale}
@@ -1998,7 +2000,7 @@ function SampleWaveformDisplay({
           {safeRelease > 0 ? <rect className="sample-waveform-phase is-release" x={releasePhaseX} y={verticalPadding} width={releasePhaseWidth} height={height - verticalPadding * 2} /> : null}
           {activePlayheads.map((playhead, index) => {
             const playheadX = timelineX(clamp(playhead, 0, 1) * sampleDuration);
-            return <line className="wave-playhead-line" key={`${index}:${playhead}`} x1={playheadX} y1={verticalPadding} x2={playheadX} y2={height - verticalPadding} />;
+            return <line className={`wave-playhead-line wave-playhead-${index % 4}`} key={`${index}:${playhead}`} x1={playheadX} y1={verticalPadding} x2={playheadX} y2={height - verticalPadding}><title>Playback {index + 1}</title></line>;
           })}
           <line className="sample-waveform-boundary-line is-start" x1={startX} y1={verticalPadding} x2={startX} y2={height - verticalPadding} />
           <line className="sample-waveform-boundary-line is-end" x1={endX} y1={verticalPadding} x2={endX} y2={height - verticalPadding} />
@@ -2076,7 +2078,7 @@ interface CustomWaveEditorProps {
   baseLevel: number;
   rangeMin: number;
   rangeMax: number;
-  playhead: number;
+  playheads: number[];
   compact: boolean;
   displaySize: ScopeNodeSize;
   graphZoomScale: number;
@@ -3281,7 +3283,7 @@ function CustomWaveEditor({
   baseLevel,
   rangeMin,
   rangeMax,
-  playhead,
+  playheads,
   compact,
   displaySize,
   graphZoomScale,
@@ -3312,7 +3314,6 @@ function CustomWaveEditor({
   const sustainEndX = padding + customWave.sustainEnd * innerWidth;
   const showSustainStart = customWaveUsesSustainStart(customWave.mode);
   const showSustainEnd = customWaveUsesSustainEnd(customWave.mode);
-  const playheadX = padding + playhead * innerWidth;
   const hitRadius = screenCircleRadius(15 * graphScreenEmphasis, width, height, graphDetailSize);
   const editPointScreenScale = customWaveEditPointScreenScale(graphZoomScale);
   const endpointRadius = screenCircleRadius(5 * graphScreenEmphasis * editPointScreenScale, width, height, graphDetailSize);
@@ -3352,7 +3353,10 @@ function CustomWaveEditor({
             <line className="custom-wave-sustain-line is-end" x1={sustainEndX} y1={padding} x2={sustainEndX} y2={height - padding} />
           ) : null}
           <path className="custom-wave-path" d={path} />
-          <line className="wave-playhead-line" x1={playheadX} y1={padding} x2={playheadX} y2={height - padding} />
+          {playheads.map((playhead, index) => {
+            const playheadX = padding + clamp(playhead, 0, 1) * innerWidth;
+            return <line className={`wave-playhead-line wave-playhead-${index % 4}`} key={`${index}:${playhead}`} x1={playheadX} y1={padding} x2={playheadX} y2={height - padding}><title>Playback {index + 1}</title></line>;
+          })}
         </g>
         {points.map((point, index) => {
           const screen = customWavePointToScreen(point, width, height, padding);

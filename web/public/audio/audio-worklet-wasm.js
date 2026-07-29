@@ -2356,15 +2356,33 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     }
     const playheads = [];
     const customWaveNodeIds = new Set((this.dspProgram?.customWaveBindings || []).map((binding) => binding.nodeId));
+    const repeatedOps = (this.dspProgram?.ops || []).filter((op) => op.opcode === 42 || op.opcode === 46);
     for (const binding of this.dspProgram?.stateBindings || []) {
-      if (!customWaveNodeIds.has(binding.nodeId)) continue;
+      if (binding.kind !== "oscillator" || !customWaveNodeIds.has(binding.nodeId)) continue;
+      const repeated = repeatedOps.some((op) => (
+        binding.state >= op.state
+        && binding.state < op.state + Math.max(0, Math.trunc(Number(op.value2) || 0))
+      ));
+      if (repeated && this.wasm?.dspRepeatedStateValueCount && this.wasm?.dspRepeatedStateValue) {
+        const count = Math.max(0, Math.trunc(Number(this.wasm.dspRepeatedStateValueCount(binding.state)) || 0));
+        for (let index = 0; index < count; index += 1) {
+          const playhead = Number(this.wasm.dspRepeatedStateValue(binding.state, index));
+          if (Number.isFinite(playhead)) playheads.push([binding.nodeId, this.clamp(playhead, 0, 1)]);
+        }
+        continue;
+      }
       const playhead = Number(this.wasm?.getDspState?.(binding.state));
       if (Number.isFinite(playhead)) playheads.push([binding.nodeId, this.clamp(playhead, 0, 1)]);
     }
     for (let slot = 0; slot < (this.dspProgram?.sampleBindings?.length || 0); slot += 1) {
       const nodeId = this.dspProgram.sampleBindings[slot]?.nodeId;
-      for (let voice = 0; voice < MAX_SAMPLE_PLAYER_VOICES; voice += 1) {
-        const playhead = Number(this.wasm?.dspSamplePlayheadVoice?.(slot, voice));
+      const playheadCount = this.wasm?.dspSamplePlayheadCount
+        ? Math.max(0, Math.trunc(Number(this.wasm.dspSamplePlayheadCount(slot)) || 0))
+        : MAX_SAMPLE_PLAYER_VOICES;
+      for (let index = 0; index < playheadCount; index += 1) {
+        const playhead = Number(this.wasm?.dspSamplePlayheadValue
+          ? this.wasm.dspSamplePlayheadValue(slot, index)
+          : this.wasm?.dspSamplePlayheadVoice?.(slot, index));
         if (nodeId && Number.isFinite(playhead) && playhead >= 0) playheads.push([nodeId, this.clamp(playhead, 0, 1)]);
       }
     }

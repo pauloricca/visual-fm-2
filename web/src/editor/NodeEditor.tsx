@@ -28,7 +28,7 @@ import { extractExpressionInputs } from '../graph/expression';
 import { defaultParamsFor, getDefinition, getNodeDefinition, sequencerShape } from '../graph/nodeTypes';
 import { normalizePatchCompatibility } from '../graph/patchCompatibility';
 import { patchToJson } from '../graph/serialize';
-import { DEFAULT_SPREAD_SIZE, SPREAD_PORTS_HEIGHT } from '../graph/spread';
+import { DEFAULT_SPREAD_SIZE, SPREAD_PORTS_HEIGHT, spreadCloneNodeId } from '../graph/spread';
 import type { CustomWaveSettings, ImageAsset, LinkMode, NodeType, Patch, PatchLink, PatchNode, PortDefinition, SampleAsset } from '../graph/types';
 import { EdgeOverlayProvider } from './EdgeOverlayContext';
 import { canvasHeaderTitleScale, USER_ZOOM_BASELINE } from './canvasZoom';
@@ -2329,7 +2329,7 @@ function NodeEditorInner() {
   const activeDspGroupIds = useMemo(() => editingStack.map((frame) => frame.groupId), [editingStack]);
 
   const renderedNodes = useMemo(() => nodesWithCallbacks.map((node) => {
-    const dspNodeId = scopedDspNodeId(node.id, activeDspGroupIds);
+    const dspNodeId = runtimeDspNodeIdForFlowNode(node, nodesWithCallbacks, activeDspGroupIds);
     const monitorLinkId = monitorLinkIdByNode.get(dspNodeId);
     const audioOutputLeft = audio.linkMeters[`${dspNodeId}:left`]?.output ?? 0;
     const audioOutputRight = audio.linkMeters[`${dspNodeId}:right`]?.output ?? 0;
@@ -2618,7 +2618,7 @@ function NodeEditorInner() {
     const scopeRequests = nodesWithCallbacks.flatMap((node) => {
       const type = node.data.patchNode.type;
       if (type !== 'Scope' && type !== 'FFT') return [];
-      const dspNodeId = scopedDspNodeId(node.id, activeDspGroupIds);
+      const dspNodeId = runtimeDspNodeIdForFlowNode(node, nodesWithCallbacks, activeDspGroupIds);
       const linkId = monitorLinkIdByNode.get(dspNodeId);
       if (!linkId) return [];
       return type === 'FFT'
@@ -6539,6 +6539,16 @@ function flowNodeIsInsideSpread(spread: ShaderFlowNode, node: ShaderFlowNode): b
     && node.position.y >= spread.position.y + NODE_HEADER_HEIGHT + SPREAD_PORTS_HEIGHT
     && node.position.y < spread.position.y + NODE_HEADER_HEIGHT + size.height
   );
+}
+
+function runtimeDspNodeIdForFlowNode(
+  node: ShaderFlowNode,
+  nodes: ShaderFlowNode[],
+  groupIds: readonly string[],
+): string {
+  const container = nodes.find((candidate) => flowNodeIsInsideSpread(candidate, node));
+  const nodeId = container ? spreadCloneNodeId(container.id, 0, node.id) : node.id;
+  return scopedDspNodeId(nodeId, groupIds);
 }
 
 function runtimeContainerLinkIsAllowed(link: PatchLink, nodes: ShaderFlowNode[]): boolean {

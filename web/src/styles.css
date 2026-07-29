@@ -1774,6 +1774,18 @@ button:hover {
   vector-effect: non-scaling-stroke;
 }
 
+.wave-playhead-1 {
+  stroke: var(--color-accent);
+}
+
+.wave-playhead-2 {
+  stroke: var(--color-link-add);
+}
+
+.wave-playhead-3 {
+  stroke: var(--color-link-multiply);
+}
+
 .custom-wave-hit-target {
   fill: transparent;
   cursor: grab;

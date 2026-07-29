@@ -342,6 +342,8 @@ impl DspSamplePlaybackState {
 }
 
 struct DspRepeatResourceLayout {
+    state_start: usize,
+    state_count: usize,
     sample_indices: Vec<usize>,
     effect_slots: Vec<usize>,
     buffer_slots: Vec<usize>,
@@ -1585,6 +1587,248 @@ fn dsp_sample_playhead_for_voice(slot: usize, voice: usize) -> f64 {
         }
         (SAMPLE_POSITIONS[voice_slot][node_index] / (length - 1) as f64).clamp(0.0, 1.0)
     }
+}
+
+fn dsp_sample_playhead_from_state(
+    slot: usize,
+    state: &DspSamplePlaybackState,
+    voice: usize,
+) -> f64 {
+    unsafe {
+        if slot >= MAX_DSP_SAMPLE_NODES
+            || state.sample_index != slot
+            || voice >= MAX_DSP_SAMPLE_PLAYER_VOICES
+            || !state.playing[voice]
+        {
+            return -1.0;
+        }
+        let node_index = DSP_SAMPLE_NODE_INDICES[slot];
+        if node_index < 0 || node_index as usize >= MAX_NODES {
+            return -1.0;
+        }
+        let Some(sample_slot) = sample_slot_for_node(node_index as usize) else {
+            return -1.0;
+        };
+        let length = SAMPLE_LENGTHS[sample_slot];
+        if length <= 1 {
+            return -1.0;
+        }
+        (state.positions[voice] / (length - 1) as f64).clamp(0.0, 1.0)
+    }
+}
+
+unsafe fn dsp_sample_slot_is_repeated(slot: usize) -> bool {
+    for runtime_slot in 0..MAX_DSP_SPREADS {
+        if DSP_SPREAD_RUNTIMES[runtime_slot]
+            .as_ref()
+            .and_then(|runtime| runtime.resource_layout.as_ref())
+            .is_some_and(|layout| layout.sample_indices.contains(&slot))
+        {
+            return true;
+        }
+        if DSP_SPAWN_RUNTIMES[runtime_slot]
+            .as_ref()
+            .and_then(|runtime| runtime.resource_layout.as_ref())
+            .is_some_and(|layout| layout.sample_indices.contains(&slot))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+#[no_mangle]
+pub extern "C" fn dspSamplePlayheadCount(slot: u32) -> u32 {
+    let slot = slot as usize;
+    let mut count = 0usize;
+    unsafe {
+        // Repeated nodes leave the last instance in the shared workspace after
+        // rendering. Only count that workspace for ordinary, non-repeated nodes
+        // so the final instance is not reported twice.
+        if !dsp_sample_slot_is_repeated(slot) {
+            for voice in 0..MAX_DSP_SAMPLE_PLAYER_VOICES {
+                if dsp_sample_playhead_for_voice(slot, voice) >= 0.0 {
+                    count += 1;
+                }
+            }
+        }
+        for runtime_slot in 0..MAX_DSP_SPREADS {
+            let Some(runtime) = DSP_SPREAD_RUNTIMES[runtime_slot].as_ref() else {
+                continue;
+            };
+            for resources in runtime.resources_by_context.iter().flatten() {
+                for state in &resources.samples {
+                    for voice in 0..MAX_DSP_SAMPLE_PLAYER_VOICES {
+                        if dsp_sample_playhead_from_state(slot, state, voice) >= 0.0 {
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+        for runtime_slot in 0..MAX_DSP_SPREADS {
+            let Some(runtime) = DSP_SPAWN_RUNTIMES[runtime_slot].as_ref() else {
+                continue;
+            };
+            for instance in runtime.instances_by_context.iter().flatten() {
+                for state in &instance.resources.samples {
+                    for voice in 0..MAX_DSP_SAMPLE_PLAYER_VOICES {
+                        if dsp_sample_playhead_from_state(slot, state, voice) >= 0.0 {
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    count.min(u32::MAX as usize) as u32
+}
+
+#[no_mangle]
+pub extern "C" fn dspSamplePlayheadValue(slot: u32, target: u32) -> f64 {
+    let slot = slot as usize;
+    let target = target as usize;
+    let mut index = 0usize;
+    unsafe {
+        if !dsp_sample_slot_is_repeated(slot) {
+            for voice in 0..MAX_DSP_SAMPLE_PLAYER_VOICES {
+                let playhead = dsp_sample_playhead_for_voice(slot, voice);
+                if playhead < 0.0 {
+                    continue;
+                }
+                if index == target {
+                    return playhead;
+                }
+                index += 1;
+            }
+        }
+        for runtime_slot in 0..MAX_DSP_SPREADS {
+            let Some(runtime) = DSP_SPREAD_RUNTIMES[runtime_slot].as_ref() else {
+                continue;
+            };
+            for resources in runtime.resources_by_context.iter().flatten() {
+                for state in &resources.samples {
+                    for voice in 0..MAX_DSP_SAMPLE_PLAYER_VOICES {
+                        let playhead = dsp_sample_playhead_from_state(slot, state, voice);
+                        if playhead < 0.0 {
+                            continue;
+                        }
+                        if index == target {
+                            return playhead;
+                        }
+                        index += 1;
+                    }
+                }
+            }
+        }
+        for runtime_slot in 0..MAX_DSP_SPREADS {
+            let Some(runtime) = DSP_SPAWN_RUNTIMES[runtime_slot].as_ref() else {
+                continue;
+            };
+            for instance in runtime.instances_by_context.iter().flatten() {
+                for state in &instance.resources.samples {
+                    for voice in 0..MAX_DSP_SAMPLE_PLAYER_VOICES {
+                        let playhead = dsp_sample_playhead_from_state(slot, state, voice);
+                        if playhead < 0.0 {
+                            continue;
+                        }
+                        if index == target {
+                            return playhead;
+                        }
+                        index += 1;
+                    }
+                }
+            }
+        }
+    }
+    -1.0
+}
+
+#[no_mangle]
+pub extern "C" fn dspRepeatedStateValueCount(state: u32) -> u32 {
+    let state = state as usize;
+    let mut count = 0usize;
+    unsafe {
+        for runtime_slot in 0..MAX_DSP_SPREADS {
+            let Some(runtime) = DSP_SPREAD_RUNTIMES[runtime_slot].as_ref() else {
+                continue;
+            };
+            let Some(layout) = runtime.resource_layout.as_ref() else {
+                continue;
+            };
+            if state < layout.state_start || state >= layout.state_start + layout.state_count {
+                continue;
+            }
+            for states in &runtime.states_by_context {
+                count = count.saturating_add(states.len() / layout.state_count.max(1));
+            }
+        }
+        for runtime_slot in 0..MAX_DSP_SPREADS {
+            let Some(runtime) = DSP_SPAWN_RUNTIMES[runtime_slot].as_ref() else {
+                continue;
+            };
+            let Some(layout) = runtime.resource_layout.as_ref() else {
+                continue;
+            };
+            if state < layout.state_start || state >= layout.state_start + layout.state_count {
+                continue;
+            }
+            for instances in &runtime.instances_by_context {
+                count = count.saturating_add(instances.len());
+            }
+        }
+    }
+    count.min(u32::MAX as usize) as u32
+}
+
+#[no_mangle]
+pub extern "C" fn dspRepeatedStateValue(state: u32, target: u32) -> f64 {
+    let state = state as usize;
+    let target = target as usize;
+    let mut index = 0usize;
+    unsafe {
+        for runtime_slot in 0..MAX_DSP_SPREADS {
+            let Some(runtime) = DSP_SPREAD_RUNTIMES[runtime_slot].as_ref() else {
+                continue;
+            };
+            let Some(layout) = runtime.resource_layout.as_ref() else {
+                continue;
+            };
+            if state < layout.state_start || state >= layout.state_start + layout.state_count {
+                continue;
+            }
+            let offset = state - layout.state_start;
+            for states in &runtime.states_by_context {
+                for item_state in states.chunks_exact(layout.state_count.max(1)) {
+                    if index == target {
+                        return item_state[offset];
+                    }
+                    index += 1;
+                }
+            }
+        }
+        for runtime_slot in 0..MAX_DSP_SPREADS {
+            let Some(runtime) = DSP_SPAWN_RUNTIMES[runtime_slot].as_ref() else {
+                continue;
+            };
+            let Some(layout) = runtime.resource_layout.as_ref() else {
+                continue;
+            };
+            if state < layout.state_start || state >= layout.state_start + layout.state_count {
+                continue;
+            }
+            let offset = state - layout.state_start;
+            for instances in &runtime.instances_by_context {
+                for instance in instances {
+                    if index == target {
+                        return instance.states[offset];
+                    }
+                    index += 1;
+                }
+            }
+        }
+    }
+    0.0
 }
 
 #[no_mangle]
@@ -7835,6 +8079,8 @@ unsafe fn dsp_template_resource_layout(
         }
     }
     DspRepeatResourceLayout {
+        state_start: DSP_OPS[op_index].state.max(0) as usize,
+        state_count: DSP_OPS[op_index].value2.round().max(0.0) as usize,
         sample_indices,
         effect_slots,
         buffer_slots,
@@ -7914,6 +8160,8 @@ mod repeated_resource_state_tests {
         unsafe {
             DSP_SAMPLE_NODE_INDICES[0] = 0;
             let layout = DspRepeatResourceLayout {
+                state_start: 0,
+                state_count: 1,
                 sample_indices: vec![0],
                 effect_slots: vec![0],
                 buffer_slots: vec![0],

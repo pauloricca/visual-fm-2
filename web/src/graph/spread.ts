@@ -167,7 +167,7 @@ function cloneLink(link: PatchLink): PatchLink {
   };
 }
 
-function spreadCloneNodeId(spreadId: string, itemIndex: number, nodeId: string): string {
+export function spreadCloneNodeId(spreadId: string, itemIndex: number, nodeId: string): string {
   return `${spreadId}__item_${itemIndex}__${nodeId}`;
 }
 
