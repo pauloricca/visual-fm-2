@@ -1,6 +1,9 @@
 import type { Patch, PatchLink, PatchNode } from './types';
 
 export const DEFAULT_SPREAD_SIZE = { width: 320, height: 220 } as const;
+export const DEFAULT_SPAWN_SIZE = { width: 400, height: 220 } as const;
+export const MIN_RUNTIME_CONTAINER_WIDTH = 240;
+export const MIN_SPAWN_WIDTH = 400;
 export const SPREAD_HEADER_HEIGHT = 32;
 export const SPREAD_PORTS_HEIGHT = 44;
 
@@ -41,13 +44,25 @@ export function nodeIsInsideSpread(spread: PatchNode, node: PatchNode): boolean 
   if (!isRuntimeContainer(spread) || node.id === spread.id) return false;
   if (spread.spreadNodeIds) return spread.spreadNodeIds.includes(node.id);
   if (!spread.position || !node.position) return false;
-  const size = spread.scopeSize ?? DEFAULT_SPREAD_SIZE;
+  const size = runtimeContainerSize(spread);
   return (
     node.position.x >= spread.position.x
     && node.position.x < spread.position.x + size.width
     && node.position.y >= spread.position.y + SPREAD_HEADER_HEIGHT + SPREAD_PORTS_HEIGHT
     && node.position.y < spread.position.y + SPREAD_HEADER_HEIGHT + size.height
   );
+}
+
+export function runtimeContainerSize(node: {
+  type: PatchNode['type'] | null;
+  scopeSize?: PatchNode['scopeSize'];
+}): { width: number; height: number } {
+  const fallback = node.type === 'Spawn' ? DEFAULT_SPAWN_SIZE : DEFAULT_SPREAD_SIZE;
+  const size = node.scopeSize ?? fallback;
+  return {
+    width: Math.max(node.type === 'Spawn' ? MIN_SPAWN_WIDTH : MIN_RUNTIME_CONTAINER_WIDTH, size.width),
+    height: Math.max(140, size.height),
+  };
 }
 
 function expandOneSpread(patch: Patch, spreadId: string): SpreadExpansion {
@@ -78,6 +93,13 @@ function expandOneSpread(patch: Patch, spreadId: string): SpreadExpansion {
       params: { value: 1 },
       runtimeSpread: { spreadId: spread.id, itemIndex: 0, originalNodeId: '__item_index__' },
     });
+  } else {
+    clonedNodes.push({
+      id: spawnInstanceGateNodeId(spread.id, 0),
+      type: 'Constant',
+      params: { value: 1 },
+      runtimeSpread: { spreadId: spread.id, itemIndex: 0, originalNodeId: '__instance_gate__' },
+    });
   }
 
   const links: PatchLink[] = [];
@@ -85,6 +107,7 @@ function expandOneSpread(patch: Patch, spreadId: string): SpreadExpansion {
     const sourceInternal = internalIds.has(link.from.node);
     const targetInternal = internalIds.has(link.to.node);
     const isIndexLink = spread.type === 'Spread' && link.from.node === spread.id && link.from.port === 'item index';
+    const isInstanceGateLink = spread.type === 'Spawn' && link.from.node === spread.id && link.from.port === 'instance gate';
     const isInternalControlLink = sourceInternal
       && link.to.node === spread.id
       && link.to.port === (spread.type === 'Spread' ? 'count' : 'trigger');
@@ -92,6 +115,10 @@ function expandOneSpread(patch: Patch, spreadId: string): SpreadExpansion {
 
     if (isIndexLink && !targetInternal) {
       errors.push(`Spread "${spread.id}" item index can only link to nodes inside that Spread.`);
+      continue;
+    }
+    if (isInstanceGateLink && !targetInternal) {
+      errors.push(`Spawn "${spread.id}" instance gate can only link to nodes inside that Spawn.`);
       continue;
     }
     if (isInternalControlLink) {
@@ -107,6 +134,14 @@ function expandOneSpread(patch: Patch, spreadId: string): SpreadExpansion {
       links.push({
         ...cloneLink(link),
         from: { node: spreadIndexNodeId(spread.id, 0), port: 'signal' },
+        to: { ...link.to, node: spreadCloneNodeId(spread.id, 0, link.to.node) },
+      });
+      continue;
+    }
+    if (isInstanceGateLink) {
+      links.push({
+        ...cloneLink(link),
+        from: { node: spawnInstanceGateNodeId(spread.id, 0), port: 'signal' },
         to: { ...link.to, node: spreadCloneNodeId(spread.id, 0, link.to.node) },
       });
       continue;
@@ -173,4 +208,8 @@ export function spreadCloneNodeId(spreadId: string, itemIndex: number, nodeId: s
 
 function spreadIndexNodeId(spreadId: string, itemIndex: number): string {
   return `${spreadId}__item_${itemIndex}__index`;
+}
+
+function spawnInstanceGateNodeId(spreadId: string, itemIndex: number): string {
+  return `${spreadId}__item_${itemIndex}__instance_gate`;
 }

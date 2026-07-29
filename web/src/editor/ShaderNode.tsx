@@ -43,7 +43,12 @@ import {
 } from '../graph/nodeTypes';
 import type { CustomWaveMode, CustomWavePoint, CustomWaveSettings, NodeDefinition, NodeType, PatchNode } from '../graph/types';
 import { midiNoteLabel, QUANTISE_SCALES } from '../graph/musicScales';
-import { DEFAULT_SPREAD_SIZE, SPREAD_HEADER_HEIGHT } from '../graph/spread';
+import {
+  MIN_RUNTIME_CONTAINER_WIDTH,
+  MIN_SPAWN_WIDTH,
+  SPREAD_HEADER_HEIGHT,
+  runtimeContainerSize,
+} from '../graph/spread';
 import { formatNumericValue } from './numericDisplay';
 import {
   clampControlNodeSize,
@@ -188,10 +193,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
       )
     : DEFAULT_SCOPE_NODE_SIZE;
   const displaySize = isRuntimeContainer
-    ? {
-        width: Math.max(240, node.scopeSize?.width ?? DEFAULT_SPREAD_SIZE.width),
-        height: Math.max(140, node.scopeSize?.height ?? DEFAULT_SPREAD_SIZE.height),
-      }
+    ? runtimeContainerSize(node)
     : showSequencerDisplay
     ? sequencerDisplaySize
     : showCustomWaveEditor || showSampleUpload || showImageDisplay ? waveformDisplaySize : scopeSize;
@@ -602,7 +604,10 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
       startSize: sequencerPanelRect
         ? { width: sequencerPanelRect.width, height: sequencerPanelRect.height }
         : displaySize,
-      minWidth: sequencerMinWidth,
+      minWidth: sequencerMinWidth
+        ?? (isRuntimeContainer
+          ? (isSpawn ? MIN_SPAWN_WIDTH : MIN_RUNTIME_CONTAINER_WIDTH)
+          : undefined),
     };
     setScopeResizeCorner(corner);
   }
@@ -824,20 +829,36 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           ) : null}
         </div>
         {!isAreaUiCollapsedPresentation ? (
-          <div className="spread-port-output">
-            <span>{isSpawn ? 'kill trigger' : 'item index'}</span>
-            <Handle
-              id={isSpawn ? 'in:kill trigger' : 'out:item index'}
-              type={isSpawn ? 'target' : 'source'}
-              position={Position.Right}
-              className={[
-                `shader-handle ${isSpawn ? 'shader-handle-input' : 'shader-handle-output'} spread-item-index-handle`,
-                (isSpawn
-                  ? selectedLinkInputs.includes('kill trigger')
+          <>
+            {isSpawn ? (
+              <div className="spread-port-output">
+                <span>instance gate</span>
+                <Handle
+                  id="out:instance gate"
+                  type="source"
+                  position={Position.Right}
+                  className={[
+                    'shader-handle shader-handle-output spread-item-index-handle',
+                    selectedLinkOutputs.includes('instance gate') ? 'shader-handle-selected-link' : '',
+                  ].filter(Boolean).join(' ')}
+                />
+              </div>
+            ) : null}
+            <div className={`spread-port-output${isSpawn ? ' spawn-kill-trigger-port' : ''}`}>
+              <Handle
+                id={isSpawn ? 'in:kill trigger' : 'out:item index'}
+                type={isSpawn ? 'target' : 'source'}
+                position={isSpawn ? Position.Left : Position.Right}
+                className={[
+                  `shader-handle ${isSpawn ? 'shader-handle-input' : 'shader-handle-output'} spread-item-index-handle`,
+                  (isSpawn
+                    ? selectedLinkInputs.includes('kill trigger')
                   : selectedLinkOutputs.includes('item index')) ? 'shader-handle-selected-link' : '',
-              ].filter(Boolean).join(' ')}
-            />
-          </div>
+                ].filter(Boolean).join(' ')}
+              />
+              <span>{isSpawn ? 'kill trigger' : 'item index'}</span>
+            </div>
+          </>
         ) : null}
       </div>
     );

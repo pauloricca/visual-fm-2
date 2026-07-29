@@ -65,6 +65,30 @@ const gateValue = dspProgram.valueBindings.find((binding) => binding.id === 'gat
 const resetValue = dspProgram.valueBindings.find((binding) => binding.id === 'reset.value')?.valueIndex;
 assert(Number.isInteger(gateValue), 'Gate value binding was not emitted.');
 assert(Number.isInteger(resetValue), 'Reset value binding was not emitted.');
+const editedPatternProgram = compilePatchToDspProgram({
+  ...patch,
+  nodes: patch.nodes.map((candidate) => candidate.id === 'seq'
+    ? node('seq', 'Sequencer', {
+      steps: 4,
+      rows: 1,
+      'cell:0:1': 1,
+      'trigger:position:0:1': 1.5,
+      'velocity:0:1': 0.4,
+    })
+    : candidate),
+});
+assert(
+  JSON.stringify(editedPatternProgram.ops) === JSON.stringify(dspProgram.ops),
+  'Sequencer event edits should not change the DSP operation graph.',
+);
+assert(
+  JSON.stringify(editedPatternProgram.valueBindings) === JSON.stringify(dspProgram.valueBindings),
+  'Sequencer event edits should not change DSP value layout.',
+);
+assert(
+  JSON.stringify(editedPatternProgram.sequencerBindings) !== JSON.stringify(dspProgram.sequencerBindings),
+  'Sequencer event edits should update only the sequencer configuration binding.',
+);
 
 const widePatch = {
   nodes: [
@@ -86,11 +110,11 @@ const widePatch = {
 };
 const wideDspProgram = compilePatchToDspProgram(widePatch);
 assert(wideDspProgram.errors.length === 0, `Wide DSP compile failed: ${wideDspProgram.errors.join('; ')}`);
-const widePatternOp = wideDspProgram.ops.find((op) => op.opcode === 35 && op.value4);
-assert(widePatternOp?.value === 5, `Wide sequencer lane 1 was not packed correctly: ${widePatternOp?.value}`);
-assert(widePatternOp?.value2 === 0, `Wide sequencer lane 2 should be empty: ${widePatternOp?.value2}`);
-assert(widePatternOp?.value3 === 1, `Wide sequencer lane 3 was not packed correctly: ${widePatternOp?.value3}`);
-assert(widePatternOp?.value4 === 2147483648, `Wide sequencer lane 4 was not packed correctly: ${widePatternOp?.value4}`);
+const wideSequencer = wideDspProgram.sequencerBindings.find((binding) => binding.nodeId === 'seq');
+assert(wideSequencer?.events[0][0].active, 'Wide sequencer step 1 was not configured.');
+assert(wideSequencer?.events[0][2].active, 'Wide sequencer step 3 was not configured.');
+assert(wideSequencer?.events[0][64].active, 'Wide sequencer step 65 was not configured.');
+assert(wideSequencer?.events[0][127].active, 'Wide sequencer step 128 was not configured.');
 
 const gatePatch = {
   nodes: [
@@ -113,8 +137,8 @@ const gatePatch = {
 };
 const gateDspProgram = compilePatchToDspProgram(gatePatch);
 assert(gateDspProgram.errors.length === 0, `Gate DSP compile failed: ${gateDspProgram.errors.join('; ')}`);
-const gateOp = gateDspProgram.ops.find((op) => op.opcode === 35 && op.value === 1.25);
-assert(gateOp?.value2 === 1.75, 'Gate interval was not compiled with fractional start/end values.');
+const gateEvent = gateDspProgram.sequencerBindings[0]?.events[0][0];
+assert(gateEvent?.start === 1.25 && gateEvent?.end === 1.75, 'Fractional gate interval was not configured.');
 
 const fractionalTriggerPatch = {
   nodes: [
@@ -136,8 +160,8 @@ const fractionalTriggerPatch = {
 const fractionalTriggerProgram = compilePatchToDspProgram(fractionalTriggerPatch);
 assert(fractionalTriggerProgram.errors.length === 0, `Fractional trigger compile failed: ${fractionalTriggerProgram.errors.join('; ')}`);
 assert(
-  fractionalTriggerProgram.ops.some((op) => op.opcode === 35 && op.value === 1.5),
-  'Fractional trigger position was not compiled.',
+  fractionalTriggerProgram.sequencerBindings[0]?.events[0][0].start === 1.5,
+  'Fractional trigger position was not configured.',
 );
 
 const wasmBytes = fs.readFileSync(path.join(repoRoot, 'web/public/audio/visual-fm-kernel.wasm'));
@@ -209,6 +233,7 @@ for (const op of dspProgram.ops) {
     op.value4 ?? 0,
   );
 }
+configureSequencers(dspProgram);
 
 function renderFrames(count) {
   for (let frame = 0; frame < count; frame += 1) {
@@ -285,6 +310,7 @@ for (const op of indexDspProgram.ops) {
     op.value4 ?? 0,
   );
 }
+configureSequencers(indexDspProgram);
 
 const indexRenderFrames = 1000;
 const leftOutput = new Float32Array(wasm.memory.buffer, wasm.leftPtr(), indexRenderFrames);
@@ -330,6 +356,7 @@ for (const op of gateDspProgram.ops) {
     op.value4 ?? 0,
   );
 }
+configureSequencers(gateDspProgram);
 const fractionalGateClock = gateDspProgram.valueBindings.find((binding) => binding.id === 'clock.value')?.valueIndex;
 const fractionalGateState = gateDspProgram.stateBindings.find((binding) => binding.id === 'seq:sequencer')?.state;
 assert(Number.isInteger(fractionalGateClock), 'Fractional gate clock binding was not emitted.');
@@ -378,6 +405,7 @@ for (const op of fractionalTriggerProgram.ops) {
     op.value4 ?? 0,
   );
 }
+configureSequencers(fractionalTriggerProgram);
 const fractionalTriggerClock = fractionalTriggerProgram.valueBindings.find((binding) => binding.id === 'clock.value')?.valueIndex;
 assert(Number.isInteger(fractionalTriggerClock), 'Fractional trigger clock binding was not emitted.');
 function renderTriggerFrames(count) {
@@ -406,6 +434,27 @@ assert(fractionalTriggerPeak > 0.9, 'Moved trigger did not emit when the fractio
 assert(renderTriggerFrames(100) === 0, 'Moved trigger should emit a single click, not a sustained gate.');
 
 console.log(`Sequencer probe passed: advance ${advanced.join(',')}; reset next step ${afterReset}; index ${indexOutputs.join(',')}`);
+
+function configureSequencers(program) {
+  for (let bindingIndex = 0; bindingIndex < program.sequencerBindings.length; bindingIndex += 1) {
+    const binding = program.sequencerBindings[bindingIndex];
+    wasm.beginDspSequencerUpdate(bindingIndex, binding.mode === 'gate' ? 1 : 0, binding.steps, binding.rows);
+    for (let row = 0; row < binding.rows; row += 1) {
+      for (let slot = 0; slot < binding.steps; slot += 1) {
+        const event = binding.events[row][slot];
+        wasm.setDspSequencerEvent(
+          bindingIndex,
+          row,
+          slot,
+          event.active ? 1 : 0,
+          event.start,
+          event.end,
+          event.velocity,
+        );
+      }
+    }
+  }
+}
 
 function node(id, type, params) {
   return { id, type, params };

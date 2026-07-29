@@ -91,8 +91,8 @@ assert(compressorSidechain.connectable !== false, 'Compress.sidechain should be 
 assert(compressorSidechain.valueEditor === false, 'Compress.sidechain should only accept a linked signal.');
 const spawnDefinition = getDefinition('Spawn');
 assert(
-  spawnDefinition.outputs.length === 0,
-  'Spawn should not expose any output pins.',
+  spawnDefinition.outputs.map((output) => output.name).join(',') === 'instance gate',
+  'Spawn should expose its internal instance gate output.',
 );
 assert(
   spawnDefinition.inputs.map((input) => input.name).join(',') === 'trigger,kill trigger',
@@ -236,10 +236,13 @@ const spawnProgram = compilePatchToDspProgram({
     { ...node('spawn', 'Spawn', { trigger: 0 }), position: { x: 0, y: 0 }, scopeSize: { width: 320, height: 220 } },
     { ...node('spawn_trigger', 'Constant', { value: 0 }), position: { x: -140, y: 0 } },
     { ...node('voice', 'Constant', { value: 0.25 }), position: { x: 20, y: 100 } },
+    { ...node('gate', 'Pass', { signal: 0 }), position: { x: 20, y: 160 } },
     { ...node('voice_out', 'AudioOut', { level: 1 }), position: { x: 140, y: 100 } },
   ],
   links: [
     link('spawn_trigger', 'signal', 'spawn', 'trigger'),
+    link('spawn', 'instance gate', 'gate', 'signal'),
+    link('gate', 'signal', 'voice_out', 'level'),
     link('voice', 'signal', 'voice_out', 'both'),
     link('voice', 'signal', 'spawn', 'kill trigger'),
   ],
@@ -249,6 +252,10 @@ const spawnBeginIndex = spawnProgram.ops.findIndex((op) => op.opcode === 46);
 assert(spawnBeginIndex >= 0, 'Spawn should compile a SpawnBegin operation.');
 const spawnBegin = spawnProgram.ops[spawnBeginIndex];
 assert(spawnBegin.c >= 0, 'Spawn should compile its internal kill trigger register.');
+assert(
+  spawnProgram.ops.some((op) => op.opcode === 50),
+  'Spawn should compile its internal instance gate signal.',
+);
 assert(
   spawnProgram.ops[spawnBegin.b]?.opcode === 47,
   'SpawnBegin should point to its matching SpawnEnd operation.',
@@ -267,6 +274,19 @@ const invalidSpawnKillProgram = compilePatchToDspProgram({
 assert(
   invalidSpawnKillProgram.errors.some((error) => error.includes('kill trigger can only be driven by a node inside that Spawn')),
   `External Spawn kill trigger error missing: ${invalidSpawnKillProgram.errors.join('; ')}`,
+);
+const invalidSpawnGateProgram = compilePatchToDspProgram({
+  nodes: [
+    { ...node('spawn', 'Spawn', { trigger: 0 }), position: { x: 0, y: 0 }, scopeSize: { width: 320, height: 220 } },
+    { ...node('external_gate', 'Pass', { signal: 0 }), position: { x: 400, y: 0 } },
+  ],
+  links: [
+    link('spawn', 'instance gate', 'external_gate', 'signal'),
+  ],
+});
+assert(
+  invalidSpawnGateProgram.errors.some((error) => error.includes('instance gate can only link to nodes inside that Spawn')),
+  `External Spawn instance gate error missing: ${invalidSpawnGateProgram.errors.join('; ')}`,
 );
 
 const timeProgram = compilePatchToDspProgram({

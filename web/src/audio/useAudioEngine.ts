@@ -167,7 +167,7 @@ interface ImageDataRequest {
 // Keep this in step with public/audio/visual-fm-kernel.wasm. AudioWorklet
 // modules and WASM are aggressively cached, so an older kernel can silently
 // omit newer DSP behavior or exports while the current UI is running.
-const AUDIO_ENGINE_ASSET_VERSION = '2026-07-29-instance-playheads-1';
+const AUDIO_ENGINE_ASSET_VERSION = '2026-07-29-instance-playheads-gate-1';
 const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const METER_UPDATE_INTERVAL_MS = 80;
@@ -347,6 +347,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   const lastSentProgramStructureRef = useRef<string | null>(null);
   const lastSentValuesRef = useRef<number[] | null>(null);
   const lastSentCustomWavePointsRef = useRef<string | null>(null);
+  const lastSentSequencerConfigRef = useRef<string | null>(null);
   const activeScopeRequestsRef = useRef<ScopeCaptureRequest[]>([]);
   const sampleDataKeysRef = useRef<Record<string, string>>({});
   const sampleDataCacheRef = useRef<Record<string, SampleDataCacheEntry>>({});
@@ -381,6 +382,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     lastSentProgramStructureRef.current = null;
     lastSentValuesRef.current = null;
     lastSentCustomWavePointsRef.current = null;
+    lastSentSequencerConfigRef.current = null;
     const closePromise = closeAudioContext(
       contextRef,
       nodeRef,
@@ -1340,6 +1342,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
             lastSentProgramStructureRef.current = dspProgramStructureKey(graphRef.current);
             lastSentValuesRef.current = [...graphRef.current.values];
             lastSentCustomWavePointsRef.current = dspCustomWavePointsKey(graphRef.current);
+            lastSentSequencerConfigRef.current = dspSequencerConfigKey(graphRef.current);
             node.port.postMessage({ type: 'dspProgram', payload: graphRef.current });
             syncGraphSamples(graphRef.current, context, node);
             syncGraphImages(graphRef.current, node);
@@ -1429,6 +1432,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     const shouldSyncExternalInputs = audioActivationRequestedRef.current;
     const structureKey = dspProgramStructureKey(graph);
     const customWavePointsKey = dspCustomWavePointsKey(graph);
+    const sequencerConfigKey = dspSequencerConfigKey(graph);
     if (
       lastSentProgramStructureRef.current === structureKey
       && lastSentCustomWavePointsRef.current !== customWavePointsKey
@@ -1437,6 +1441,16 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
       nodeRef.current.port.postMessage({
         type: 'dspCustomWaves',
         payload: { bindings: graph.customWaveBindings },
+      });
+    }
+    if (
+      lastSentProgramStructureRef.current === structureKey
+      && lastSentSequencerConfigRef.current !== sequencerConfigKey
+    ) {
+      lastSentSequencerConfigRef.current = sequencerConfigKey;
+      nodeRef.current.port.postMessage({
+        type: 'dspSequencers',
+        payload: { bindings: graph.sequencerBindings },
       });
     }
     if (
@@ -1467,6 +1481,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     lastSentProgramStructureRef.current = structureKey;
     lastSentValuesRef.current = [...graph.values];
     lastSentCustomWavePointsRef.current = customWavePointsKey;
+    lastSentSequencerConfigRef.current = sequencerConfigKey;
     nodeRef.current.port.postMessage({ type: 'dspProgram', payload: graph });
     syncGraphSamples(graph, contextRef.current, nodeRef.current);
     syncGraphImages(graph, nodeRef.current);
@@ -1832,6 +1847,8 @@ function dspProgramStructureKey(program: DspProgram): string {
       sustainStart: binding.customWave.sustainStart,
       sustainEnd: binding.customWave.sustainEnd,
     })),
+    sequencerBindings: program.sequencerBindings.map((binding) => binding.nodeId),
+    repeatBindings: program.repeatBindings,
     maxVoices: program.maxVoices,
     usesMidiNote: program.usesMidiNote,
     usesMidiClock: program.usesMidiClock,
@@ -1844,6 +1861,10 @@ function dspCustomWavePointsKey(program: DspProgram): string {
     nodeId: binding.nodeId,
     points: binding.customWave.points,
   })));
+}
+
+function dspSequencerConfigKey(program: DspProgram): string {
+  return JSON.stringify(program.sequencerBindings);
 }
 
 function arraysEqual(left: number[] | null, right: number[]): boolean {

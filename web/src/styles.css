@@ -907,6 +907,10 @@ button:hover {
   margin-left: 24px;
 }
 
+.spawn-kill-trigger-port {
+  margin-left: auto;
+}
+
 .spread-port-input > span,
 .spread-port-output > span {
   font-weight: 700;

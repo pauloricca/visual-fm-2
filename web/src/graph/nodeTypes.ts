@@ -32,7 +32,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
       { name: 'trigger', defaultValue: 0 },
       { name: 'kill trigger', defaultValue: 0, valueEditor: false },
     ],
-    outputs: [],
+    outputs: [{ name: 'instance gate' }],
   },
   Ins: {
     type: 'Ins',

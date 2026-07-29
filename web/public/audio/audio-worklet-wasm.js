@@ -224,6 +224,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         this.setDspValues(payload);
       } else if (type === "dspCustomWaves") {
         this.setDspCustomWaves(payload);
+      } else if (type === "dspSequencers") {
+        this.setDspSequencers(payload);
       } else if (type === "sampleData") {
         this.setSampleData(payload);
       } else if (type === "imageData") {
@@ -474,9 +476,12 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
   }
 
   setDspProgram(program = {}) {
-    const preservedState = this.captureDspState(this.dspProgram);
+    const previousProgram = this.dspProgram;
+    const preservedState = this.captureDspState(previousProgram);
     const hasTransition = this.prepareGraphUpdateCrossfade();
-    this.dspProgram = this.normalizeDspProgram(program);
+    const nextProgram = this.normalizeDspProgram(program);
+    const repeatMigration = this.captureDspRepeatMigration(previousProgram, nextProgram);
+    this.dspProgram = nextProgram;
     if (!hasTransition) {
       this.outputLifecycleGain = 0;
     }
@@ -487,7 +492,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.monitorScopeStates.clear();
     this.customWaveMorphEndSamples.clear();
     this.pendingCustomWaveUpdates.clear();
-    this.syncDspProgram(preservedState);
+    this.syncDspProgram(preservedState, repeatMigration);
     this.refreshWasmViews(true);
     this.configureDspScopes();
     this.configureDspMeters();
@@ -565,6 +570,71 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       }
 
       this.applyDspCustomWaveUpdate(nodeId, nextCustomWave);
+    }
+  }
+
+  setDspSequencers(payload = {}) {
+    if (!this.dspProgram) return;
+    const bindings = this.normalizeSequencerBindings(payload.bindings);
+    if (
+      bindings.length !== this.dspProgram.sequencerBindings.length
+      || bindings.some((binding, index) => binding.nodeId !== this.dspProgram.sequencerBindings[index]?.nodeId)
+    ) {
+      return;
+    }
+    this.dspProgram.sequencerBindings = bindings;
+    this.syncDspSequencers();
+  }
+
+  normalizeSequencerBindings(bindings) {
+    if (!Array.isArray(bindings)) return [];
+    return bindings.map((binding) => {
+      const steps = this.clamp(Math.round(Number(binding?.steps) || 1), 1, 128);
+      const rows = this.clamp(Math.round(Number(binding?.rows) || 1), 1, 16);
+      return {
+        nodeId: String(binding?.nodeId || ""),
+        mode: binding?.mode === "gate" ? "gate" : "trigger",
+        steps,
+        rows,
+        events: Array.from({ length: rows }, (_, row) => (
+          Array.from({ length: steps }, (_, slot) => {
+            const event = binding?.events?.[row]?.[slot];
+            return {
+              active: Boolean(event?.active),
+              start: Number.isFinite(Number(event?.start)) ? Number(event.start) : slot,
+              end: Number.isFinite(Number(event?.end)) ? Number(event.end) : slot,
+              velocity: this.clamp(Number(event?.velocity) || 1, 0, 1),
+            };
+          })
+        )),
+      };
+    }).filter((binding) => binding.nodeId);
+  }
+
+  syncDspSequencers() {
+    if (!this.wasm?.beginDspSequencerUpdate || !this.wasm?.setDspSequencerEvent) return;
+    for (let bindingIndex = 0; bindingIndex < this.dspProgram.sequencerBindings.length; bindingIndex += 1) {
+      const binding = this.dspProgram.sequencerBindings[bindingIndex];
+      this.wasm.beginDspSequencerUpdate(
+        bindingIndex,
+        binding.mode === "gate" ? 1 : 0,
+        binding.steps,
+        binding.rows,
+      );
+      for (let row = 0; row < binding.rows; row += 1) {
+        for (let slot = 0; slot < binding.steps; slot += 1) {
+          const event = binding.events[row][slot];
+          this.wasm.setDspSequencerEvent(
+            bindingIndex,
+            row,
+            slot,
+            event.active ? 1 : 0,
+            event.start,
+            event.end,
+            event.velocity,
+          );
+        }
+      }
     }
   }
 
@@ -685,6 +755,16 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         customWave: this.normalizeCustomWave(binding?.customWave),
       })).filter((binding) => binding.nodeId)
       : [];
+    const sequencerBindings = this.normalizeSequencerBindings(program.sequencerBindings);
+    const repeatBindings = Array.isArray(program.repeatBindings)
+      ? program.repeatBindings.map((binding) => ({
+        nodeId: String(binding?.nodeId || ""),
+        type: binding?.type === "Spawn" ? "Spawn" : "Spread",
+        slot: Math.max(0, Math.trunc(Number(binding?.slot) || 0)),
+        stateStart: Math.max(0, Math.trunc(Number(binding?.stateStart) || 0)),
+        stateCount: Math.max(0, Math.trunc(Number(binding?.stateCount) || 0)),
+      })).filter((binding) => binding.nodeId)
+      : [];
     const fftBindings = Array.isArray(program.fftBindings)
       ? program.fftBindings.map((binding) => ({
         nodeId: String(binding?.nodeId || ""),
@@ -756,6 +836,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       sampleBindings,
       imageBindings,
       customWaveBindings,
+      sequencerBindings,
+      repeatBindings,
       fftBindings,
       maxVoices: this.clamp(Math.round(Number(program.maxVoices) || 1), 1, MAX_ACTIVE_VOICES),
       usesMidiNote: Boolean(program.usesMidiNote),
@@ -785,6 +867,127 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     }
     this.captureDspMemoryState(program, states);
     return states;
+  }
+
+  captureDspRepeatMigration(previousProgram, nextProgram) {
+    if (
+      !previousProgram
+      || !nextProgram
+      || !this.wasm?.beginDspProgramUpdate
+      || !this.wasm?.beginDspRepeatRuntimeMigration
+      || !this.wasm?.finishDspRepeatRuntimeMigration
+      || !this.wasm?.finishDspProgramUpdate
+    ) {
+      return null;
+    }
+    const nextById = new Map((nextProgram.repeatBindings || []).map((binding) => [binding.nodeId, binding]));
+    return (previousProgram.repeatBindings || []).flatMap((previous) => {
+      const next = nextById.get(previous.nodeId);
+      if (!next || next.type !== previous.type) return [];
+      const previousStates = (previousProgram.stateBindings || []).filter((binding) => (
+        binding.state >= previous.stateStart
+        && binding.state + binding.count <= previous.stateStart + previous.stateCount
+      ));
+      const nextStatesById = new Map((nextProgram.stateBindings || [])
+        .filter((binding) => (
+          binding.state >= next.stateStart
+          && binding.state + binding.count <= next.stateStart + next.stateCount
+        ))
+        .map((binding) => [binding.id, binding]));
+      const stateMappings = previousStates.flatMap((binding) => {
+        const nextBinding = nextStatesById.get(binding.id);
+        if (!nextBinding) return [];
+        return [{
+          id: binding.id,
+          oldOffset: binding.state - previous.stateStart,
+          newOffset: nextBinding.state - next.stateStart,
+          count: Math.min(binding.count, nextBinding.count),
+          oldState: binding.state,
+          newState: nextBinding.state,
+        }];
+      });
+      const nodePrefix = `${previous.nodeId}__item_0__`;
+      const nextSamplesByNodeId = new Map((nextProgram.sampleBindings || [])
+        .map((binding, index) => [binding.nodeId, index]));
+      const sampleMappings = (previousProgram.sampleBindings || []).flatMap((binding, oldSlot) => {
+        if (!binding.nodeId.startsWith(nodePrefix)) return [];
+        const newSlot = nextSamplesByNodeId.get(binding.nodeId);
+        return newSlot === undefined ? [] : [{ oldSlot, newSlot }];
+      });
+      const previousTemplate = this.repeatTemplateOps(previousProgram, previous);
+      const effectStates = new Set(previousTemplate
+        .filter((op) => this.dspOpUsesEffectBuffer(op))
+        .map((op) => op.state));
+      const bufferStates = new Set(previousTemplate
+        .filter((op) => op.opcode === 34)
+        .map((op) => op.state));
+      return [{
+        previous,
+        next,
+        stateMappings,
+        sampleMappings,
+        effectMappings: stateMappings.flatMap((mapping) => {
+          if (!effectStates.has(mapping.oldState)) return [];
+          const oldSlot = Math.trunc(Number(this.wasm.dspEffectSlotForState?.(mapping.oldState)));
+          return oldSlot >= 0 ? [{ ...mapping, oldSlot }] : [];
+        }),
+        bufferMappings: stateMappings.flatMap((mapping) => {
+          if (!bufferStates.has(mapping.oldState)) return [];
+          const oldSlot = Math.trunc(Number(this.wasm.dspBufferSlotForState?.(mapping.oldState)));
+          return oldSlot >= 0 ? [{ ...mapping, oldSlot }] : [];
+        }),
+      }];
+    });
+  }
+
+  repeatTemplateOps(program, binding) {
+    const opcode = binding.type === "Spawn" ? 46 : 42;
+    const beginIndex = (program.ops || []).findIndex((op) => (
+      op.opcode === opcode && Math.trunc(op.value) === binding.slot
+    ));
+    if (beginIndex < 0) return [];
+    const endIndex = Math.trunc(program.ops[beginIndex].b);
+    return program.ops.slice(beginIndex + 1, Math.max(beginIndex + 1, endIndex));
+  }
+
+  dspOpUsesEffectBuffer(op) {
+    return op.opcode === 12
+      || op.opcode === 13
+      || op.opcode === 14
+      || op.opcode === 39
+      || (op.opcode === 4 && (op.a === 5 || op.a === 6));
+  }
+
+  applyDspRepeatMigration(migrations) {
+    if (!migrations) return;
+    for (const migration of migrations) {
+      this.wasm.beginDspRepeatRuntimeMigration();
+      for (const mapping of migration.stateMappings) {
+        this.wasm.addDspRepeatStateMigration?.(mapping.oldOffset, mapping.newOffset, mapping.count);
+      }
+      for (const mapping of migration.sampleMappings) {
+        this.wasm.addDspRepeatSampleMigration?.(mapping.oldSlot, mapping.newSlot);
+      }
+      for (const mapping of migration.effectMappings) {
+        const newSlot = Math.trunc(Number(this.wasm.dspEffectSlotForState?.(mapping.newState)));
+        if (newSlot >= 0) this.wasm.addDspRepeatEffectMigration?.(mapping.oldSlot, newSlot);
+      }
+      for (const mapping of migration.bufferMappings) {
+        const newSlot = Math.trunc(Number(this.wasm.dspBufferSlotForState?.(mapping.newState)));
+        if (newSlot >= 0) this.wasm.addDspRepeatBufferMigration?.(mapping.oldSlot, newSlot);
+      }
+      const opcode = migration.next.type === "Spawn" ? 46 : 42;
+      const beginIndex = this.dspProgram.ops.findIndex((op) => (
+        op.opcode === opcode && Math.trunc(op.value) === migration.next.slot
+      ));
+      if (beginIndex < 0) continue;
+      this.wasm.finishDspRepeatRuntimeMigration(
+        migration.next.type === "Spawn" ? 1 : 0,
+        migration.previous.slot,
+        migration.next.slot,
+        beginIndex,
+      );
+    }
   }
 
   captureDspMemoryState(program, states) {
@@ -892,16 +1095,20 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     }
   }
 
-  syncDspProgram(preservedState = null) {
+  syncDspProgram(preservedState = null, repeatMigration = null) {
     if (!this.wasm?.clearDspProgram || !this.dspProgram) return;
 
+    if (repeatMigration) this.wasm.beginDspProgramUpdate();
     this.wasm.clearDspProgram();
     this.wasm.clearGraph?.();
     this.maxVoices = this.dspProgram.maxVoices;
     this.nodes = [];
     this.nodesById = new Map();
     this.midiButtonControlValues.clear();
-    if (this.dspProgram.errors.length > 0) return;
+    if (this.dspProgram.errors.length > 0) {
+      if (repeatMigration) this.wasm.finishDspProgramUpdate();
+      return;
+    }
 
     for (let index = 0; index < this.dspProgram.values.length; index += 1) {
       this.wasm.setDspValue?.(index, this.dspProgram.values[index]);
@@ -1025,6 +1232,9 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       );
     }
 
+    this.applyDspRepeatMigration(repeatMigration);
+    if (repeatMigration) this.wasm.finishDspProgramUpdate();
+    this.syncDspSequencers();
     this.restoreDspState(preservedState);
 
     // A newly created one-shot custom wave is an event-driven source. It must

@@ -8,10 +8,7 @@ import {
   getNodeDefinition,
   sequencerGatesForRow,
   sequencerOutputIndex,
-  sequencerPatternValue,
   sequencerShape,
-  sequencerStepVelocity,
-  sequencerTriggerPositionParamName,
   sequencerTriggersForRow,
   sequencerUsesGateMode,
 } from '../graph/nodeTypes';
@@ -68,6 +65,7 @@ export const DSP_OP = {
   SpawnEnd: 47,
   EndTrigger: 48,
   Random: 49,
+  SpawnInstanceGate: 50,
 } as const;
 
 export interface DspProgram {
@@ -86,6 +84,8 @@ export interface DspProgram {
   sampleBindings: DspSampleBinding[];
   imageBindings: DspImageBinding[];
   customWaveBindings: DspCustomWaveBinding[];
+  sequencerBindings: DspSequencerBinding[];
+  repeatBindings: DspRepeatBinding[];
   fftBindings: DspFftBinding[];
   maxVoices: number;
   usesMidiNote: boolean;
@@ -155,6 +155,29 @@ export interface DspCustomWaveBinding {
   customWave: CustomWaveSettings;
 }
 
+export interface DspSequencerEventBinding {
+  active: boolean;
+  start: number;
+  end: number;
+  velocity: number;
+}
+
+export interface DspSequencerBinding {
+  nodeId: string;
+  mode: 'trigger' | 'gate';
+  steps: number;
+  rows: number;
+  events: DspSequencerEventBinding[][];
+}
+
+export interface DspRepeatBinding {
+  nodeId: string;
+  type: 'Spread' | 'Spawn';
+  slot: number;
+  stateStart: number;
+  stateCount: number;
+}
+
 export interface DspFftBinding {
   nodeId: string;
   inputRegister: number;
@@ -200,6 +223,9 @@ interface CompileContext {
   imageBindings: DspImageBinding[];
   imageBindingIndexByNodeId: Map<string, number>;
   customWaveBindings: DspCustomWaveBinding[];
+  sequencerBindings: DspSequencerBinding[];
+  sequencerBindingIndexByNodeId: Map<string, number>;
+  repeatBindings: DspRepeatBinding[];
   fftBindings: DspFftBinding[];
   fftBindingByNodeId: Map<string, DspFftBinding>;
   spreadCountRegisterById: Map<string, number>;
@@ -373,6 +399,8 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
       sampleBindings: context.sampleBindings,
       imageBindings: context.imageBindings,
       customWaveBindings: context.customWaveBindings,
+      sequencerBindings: context.sequencerBindings,
+      repeatBindings: context.repeatBindings,
       fftBindings: context.fftBindings,
       maxVoices: context.maxVoices,
       usesMidiNote: context.usesMidiNote,
@@ -397,6 +425,8 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
     sampleBindings: context.sampleBindings,
     imageBindings: context.imageBindings,
     customWaveBindings: context.customWaveBindings,
+    sequencerBindings: context.sequencerBindings,
+    repeatBindings: context.repeatBindings,
     fftBindings: context.fftBindings,
     maxVoices: context.maxVoices,
     usesMidiNote: context.usesMidiNote,
@@ -443,6 +473,9 @@ function createContext(patch: Patch): CompileContext {
     imageBindings: [],
     imageBindingIndexByNodeId: new Map(),
     customWaveBindings: [],
+    sequencerBindings: [],
+    sequencerBindingIndexByNodeId: new Map(),
+    repeatBindings: [],
     fftBindings: [],
     fftBindingByNodeId: new Map(),
     spreadCountRegisterById: new Map(),
@@ -537,6 +570,13 @@ function compileSpreadTemplates(context: CompileContext): void {
     });
     begin.b = endIndex;
     begin.value2 = context.stateCount - stateStart;
+    context.repeatBindings.push({
+      nodeId: spread.id,
+      type: spread.type === 'Spawn' ? 'Spawn' : 'Spread',
+      slot: spreadSlot,
+      stateStart,
+      stateCount: context.stateCount - stateStart,
+    });
   }
 }
 
@@ -794,6 +834,11 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     if (node.runtimeSpread?.originalNodeId === '__item_index__') {
       const output = nextRegister(context);
       context.ops.push({ opcode: DSP_OP.SpreadIndex, out: output });
+      return output;
+    }
+    if (node.runtimeSpread?.originalNodeId === '__instance_gate__') {
+      const output = nextRegister(context);
+      context.ops.push({ opcode: DSP_OP.SpawnInstanceGate, out: output });
       return output;
     }
     return resolveInput(node, 'value', 1, context);
@@ -1881,37 +1926,8 @@ function compileSequencerIndex(node: PatchNode, context: CompileContext): number
 }
 
 function compileSequencerRow(node: PatchNode, rowIndex: number, context: CompileContext): number {
-  const shape = sequencerShape(node.params);
   const state = ensureSequencerStepRegister(node, context).state;
-  if (sequencerUsesGateMode(node.params)) {
-    const gates = sequencerGatesForRow(node.params, rowIndex, shape.steps);
-    const outputs = gates.map((gate) => {
-      const output = nextRegister(context);
-      context.ops.push({
-        opcode: DSP_OP.Sequencer,
-        out: output,
-        a: resolveInput(node, 'signal', 0, context),
-        b: resolveInput(node, 'steps', SEQUENCER_DEFAULT_STEPS, context),
-        c: constantRegister(-2, context),
-        d: resolveInput(node, 'rows', SEQUENCER_DEFAULT_ROWS, context),
-        e: resolveInput(node, 'reset', 0, context),
-        state,
-        value: gate.start,
-        value2: gate.end,
-      });
-      const velocity = sequencerStepVelocity(node.params, rowIndex, gate.slot);
-      if (velocity >= 1) return output;
-      return emitBinary(DSP_OP.Mul, output, constantRegister(velocity, context), context);
-    });
-    const sum = sumRegisters(outputs, context);
-    if (outputs.length <= 1) return sum;
-    const output = nextRegister(context);
-    context.ops.push({ opcode: DSP_OP.HardClip, out: output, a: sum, b: constantRegister(1, context) });
-    return output;
-  }
-
   const output = nextRegister(context);
-  const pattern = sequencerPatternValue(node.params, rowIndex, shape.steps);
   context.ops.push({
     opcode: DSP_OP.Sequencer,
     out: output,
@@ -1921,38 +1937,9 @@ function compileSequencerRow(node: PatchNode, rowIndex: number, context: Compile
     d: resolveInput(node, 'rows', SEQUENCER_DEFAULT_ROWS, context),
     e: resolveInput(node, 'reset', 0, context),
     state,
-    value: pattern[0],
-    value2: pattern[1],
-    value3: pattern[2],
-    value4: pattern[3],
+    value: ensureSequencerBinding(node, context),
   });
-  const positionedOutputs = sequencerTriggersForRow(node.params, rowIndex, shape.steps)
-    .filter((trigger) => (
-      node.params[sequencerTriggerPositionParamName(rowIndex, trigger.slot)] !== undefined
-      || trigger.velocity < 1
-    ))
-    .map((trigger) => {
-      const triggerOutput = nextRegister(context);
-      context.ops.push({
-        opcode: DSP_OP.Sequencer,
-        out: triggerOutput,
-        a: resolveInput(node, 'signal', 0, context),
-        b: resolveInput(node, 'steps', SEQUENCER_DEFAULT_STEPS, context),
-        c: constantRegister(-3, context),
-        d: resolveInput(node, 'rows', SEQUENCER_DEFAULT_ROWS, context),
-        e: resolveInput(node, 'reset', 0, context),
-        state,
-        value: trigger.position,
-      });
-      const velocity = sequencerStepVelocity(node.params, rowIndex, trigger.slot);
-      if (velocity >= 1) return triggerOutput;
-      return emitBinary(DSP_OP.Mul, triggerOutput, constantRegister(velocity, context), context);
-    });
-  if (positionedOutputs.length === 0) return output;
-  const sum = sumRegisters([output, ...positionedOutputs], context);
-  const clipped = nextRegister(context);
-  context.ops.push({ opcode: DSP_OP.HardClip, out: clipped, a: sum, b: constantRegister(1, context) });
-  return clipped;
+  return output;
 }
 
 function registerSequencerMonitor(node: PatchNode, context: CompileContext): void {
@@ -1987,11 +1974,51 @@ function ensureSequencerStepRegister(node: PatchNode, context: CompileContext): 
       d: resolveInput(node, 'rows', SEQUENCER_DEFAULT_ROWS, context),
       e: resolveInput(node, 'reset', 0, context),
       state,
-      value: sequencerUsesGateMode(node.params) ? 1 : 0,
+      value: ensureSequencerBinding(node, context),
     });
   }
 
   return { state, register };
+}
+
+function ensureSequencerBinding(node: PatchNode, context: CompileContext): number {
+  const existing = context.sequencerBindingIndexByNodeId.get(node.id);
+  if (existing !== undefined) return existing;
+
+  const shape = sequencerShape(node.params);
+  const gateMode = sequencerUsesGateMode(node.params);
+  const events = Array.from({ length: shape.rows }, (_, rowIndex) => {
+    const activeEvents = gateMode
+      ? sequencerGatesForRow(node.params, rowIndex, shape.steps)
+        .map((gate) => ({ slot: gate.slot, start: gate.start, end: gate.end, velocity: gate.velocity }))
+      : sequencerTriggersForRow(node.params, rowIndex, shape.steps)
+        .map((trigger) => ({
+          slot: trigger.slot,
+          start: trigger.position,
+          end: trigger.position,
+          velocity: trigger.velocity,
+        }));
+    const eventsBySlot = new Map(activeEvents.map((event) => [event.slot, event]));
+    return Array.from({ length: shape.steps }, (_, slot) => {
+      const event = eventsBySlot.get(slot);
+      return {
+        active: Boolean(event),
+        start: event?.start ?? slot,
+        end: event?.end ?? slot,
+        velocity: event?.velocity ?? 1,
+      };
+    });
+  });
+  const bindingIndex = context.sequencerBindings.length;
+  context.sequencerBindings.push({
+    nodeId: node.id,
+    mode: gateMode ? 'gate' : 'trigger',
+    steps: shape.steps,
+    rows: shape.rows,
+    events,
+  });
+  context.sequencerBindingIndexByNodeId.set(node.id, bindingIndex);
+  return bindingIndex;
 }
 
 function compilePan(node: PatchNode, port: string, context: CompileContext): number {

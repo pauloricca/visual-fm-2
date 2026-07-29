@@ -28,7 +28,15 @@ import { extractExpressionInputs } from '../graph/expression';
 import { defaultParamsFor, getDefinition, getNodeDefinition, sequencerShape } from '../graph/nodeTypes';
 import { normalizePatchCompatibility } from '../graph/patchCompatibility';
 import { patchToJson } from '../graph/serialize';
-import { DEFAULT_SPREAD_SIZE, SPREAD_PORTS_HEIGHT, spreadCloneNodeId } from '../graph/spread';
+import {
+  DEFAULT_SPAWN_SIZE,
+  DEFAULT_SPREAD_SIZE,
+  MIN_RUNTIME_CONTAINER_WIDTH,
+  MIN_SPAWN_WIDTH,
+  SPREAD_PORTS_HEIGHT,
+  runtimeContainerSize,
+  spreadCloneNodeId,
+} from '../graph/spread';
 import type { CustomWaveSettings, ImageAsset, LinkMode, NodeType, Patch, PatchLink, PatchNode, PortDefinition, SampleAsset } from '../graph/types';
 import { EdgeOverlayProvider } from './EdgeOverlayContext';
 import { canvasHeaderTitleScale, USER_ZOOM_BASELINE } from './canvasZoom';
@@ -1279,7 +1287,9 @@ function NodeEditorInner() {
               ...(type === 'CustomWave' ? {
                 customWave: normalizeCustomWave(node.data.patchNode.customWave, node.data.patchNode.params),
               } : {}),
-              ...((type === 'Spread' || type === 'Spawn') ? { scopeSize: { ...DEFAULT_SPREAD_SIZE } } : {}),
+              ...((type === 'Spread' || type === 'Spawn') ? {
+                scopeSize: { ...(type === 'Spawn' ? DEFAULT_SPAWN_SIZE : DEFAULT_SPREAD_SIZE) },
+              } : {}),
               params: nextParams,
               position: node.position,
               ...(expressionInputs ? { inputs: expressionInputs } : {}),
@@ -1305,7 +1315,7 @@ function NodeEditorInner() {
             ...relatedNode.data.patchNode,
             id: nextId,
             type,
-            scopeSize: { ...DEFAULT_SPREAD_SIZE },
+            scopeSize: { ...(type === 'Spawn' ? DEFAULT_SPAWN_SIZE : DEFAULT_SPREAD_SIZE) },
           },
         },
       })];
@@ -1465,7 +1475,13 @@ function NodeEditorInner() {
     }
 
     const nextSize = relatedNode.data.patchNode.type === 'Spread' || relatedNode.data.patchNode.type === 'Spawn'
-      ? { width: Math.max(240, Math.round(size.width)), height: Math.max(140, Math.round(size.height)) }
+      ? {
+          width: Math.max(
+            relatedNode.data.patchNode.type === 'Spawn' ? MIN_SPAWN_WIDTH : MIN_RUNTIME_CONTAINER_WIDTH,
+            Math.round(size.width),
+          ),
+          height: Math.max(140, Math.round(size.height)),
+        }
       : relatedNode.data.patchNode.type === 'Sequencer'
       ? (() => {
           const shape = sequencerShape(relatedNode.data.patchNode.params);
@@ -1494,7 +1510,7 @@ function NodeEditorInner() {
 
       const currentSize = node.data.patchNode.scopeSize ?? (
         node.data.patchNode.type === 'Spread' || node.data.patchNode.type === 'Spawn'
-          ? DEFAULT_SPREAD_SIZE
+          ? (node.data.patchNode.type === 'Spawn' ? DEFAULT_SPAWN_SIZE : DEFAULT_SPREAD_SIZE)
         : node.data.patchNode.type === 'Sequencer'
           ? clampSequencerNodeSize(
               DEFAULT_SEQUENCER_NODE_SIZE,
@@ -2800,13 +2816,15 @@ function NodeEditorInner() {
       setPendingBoundaryPort(null);
       return;
     }
-    const spreadSource = nodesRef.current.find((node) => (
+    const internalRuntimeSource = nodesRef.current.find((node) => (
       node.id === link.from.node
-      && node.data.patchNode.type === 'Spread'
-      && link.from.port === 'item index'
+      && (
+        (node.data.patchNode.type === 'Spread' && link.from.port === 'item index')
+        || (node.data.patchNode.type === 'Spawn' && link.from.port === 'instance gate')
+      )
     ));
     const targetNode = nodesRef.current.find((node) => node.id === link.to.node);
-    if (spreadSource && (!targetNode || !flowNodeIsInsideSpread(spreadSource, targetNode))) {
+    if (internalRuntimeSource && (!targetNode || !flowNodeIsInsideSpread(internalRuntimeSource, targetNode))) {
       setPendingBoundaryPort(null);
       return;
     }
@@ -3838,8 +3856,13 @@ function NodeEditorInner() {
     const containedBounds = resizedArea?.locked
       ? lockedAreaNodeBounds(resizedArea, nodesRef.current)
       : null;
+    const runtimeContainerNode = resizedArea?.spreadNodeId
+      ? nodesRef.current.find((node) => node.id === resizedArea.spreadNodeId)
+      : undefined;
     const minimumWidth = Math.max(
-      resizedArea?.kind === 'spread' ? 240 : 48,
+      runtimeContainerNode?.data.patchNode.type === 'Spawn'
+        ? MIN_SPAWN_WIDTH
+        : resizedArea?.kind === 'spread' ? MIN_RUNTIME_CONTAINER_WIDTH : 48,
       containedBounds?.width ?? 0,
     );
     const minimumHeight = Math.max(
@@ -6447,7 +6470,7 @@ function viewportNodeSize(node: ShaderFlowNode): { width: number; height: number
   }
 
   if (patchNode.type === 'Spread' || patchNode.type === 'Spawn') {
-    const size = patchNode.scopeSize ?? DEFAULT_SPREAD_SIZE;
+    const size = runtimeContainerSize(patchNode);
     return { width: size.width, height: size.height + NODE_HEADER_HEIGHT };
   }
 
@@ -6532,7 +6555,7 @@ function flowNodeIsInsideSpread(spread: ShaderFlowNode, node: ShaderFlowNode): b
   if (spread.data.patchNode.spreadNodeIds) {
     return spread.data.patchNode.spreadNodeIds.includes(node.id);
   }
-  const size = spread.data.patchNode.scopeSize ?? DEFAULT_SPREAD_SIZE;
+  const size = runtimeContainerSize(spread.data.patchNode);
   return (
     node.position.x >= spread.position.x
     && node.position.x < spread.position.x + size.width
@@ -6556,8 +6579,10 @@ function runtimeContainerLinkIsAllowed(link: PatchLink, nodes: ShaderFlowNode[])
   const targetNode = nodes.find((node) => node.id === link.to.node);
 
   if (
-    sourceNode?.data.patchNode.type === 'Spread'
-    && link.from.port === 'item index'
+    (
+      (sourceNode?.data.patchNode.type === 'Spread' && link.from.port === 'item index')
+      || (sourceNode?.data.patchNode.type === 'Spawn' && link.from.port === 'instance gate')
+    )
     && (!targetNode || !flowNodeIsInsideSpread(sourceNode, targetNode))
   ) {
     return false;
@@ -6683,7 +6708,7 @@ function promoteNodeIdsInStackOrder(
 }
 
 function spreadAreaForNode(node: ShaderFlowNode): EditorArea {
-  const size = node.data.patchNode.scopeSize ?? DEFAULT_SPREAD_SIZE;
+  const size = runtimeContainerSize(node.data.patchNode);
   const title = node.data.patchNode.type === 'Spawn' ? 'Spawn' : 'Spread';
   return {
     id: `spread-area:${node.id}`,
@@ -6692,7 +6717,7 @@ function spreadAreaForNode(node: ShaderFlowNode): EditorArea {
     title,
     position: { ...node.position },
     size: {
-      width: Math.max(240, size.width),
+      width: size.width,
       height: Math.max(NODE_HEADER_HEIGHT + SPREAD_PORTS_HEIGHT + 48, NODE_HEADER_HEIGHT + size.height),
     },
     uiHeight: SPREAD_PORTS_HEIGHT,
@@ -6708,17 +6733,29 @@ function reconcileSpreadAreas(areas: EditorArea[], nodes: ShaderFlowNode[]): Edi
     node.data.patchNode.type === 'Spread' || node.data.patchNode.type === 'Spawn'
   ));
   const spreadNodeIds = new Set(spreadNodes.map((node) => node.id));
-  const retained = areas.filter((area) => (
-    area.kind !== 'spread'
-    || (area.spreadNodeId !== undefined && spreadNodeIds.has(area.spreadNodeId))
-  ));
+  let resizedExistingSpawn = false;
+  const retained = areas.flatMap((area) => {
+    if (area.kind !== 'spread') return [area];
+    if (area.spreadNodeId === undefined || !spreadNodeIds.has(area.spreadNodeId)) return [];
+    const spawnNode = spreadNodes.find((node) => (
+      node.id === area.spreadNodeId && node.data.patchNode.type === 'Spawn'
+    ));
+    if (!spawnNode || area.size.width >= MIN_SPAWN_WIDTH) return [area];
+    resizedExistingSpawn = true;
+    return [{
+      ...area,
+      size: { ...area.size, width: MIN_SPAWN_WIDTH },
+    }];
+  });
   const existingSpreadNodeIds = new Set(retained.flatMap((area) => (
     area.kind === 'spread' && area.spreadNodeId ? [area.spreadNodeId] : []
   )));
   const added = spreadNodes
     .filter((node) => !existingSpreadNodeIds.has(node.id))
     .map(spreadAreaForNode);
-  return retained.length === areas.length && added.length === 0 ? areas : [...retained, ...added];
+  return retained.length === areas.length && added.length === 0 && !resizedExistingSpawn
+    ? areas
+    : [...retained, ...added];
 }
 
 function optionalStringArraysEqual(left: string[] | undefined, right: string[] | undefined): boolean {
