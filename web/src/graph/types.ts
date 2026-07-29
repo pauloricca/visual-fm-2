@@ -31,6 +31,8 @@ export type NodeType =
   | 'Sequencer'
   | 'Tempo'
   | 'MidiNote'
+  | 'MidiNoteOn'
+  | 'MidiNoteOff'
   | 'MidiCc'
   | 'Selector'
   | 'Accumulator'

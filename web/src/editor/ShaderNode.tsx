@@ -47,6 +47,7 @@ import {
   MIN_RUNTIME_CONTAINER_WIDTH,
   MIN_SPAWN_WIDTH,
   SPREAD_HEADER_HEIGHT,
+  runtimeContainerPortsHeight,
   runtimeContainerSize,
 } from '../graph/spread';
 import { formatNumericValue } from './numericDisplay';
@@ -148,7 +149,9 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const showTempoDisplay = node.type === 'Tempo';
   const showAudioOutputDisplay = node.type === 'AudioOut';
   const showAudioInputDisplay = node.type === 'AudioInput';
-  const showMidiNoteDisplay = node.type === 'MidiNote';
+  const showMidiNoteDisplay = node.type === 'MidiNote'
+    || node.type === 'MidiNoteOn'
+    || node.type === 'MidiNoteOff';
   const showCustomWaveEditor = node.type === 'CustomWave';
   const showSampleUpload = node.type === 'SamplePlayer';
   const showImageDisplay = node.type === 'Image';
@@ -804,34 +807,62 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
         className={`spread-port-panel${isAreaUiCollapsedPresentation ? ' spread-port-panel-collapsed' : ''}`}
         style={{
           '--spread-port-width': `${displaySize.width}px`,
+          '--spread-port-height': `${runtimeContainerPortsHeight(node)}px`,
           '--spread-header-height': `${SPREAD_HEADER_HEIGHT}px`,
           '--node-scale': String(node.scale ?? 1),
         } as CSSProperties}
       >
-        <div className="spread-port-input">
-          <Handle
-            id={`in:${isSpawn ? 'trigger' : 'count'}`}
-            type="target"
-            position={Position.Left}
-            className={[
-              'shader-handle shader-handle-input spread-count-handle',
-              selectedLinkInputs.includes(isSpawn ? 'trigger' : 'count') ? 'shader-handle-selected-link' : '',
-            ].filter(Boolean).join(' ')}
-          />
-          <span>{isSpawn ? 'trigger' : 'count'}</span>
-          {!isSpawn ? (
+        {isSpawn ? (
+          <div className="spawn-port-inputs">
+            <div className="spawn-port-input">
+              <Handle
+                id="in:trigger"
+                type="target"
+                position={Position.Left}
+                className={[
+                  'shader-handle shader-handle-input spread-count-handle spawn-trigger-handle',
+                  selectedLinkInputs.includes('trigger') ? 'shader-handle-selected-link' : '',
+                ].filter(Boolean).join(' ')}
+              />
+              <span>trigger</span>
+            </div>
+            <div className="spawn-port-input">
+              <Handle
+                id="in:release trigger"
+                type="target"
+                position={Position.Left}
+                className={[
+                  'shader-handle shader-handle-input spread-count-handle spawn-release-trigger-handle',
+                  selectedLinkInputs.includes('release trigger') ? 'shader-handle-selected-link' : '',
+                ].filter(Boolean).join(' ')}
+              />
+              <span>release trigger</span>
+            </div>
+          </div>
+        ) : (
+          <div className="spread-port-input">
+            <Handle
+              id="in:count"
+              type="target"
+              position={Position.Left}
+              className={[
+                'shader-handle shader-handle-input spread-count-handle',
+                selectedLinkInputs.includes('count') ? 'shader-handle-selected-link' : '',
+              ].filter(Boolean).join(' ')}
+            />
+            <span>count</span>
             <NumericScrubber
               value={node.params.count ?? 1}
               min={0}
               integer
               onChange={(value) => data.onParamChange(node.id, 'count', value)}
             />
-          ) : null}
-        </div>
+          </div>
+        )}
         {!isAreaUiCollapsedPresentation ? (
           <>
             {isSpawn ? (
-              <div className="spread-port-output">
+              <div className="spread-port-output spawn-instance-gate-port">
                 <span>instance gate</span>
                 <Handle
                   id="out:instance gate"
@@ -1549,35 +1580,6 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                     ))}
                   </select>
                 </>
-              ) : showMidiNoteDisplay && input.name === 'voices' && !input.preview ? (
-                <>
-                  <PortNameLabel
-                    name={input.name}
-                    editable={false}
-                    draggable={false}
-                    preview={false}
-                    selected={data.selectedPort?.side === 'input' && data.selectedPort.name === input.name}
-                    activeDragTarget={false}
-                    activeDragSource={false}
-                    onChange={() => undefined}
-                  />
-                  <select
-                    className="midi-voices-select nodrag nopan"
-                    aria-label="MIDI polyphony voices"
-                    value={String(clamp(Math.round(node.params.voices ?? input.defaultValue ?? 8), 1, 16))}
-                    onChange={(event) => {
-                      data.onParamChange(node.id, input.name, Number(event.currentTarget.value));
-                      event.currentTarget.blur();
-                    }}
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onClick={(event) => event.stopPropagation()}
-                    onDoubleClick={(event) => event.stopPropagation()}
-                  >
-                    {Array.from({ length: 16 }, (_, index) => index + 1).map((voiceCount) => (
-                      <option key={voiceCount} value={voiceCount}>{voiceCount}</option>
-                    ))}
-                  </select>
-                </>
               ) : showButtonDisplay && input.name === 'mode' && !input.preview ? (
                 <>
                   <PortNameLabel
@@ -1709,7 +1711,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   onChange={(nextName) => data.onPortNameChange(node.id, 'input', input.name, nextName)}
                 />
               )}
-              {!input.preview && node.type !== 'Outs' && input.valueEditor !== false && input.defaultValue !== undefined && !(showSliderDisplay && input.name === 'direction') && !(showSequencerDisplay && input.name === 'mode') && !(showButtonDisplay && input.name === 'mode') && !(showAccumulatorDisplay && input.name === 'mode') && !(showQuantiseDisplay && (input.name === 'scale' || input.name === 'root')) && !(showSampleUpload && input.name === 'mode') && !(showMidiNoteDisplay && input.name === 'voices') && !(showTempoDisplay && (input.name === 'source' || input.name === 'midiSource')) ? (
+              {!input.preview && node.type !== 'Outs' && input.valueEditor !== false && input.defaultValue !== undefined && !(showSliderDisplay && input.name === 'direction') && !(showSequencerDisplay && input.name === 'mode') && !(showButtonDisplay && input.name === 'mode') && !(showAccumulatorDisplay && input.name === 'mode') && !(showQuantiseDisplay && (input.name === 'scale' || input.name === 'root')) && !(showSampleUpload && input.name === 'mode') && !(showTempoDisplay && (input.name === 'source' || input.name === 'midiSource')) ? (
                 <NumericScrubber
                   value={node.params[input.name] ?? input.defaultValue ?? 0}
                   min={input.min}

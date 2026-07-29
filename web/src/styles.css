@@ -878,7 +878,7 @@ button:hover {
   position: relative;
   display: flex;
   width: var(--spread-port-width, 320px);
-  height: 44px;
+  height: var(--spread-port-height, 44px);
   align-items: center;
   justify-content: flex-start;
   box-sizing: border-box;
@@ -895,6 +895,7 @@ button:hover {
 }
 
 .spread-port-input,
+.spawn-port-input,
 .spread-port-output {
   display: flex;
   align-items: center;
@@ -903,8 +904,41 @@ button:hover {
   pointer-events: auto;
 }
 
+.spawn-port-inputs {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+  pointer-events: auto;
+}
+
+.spawn-port-input {
+  height: 26px;
+}
+
+.spawn-port-input > span {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.spawn-trigger-handle {
+  top: 19px !important;
+}
+
+.spawn-release-trigger-handle {
+  top: 53px !important;
+}
+
 .spread-port-output {
   margin-left: 24px;
+}
+
+.spawn-instance-gate-port,
+.spawn-kill-trigger-port {
+  align-self: flex-end;
+  margin-bottom: 4px;
 }
 
 .spawn-kill-trigger-port {
@@ -1591,7 +1625,6 @@ button:hover {
 .audio-input-node-device-select,
 .midi-input-node-device-count,
 .midi-input-node-refresh-button,
-.midi-voices-select,
 .tempo-source-select {
   height: 22px;
   min-width: 0;
@@ -1666,11 +1699,6 @@ button:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.midi-voices-select {
-  width: 68px;
-  padding: 0 4px;
 }
 
 .tempo-source-select {
@@ -2685,8 +2713,7 @@ button:hover {
 .shader-node-body-no-outputs .slider-direction-select,
 .shader-node-body-no-outputs .button-mode-select,
 .shader-node-body-no-outputs .sample-mode-select,
-.shader-node-body-no-outputs .tempo-source-select,
-.shader-node-body-no-outputs .midi-voices-select {
+.shader-node-body-no-outputs .tempo-source-select {
   width: 68px;
   min-width: 0;
   max-width: 68px;

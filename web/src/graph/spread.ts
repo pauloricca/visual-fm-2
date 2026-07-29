@@ -1,11 +1,12 @@
 import type { Patch, PatchLink, PatchNode } from './types';
 
 export const DEFAULT_SPREAD_SIZE = { width: 320, height: 220 } as const;
-export const DEFAULT_SPAWN_SIZE = { width: 400, height: 220 } as const;
+export const DEFAULT_SPAWN_SIZE = { width: 480, height: 220 } as const;
 export const MIN_RUNTIME_CONTAINER_WIDTH = 240;
-export const MIN_SPAWN_WIDTH = 400;
+export const MIN_SPAWN_WIDTH = 480;
 export const SPREAD_HEADER_HEIGHT = 32;
 export const SPREAD_PORTS_HEIGHT = 44;
+export const SPAWN_PORTS_HEIGHT = 72;
 
 export interface SpreadExpansion {
   patch: Patch;
@@ -45,10 +46,11 @@ export function nodeIsInsideSpread(spread: PatchNode, node: PatchNode): boolean 
   if (spread.spreadNodeIds) return spread.spreadNodeIds.includes(node.id);
   if (!spread.position || !node.position) return false;
   const size = runtimeContainerSize(spread);
+  const portsHeight = runtimeContainerPortsHeight(spread);
   return (
     node.position.x >= spread.position.x
     && node.position.x < spread.position.x + size.width
-    && node.position.y >= spread.position.y + SPREAD_HEADER_HEIGHT + SPREAD_PORTS_HEIGHT
+    && node.position.y >= spread.position.y + SPREAD_HEADER_HEIGHT + portsHeight
     && node.position.y < spread.position.y + SPREAD_HEADER_HEIGHT + size.height
   );
 }
@@ -63,6 +65,10 @@ export function runtimeContainerSize(node: {
     width: Math.max(node.type === 'Spawn' ? MIN_SPAWN_WIDTH : MIN_RUNTIME_CONTAINER_WIDTH, size.width),
     height: Math.max(140, size.height),
   };
+}
+
+export function runtimeContainerPortsHeight(node: { type: PatchNode['type'] | null }): number {
+  return node.type === 'Spawn' ? SPAWN_PORTS_HEIGHT : SPREAD_PORTS_HEIGHT;
 }
 
 function expandOneSpread(patch: Patch, spreadId: string): SpreadExpansion {
@@ -110,7 +116,10 @@ function expandOneSpread(patch: Patch, spreadId: string): SpreadExpansion {
     const isInstanceGateLink = spread.type === 'Spawn' && link.from.node === spread.id && link.from.port === 'instance gate';
     const isInternalControlLink = sourceInternal
       && link.to.node === spread.id
-      && link.to.port === (spread.type === 'Spread' ? 'count' : 'trigger');
+      && (
+        link.to.port === (spread.type === 'Spread' ? 'count' : 'trigger')
+        || (spread.type === 'Spawn' && link.to.port === 'release trigger')
+      );
     const isKillLink = spread.type === 'Spawn' && link.to.node === spread.id && link.to.port === 'kill trigger';
 
     if (isIndexLink && !targetInternal) {
@@ -122,7 +131,7 @@ function expandOneSpread(patch: Patch, spreadId: string): SpreadExpansion {
       continue;
     }
     if (isInternalControlLink) {
-      errors.push(`${spread.type} "${spread.id}" ${spread.type === 'Spread' ? 'count' : 'trigger'} cannot be driven by a node inside the same ${spread.type}.`);
+      errors.push(`${spread.type} "${spread.id}" ${link.to.port} cannot be driven by a node inside the same ${spread.type}.`);
       continue;
     }
     if (isKillLink && !sourceInternal) {

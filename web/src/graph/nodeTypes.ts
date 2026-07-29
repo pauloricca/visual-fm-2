@@ -30,6 +30,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     type: 'Spawn',
     inputs: [
       { name: 'trigger', defaultValue: 0 },
+      { name: 'release trigger', defaultValue: 0 },
       { name: 'kill trigger', defaultValue: 0, valueEditor: false },
     ],
     outputs: [{ name: 'instance gate' }],
@@ -280,16 +281,30 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   },
   MidiNote: {
     type: 'MidiNote',
-    inputs: [
-      { name: 'channel', defaultValue: 0, min: 0, max: 16, integer: true },
-      { name: 'voices', defaultValue: 8, min: 1, max: 16, integer: true, connectable: false, valueEditor: false },
-    ],
+    inputs: [{ name: 'channel', defaultValue: 0, min: 0, max: 16, integer: true }],
     outputs: [
       { name: 'note' },
       { name: 'frequency' },
       { name: 'velocity' },
       { name: 'gate' },
       { name: 'trigger' },
+    ],
+  },
+  MidiNoteOn: {
+    type: 'MidiNoteOn',
+    inputs: [{ name: 'channel', defaultValue: 0, min: 0, max: 16, integer: true }],
+    outputs: [
+      { name: 'note' },
+      { name: 'frequency' },
+      { name: 'velocity' },
+    ],
+  },
+  MidiNoteOff: {
+    type: 'MidiNoteOff',
+    inputs: [{ name: 'channel', defaultValue: 0, min: 0, max: 16, integer: true }],
+    outputs: [
+      { name: 'note' },
+      { name: 'frequency' },
     ],
   },
   MidiCc: {
@@ -507,6 +522,8 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   Sequencer: 'Sequencer',
   Tempo: 'Tempo',
   MidiNote: 'MIDI Note',
+  MidiNoteOn: 'MIDI Note On',
+  MidiNoteOff: 'MIDI Note Off',
   MidiCc: 'MIDI CC',
   Selector: 'Selector',
   Accumulator: 'Accumulator',

@@ -56,7 +56,9 @@ Most node types are available from the node picker. `Ins` and `Outs` appear whil
 - `Keys`: provides an on-canvas keyboard with configurable size and starting MIDI note, outputting MIDI note and frequency.
 - `Sequencer`: offers Trigger mode for the original clickable pulse grid and Gate mode for freely positioned, edge-resizable intervals. Clicking to create a gate snaps its start to the leading edge of the selected grid square. Gates in a row never overlap: creating, moving, and resizing stops at neighboring gates, creation uses the available gap when it is shorter than a full step, and mode conversion resolves overlaps by shortening the earlier gate's end. Drag a step's top edge down to lower its velocity from `1` to a minimum of `0.1`, so the row output emits that smaller value when the step triggers or gates; `signal` advances the sequence, `reset` restarts it, each row has its own output, and `trigger index` emits the 1-based index of the first active row. Pattern, timing, velocity, length, and Trigger/Gate mode edits update the running sequencer in place without resetting its playhead or recompiling the DSP graph; changing the row count still recompiles because it changes the node's output ports.
 - `Tempo`: outputs clock triggers and matching frequency values from 4-bar divisions down to thirty-seconds, with BPM, swing, internal/MIDI source, and MIDI-source selection.
-- `MIDI Note`: converts MIDI note input into note, frequency, velocity, gate, and trigger outputs.
+- `MIDI Note`: tracks the most recently pressed held note as a monophonic note, frequency, velocity, gate, and note-on trigger source.
+- `MIDI Note On`: emits queued one-sample note, frequency, and velocity values for MIDI note-on events, with zero-valued separator samples between events.
+- `MIDI Note Off`: emits queued one-sample note and frequency values for MIDI note-off events, with zero-valued separator samples between events.
 - `MIDI CC`: outputs the current value of a selected MIDI CC.
 - `Selector`: selects one of several input values and can glide between selections.
 - `Accumulator`: steps through a min/max range by a configurable, floating-point increment, either on trigger edges or continuously for every audio sample.
@@ -101,7 +103,7 @@ The signature notation below is `inputs -> outputs`. Port names are the names us
 | Expression | dynamic expression variables | `value` |
 | Group | dynamic subpatch inputs | dynamic subpatch outputs |
 | Spread | count | item index |
-| Spawn | `trigger`, internal-only `kill trigger` | internal-only `instance gate` |
+| Spawn | `trigger`, `release trigger`, internal-only `kill trigger` | internal-only `instance gate` |
 | Ins | — | dynamic subpatch inputs |
 | Outs | dynamic subpatch outputs | — |
 | Audio Out | `both`, `left`, `right`, `level` | — |
@@ -129,7 +131,9 @@ The signature notation below is `inputs -> outputs`. Port names are the names us
 | Keys | `size`, `startNote` | `midi note`, `frequency` |
 | Sequencer | `steps`, `rows`, `beatLength`, `mode`, `signal`, `reset` | row outputs `1`…`16` (according to `rows`), `trigger index` |
 | Tempo | `bpm`, `swing`, `source`, `midiSource` | `4 bar`, `2 bar`, `bar`, `whole`, `half`, `quarter / beat`, `upbeat`, `eighth`, `sixteenth`, `thirty-second`, plus a matching `… freq` output for each |
-| MIDI Note | `channel`, `voices` | `note`, `frequency`, `velocity`, `gate`, `trigger` |
+| MIDI Note | `channel` | `note`, `frequency`, `velocity`, `gate`, `trigger` |
+| MIDI Note On | `channel` | `note`, `frequency`, `velocity` |
+| MIDI Note Off | `channel` | `note`, `frequency` |
 | MIDI CC | `channel`, `cc` | `signal` |
 | Selector | `select`, `slide`, dynamic value inputs `1`… | `signal` |
 | Accumulator | `mode`, `trigger`, `reset`, `increment`, `min`, `max` | `signal` |
@@ -219,13 +223,16 @@ The compiler emits the contained graph once as a repeatable DSP template. The WA
 
 ## Spawns
 
-Choose `Spawn` from a node's type picker to create an event-driven functional area with the same header, resizing, nesting, membership, movement, lock, and collapse interactions as a Spread. Spawn areas have a minimum width of 400 pixels so their lifecycle controls remain distinct. The header shows the current number of live instances after the Spawn title, such as `Spawn (3)`. In its control strip, `trigger` is a normal boundary input on the left, while the inward-facing `instance gate` output and `kill trigger` input are visible only when the Spawn is expanded.
+Choose `Spawn` from a node's type picker to create an event-driven functional area with the same header, resizing, nesting, membership, movement, lock, and collapse interactions as a Spread. Spawn areas have a minimum width of 480 pixels so their lifecycle controls remain distinct. The header shows the current number of live instances after the Spawn title, such as `Spawn (3)`. In its control strip, the external `trigger` and `release trigger` boundary inputs are stacked on the left, while the inward-facing `instance gate` output and `kill trigger` input are visible only when the Spawn is expanded.
 
-- A rising edge on `trigger` creates a new runtime instance of every contained node. Existing instances continue independently, so retriggering does not reset or replace them.
-- `instance gate` is an internal-only signal owned by each instance. It starts at `1` when the instance is created and is intended to tell the contained graph when to sustain or begin its release. No current Spawn control lowers it yet, so it remains at `1` until later lifecycle-control support is added.
+- A value rising to `0.5` or above on `trigger` creates a new runtime instance of every contained node and tags that instance with the numeric trigger value. Existing instances continue independently, so retriggering does not reset or replace them. Return the signal to `0` between events to arm the next rising edge.
+- A value rising to `0.5` or above on `release trigger` finds every live instance whose tag matches that numeric value and lowers its `instance gate` from `1` to `0`. For example, triggering with `35` and later release-triggering with `35` releases all live instances tagged `35`. Return this signal to `0` between release events as well.
+- `instance gate` is an internal-only signal owned by each instance. It starts at `1`; a matching `release trigger` changes it to `0`. The contained graph decides how to respond—for example, by beginning an envelope release or allowing a Buffer tail to finish.
 - `kill trigger` may only be driven by a node inside that Spawn. A rising edge produced by an instance removes that instance and its complete contained-node state without affecting the other live instances.
 - Links between contained nodes are copied within each instance. Links entering the Spawn are shared with every live instance, while links leaving it combine one signal from each live instance using the link's existing `set`, `add`, or `multiply` behavior.
 - A Spawn has no fixed voice limit. Instances remain alive until their own kill trigger fires, so a missing kill path or a very fast trigger can consume increasing CPU and memory.
+
+For MIDI-controlled Spawn voices, connect `MIDI Note On.note` to `Spawn.trigger` and `MIDI Note Off.note` to `Spawn.release trigger`. Inside the Spawn, instance-local Sample & Hold nodes can capture `MIDI Note On.note`, `frequency`, and `velocity` when `instance gate` first rises. Connect `instance gate` to the voice envelope gate and route the envelope's `end trigger` back to `kill trigger`. MIDI note `0` is currently indistinguishable from the event nodes' idle zero output and therefore cannot tag a Spawn instance.
 
 The compiler emits the contained graph once as a reusable DSP template, and the WASM engine allocates a fresh state set for each trigger. Both scalar DSP state and mutable node resources are instance-local, so Sample playback, Delay, Chorus, Reverb, Comb/Notch, Limiter lookahead, and Buffer memory advance independently in overlapping instances. Sample and Custom Wave visualizations inside the Spawn show every live instance's playhead, cycling through four line colors to make overlapping instances easier to follow. Immutable assets and external sources such as decoded sample data, images, audio input, MIDI, and tempo transport remain intentionally shared. Group, Spread, and nested Spawn nodes are not currently supported inside a Spawn; place their underlying nodes directly in the Spawn instead.
 
@@ -328,7 +335,7 @@ Render a quick WASM startup smoke test:
 node scripts/render-worklet-startup.mjs 1
 ```
 
-Render the compiled MIDI/polyphony path:
+Render the MIDI note path:
 
 ```sh
 node scripts/render-worklet-startup.mjs 1 --midi-note
@@ -338,5 +345,7 @@ Manual MIDI check:
 
 1. Add a MIDI Note node, Sine Osc, and Audio Out.
 2. Connect `MIDI Note.frequency` to `Sine Osc.frequency`, then `Sine Osc.signal` to `Audio Out.both`.
-3. Set `MIDI Note.voices` to `2`, start audio, and allow MIDI access when prompted.
-4. Play and release notes on a MIDI keyboard. Note-on should start voices, note-off should release them, and holding more than two notes should steal the oldest voice with a short fade.
+3. Start audio and allow MIDI access when prompted.
+4. Hold a note, then press another. MIDI Note should follow the newest held note; releasing it should restore the most recently pressed note still held, and releasing all notes should lower `gate`.
+
+`MIDI Note On` and `MIDI Note Off` share an ordered event queue. One MIDI event is exposed per audio sample and every event is followed by a zero sample, so simultaneous chord messages become sequences such as `10, 0, 32, 0, 52`. All outputs belonging to an event are aligned on the same sample. The separator makes each non-zero note value a distinct rising event when connected to Spawn.

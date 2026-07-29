@@ -511,6 +511,9 @@ function compileSpreadTemplates(context: CompileContext): void {
     const triggerRegister = spread.type === 'Spawn'
       ? resolveInput(spread, 'trigger', 0, context, 'immediate')
       : -1;
+    const releaseTriggerRegister = spread.type === 'Spawn'
+      ? resolveInput(spread, 'release trigger', 0, context, 'immediate')
+      : -1;
     const stateStart = context.stateCount;
     const begin: DspOp = {
       opcode: spread.type === 'Spawn' ? DSP_OP.SpawnBegin : DSP_OP.SpreadBegin,
@@ -518,6 +521,7 @@ function compileSpreadTemplates(context: CompileContext): void {
       a: spread.type === 'Spawn' ? triggerRegister : countRegister,
       b: -1,
       c: -1,
+      d: releaseTriggerRegister,
       state: stateStart,
       value: spreadSlot,
       value2: 0,
@@ -975,14 +979,12 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     return compileExpression(node, context);
   }
 
-  if (node.type === 'MidiNote') {
-    context.usesMidiNote = true;
-    context.maxVoices = Math.max(context.maxVoices, clampInteger(node.params.voices ?? 8, 1, 16));
+  if (node.type === 'MidiNote' || node.type === 'MidiNoteOn' || node.type === 'MidiNoteOff') {
     const output = nextRegister(context);
     context.ops.push({
       opcode: DSP_OP.MidiNote,
       out: output,
-      a: midiNoteOutputKind(port),
+      a: midiNoteOutputKind(node.type, port),
       b: resolveInput(node, 'channel', 0, context),
     });
     return output;
@@ -2048,7 +2050,15 @@ function compilePan(node: PatchNode, port: string, context: CompileContext): num
   return emitBinary(DSP_OP.Mul, signal, gain, context);
 }
 
-function midiNoteOutputKind(port: string): number {
+function midiNoteOutputKind(type: 'MidiNote' | 'MidiNoteOn' | 'MidiNoteOff', port: string): number {
+  if (type === 'MidiNoteOn') {
+    if (port === 'frequency') return 6;
+    if (port === 'velocity') return 7;
+    return 5;
+  }
+  if (type === 'MidiNoteOff') {
+    return port === 'frequency' ? 9 : 8;
+  }
   switch (port) {
     case 'note':
       return 0;

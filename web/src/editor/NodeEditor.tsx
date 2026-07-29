@@ -33,7 +33,9 @@ import {
   DEFAULT_SPREAD_SIZE,
   MIN_RUNTIME_CONTAINER_WIDTH,
   MIN_SPAWN_WIDTH,
+  SPAWN_PORTS_HEIGHT,
   SPREAD_PORTS_HEIGHT,
+  runtimeContainerPortsHeight,
   runtimeContainerSize,
   spreadCloneNodeId,
 } from '../graph/spread';
@@ -2225,6 +2227,8 @@ function NodeEditorInner() {
         selectedLinkPorts: selectedLinkPortsByNode.get(node.id),
         ...(node.data.patchNode.type === 'AudioInput' ? { audioInput: audio.audioInput } : {}),
         ...(node.data.patchNode.type === 'MidiNote'
+          || node.data.patchNode.type === 'MidiNoteOn'
+          || node.data.patchNode.type === 'MidiNoteOff'
           || node.data.patchNode.type === 'MidiCc'
           || node.data.patchNode.type === 'Slider'
           || node.data.patchNode.type === 'Joystick'
@@ -2842,7 +2846,10 @@ function NodeEditorInner() {
       node.id === link.to.node
       && (
         (node.data.patchNode.type === 'Spread' && link.to.port === 'count')
-        || (node.data.patchNode.type === 'Spawn' && link.to.port === 'trigger')
+        || (
+          node.data.patchNode.type === 'Spawn'
+          && (link.to.port === 'trigger' || link.to.port === 'release trigger')
+        )
       )
     ));
     if (runtimeControlTarget && sourceNode && flowNodeIsInsideSpread(runtimeControlTarget, sourceNode)) {
@@ -3866,7 +3873,9 @@ function NodeEditorInner() {
       containedBounds?.width ?? 0,
     );
     const minimumHeight = Math.max(
-      resizedArea?.kind === 'spread' ? NODE_HEADER_HEIGHT + SPREAD_PORTS_HEIGHT + 48 : 48,
+      resizedArea?.kind === 'spread'
+        ? NODE_HEADER_HEIGHT + (runtimeContainerNode?.data.patchNode.type === 'Spawn' ? SPAWN_PORTS_HEIGHT : SPREAD_PORTS_HEIGHT) + 48
+        : 48,
       containedBounds?.height ?? 0,
     );
     const originalRight = resize.originalPosition.x + resize.originalSize.width;
@@ -3924,7 +3933,10 @@ function NodeEditorInner() {
             position,
             scopeSize: {
               width,
-              height: Math.max(SPREAD_PORTS_HEIGHT, height - NODE_HEADER_HEIGHT),
+              height: Math.max(
+                node.data.patchNode.type === 'Spawn' ? SPAWN_PORTS_HEIGHT : SPREAD_PORTS_HEIGHT,
+                height - NODE_HEADER_HEIGHT,
+              ),
             },
           },
         },
@@ -6556,10 +6568,11 @@ function flowNodeIsInsideSpread(spread: ShaderFlowNode, node: ShaderFlowNode): b
     return spread.data.patchNode.spreadNodeIds.includes(node.id);
   }
   const size = runtimeContainerSize(spread.data.patchNode);
+  const portsHeight = runtimeContainerPortsHeight(spread.data.patchNode);
   return (
     node.position.x >= spread.position.x
     && node.position.x < spread.position.x + size.width
-    && node.position.y >= spread.position.y + NODE_HEADER_HEIGHT + SPREAD_PORTS_HEIGHT
+    && node.position.y >= spread.position.y + NODE_HEADER_HEIGHT + portsHeight
     && node.position.y < spread.position.y + NODE_HEADER_HEIGHT + size.height
   );
 }
@@ -6599,7 +6612,10 @@ function runtimeContainerLinkIsAllowed(link: PatchLink, nodes: ShaderFlowNode[])
     && sourceNode
     && (
       (targetNode.data.patchNode.type === 'Spread' && link.to.port === 'count')
-      || (targetNode.data.patchNode.type === 'Spawn' && link.to.port === 'trigger')
+      || (
+        targetNode.data.patchNode.type === 'Spawn'
+        && (link.to.port === 'trigger' || link.to.port === 'release trigger')
+      )
     )
     && flowNodeIsInsideSpread(targetNode, sourceNode)
   ) {
@@ -6709,6 +6725,7 @@ function promoteNodeIdsInStackOrder(
 
 function spreadAreaForNode(node: ShaderFlowNode): EditorArea {
   const size = runtimeContainerSize(node.data.patchNode);
+  const portsHeight = runtimeContainerPortsHeight(node.data.patchNode);
   const title = node.data.patchNode.type === 'Spawn' ? 'Spawn' : 'Spread';
   return {
     id: `spread-area:${node.id}`,
@@ -6718,9 +6735,9 @@ function spreadAreaForNode(node: ShaderFlowNode): EditorArea {
     position: { ...node.position },
     size: {
       width: size.width,
-      height: Math.max(NODE_HEADER_HEIGHT + SPREAD_PORTS_HEIGHT + 48, NODE_HEADER_HEIGHT + size.height),
+      height: Math.max(NODE_HEADER_HEIGHT + portsHeight + 48, NODE_HEADER_HEIGHT + size.height),
     },
-    uiHeight: SPREAD_PORTS_HEIGHT,
+    uiHeight: portsHeight,
     ...(node.data.patchNode.spreadNodeIds ? {
       locked: true,
       nodeIds: [...node.data.patchNode.spreadNodeIds],
@@ -6740,11 +6757,15 @@ function reconcileSpreadAreas(areas: EditorArea[], nodes: ShaderFlowNode[]): Edi
     const spawnNode = spreadNodes.find((node) => (
       node.id === area.spreadNodeId && node.data.patchNode.type === 'Spawn'
     ));
-    if (!spawnNode || area.size.width >= MIN_SPAWN_WIDTH) return [area];
+    if (
+      !spawnNode
+      || (area.size.width >= MIN_SPAWN_WIDTH && (area.uiHeight ?? 0) >= SPAWN_PORTS_HEIGHT)
+    ) return [area];
     resizedExistingSpawn = true;
     return [{
       ...area,
-      size: { ...area.size, width: MIN_SPAWN_WIDTH },
+      size: { ...area.size, width: Math.max(area.size.width, MIN_SPAWN_WIDTH) },
+      uiHeight: Math.max(area.uiHeight ?? 0, SPAWN_PORTS_HEIGHT),
     }];
   });
   const existingSpreadNodeIds = new Set(retained.flatMap((area) => (

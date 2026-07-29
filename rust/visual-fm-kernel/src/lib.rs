@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 const MAX_WASM_FRAMES: usize = 2048;
 const MAX_NODES: usize = 512;
 const MAX_LINKS: usize = 1024;
@@ -273,6 +275,7 @@ impl DspSpreadRuntime {
 struct DspSpawnInstance {
     states: Vec<f64>,
     resources: DspRepeatResourceState,
+    tag: f64,
     gate: bool,
     kill_triggered: bool,
 }
@@ -280,8 +283,31 @@ struct DspSpawnInstance {
 struct DspSpawnRuntime {
     instances_by_context: Vec<Vec<DspSpawnInstance>>,
     previous_trigger_by_context: Vec<bool>,
+    previous_release_trigger_by_context: Vec<bool>,
     resource_layout: Option<DspRepeatResourceLayout>,
 }
+
+#[derive(Copy, Clone)]
+struct DspMidiHeldNote {
+    channel: usize,
+    note: f64,
+    velocity: f64,
+}
+
+#[derive(Copy, Clone)]
+struct DspMidiNoteEvent {
+    note_on: bool,
+    channel: usize,
+    note: f64,
+    velocity: f64,
+}
+
+const EMPTY_DSP_MIDI_NOTE_EVENT: DspMidiNoteEvent = DspMidiNoteEvent {
+    note_on: false,
+    channel: 1,
+    note: 0.0,
+    velocity: 0.0,
+};
 
 #[derive(Copy, Clone)]
 struct DspSequencerEvent {
@@ -328,6 +354,7 @@ impl DspSpawnRuntime {
         Self {
             instances_by_context: (0..=MAX_VOICE_SLOTS).map(|_| Vec::new()).collect(),
             previous_trigger_by_context: vec![false; MAX_VOICE_SLOTS + 1],
+            previous_release_trigger_by_context: vec![false; MAX_VOICE_SLOTS + 1],
             resource_layout: None,
         }
     }
@@ -850,6 +877,16 @@ static mut DSP_CURRENT_FREQUENCY: f64 = 0.0;
 static mut DSP_CURRENT_VELOCITY: f64 = 0.0;
 static mut DSP_CURRENT_GATE: f64 = 0.0;
 static mut DSP_CURRENT_TRIGGER: f64 = 0.0;
+static mut DSP_MIDI_HELD_NOTES: Option<Vec<DspMidiHeldNote>> = None;
+static mut DSP_MIDI_NOTE_EVENTS: Option<VecDeque<DspMidiNoteEvent>> = None;
+static mut DSP_MIDI_NOTE_EVENT_BLANK_PENDING: bool = false;
+static mut DSP_MIDI_CURRENT_EVENT_ACTIVE: bool = false;
+static mut DSP_MIDI_CURRENT_EVENT: DspMidiNoteEvent = EMPTY_DSP_MIDI_NOTE_EVENT;
+static mut DSP_MIDI_MONO_NOTES: [f64; 17] = [0.0; 17];
+static mut DSP_MIDI_MONO_FREQUENCIES: [f64; 17] = [0.0; 17];
+static mut DSP_MIDI_MONO_VELOCITIES: [f64; 17] = [0.0; 17];
+static mut DSP_MIDI_MONO_GATES: [f64; 17] = [0.0; 17];
+static mut DSP_MIDI_MONO_TRIGGERS: [f64; 17] = [0.0; 17];
 static mut DSP_MIDI_CC_VALUES: [[f64; 128]; 17] = [[0.0; 128]; 17];
 static mut DSP_TEMPO_BPM: f64 = 120.0;
 static mut DSP_TEMPO_BPM_BY_SOURCE: [f64; MAX_DSP_TEMPO_SOURCES] = [120.0; MAX_DSP_TEMPO_SOURCES];
@@ -1665,6 +1702,8 @@ pub extern "C" fn finishDspRepeatRuntimeMigration(
             };
             let mut migrated = DspSpawnRuntime::new();
             migrated.previous_trigger_by_context = old_runtime.previous_trigger_by_context;
+            migrated.previous_release_trigger_by_context =
+                old_runtime.previous_release_trigger_by_context;
             for (context, instances) in old_runtime.instances_by_context.into_iter().enumerate() {
                 migrated.instances_by_context[context] = instances
                     .into_iter()
@@ -1680,6 +1719,7 @@ pub extern "C" fn finishDspRepeatRuntimeMigration(
                             &new_layout,
                             &plan,
                         ),
+                        tag: instance.tag,
                         gate: instance.gate,
                         kill_triggered: instance.kill_triggered,
                     })
@@ -1787,6 +1827,7 @@ pub extern "C" fn resetDspVoiceState(slot: u32) {
             if let Some(runtime) = DSP_SPAWN_RUNTIMES[spread_slot].as_mut() {
                 runtime.instances_by_context[slot + 1].clear();
                 runtime.previous_trigger_by_context[slot + 1] = false;
+                runtime.previous_release_trigger_by_context[slot + 1] = false;
             }
         }
     }
@@ -1821,6 +1862,7 @@ pub extern "C" fn resetDspRuntimeState() {
                 for context in 0..runtime.instances_by_context.len() {
                     runtime.instances_by_context[context].clear();
                     runtime.previous_trigger_by_context[context] = false;
+                    runtime.previous_release_trigger_by_context[context] = false;
                 }
             }
         }
@@ -1831,6 +1873,7 @@ pub extern "C" fn resetDspRuntimeState() {
             }
         }
         clear_dsp_buffers();
+        reset_dsp_midi_notes();
         reset_dsp_tempo_clocks();
     }
 }
@@ -1853,6 +1896,111 @@ fn reset_dsp_tempo_clocks() {
             DSP_TEMPO_LAST_FRAME_BY_SOURCE[index] = DSP_RENDER_FRAME_UNSET;
         }
         DSP_RENDER_QUANTUM_ID = 1;
+    }
+}
+
+fn midi_note_frequency(note: f64) -> f64 {
+    440.0 * 2.0_f64.powf((note - 69.0) / 12.0)
+}
+
+#[allow(static_mut_refs)]
+unsafe fn reset_dsp_midi_notes() {
+    DSP_MIDI_HELD_NOTES = Some(Vec::new());
+    DSP_MIDI_NOTE_EVENTS = Some(VecDeque::new());
+    DSP_MIDI_NOTE_EVENT_BLANK_PENDING = false;
+    DSP_MIDI_CURRENT_EVENT_ACTIVE = false;
+    DSP_MIDI_CURRENT_EVENT = EMPTY_DSP_MIDI_NOTE_EVENT;
+    DSP_MIDI_MONO_NOTES = [0.0; 17];
+    DSP_MIDI_MONO_FREQUENCIES = [0.0; 17];
+    DSP_MIDI_MONO_VELOCITIES = [0.0; 17];
+    DSP_MIDI_MONO_GATES = [0.0; 17];
+    DSP_MIDI_MONO_TRIGGERS = [0.0; 17];
+}
+
+#[allow(static_mut_refs)]
+unsafe fn refresh_dsp_midi_mono_values(note_on_event: Option<DspMidiNoteEvent>) {
+    if let Some(event) = note_on_event {
+        DSP_MIDI_MONO_TRIGGERS[0] = 1.0;
+        DSP_MIDI_MONO_TRIGGERS[event.channel] = 1.0;
+    }
+
+    for channel in 0..=16 {
+        let active = DSP_MIDI_HELD_NOTES.as_ref().and_then(|held| {
+            held.iter()
+                .rev()
+                .find(|entry| channel == 0 || entry.channel == channel)
+                .copied()
+        });
+        if let Some(active) = active {
+            DSP_MIDI_MONO_NOTES[channel] = active.note;
+            DSP_MIDI_MONO_FREQUENCIES[channel] = midi_note_frequency(active.note);
+            DSP_MIDI_MONO_VELOCITIES[channel] = active.velocity;
+            DSP_MIDI_MONO_GATES[channel] = 1.0;
+        } else {
+            DSP_MIDI_MONO_NOTES[channel] = 0.0;
+            DSP_MIDI_MONO_FREQUENCIES[channel] = 0.0;
+            DSP_MIDI_MONO_VELOCITIES[channel] = 0.0;
+            DSP_MIDI_MONO_GATES[channel] = 0.0;
+        }
+    }
+}
+
+#[allow(static_mut_refs)]
+unsafe fn advance_dsp_midi_note_event() {
+    DSP_MIDI_CURRENT_EVENT_ACTIVE = false;
+    DSP_MIDI_CURRENT_EVENT = EMPTY_DSP_MIDI_NOTE_EVENT;
+    DSP_MIDI_MONO_TRIGGERS = [0.0; 17];
+
+    if DSP_MIDI_NOTE_EVENT_BLANK_PENDING {
+        DSP_MIDI_NOTE_EVENT_BLANK_PENDING = false;
+        return;
+    }
+
+    let event = DSP_MIDI_NOTE_EVENTS.as_mut().and_then(VecDeque::pop_front);
+    let Some(event) = event else {
+        return;
+    };
+
+    let held = DSP_MIDI_HELD_NOTES.get_or_insert_with(Vec::new);
+    held.retain(|entry| {
+        entry.channel != event.channel || (entry.note - event.note).abs() > 0.000001
+    });
+    if event.note_on {
+        held.push(DspMidiHeldNote {
+            channel: event.channel,
+            note: event.note,
+            velocity: event.velocity,
+        });
+    }
+
+    DSP_MIDI_CURRENT_EVENT_ACTIVE = true;
+    DSP_MIDI_CURRENT_EVENT = event;
+    DSP_MIDI_NOTE_EVENT_BLANK_PENDING = true;
+    refresh_dsp_midi_mono_values(event.note_on.then_some(event));
+}
+
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub extern "C" fn queueDspMidiNoteEvent(note_on: u32, channel: u32, note: f64, velocity: f64) {
+    unsafe {
+        let events = DSP_MIDI_NOTE_EVENTS.get_or_insert_with(VecDeque::new);
+        if events.len() >= 4096 {
+            events.pop_front();
+        }
+        events.push_back(DspMidiNoteEvent {
+            note_on: note_on != 0,
+            channel: (channel as usize).clamp(1, 16),
+            note: if note.is_finite() {
+                note.clamp(0.0, 127.0)
+            } else {
+                0.0
+            },
+            velocity: if velocity.is_finite() {
+                velocity.clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
+        });
     }
 }
 
@@ -7240,16 +7388,28 @@ fn sign_preserving_pow(base: f64, exponent: f64) -> f64 {
 
 fn render_dsp_midi_note(op: DspOp) -> f64 {
     unsafe {
-        let channel = dsp_reg(op.b).round().clamp(0.0, 16.0);
-        if channel > 0.0 && (channel - DSP_CURRENT_CHANNEL).abs() > 0.5 {
-            return 0.0;
-        }
+        let channel = dsp_reg(op.b).round().clamp(0.0, 16.0) as usize;
         match op.a {
-            1 => DSP_CURRENT_FREQUENCY,
-            2 => DSP_CURRENT_VELOCITY,
-            3 => DSP_CURRENT_GATE,
-            4 => DSP_CURRENT_TRIGGER,
-            _ => DSP_CURRENT_NOTE,
+            1 => DSP_MIDI_MONO_FREQUENCIES[channel],
+            2 => DSP_MIDI_MONO_VELOCITIES[channel],
+            3 => DSP_MIDI_MONO_GATES[channel],
+            4 => DSP_MIDI_MONO_TRIGGERS[channel],
+            5..=9 => {
+                let event = DSP_MIDI_CURRENT_EVENT;
+                let channel_matches = channel == 0 || channel == event.channel;
+                if !DSP_MIDI_CURRENT_EVENT_ACTIVE || !channel_matches {
+                    return 0.0;
+                }
+                match op.a {
+                    5 if event.note_on => event.note,
+                    6 if event.note_on => midi_note_frequency(event.note),
+                    7 if event.note_on => event.velocity,
+                    8 if !event.note_on => event.note,
+                    9 if !event.note_on => midi_note_frequency(event.note),
+                    _ => 0.0,
+                }
+            }
+            _ => DSP_MIDI_MONO_NOTES[channel],
         }
     }
 }
@@ -8615,13 +8775,27 @@ unsafe fn render_dsp_ops(
                 runtime.resource_layout = Some(dsp_template_resource_layout(op_index, end_index));
             }
             let context = DSP_SPREAD_CONTEXT.min(MAX_VOICE_SLOTS);
-            let trigger = dsp_reg(op.a) >= ENVELOPE_TRIGGER_THRESHOLD;
+            let trigger_value = dsp_reg(op.a);
+            let trigger = trigger_value >= ENVELOPE_TRIGGER_THRESHOLD;
+            let release_value = if op.d >= 0 { dsp_reg(op.d) } else { 0.0 };
+            let release_trigger = release_value >= ENVELOPE_TRIGGER_THRESHOLD;
+            let release_edge =
+                release_trigger && !runtime.previous_release_trigger_by_context[context];
+            if release_edge {
+                for instance in &mut runtime.instances_by_context[context] {
+                    if (instance.tag - release_value).abs() <= 0.000001 {
+                        instance.gate = false;
+                    }
+                }
+            }
+            runtime.previous_release_trigger_by_context[context] = release_trigger;
             if trigger && !runtime.previous_trigger_by_context[context] {
                 runtime.instances_by_context[context].push(DspSpawnInstance {
                     states: vec![0.0; state_count],
                     resources: DspRepeatResourceState::new(
                         runtime.resource_layout.as_ref().unwrap(),
                     ),
+                    tag: trigger_value,
                     gate: true,
                     kill_triggered: false,
                 });
@@ -8771,6 +8945,7 @@ pub extern "C" fn renderDspProgram(frames: u32, sample_rate: f64) {
         for frame in 0..frames {
             let mut left_sample = 0.0;
             let mut right_sample = 0.0;
+            advance_dsp_midi_note_event();
             advance_dsp_values(value_smoothing_alpha);
             render_dsp_ops(frame, sample_rate, &mut left_sample, &mut right_sample);
             capture_dsp_meters();

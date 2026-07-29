@@ -95,8 +95,25 @@ assert(
   'Spawn should expose its internal instance gate output.',
 );
 assert(
-  spawnDefinition.inputs.map((input) => input.name).join(',') === 'trigger,kill trigger',
-  'Spawn should expose trigger and internal kill trigger inputs.',
+  spawnDefinition.inputs.map((input) => input.name).join(',') === 'trigger,release trigger,kill trigger',
+  'Spawn should expose trigger, external release trigger, and internal kill trigger inputs.',
+);
+const midiNoteDefinition = getDefinition('MidiNote');
+assert(
+  midiNoteDefinition.inputs.map((input) => input.name).join(',') === 'channel',
+  'MIDI Note should be monophonic and expose only its channel input.',
+);
+assert(
+  midiNoteDefinition.outputs.map((output) => output.name).join(',') === 'note,frequency,velocity,gate,trigger',
+  'MIDI Note should expose held monophonic note state.',
+);
+assert(
+  getDefinition('MidiNoteOn').outputs.map((output) => output.name).join(',') === 'note,frequency,velocity',
+  'MIDI Note On should expose queued note-on payload outputs.',
+);
+assert(
+  getDefinition('MidiNoteOff').outputs.map((output) => output.name).join(',') === 'note,frequency',
+  'MIDI Note Off should expose queued note-off payload outputs.',
 );
 for (const port of ['inputGain', 'ceiling', 'release', 'lookahead']) {
   const input = getDefinition('Limiter').inputs.find((entry) => entry.name === port);
@@ -235,12 +252,14 @@ const spawnProgram = compilePatchToDspProgram({
   nodes: [
     { ...node('spawn', 'Spawn', { trigger: 0 }), position: { x: 0, y: 0 }, scopeSize: { width: 320, height: 220 } },
     { ...node('spawn_trigger', 'Constant', { value: 0 }), position: { x: -140, y: 0 } },
-    { ...node('voice', 'Constant', { value: 0.25 }), position: { x: 20, y: 100 } },
+    { ...node('spawn_release', 'Constant', { value: 0 }), position: { x: -140, y: 60 } },
+    { ...node('voice', 'Constant', { value: 0.25 }), position: { x: 20, y: 110 } },
     { ...node('gate', 'Pass', { signal: 0 }), position: { x: 20, y: 160 } },
-    { ...node('voice_out', 'AudioOut', { level: 1 }), position: { x: 140, y: 100 } },
+    { ...node('voice_out', 'AudioOut', { level: 1 }), position: { x: 140, y: 110 } },
   ],
   links: [
     link('spawn_trigger', 'signal', 'spawn', 'trigger'),
+    link('spawn_release', 'signal', 'spawn', 'release trigger'),
     link('spawn', 'instance gate', 'gate', 'signal'),
     link('gate', 'signal', 'voice_out', 'level'),
     link('voice', 'signal', 'voice_out', 'both'),
@@ -252,6 +271,7 @@ const spawnBeginIndex = spawnProgram.ops.findIndex((op) => op.opcode === 46);
 assert(spawnBeginIndex >= 0, 'Spawn should compile a SpawnBegin operation.');
 const spawnBegin = spawnProgram.ops[spawnBeginIndex];
 assert(spawnBegin.c >= 0, 'Spawn should compile its internal kill trigger register.');
+assert(spawnBegin.d >= 0, 'Spawn should compile its external release trigger register.');
 assert(
   spawnProgram.ops.some((op) => op.opcode === 50),
   'Spawn should compile its internal instance gate signal.',
@@ -275,6 +295,19 @@ assert(
   invalidSpawnKillProgram.errors.some((error) => error.includes('kill trigger can only be driven by a node inside that Spawn')),
   `External Spawn kill trigger error missing: ${invalidSpawnKillProgram.errors.join('; ')}`,
 );
+const invalidInternalSpawnReleaseProgram = compilePatchToDspProgram({
+  nodes: [
+    { ...node('spawn', 'Spawn', { trigger: 0 }), position: { x: 0, y: 0 }, scopeSize: { width: 480, height: 220 } },
+    { ...node('internal_release', 'Constant', { value: 35 }), position: { x: 20, y: 110 } },
+  ],
+  links: [
+    link('internal_release', 'signal', 'spawn', 'release trigger'),
+  ],
+});
+assert(
+  invalidInternalSpawnReleaseProgram.errors.some((error) => error.includes('release trigger cannot be driven by a node inside the same Spawn')),
+  `Internal Spawn release trigger error missing: ${invalidInternalSpawnReleaseProgram.errors.join('; ')}`,
+);
 const invalidSpawnGateProgram = compilePatchToDspProgram({
   nodes: [
     { ...node('spawn', 'Spawn', { trigger: 0 }), position: { x: 0, y: 0 }, scopeSize: { width: 320, height: 220 } },
@@ -288,6 +321,29 @@ assert(
   invalidSpawnGateProgram.errors.some((error) => error.includes('instance gate can only link to nodes inside that Spawn')),
   `External Spawn instance gate error missing: ${invalidSpawnGateProgram.errors.join('; ')}`,
 );
+
+const midiEventProgram = compilePatchToDspProgram({
+  nodes: [
+    node('midi_mono', 'MidiNote', { channel: 0 }),
+    node('midi_on', 'MidiNoteOn', { channel: 0 }),
+    node('midi_off', 'MidiNoteOff', { channel: 0 }),
+    node('midi_out', 'AudioOut', { level: 1 }),
+  ],
+  links: [
+    link('midi_mono', 'gate', 'midi_out', 'left'),
+    link('midi_on', 'velocity', 'midi_out', 'right'),
+    link('midi_off', 'note', 'midi_out', 'both'),
+  ],
+});
+assert(midiEventProgram.errors.length === 0, `MIDI event DSP compile failed: ${midiEventProgram.errors.join('; ')}`);
+assert(!midiEventProgram.usesMidiNote, 'MIDI nodes should not enable whole-program voice rendering.');
+assert(midiEventProgram.maxVoices === 1, 'MIDI nodes should not allocate legacy graph voices.');
+const midiOutputKinds = new Set(
+  midiEventProgram.ops.filter((op) => op.opcode === 27).map((op) => op.a),
+);
+for (const kind of [3, 7, 8]) {
+  assert(midiOutputKinds.has(kind), `MIDI output kind ${kind} was not compiled.`);
+}
 
 const timeProgram = compilePatchToDspProgram({
   nodes: [

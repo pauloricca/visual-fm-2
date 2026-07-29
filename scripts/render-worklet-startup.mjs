@@ -131,7 +131,7 @@ async function runSamplePlayerModeSmoke() {
 
 async function runMidiNoteSmoke() {
   const graph = await compileVisiblePatch();
-  if (!graph.usesMidiNote || graph.maxVoices !== 2) {
+  if (graph.usesMidiNote || graph.maxVoices !== 1) {
     throw new Error(`MidiNote smoke compiled unexpected MIDI metadata: ${JSON.stringify({ usesMidiNote: graph.usesMidiNote, maxVoices: graph.maxVoices })}`);
   }
 
@@ -148,33 +148,27 @@ async function runMidiNoteSmoke() {
     throw new Error(`MidiNote.frequency did not drive oscillator near A4: ${JSON.stringify(voicedWindow)}`);
   }
 
+  processor.port.onmessage({ data: { type: 'noteOn', payload: { note: 72, velocity: 0.8 } } });
+  const newestWindows = renderAudioWindows(graph, 0.25);
+  const newestWindow = newestWindows.findLast((row) => row.peak > 0.01 && Number.isFinite(row.hz));
+  if (!newestWindow || Math.abs(newestWindow.hz - 523.25) > 14) {
+    throw new Error(`MidiNote did not follow the newest held note: ${JSON.stringify(newestWindows)}`);
+  }
+
+  processor.port.onmessage({ data: { type: 'noteOff', payload: { note: 72 } } });
+  const fallbackWindows = renderAudioWindows(graph, 0.25);
+  const fallbackWindow = fallbackWindows.findLast((row) => row.peak > 0.01 && Number.isFinite(row.hz));
+  if (!fallbackWindow || Math.abs(fallbackWindow.hz - 440) > 12) {
+    throw new Error(`MidiNote did not restore the previously held note: ${JSON.stringify(fallbackWindows)}`);
+  }
+
   processor.port.onmessage({ data: { type: 'noteOff', payload: { note: 69 } } });
-  const releasedVoice = [...processor.voices.values()].find((voice) => voice.note === 69 && voice.releasedAt !== null);
-  if (!releasedVoice || processor.activeVoicesByNote.has('1:69')) {
-    throw new Error('MidiNote noteOff did not release the active A4 voice.');
-  }
-  renderAudioWindows(graph, 0.5);
-  if ([...processor.voices.values()].some((voice) => voice.note === 69 && voice.releasedAt === null && voice.stolenAt === null)) {
-    throw new Error('MidiNote A4 voice remained active after release tail.');
+  const silentWindows = renderAudioWindows(graph, 0.12);
+  if (silentWindows.some((row) => row.peak > 0.001)) {
+    throw new Error(`MidiNote gate remained active after all notes were released: ${JSON.stringify(silentWindows)}`);
   }
 
-  processor.port.onmessage({ data: { type: 'panic' } });
-  configureProcessorGraph(graph);
-  for (const note of [60, 64, 67]) {
-    processor.port.onmessage({ data: { type: 'noteOn', payload: { note, velocity: 0.9 } } });
-    renderAudioWindows(graph, 0.04);
-  }
-  renderAudioWindows(graph, 0.12);
-  const liveVoices = [...processor.voices.values()].filter((voice) => voice.releasedAt === null && voice.stolenAt === null);
-  const stolenVoices = [...processor.voices.values()].filter((voice) => voice.stolenAt !== null);
-  if (liveVoices.length > 2) {
-    throw new Error(`MidiNote voices limit allowed too many live voices: ${liveVoices.length}`);
-  }
-  if (stolenVoices.length === 0 && processor.activeVoicesByNote.has('1:60')) {
-    throw new Error('MidiNote voice stealing did not retire the oldest note under a 2 voice limit.');
-  }
-
-  console.log(`midi-note ok hz=${voicedWindow.hz.toFixed(2)} live=${liveVoices.length} stolen=${stolenVoices.length}`);
+  console.log(`midi-note mono ok first=${voicedWindow.hz.toFixed(2)} newest=${newestWindow.hz.toFixed(2)} fallback=${fallbackWindow.hz.toFixed(2)}`);
 }
 
 function configureProcessorGraph(graph) {
@@ -311,8 +305,9 @@ async function compileVisiblePatch() {
   const patch = {
     nodes: midiNote
       ? [
-        { id: 'midi', type: 'MidiNote', params: { voices: 2 } },
+        { id: 'midi', type: 'MidiNote', params: { channel: 0 } },
         { id: 'sine', type: 'SineOsc', params: { frequency: 220 } },
+        { id: 'amp', type: 'Multiply', params: { factor: 0 } },
         { id: 'out', type: 'AudioOut', params: { level: 0.7 } },
       ]
       : audioInput
@@ -427,7 +422,9 @@ async function compileVisiblePatch() {
       ...(midiNote
         ? [
           { from: { node: 'midi', port: 'frequency' }, to: { node: 'sine', port: 'frequency' }, weight: 1, mode: 'set' },
-          { from: { node: 'sine', port: 'signal' }, to: { node: 'out', port: 'both' }, weight: 1, mode: 'set' },
+          { from: { node: 'sine', port: 'signal' }, to: { node: 'amp', port: 'signal' }, weight: 1, mode: 'set' },
+          { from: { node: 'midi', port: 'gate' }, to: { node: 'amp', port: 'factor' }, weight: 1, mode: 'set' },
+          { from: { node: 'amp', port: 'signal' }, to: { node: 'out', port: 'both' }, weight: 1, mode: 'set' },
         ]
         : []),
       ...(samplePlayer

@@ -161,6 +161,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.voices = new Map();
     this.activeVoicesByNote = new Map();
     this.pendingVoiceStarts = [];
+    this.pendingMidiNoteEvents = [];
     this.voiceCounter = 1;
     this.freeSlots = Array.from({ length: MAX_ACTIVE_VOICES }, (_, index) => index);
     this.sampleCursor = 0;
@@ -231,9 +232,9 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       } else if (type === "imageData") {
         this.setImageData(payload);
       } else if (type === "noteOn") {
-        if (!this.muted) this.noteOn(payload.channel, payload.note, payload.velocity);
+        if (!this.muted) this.queueMidiNoteEvent(true, payload.channel, payload.note, payload.velocity);
       } else if (type === "noteOff") {
-        this.noteOff(payload.channel, payload.note);
+        this.queueMidiNoteEvent(false, payload.channel, payload.note, payload.velocity);
       } else if (type === "midiCc") {
         this.setMidiCc(payload);
       } else if (type === "midiClockTempo") {
@@ -1804,6 +1805,34 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     return 440 * Math.pow(2, (note - 69) / 12);
   }
 
+  queueMidiNoteEvent(noteOn, channel, note, velocity = 0) {
+    const numericChannel = this.clamp(Math.round(Number(channel ?? 1)), 1, 16);
+    const numericNote = Number(note);
+    if (!Number.isFinite(numericNote)) return;
+    this.pendingMidiNoteEvents.push({
+      noteOn: Boolean(noteOn),
+      channel: numericChannel,
+      note: this.clamp(numericNote, 0, 127),
+      velocity: this.clamp(Number(velocity) || 0, 0, 1),
+    });
+    if (this.pendingMidiNoteEvents.length > 4096) {
+      this.pendingMidiNoteEvents.splice(0, this.pendingMidiNoteEvents.length - 4096);
+    }
+  }
+
+  flushMidiNoteEventsToWasm() {
+    if (!this.pendingMidiNoteEvents.length || !this.wasm?.queueDspMidiNoteEvent) return;
+    for (const event of this.pendingMidiNoteEvents) {
+      this.wasm.queueDspMidiNoteEvent(
+        event.noteOn ? 1 : 0,
+        event.channel,
+        event.note,
+        event.velocity,
+      );
+    }
+    this.pendingMidiNoteEvents = [];
+  }
+
   allocateSlot() {
     if (this.freeSlots.length) return this.freeSlots.shift();
     const stolenVoice = [...this.voices.values()]
@@ -2075,6 +2104,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.voices.clear();
     this.activeVoicesByNote.clear();
     this.pendingVoiceStarts = [];
+    this.pendingMidiNoteEvents = [];
     this.freeSlots = Array.from({ length: MAX_ACTIVE_VOICES }, (_, index) => index);
     this.outputLifecycleGain = 0;
     this.chorusBuffers.forEach((buffer) => buffer.fill(0));
@@ -2663,29 +2693,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
   }
 
   renderCurrentDspProgramToWasm(frames) {
-    if (this.dspProgram.usesMidiNote) {
-      for (const voice of this.voices.values()) {
-        const now = this.sampleCursor / sampleRate;
-        const lifecycleGain = voice.releasedAt === null
-          ? 1
-          : voice.releaseGain * Math.max(0, 1 - ((now - voice.releasedAt) / (voice.releaseSeconds || 0.24)));
-        this.wasm.renderDspProgramVoice?.(
-          voice.slot,
-          frames,
-          sampleRate,
-          voice.channel ?? 1,
-          voice.note,
-          voice.frequency,
-          voice.velocity,
-          lifecycleGain,
-          now - voice.startedAt,
-          voice.releasedAt === null ? -1 : now - voice.releasedAt,
-          voice.stolenAt === null ? -1 : now - voice.stolenAt,
-        );
-      }
-      return;
-    }
-
+    this.flushMidiNoteEventsToWasm();
     this.wasm.renderDspProgram?.(frames, sampleRate);
   }
 
