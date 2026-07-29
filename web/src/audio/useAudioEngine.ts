@@ -1286,7 +1286,9 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
             }
             if (type === 'visualizationFrame') {
               setLinkMeters(linkMetersFromPayload(payload));
-              setPlayheads(playheadsFromPayload({ values: payload?.playheads }));
+              if (audioActivationRequestedRef.current) {
+                setPlayheads(playheadsFromPayload({ values: payload?.playheads }));
+              }
               setLinkScopeReadings(linkScopesFromPayload(payload));
               return;
             }
@@ -1295,7 +1297,9 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
               return;
             }
             if (type === 'playheads') {
-              setPlayheads(playheadsFromPayload(payload));
+              if (audioActivationRequestedRef.current) {
+                setPlayheads(playheadsFromPayload(payload));
+              }
               return;
             }
             if (type === 'linkScope') {
@@ -1541,6 +1545,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     });
     audioActivationRequestedRef.current = false;
     finishRecordingCapture();
+    setPlayheads({});
     const context = contextRef.current;
     const outputGain = outputGainRef.current;
     if (context && outputGain && context.state !== 'closed') {

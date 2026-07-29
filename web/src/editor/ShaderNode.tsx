@@ -1928,7 +1928,7 @@ function SampleWaveformDisplay({
       verticalPadding,
     )
     : '';
-  const activePlayheads = playheads?.length ? playheads : [safeStart];
+  const activePlayheads = playheads ?? [];
   const startX = timelineX(startSeconds);
   const endX = timelineX(endSeconds);
   const attackEndX = timelineX(attackEndSeconds);
