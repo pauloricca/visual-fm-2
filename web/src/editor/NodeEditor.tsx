@@ -4353,6 +4353,14 @@ function NodeEditorInner() {
                           }}
                         >
                           {area.title}
+                          {area.kind === 'spread'
+                            && nodesRef.current.find((node) => node.id === area.spreadNodeId)?.data.patchNode.type === 'Spawn'
+                            ? ` (${Math.max(0, Math.floor(
+                                audio.linkMeters[
+                                  `${scopedDspNodeId(area.spreadNodeId ?? '', activeDspGroupIds)}:spawn-count`
+                                ]?.output ?? 0,
+                              ))})`
+                            : ''}
                         </button>
                       )}
                       {!area.collapsed ? (

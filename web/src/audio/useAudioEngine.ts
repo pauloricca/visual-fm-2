@@ -123,6 +123,19 @@ interface RecordingCapture {
   sampleRate: number;
   frames: number;
   stopping: boolean;
+  sampleEvents: SamplePlaybackEvent[];
+}
+
+interface SamplePlaybackEvent {
+  nodeId: string;
+  sampleName: string;
+  startMs: number;
+  endMs: number;
+  speed: number;
+  volume: number;
+  attackMs: number;
+  releaseMs: number;
+  triggerTimeMs: number;
 }
 
 interface SampleDataCacheEntry {
@@ -154,7 +167,7 @@ interface ImageDataRequest {
 // Keep this in step with public/audio/visual-fm-kernel.wasm. AudioWorklet
 // modules and WASM are aggressively cached, so an older kernel can silently
 // omit newer DSP behavior or exports while the current UI is running.
-const AUDIO_ENGINE_ASSET_VERSION = '2026-07-24-random-node-1';
+const AUDIO_ENGINE_ASSET_VERSION = '2026-07-29-instance-resource-state-1';
 const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const METER_UPDATE_INTERVAL_MS = 80;
@@ -491,7 +504,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     setRecordingStatus('saving');
     setRecordingMessage('saving recording');
 
-    void uploadRecording(wavBlob, capture.patchName).then((result) => {
+    void uploadRecording(wavBlob, capture.patchName, capture.sampleEvents).then((result) => {
       if (recordingSaveIdRef.current !== saveId) return;
       setRecordingStatus('saved');
       setRecordingMessage(`saved ${result.name}`);
@@ -520,6 +533,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
       sampleRate: context.sampleRate,
       frames: 0,
       stopping: false,
+      sampleEvents: [],
     };
     node.port.postMessage({
       type: 'startRecording',
@@ -1262,6 +1276,8 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
             if (type === 'recordingStopped') {
               const id = Number(payload?.id);
               if (Number.isFinite(id)) {
+                const capture = recordingCaptureRef.current;
+                if (capture?.id === id) capture.sampleEvents = samplePlaybackEventsFromPayload(payload?.sampleEvents);
                 completeRecordingCapture(id);
               }
               return;
@@ -1716,7 +1732,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-async function uploadRecording(blob: Blob, patchName: string): Promise<{ name: string }> {
+async function uploadRecording(blob: Blob, patchName: string, sampleEvents: SamplePlaybackEvent[]): Promise<{ name: string }> {
   const response = await fetch('/api/recordings', {
     method: 'POST',
     headers: {
@@ -1733,7 +1749,49 @@ async function uploadRecording(blob: Blob, patchName: string): Promise<{ name: s
   if (!isRecord(payload) || typeof payload.name !== 'string') {
     throw new Error('Recording save returned an invalid response.');
   }
+  const metadataResponse = await fetch('/api/recording-metadata', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'X-Visual-Fm-Recording-Name': payload.name,
+    },
+    body: samplePlaybackEventsCsv(sampleEvents),
+  });
+  if (!metadataResponse.ok) {
+    throw new Error(await metadataResponse.text() || `Recording metadata save failed (${metadataResponse.status}).`);
+  }
   return { name: payload.name };
+}
+
+function samplePlaybackEventsFromPayload(value: unknown): SamplePlaybackEvent[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isRecord).map((event) => ({
+    nodeId: String(event.nodeId ?? ''),
+    sampleName: String(event.sampleName ?? ''),
+    startMs: Number(event.startMs) || 0,
+    endMs: Number(event.endMs) || 0,
+    speed: Number(event.speed) || 0,
+    volume: Number(event.volume) || 0,
+    attackMs: Number(event.attackMs) || 0,
+    releaseMs: Number(event.releaseMs) || 0,
+    triggerTimeMs: Number(event.triggerTimeMs) || 0,
+  }));
+}
+
+function samplePlaybackEventsCsv(events: SamplePlaybackEvent[]): string {
+  const escape = (value: string | number) => `"${String(value).replaceAll('"', '""')}"`;
+  const header = ['node_id', 'sample_name', 'start_ms', 'end_ms', 'speed', 'volume', 'attack_ms', 'release_ms', 'trigger_time_ms'];
+  const rows = events
+    .map((event, captureOrder) => ({ event, captureOrder }))
+    .sort((left, right) => (
+      left.event.triggerTimeMs - right.event.triggerTimeMs
+      || left.captureOrder - right.captureOrder
+    ))
+    .map(({ event }) => [
+      event.nodeId, event.sampleName, event.startMs, event.endMs, event.speed, event.volume,
+      event.attackMs, event.releaseMs, event.triggerTimeMs,
+    ].map(escape).join(','));
+  return `${header.join(',')}\n${rows.join('\n')}${rows.length ? '\n' : ''}`;
 }
 
 function scopePayload(requests: ScopeCaptureRequest[]) {

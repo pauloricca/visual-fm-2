@@ -155,6 +155,8 @@ const SEQUENCER_MIN_STEPS: i32 = 1;
 const SEQUENCER_MAX_STEPS: i32 = 128;
 const SEQUENCER_MIN_ROWS: i32 = 1;
 const SEQUENCER_MAX_ROWS: i32 = 16;
+const MAX_SAMPLE_TRIGGER_EVENTS: usize = 512;
+const SAMPLE_TRIGGER_EVENT_FIELDS: usize = 8;
 
 #[derive(Copy, Clone)]
 struct Node {
@@ -253,24 +255,30 @@ struct DspDerivedValueCache {
 
 struct DspSpreadRuntime {
     states_by_context: Vec<Vec<f64>>,
+    resources_by_context: Vec<Vec<DspRepeatResourceState>>,
+    resource_layout: Option<DspRepeatResourceLayout>,
 }
 
 impl DspSpreadRuntime {
     fn new() -> Self {
         Self {
             states_by_context: (0..=MAX_VOICE_SLOTS).map(|_| Vec::new()).collect(),
+            resources_by_context: (0..=MAX_VOICE_SLOTS).map(|_| Vec::new()).collect(),
+            resource_layout: None,
         }
     }
 }
 
 struct DspSpawnInstance {
     states: Vec<f64>,
+    resources: DspRepeatResourceState,
     kill_triggered: bool,
 }
 
 struct DspSpawnRuntime {
     instances_by_context: Vec<Vec<DspSpawnInstance>>,
     previous_trigger_by_context: Vec<bool>,
+    resource_layout: Option<DspRepeatResourceLayout>,
 }
 
 impl DspSpawnRuntime {
@@ -278,6 +286,7 @@ impl DspSpawnRuntime {
         Self {
             instances_by_context: (0..=MAX_VOICE_SLOTS).map(|_| Vec::new()).collect(),
             previous_trigger_by_context: vec![false; MAX_VOICE_SLOTS + 1],
+            resource_layout: None,
         }
     }
 }
@@ -287,6 +296,147 @@ struct DspSampleVoiceSettings {
     node: Node,
     frequency: f64,
     level: f64,
+}
+
+#[derive(Clone)]
+struct DspSamplePlaybackState {
+    sample_index: usize,
+    voice_settings: [DspSampleVoiceSettings; MAX_DSP_SAMPLE_PLAYER_VOICES],
+    playing: [bool; MAX_DSP_SAMPLE_PLAYER_VOICES],
+    positions: [f64; MAX_DSP_SAMPLE_PLAYER_VOICES],
+    directions: [f64; MAX_DSP_SAMPLE_PLAYER_VOICES],
+    frequency_directions: [f64; MAX_DSP_SAMPLE_PLAYER_VOICES],
+    has_advanced: [bool; MAX_DSP_SAMPLE_PLAYER_VOICES],
+    playback_ages: [f64; MAX_DSP_SAMPLE_PLAYER_VOICES],
+    release_ages: [f64; MAX_DSP_SAMPLE_PLAYER_VOICES],
+    start_values: [f64; MAX_DSP_SAMPLE_PLAYER_VOICES],
+    last_outputs: [f64; MAX_DSP_SAMPLE_PLAYER_VOICES],
+    retrigger_outputs: [f64; MAX_DSP_SAMPLE_PLAYER_VOICES],
+    retrigger_fade_ages: [f64; MAX_DSP_SAMPLE_PLAYER_VOICES],
+    retrigger_fade_durations: [f64; MAX_DSP_SAMPLE_PLAYER_VOICES],
+    stretch_phases: [f64; MAX_DSP_SAMPLE_PLAYER_VOICES],
+    stretch_anchors: [f64; MAX_DSP_SAMPLE_PLAYER_VOICES],
+}
+
+impl DspSamplePlaybackState {
+    fn new(sample_index: usize) -> Self {
+        Self {
+            sample_index,
+            voice_settings: [EMPTY_DSP_SAMPLE_VOICE_SETTINGS; MAX_DSP_SAMPLE_PLAYER_VOICES],
+            playing: [false; MAX_DSP_SAMPLE_PLAYER_VOICES],
+            positions: [0.0; MAX_DSP_SAMPLE_PLAYER_VOICES],
+            directions: [1.0; MAX_DSP_SAMPLE_PLAYER_VOICES],
+            frequency_directions: [1.0; MAX_DSP_SAMPLE_PLAYER_VOICES],
+            has_advanced: [false; MAX_DSP_SAMPLE_PLAYER_VOICES],
+            playback_ages: [0.0; MAX_DSP_SAMPLE_PLAYER_VOICES],
+            release_ages: [-1.0; MAX_DSP_SAMPLE_PLAYER_VOICES],
+            start_values: [0.0; MAX_DSP_SAMPLE_PLAYER_VOICES],
+            last_outputs: [0.0; MAX_DSP_SAMPLE_PLAYER_VOICES],
+            retrigger_outputs: [0.0; MAX_DSP_SAMPLE_PLAYER_VOICES],
+            retrigger_fade_ages: [-1.0; MAX_DSP_SAMPLE_PLAYER_VOICES],
+            retrigger_fade_durations: [0.0; MAX_DSP_SAMPLE_PLAYER_VOICES],
+            stretch_phases: [0.0; MAX_DSP_SAMPLE_PLAYER_VOICES],
+            stretch_anchors: [0.0; MAX_DSP_SAMPLE_PLAYER_VOICES],
+        }
+    }
+}
+
+struct DspRepeatResourceLayout {
+    sample_indices: Vec<usize>,
+    effect_slots: Vec<usize>,
+    buffer_slots: Vec<usize>,
+}
+
+struct DspRepeatEffectBufferState {
+    slot: usize,
+    buffer: Option<Box<[f32]>>,
+    index: usize,
+}
+
+struct DspRepeatBufferState {
+    slot: usize,
+    buffer: Option<Box<[f32]>>,
+}
+
+struct DspRepeatResourceState {
+    samples: Vec<DspSamplePlaybackState>,
+    effect_buffers: Vec<DspRepeatEffectBufferState>,
+    buffers: Vec<DspRepeatBufferState>,
+}
+
+impl DspRepeatResourceState {
+    fn new(layout: &DspRepeatResourceLayout) -> Self {
+        Self {
+            samples: layout
+                .sample_indices
+                .iter()
+                .map(|sample_index| DspSamplePlaybackState::new(*sample_index))
+                .collect(),
+            effect_buffers: layout
+                .effect_slots
+                .iter()
+                .map(|slot| DspRepeatEffectBufferState {
+                    slot: *slot,
+                    buffer: try_zeroed_f32_buffer(MAX_DSP_DELAY_SAMPLES),
+                    index: 0,
+                })
+                .collect(),
+            buffers: layout
+                .buffer_slots
+                .iter()
+                .map(|slot| DspRepeatBufferState {
+                    slot: *slot,
+                    buffer: try_zeroed_f32_buffer(MAX_DSP_BUFFER_SAMPLES),
+                })
+                .collect(),
+        }
+    }
+
+    unsafe fn load_into_workspace(&mut self) {
+        restore_dsp_sample_playback_states(&self.samples);
+        for effect in &mut self.effect_buffers {
+            core::mem::swap(&mut DSP_EFFECT_BUFFERS[effect.slot], &mut effect.buffer);
+            core::mem::swap(&mut DSP_EFFECT_INDICES[effect.slot], &mut effect.index);
+        }
+        for buffer in &mut self.buffers {
+            core::mem::swap(&mut DSP_BUFFER_BUFFERS[buffer.slot], &mut buffer.buffer);
+        }
+    }
+
+    unsafe fn save_from_workspace(&mut self) {
+        capture_dsp_sample_playback_states(&mut self.samples);
+        for effect in &mut self.effect_buffers {
+            core::mem::swap(&mut DSP_EFFECT_BUFFERS[effect.slot], &mut effect.buffer);
+            core::mem::swap(&mut DSP_EFFECT_INDICES[effect.slot], &mut effect.index);
+        }
+        for buffer in &mut self.buffers {
+            core::mem::swap(&mut DSP_BUFFER_BUFFERS[buffer.slot], &mut buffer.buffer);
+        }
+    }
+
+    fn allocated_buffer_bytes(&self) -> usize {
+        let effect_bytes = self
+            .effect_buffers
+            .iter()
+            .map(|resource| {
+                resource
+                    .buffer
+                    .as_ref()
+                    .map_or(0, |buffer| buffer.len() * core::mem::size_of::<f32>())
+            })
+            .sum::<usize>();
+        let buffer_bytes = self
+            .buffers
+            .iter()
+            .map(|resource| {
+                resource
+                    .buffer
+                    .as_ref()
+                    .map_or(0, |buffer| buffer.len() * core::mem::size_of::<f32>())
+            })
+            .sum::<usize>();
+        effect_bytes.saturating_add(buffer_bytes)
+    }
 }
 
 const EMPTY_NODE: Node = Node {
@@ -603,6 +753,8 @@ static mut DSP_METER_COUNTS: [u32; MAX_DSP_METERS] = [0; MAX_DSP_METERS];
 static mut DSP_EFFECT_BUFFERS: [Option<Box<[f32]>>; MAX_DSP_EFFECT_SLOTS] =
     [const { None }; MAX_DSP_EFFECT_SLOTS];
 static mut DSP_EFFECT_INDICES: [usize; MAX_DSP_EFFECT_SLOTS] = [0; MAX_DSP_EFFECT_SLOTS];
+static mut DSP_EFFECT_STATE_SLOTS: [i32; MAX_DSP_STATE] = [-1; MAX_DSP_STATE];
+static mut DSP_EFFECT_SLOT_STATES: [i32; MAX_DSP_EFFECT_SLOTS] = [-1; MAX_DSP_EFFECT_SLOTS];
 static mut DSP_BUFFER_BUFFERS: [Option<Box<[f32]>>; MAX_DSP_BUFFER_SLOTS] =
     [const { None }; MAX_DSP_BUFFER_SLOTS];
 static mut DSP_BUFFER_STATE_SLOTS: [i32; MAX_DSP_STATE] = [-1; MAX_DSP_STATE];
@@ -610,6 +762,10 @@ static mut DSP_BUFFER_SLOT_STATES: [i32; MAX_DSP_BUFFER_SLOTS] = [-1; MAX_DSP_BU
 static mut DSP_SAMPLE_NODE_INDICES: [i32; MAX_DSP_SAMPLE_NODES] = [-1; MAX_DSP_SAMPLE_NODES];
 static mut DSP_SAMPLE_VOICE_SETTINGS: [[DspSampleVoiceSettings; MAX_DSP_SAMPLE_PLAYER_VOICES]; MAX_DSP_SAMPLE_NODES] =
     [[EMPTY_DSP_SAMPLE_VOICE_SETTINGS; MAX_DSP_SAMPLE_PLAYER_VOICES]; MAX_DSP_SAMPLE_NODES];
+// sample index, frame, start ms, end ms, speed ratio, level, attack ms, release ms
+static mut SAMPLE_TRIGGER_EVENTS: [[f64; SAMPLE_TRIGGER_EVENT_FIELDS]; MAX_SAMPLE_TRIGGER_EVENTS] =
+    [[0.0; SAMPLE_TRIGGER_EVENT_FIELDS]; MAX_SAMPLE_TRIGGER_EVENTS];
+static mut SAMPLE_TRIGGER_EVENT_COUNT: usize = 0;
 static mut SAMPLE_PLAYING: [[bool; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS] =
     [[false; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS];
 static mut SAMPLE_POSITIONS: [[f64; MAX_NODES]; MAX_SAMPLE_VOICE_SLOTS] =
@@ -811,6 +967,23 @@ pub extern "C" fn lazyBufferBytes() -> f64 {
                     * core::mem::size_of::<f32>(),
             );
         }
+        for slot in 0..MAX_DSP_SPREADS {
+            if let Some(runtime) = DSP_SPREAD_RUNTIMES[slot].as_ref() {
+                for context_resources in &runtime.resources_by_context {
+                    for resources in context_resources {
+                        bytes = bytes.saturating_add(resources.allocated_buffer_bytes());
+                    }
+                }
+            }
+            if let Some(runtime) = DSP_SPAWN_RUNTIMES[slot].as_ref() {
+                for context_instances in &runtime.instances_by_context {
+                    for instance in context_instances {
+                        bytes =
+                            bytes.saturating_add(instance.resources.allocated_buffer_bytes());
+                    }
+                }
+            }
+        }
         for index in 0..(MAX_VOICE_SLOTS * MAX_DELAY_SLOTS) {
             bytes = bytes.saturating_add(
                 LINK_DELAY_BUFFERS[index]
@@ -836,6 +1009,28 @@ fn ensure_dsp_effect_buffer(slot: usize) {
         if slot < MAX_DSP_EFFECT_SLOTS && DSP_EFFECT_BUFFERS[slot].is_none() {
             DSP_EFFECT_BUFFERS[slot] = Some(zeroed_f32_buffer(MAX_DSP_DELAY_SAMPLES));
         }
+    }
+}
+
+fn prepare_dsp_effect_slot(state: i32) -> Option<usize> {
+    unsafe {
+        if state < 0 || state as usize >= MAX_DSP_STATE {
+            return None;
+        }
+        let state_index = state as usize;
+        let existing = DSP_EFFECT_STATE_SLOTS[state_index];
+        if existing >= 0 && (existing as usize) < MAX_DSP_EFFECT_SLOTS {
+            return Some(existing as usize);
+        }
+        for slot in 0..MAX_DSP_EFFECT_SLOTS {
+            if DSP_EFFECT_SLOT_STATES[slot] < 0 {
+                DSP_EFFECT_SLOT_STATES[slot] = state;
+                DSP_EFFECT_STATE_SLOTS[state_index] = slot as i32;
+                ensure_dsp_effect_buffer(slot);
+                return Some(slot);
+            }
+        }
+        None
     }
 }
 
@@ -880,6 +1075,15 @@ pub extern "C" fn dspEffectBufferPtr(slot: u32) -> *mut f32 {
 #[no_mangle]
 pub extern "C" fn dspEffectBufferLength() -> u32 {
     MAX_DSP_DELAY_SAMPLES as u32
+}
+
+#[no_mangle]
+pub extern "C" fn dspEffectSlotForState(state: u32) -> i32 {
+    let state = state as usize;
+    if state >= MAX_DSP_STATE {
+        return -1;
+    }
+    unsafe { DSP_EFFECT_STATE_SLOTS[state] }
 }
 
 #[no_mangle]
@@ -1070,6 +1274,7 @@ pub extern "C" fn clear(frames: u32) {
 #[no_mangle]
 pub extern "C" fn beginDspRenderQuantum() {
     unsafe {
+        SAMPLE_TRIGGER_EVENT_COUNT = 0;
         for index in 0..NODE_COUNT {
             CUSTOM_WAVE_MORPH_REMAINING_AT_QUANTUM_START[index] =
                 CUSTOM_WAVE_MORPH_REMAINING_AT_QUANTUM_START[index]
@@ -1083,6 +1288,24 @@ pub extern "C" fn beginDspRenderQuantum() {
                 DSP_TEMPO_LAST_QUANTUM_BY_SOURCE[index] = 0;
                 DSP_TEMPO_LAST_FRAME_BY_SOURCE[index] = DSP_RENDER_FRAME_UNSET;
             }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn sampleTriggerEventCount() -> u32 {
+    unsafe { SAMPLE_TRIGGER_EVENT_COUNT as u32 }
+}
+
+#[no_mangle]
+pub extern "C" fn sampleTriggerEventValue(event: u32, field: u32) -> f64 {
+    let event = event as usize;
+    let field = field as usize;
+    unsafe {
+        if event < SAMPLE_TRIGGER_EVENT_COUNT && field < SAMPLE_TRIGGER_EVENT_FIELDS {
+            SAMPLE_TRIGGER_EVENTS[event][field]
+        } else {
+            0.0
         }
     }
 }
@@ -1119,16 +1342,28 @@ pub extern "C" fn clearGraph() {
 
 fn clear_dsp_buffers() {
     unsafe {
-        for state in 0..MAX_DSP_STATE {
-            DSP_BUFFER_STATE_SLOTS[state] = -1;
-        }
         for slot in 0..MAX_DSP_BUFFER_SLOTS {
-            DSP_BUFFER_SLOT_STATES[slot] = -1;
             if let Some(buffer) = DSP_BUFFER_BUFFERS[slot].as_mut() {
                 buffer.fill(0.0);
             }
         }
     }
+}
+
+fn clear_dsp_resource_slots() {
+    unsafe {
+        for state in 0..MAX_DSP_STATE {
+            DSP_EFFECT_STATE_SLOTS[state] = -1;
+            DSP_BUFFER_STATE_SLOTS[state] = -1;
+        }
+        for slot in 0..MAX_DSP_EFFECT_SLOTS {
+            DSP_EFFECT_SLOT_STATES[slot] = -1;
+        }
+        for slot in 0..MAX_DSP_BUFFER_SLOTS {
+            DSP_BUFFER_SLOT_STATES[slot] = -1;
+        }
+    }
+    clear_dsp_buffers();
 }
 
 #[no_mangle]
@@ -1160,7 +1395,7 @@ pub extern "C" fn clearDspProgram() {
                 buffer.fill(0.0);
             }
         }
-        clear_dsp_buffers();
+        clear_dsp_resource_slots();
         for index in 0..MAX_DSP_SAMPLE_NODES {
             DSP_SAMPLE_NODE_INDICES[index] = -1;
         }
@@ -1180,6 +1415,7 @@ pub extern "C" fn resetDspVoiceState(slot: u32) {
         for spread_slot in 0..MAX_DSP_SPREADS {
             if let Some(runtime) = DSP_SPREAD_RUNTIMES[spread_slot].as_mut() {
                 runtime.states_by_context[slot + 1].clear();
+                runtime.resources_by_context[slot + 1].clear();
             }
             if let Some(runtime) = DSP_SPAWN_RUNTIMES[spread_slot].as_mut() {
                 runtime.instances_by_context[slot + 1].clear();
@@ -1207,6 +1443,11 @@ pub extern "C" fn resetDspRuntimeState() {
             if let Some(runtime) = DSP_SPREAD_RUNTIMES[spread_slot].as_mut() {
                 for context in 0..runtime.states_by_context.len() {
                     runtime.states_by_context[context].fill(0.0);
+                    if let Some(layout) = runtime.resource_layout.as_ref() {
+                        for resources in runtime.resources_by_context[context].iter_mut() {
+                            *resources = DspRepeatResourceState::new(layout);
+                        }
+                    }
                 }
             }
             if let Some(runtime) = DSP_SPAWN_RUNTIMES[spread_slot].as_mut() {
@@ -1692,14 +1933,9 @@ pub extern "C" fn addDspOp(
         ) {
             return -1;
         }
-        if opcode == DSP_OP_DELAY
-            || opcode == DSP_OP_CHORUS
-            || opcode == DSP_OP_REVERB
-            || opcode == DSP_OP_LIMITER
-            || (opcode == DSP_OP_FILTER && (a == 5 || a == 6))
-        {
-            if let Some(slot) = dsp_effect_slot(state) {
-                ensure_dsp_effect_buffer(slot);
+        if dsp_op_uses_effect_buffer(opcode, a) {
+            if prepare_dsp_effect_slot(state).is_none() {
+                return -1;
             }
         }
         if opcode == DSP_OP_BUFFER && prepare_dsp_buffer_slot(state).is_none() {
@@ -5250,10 +5486,24 @@ fn render_dsp_selector(op: DspOp, sample_rate: f64) -> f64 {
 }
 
 fn dsp_effect_slot(state: i32) -> Option<usize> {
-    if state < 0 {
-        return None;
+    unsafe {
+        if state < 0 || state as usize >= MAX_DSP_STATE {
+            return None;
+        }
+        let slot = DSP_EFFECT_STATE_SLOTS[state as usize];
+        if slot < 0 || slot as usize >= MAX_DSP_EFFECT_SLOTS {
+            return None;
+        }
+        Some(slot as usize)
     }
-    Some((state as usize) % MAX_DSP_EFFECT_SLOTS)
+}
+
+fn dsp_op_uses_effect_buffer(opcode: i32, kind: i32) -> bool {
+    opcode == DSP_OP_DELAY
+        || opcode == DSP_OP_CHORUS
+        || opcode == DSP_OP_REVERB
+        || opcode == DSP_OP_LIMITER
+        || (opcode == DSP_OP_FILTER && (kind == 5 || kind == 6))
 }
 
 fn dsp_buffer_slot(state: i32) -> Option<usize> {
@@ -6100,7 +6350,7 @@ fn snapshot_dsp_sample_voice(
     start_sample_player(node_index, voice_slot, node, 0.0, 0.0);
 }
 
-fn render_dsp_sample(op: DspOp, sample_rate: f64) -> f64 {
+fn render_dsp_sample(op: DspOp, frame: usize, sample_rate: f64) -> f64 {
     let Some(node_index) = dsp_sample_node_index(op.a) else {
         return 0.0;
     };
@@ -6135,6 +6385,27 @@ fn render_dsp_sample(op: DspOp, sample_rate: f64) -> f64 {
                 dsp_reg(op.b),
                 level,
             );
+            if SAMPLE_TRIGGER_EVENT_COUNT < MAX_SAMPLE_TRIGGER_EVENTS {
+                if let Some(slot) = sample_slot_for_node(node_index) {
+                    let (start_frame, end_frame, _, _, _, _) =
+                        sample_range(node_index, node, 0.0, 0.0)
+                            .unwrap_or((0.0, 0.0, 0.0, 0.0, 0.0, 0.0));
+                    let source_rate = SAMPLE_RATES[slot].max(1.0);
+                    let speed = (dsp_reg(op.b) / node.sample_original_frequency.max(0.0001))
+                        / node.sample_stretch.max(0.001);
+                    SAMPLE_TRIGGER_EVENTS[SAMPLE_TRIGGER_EVENT_COUNT] = [
+                        sample_index as f64,
+                        frame as f64,
+                        start_frame / source_rate * 1000.0,
+                        end_frame / source_rate * 1000.0,
+                        speed,
+                        level,
+                        node.sample_attack.max(0.0) * 1000.0,
+                        node.sample_release.max(0.0) * 1000.0,
+                    ];
+                    SAMPLE_TRIGGER_EVENT_COUNT += 1;
+                }
+            }
         }
         DSP_STATE[op.state as usize] = if trigger { 1.0 } else { 0.0 };
 
@@ -7324,7 +7595,7 @@ fn render_dsp_op(
         }
         DSP_OP_DISTORTION => set_dsp_reg(op.out, render_dsp_distortion(op)),
         DSP_OP_SAMPLE_PARAM => render_dsp_sample_param(op),
-        DSP_OP_SAMPLE => set_dsp_reg(op.out, render_dsp_sample(op, sample_rate)),
+        DSP_OP_SAMPLE => set_dsp_reg(op.out, render_dsp_sample(op, frame, sample_rate)),
         DSP_OP_FUNCTION => set_dsp_reg(op.out, render_dsp_function(op)),
         DSP_OP_MIDI_NOTE => set_dsp_reg(op.out, render_dsp_midi_note(op)),
         DSP_OP_MIDI_CC => set_dsp_reg(op.out, render_dsp_midi_cc(op)),
@@ -7533,6 +7804,174 @@ fn capture_dsp_meters() {
     }
 }
 
+unsafe fn dsp_template_resource_layout(
+    op_index: usize,
+    end_index: usize,
+) -> DspRepeatResourceLayout {
+    let mut sample_indices = Vec::new();
+    let mut effect_slots = Vec::new();
+    let mut buffer_slots = Vec::new();
+    for template_index in (op_index + 1)..end_index {
+        let template_op = DSP_OPS[template_index];
+        if template_op.opcode == DSP_OP_SAMPLE && template_op.a >= 0 {
+            let sample_index = template_op.a as usize;
+            if sample_index < MAX_DSP_SAMPLE_NODES && !sample_indices.contains(&sample_index) {
+                sample_indices.push(sample_index);
+            }
+        }
+        if dsp_op_uses_effect_buffer(template_op.opcode, template_op.a) {
+            if let Some(slot) = dsp_effect_slot(template_op.state) {
+                if !effect_slots.contains(&slot) {
+                    effect_slots.push(slot);
+                }
+            }
+        }
+        if template_op.opcode == DSP_OP_BUFFER {
+            if let Some(slot) = dsp_buffer_slot(template_op.state) {
+                if !buffer_slots.contains(&slot) {
+                    buffer_slots.push(slot);
+                }
+            }
+        }
+    }
+    DspRepeatResourceLayout {
+        sample_indices,
+        effect_slots,
+        buffer_slots,
+    }
+}
+
+unsafe fn restore_dsp_sample_playback_states(states: &[DspSamplePlaybackState]) {
+    for state in states {
+        let sample_index = state.sample_index;
+        let Some(node_index) = dsp_sample_node_index(sample_index as i32) else {
+            continue;
+        };
+        DSP_SAMPLE_VOICE_SETTINGS[sample_index] = state.voice_settings;
+        for voice in 0..MAX_DSP_SAMPLE_PLAYER_VOICES {
+            let voice_slot = DSP_SAMPLE_VOICE_SLOT_START + voice;
+            SAMPLE_PLAYING[voice_slot][node_index] = state.playing[voice];
+            SAMPLE_POSITIONS[voice_slot][node_index] = state.positions[voice];
+            SAMPLE_DIRECTIONS[voice_slot][node_index] = state.directions[voice];
+            SAMPLE_FREQUENCY_DIRECTIONS[voice_slot][node_index] =
+                state.frequency_directions[voice];
+            SAMPLE_HAS_ADVANCED[voice_slot][node_index] = state.has_advanced[voice];
+            SAMPLE_PLAYBACK_AGES[voice_slot][node_index] = state.playback_ages[voice];
+            SAMPLE_RELEASE_AGES[voice_slot][node_index] = state.release_ages[voice];
+            SAMPLE_START_VALUES[voice_slot][node_index] = state.start_values[voice];
+            SAMPLE_LAST_OUTPUTS[voice_slot][node_index] = state.last_outputs[voice];
+            SAMPLE_RETRIGGER_OUTPUTS[voice_slot][node_index] = state.retrigger_outputs[voice];
+            SAMPLE_RETRIGGER_FADE_AGES[voice_slot][node_index] =
+                state.retrigger_fade_ages[voice];
+            SAMPLE_RETRIGGER_FADE_DURATIONS[voice_slot][node_index] =
+                state.retrigger_fade_durations[voice];
+            SAMPLE_STRETCH_PHASES[voice_slot][node_index] = state.stretch_phases[voice];
+            SAMPLE_STRETCH_ANCHORS[voice_slot][node_index] = state.stretch_anchors[voice];
+        }
+    }
+}
+
+unsafe fn capture_dsp_sample_playback_states(states: &mut [DspSamplePlaybackState]) {
+    for state in states {
+        let sample_index = state.sample_index;
+        let Some(node_index) = dsp_sample_node_index(sample_index as i32) else {
+            continue;
+        };
+        state.voice_settings = DSP_SAMPLE_VOICE_SETTINGS[sample_index];
+        for voice in 0..MAX_DSP_SAMPLE_PLAYER_VOICES {
+            let voice_slot = DSP_SAMPLE_VOICE_SLOT_START + voice;
+            state.playing[voice] = SAMPLE_PLAYING[voice_slot][node_index];
+            state.positions[voice] = SAMPLE_POSITIONS[voice_slot][node_index];
+            state.directions[voice] = SAMPLE_DIRECTIONS[voice_slot][node_index];
+            state.frequency_directions[voice] =
+                SAMPLE_FREQUENCY_DIRECTIONS[voice_slot][node_index];
+            state.has_advanced[voice] = SAMPLE_HAS_ADVANCED[voice_slot][node_index];
+            state.playback_ages[voice] = SAMPLE_PLAYBACK_AGES[voice_slot][node_index];
+            state.release_ages[voice] = SAMPLE_RELEASE_AGES[voice_slot][node_index];
+            state.start_values[voice] = SAMPLE_START_VALUES[voice_slot][node_index];
+            state.last_outputs[voice] = SAMPLE_LAST_OUTPUTS[voice_slot][node_index];
+            state.retrigger_outputs[voice] = SAMPLE_RETRIGGER_OUTPUTS[voice_slot][node_index];
+            state.retrigger_fade_ages[voice] =
+                SAMPLE_RETRIGGER_FADE_AGES[voice_slot][node_index];
+            state.retrigger_fade_durations[voice] =
+                SAMPLE_RETRIGGER_FADE_DURATIONS[voice_slot][node_index];
+            state.stretch_phases[voice] = SAMPLE_STRETCH_PHASES[voice_slot][node_index];
+            state.stretch_anchors[voice] = SAMPLE_STRETCH_ANCHORS[voice_slot][node_index];
+        }
+    }
+}
+
+#[cfg(test)]
+mod repeated_resource_state_tests {
+    use super::{
+        clear_dsp_resource_slots, prepare_dsp_effect_slot, DspRepeatResourceLayout,
+        DspRepeatResourceState, DSP_BUFFER_BUFFERS, DSP_EFFECT_BUFFERS, DSP_EFFECT_INDICES,
+        DSP_SAMPLE_NODE_INDICES, DSP_SAMPLE_VOICE_SLOT_START, SAMPLE_PLAYING, SAMPLE_POSITIONS,
+    };
+
+    #[test]
+    fn repeated_instances_restore_independent_node_resources() {
+        unsafe {
+            DSP_SAMPLE_NODE_INDICES[0] = 0;
+            let layout = DspRepeatResourceLayout {
+                sample_indices: vec![0],
+                effect_slots: vec![0],
+                buffer_slots: vec![0],
+            };
+            let mut first = DspRepeatResourceState::new(&layout);
+            let mut second = DspRepeatResourceState::new(&layout);
+            let voice_slot = DSP_SAMPLE_VOICE_SLOT_START;
+
+            first.load_into_workspace();
+            SAMPLE_PLAYING[voice_slot][0] = true;
+            SAMPLE_POSITIONS[voice_slot][0] = 128.0;
+            DSP_EFFECT_BUFFERS[0].as_mut().unwrap()[0] = 0.75;
+            DSP_EFFECT_INDICES[0] = 9;
+            DSP_BUFFER_BUFFERS[0].as_mut().unwrap()[0] = 0.5;
+            first.save_from_workspace();
+
+            second.load_into_workspace();
+            assert!(!SAMPLE_PLAYING[voice_slot][0]);
+            assert_eq!(SAMPLE_POSITIONS[voice_slot][0], 0.0);
+            assert_eq!(DSP_EFFECT_BUFFERS[0].as_ref().unwrap()[0], 0.0);
+            assert_eq!(DSP_EFFECT_INDICES[0], 0);
+            assert_eq!(DSP_BUFFER_BUFFERS[0].as_ref().unwrap()[0], 0.0);
+            SAMPLE_PLAYING[voice_slot][0] = true;
+            SAMPLE_POSITIONS[voice_slot][0] = 32.0;
+            DSP_EFFECT_BUFFERS[0].as_mut().unwrap()[0] = 0.25;
+            DSP_EFFECT_INDICES[0] = 3;
+            DSP_BUFFER_BUFFERS[0].as_mut().unwrap()[0] = 0.125;
+            second.save_from_workspace();
+
+            first.load_into_workspace();
+            assert!(SAMPLE_PLAYING[voice_slot][0]);
+            assert_eq!(SAMPLE_POSITIONS[voice_slot][0], 128.0);
+            assert_eq!(DSP_EFFECT_BUFFERS[0].as_ref().unwrap()[0], 0.75);
+            assert_eq!(DSP_EFFECT_INDICES[0], 9);
+            assert_eq!(DSP_BUFFER_BUFFERS[0].as_ref().unwrap()[0], 0.5);
+            first.save_from_workspace();
+
+            second.load_into_workspace();
+            assert_eq!(SAMPLE_POSITIONS[voice_slot][0], 32.0);
+            assert_eq!(DSP_EFFECT_BUFFERS[0].as_ref().unwrap()[0], 0.25);
+            assert_eq!(DSP_EFFECT_INDICES[0], 3);
+            assert_eq!(DSP_BUFFER_BUFFERS[0].as_ref().unwrap()[0], 0.125);
+            second.save_from_workspace();
+
+            DSP_SAMPLE_NODE_INDICES[0] = -1;
+        }
+    }
+
+    #[test]
+    fn effect_states_do_not_alias_by_modulo() {
+        clear_dsp_resource_slots();
+        let first = prepare_dsp_effect_slot(0).unwrap();
+        let sixty_fifth = prepare_dsp_effect_slot(64).unwrap();
+        assert_ne!(first, sixty_fifth);
+        clear_dsp_resource_slots();
+    }
+}
+
 unsafe fn render_dsp_ops(
     frame: usize,
     sample_rate: f64,
@@ -7574,11 +8013,18 @@ unsafe fn render_dsp_ops(
             let mut runtime = DSP_SPAWN_RUNTIMES[spread_slot]
                 .take()
                 .unwrap_or_else(DspSpawnRuntime::new);
+            if runtime.resource_layout.is_none() {
+                runtime.resource_layout =
+                    Some(dsp_template_resource_layout(op_index, end_index));
+            }
             let context = DSP_SPREAD_CONTEXT.min(MAX_VOICE_SLOTS);
             let trigger = dsp_reg(op.a) >= ENVELOPE_TRIGGER_THRESHOLD;
             if trigger && !runtime.previous_trigger_by_context[context] {
                 runtime.instances_by_context[context].push(DspSpawnInstance {
                     states: vec![0.0; state_count],
+                    resources: DspRepeatResourceState::new(
+                        runtime.resource_layout.as_ref().unwrap(),
+                    ),
                     kill_triggered: false,
                 });
             }
@@ -7602,6 +8048,7 @@ unsafe fn render_dsp_ops(
                 if op.c >= 0 {
                     set_dsp_reg(op.c, 0.0);
                 }
+                instance.resources.load_into_workspace();
                 DSP_SPREAD_ITEM_INDEX = instance_index;
                 for template_index in (op_index + 1)..end_index {
                     render_dsp_op(
@@ -7612,6 +8059,7 @@ unsafe fn render_dsp_ops(
                         right_sample,
                     );
                 }
+                instance.resources.save_from_workspace();
                 if state_count > 0 {
                     core::ptr::copy_nonoverlapping(
                         dsp_state_ptr,
@@ -7654,10 +8102,18 @@ unsafe fn render_dsp_ops(
         let mut runtime = DSP_SPREAD_RUNTIMES[spread_slot]
             .take()
             .unwrap_or_else(DspSpreadRuntime::new);
+        if runtime.resource_layout.is_none() {
+            runtime.resource_layout =
+                Some(dsp_template_resource_layout(op_index, end_index));
+        }
         let context = DSP_SPREAD_CONTEXT.min(MAX_VOICE_SLOTS);
         let required_states = count.saturating_mul(state_count);
         let states = &mut runtime.states_by_context[context];
         states.resize(required_states, 0.0);
+        let resource_layout = runtime.resource_layout.as_ref().unwrap();
+        let resources = &mut runtime.resources_by_context[context];
+        resources.resize_with(count, || DspRepeatResourceState::new(resource_layout));
+        resources.truncate(count);
         let dsp_state_ptr = core::ptr::addr_of_mut!(DSP_STATE)
             .cast::<f64>()
             .add(state_start);
@@ -7667,6 +8123,7 @@ unsafe fn render_dsp_ops(
                 DSP_SPREAD_ITEM_INDEX = item_index;
                 let item_state_ptr = states.as_mut_ptr().add(item_index);
                 *dsp_state_ptr = *item_state_ptr;
+                resources[item_index].load_into_workspace();
                 for template_index in (op_index + 1)..end_index {
                     render_dsp_op(
                         DSP_OPS[template_index],
@@ -7676,6 +8133,7 @@ unsafe fn render_dsp_ops(
                         right_sample,
                     );
                 }
+                resources[item_index].save_from_workspace();
                 *item_state_ptr = *dsp_state_ptr;
             }
         } else {
@@ -7684,6 +8142,7 @@ unsafe fn render_dsp_ops(
                 let item_state_start = item_index.saturating_mul(state_count);
                 let item_state_ptr = states.as_mut_ptr().add(item_state_start);
                 core::ptr::copy_nonoverlapping(item_state_ptr, dsp_state_ptr, state_count);
+                resources[item_index].load_into_workspace();
                 for template_index in (op_index + 1)..end_index {
                     render_dsp_op(
                         DSP_OPS[template_index],
@@ -7693,6 +8152,7 @@ unsafe fn render_dsp_ops(
                         right_sample,
                     );
                 }
+                resources[item_index].save_from_workspace();
                 core::ptr::copy_nonoverlapping(dsp_state_ptr, item_state_ptr, state_count);
             }
         }

@@ -284,6 +284,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       index: 0,
       frames: 0,
       chunks: 0,
+      sampleEvents: [],
     };
     this.port.postMessage({
       type: "recordingStarted",
@@ -310,6 +311,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         channelCount: capture.channelCount,
         frames: capture.frames,
         chunks: capture.chunks,
+        sampleEvents: capture.sampleEvents,
       },
     });
   }
@@ -332,6 +334,29 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       if (capture.index >= capture.chunkFrames) {
         this.flushRecordingChunk(capture);
       }
+    }
+  }
+
+  captureSampleTriggerEvents() {
+    const capture = this.recordingCapture;
+    const wasm = this.wasm;
+    if (!capture || !wasm?.sampleTriggerEventCount || !wasm?.sampleTriggerEventValue) return;
+    const count = Math.max(0, Math.trunc(Number(wasm.sampleTriggerEventCount()) || 0));
+    for (let event = 0; event < count; event += 1) {
+      const value = (field) => Number(wasm.sampleTriggerEventValue(event, field)) || 0;
+      const sampleIndex = Math.trunc(value(0));
+      const binding = this.dspProgram?.sampleBindings?.[sampleIndex];
+      capture.sampleEvents.push({
+        nodeId: binding?.nodeId || "",
+        sampleName: binding?.sample?.name || "",
+        startMs: value(2),
+        endMs: value(3),
+        speed: value(4),
+        volume: value(5),
+        attackMs: value(6),
+        releaseMs: value(7),
+        triggerTimeMs: (capture.frames + value(1)) / sampleRate * 1000,
+      });
     }
   }
 
@@ -782,7 +807,10 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
 
       for (const binding of program.stateBindings || []) {
         if (!effectOpsByState.has(binding.state)) continue;
-        const slot = binding.state % 64;
+        const assignedSlot = Math.trunc(Number(this.wasm.dspEffectSlotForState?.(binding.state)));
+        const slot = Number.isInteger(assignedSlot) && assignedSlot >= 0
+          ? assignedSlot
+          : binding.state % 64;
         const ptr = this.wasm.dspEffectBufferPtr(slot);
         if (!ptr) continue;
         states.set(`${binding.id}:effect-memory`, {
@@ -840,7 +868,10 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         if (!effectOpsByState.has(binding.state)) continue;
         const memoryState = preservedState.get(`${binding.id}:effect-memory`);
         if (!memoryState?.samples) continue;
-        const slot = binding.state % 64;
+        const assignedSlot = Math.trunc(Number(this.wasm.dspEffectSlotForState?.(binding.state)));
+        const slot = Number.isInteger(assignedSlot) && assignedSlot >= 0
+          ? assignedSlot
+          : binding.state % 64;
         const ptr = this.wasm.dspEffectBufferPtr(slot);
         if (!ptr) continue;
         new Float32Array(this.wasm.memory.buffer, ptr, effectLength).set(memoryState.samples.subarray(0, effectLength));
@@ -2474,6 +2505,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.copyInput(inputs, frames);
     this.wasm.beginDspRenderQuantum?.();
     this.renderCurrentDspProgramToWasm(frames);
+    this.captureSampleTriggerEvents();
 
     let peak = 0;
     for (let i = 0; i < frames; i += 1) {

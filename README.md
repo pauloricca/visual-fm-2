@@ -215,18 +215,18 @@ A node is part of an unlocked Spread when its top-left corner is inside the func
 - `item index` produces the user-facing, one-based index of each active item (`1` through `count`). It may only be linked to nodes inside that Spread.
 - Links between two contained nodes are copied within each item. Links entering the Spread are copied to every item, and links leaving it contribute one signal per active item using the link's existing `set`, `add`, or `multiply` behavior.
 
-The compiler emits the contained graph once as a repeatable DSP template. The WASM engine floors the `count` signal at zero, samples it once at the start of each audio buffer, and runs that template only for the active items. Each item keeps independent DSP state, allocated as the runtime count grows; there is no Spread count ceiling, so very large values can exhaust CPU or memory. Group, Spawn, and nested Spread nodes are not currently supported inside a Spread; place their underlying nodes directly in the Spread instead.
+The compiler emits the contained graph once as a repeatable DSP template. The WASM engine floors the `count` signal at zero, samples it once at the start of each audio buffer, and runs that template only for the active items. Each item keeps independent scalar DSP state and mutable node resources, including Sample playback voices, effect delay memory, Limiter lookahead, and Buffer recordings. State is allocated as the runtime count grows; there is no Spread count ceiling, so very large values—especially with memory-heavy nodes—can exhaust CPU or memory. Group, Spawn, and nested Spread nodes are not currently supported inside a Spread; place their underlying nodes directly in the Spread instead.
 
 ## Spawns
 
-Choose `Spawn` from a node's type picker to create an event-driven functional area with the same header, resizing, nesting, membership, movement, lock, and collapse interactions as a Spread. Its control strip has no output pins: `trigger` is a normal boundary input on the left, while the inward-facing `kill trigger` input is visible only when the Spawn is expanded.
+Choose `Spawn` from a node's type picker to create an event-driven functional area with the same header, resizing, nesting, membership, movement, lock, and collapse interactions as a Spread. The header shows the current number of live instances after the Spawn title, such as `Spawn (3)`. Its control strip has no output pins: `trigger` is a normal boundary input on the left, while the inward-facing `kill trigger` input is visible only when the Spawn is expanded.
 
 - A rising edge on `trigger` creates a new runtime instance of every contained node. Existing instances continue independently, so retriggering does not reset or replace them.
 - `kill trigger` may only be driven by a node inside that Spawn. A rising edge produced by an instance removes that instance and its complete contained-node state without affecting the other live instances.
 - Links between contained nodes are copied within each instance. Links entering the Spawn are shared with every live instance, while links leaving it combine one signal from each live instance using the link's existing `set`, `add`, or `multiply` behavior.
 - A Spawn has no fixed voice limit. Instances remain alive until their own kill trigger fires, so a missing kill path or a very fast trigger can consume increasing CPU and memory.
 
-The compiler emits the contained graph once as a reusable DSP template, and the WASM engine allocates a fresh state set for each trigger. Group, Spread, and nested Spawn nodes are not currently supported inside a Spawn; place their underlying nodes directly in the Spawn instead.
+The compiler emits the contained graph once as a reusable DSP template, and the WASM engine allocates a fresh state set for each trigger. Both scalar DSP state and mutable node resources are instance-local, so Sample playback, Delay, Chorus, Reverb, Comb/Notch, Limiter lookahead, and Buffer memory advance independently in overlapping instances. Immutable assets and external sources such as decoded sample data, images, audio input, MIDI, and tempo transport remain intentionally shared. Group, Spread, and nested Spawn nodes are not currently supported inside a Spawn; place their underlying nodes directly in the Spawn instead.
 
 ## Editor controls and shortcuts
 
@@ -255,7 +255,7 @@ Shortcuts are ignored while editing text or numeric fields unless noted otherwis
 | Scroll | Pan the canvas. |
 | Pinch | Zoom the canvas. |
 
-The floating controls provide play/stop (`PL`), recording, MIDI device settings (`MD`), patch save/load (`SV`/`LD`), undo/redo (`UN`/`RE`), grouping (`GR`), new patch (`NW`), subpatch import (`IM`), and selected-node scaling (`S+`/`S-`). Pressing record while playback is stopped arms recording at `0:00`; capture begins when playback starts. The zoom percentage button resets zoom to 100%. Node and area header titles receive stepped size boosts below 70%, at 50%, and at 30% canvas zoom so they remain readable while zoomed out. The adjacent `CPU` meter fills from left to right while audio is running to show the DSP worklet's share of each audio-block deadline; hover it for the percentage.
+The floating controls provide play/stop (`PL`), recording, MIDI device settings (`MD`), patch save/load (`SV`/`LD`), undo/redo (`UN`/`RE`), grouping (`GR`), new patch (`NW`), subpatch import (`IM`), and selected-node scaling (`S+`/`S-`). Pressing record while playback is stopped arms recording at `0:00`; capture begins when playback starts. Each saved WAV has a same-stem CSV beside it in `recordings/` (for example, `performance.wav` and `performance.csv`). The CSV contains one row for every triggered playback from every Sample node, sorted by trigger time. Its `node_id` and `sample_name` columns identify the source; the remaining columns record source-region start/end in milliseconds, effective speed ratio (`1` is real time, including pitch and stretch), volume, attack/release in milliseconds, and trigger time relative to the start of the recording. The zoom percentage button resets zoom to 100%. Node and area header titles receive stepped size boosts below 70%, at 50%, and at 30% canvas zoom so they remain readable while zoomed out. The adjacent `CPU` meter fills from left to right while audio is running to show the DSP worklet's share of each audio-block deadline; hover it for the percentage.
 
 ## Compiler And Engine Boundary
 
@@ -264,6 +264,10 @@ The active compiler is `web/src/audio/dspProgram.ts`. It expands subpatches, com
 The old link-centric `WasmAudioGraph` TypeScript compiler has been removed. Current playback fixes should target `web/src/audio/dspProgram.ts` and the `DspProgram` sync path in the worklet.
 
 The worklet in `web/public/audio/audio-worklet-wasm.js` loads the `visual-fm` WASM kernel and syncs the compiled `DspProgram` into it. User-facing patch links target nodes or the audio output; any remaining inherited link-centric WASM API names are implementation details, not the patch philosophy.
+
+Spawn instances and Spread items execute a shared compiled template with separate runtime state. Small numeric histories use a packed per-instance state block; memory-backed node resources use a per-instance resource set whose buffers are moved into the kernel workspace for that instance's template execution and moved back afterward without copying their contents.
+
+The engine supports up to 64 compiled buffered effects (`Delay`, `Chorus`, `Reverb`, Comb/Notch, and `Limiter`) and 16 compiled `Buffer` nodes. Each compiled node receives an explicit resource slot; exceeding either limit is a compiler error rather than causing two nodes to share memory. Spawn and Spread runtime copies reuse their template's compiled slot while owning separate buffer contents.
 
 The current WASM binary still has the inherited `visual-fm` ABI, where some processor settings are named as link parameters. That naming reflects the original engine, not the user-facing model in this app. The app should keep the audio kernel stable unless there is a clear DSP reason to change it.
 

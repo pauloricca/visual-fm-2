@@ -217,6 +217,8 @@ const MAX_DSP_OPS = 4096;
 const MAX_DSP_REGISTERS = 2048;
 const MAX_DSP_VALUES = 2048;
 const MAX_DSP_STATE = 4096;
+const MAX_DSP_EFFECT_BUFFERS = 64;
+const MAX_DSP_BUFFERS = 16;
 
 const OSC_WAVES: Partial<Record<NodeType, number>> = {
   SineOsc: 0,
@@ -340,6 +342,18 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
   }
   if (context.stateCount > MAX_DSP_STATE) {
     context.errors.push(`DSP program needs ${context.stateCount} state slots; the engine limit is ${MAX_DSP_STATE}. Reduce the nodes inside Spreads.`);
+  }
+  const effectBufferCount = new Set(context.ops
+    .filter(dspOpUsesEffectBuffer)
+    .flatMap((op) => typeof op.state === 'number' ? [op.state] : [])).size;
+  if (effectBufferCount > MAX_DSP_EFFECT_BUFFERS) {
+    context.errors.push(`DSP program needs ${effectBufferCount} buffered effects; the engine limit is ${MAX_DSP_EFFECT_BUFFERS}. Reduce Delay, Chorus, Reverb, Comb/Notch, or Limiter nodes.`);
+  }
+  const bufferCount = new Set(context.ops
+    .filter((op) => op.opcode === DSP_OP.Buffer)
+    .flatMap((op) => typeof op.state === 'number' ? [op.state] : [])).size;
+  if (bufferCount > MAX_DSP_BUFFERS) {
+    context.errors.push(`DSP program needs ${bufferCount} Buffer nodes; the engine limit is ${MAX_DSP_BUFFERS}.`);
   }
 
   if (context.errors.length > 0) {
@@ -478,6 +492,7 @@ function compileSpreadTemplates(context: CompileContext): void {
     context.ops.push(begin);
     if (spread.type === 'Spawn') {
       context.spawnActiveCountRegisterById.set(spread.id, countRegister);
+      context.monitorIds[`${spread.id}:spawn-count`] = countRegister;
     }
 
     // Sinks and previews contained by the Spread are part of the repeated
@@ -2507,6 +2522,14 @@ function nextState(context: CompileContext, count: number): number {
   const state = context.stateCount;
   context.stateCount += count;
   return state;
+}
+
+function dspOpUsesEffectBuffer(op: DspOp): boolean {
+  return op.opcode === DSP_OP.Delay
+    || op.opcode === DSP_OP.Chorus
+    || op.opcode === DSP_OP.Reverb
+    || op.opcode === DSP_OP.Limiter
+    || (op.opcode === DSP_OP.Filter && (op.a === 5 || op.a === 6));
 }
 
 function finiteNumber(value: unknown, fallback: number): number {

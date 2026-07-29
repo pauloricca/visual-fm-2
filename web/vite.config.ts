@@ -236,6 +236,16 @@ function localRecordingStoragePlugin(): Plugin {
     const url = new URL(request.url ?? '/', 'http://localhost');
     const path = url.pathname;
 
+    if (request.method === 'POST' && path === '/api/recording-metadata') {
+      saveRecordingMetadata(recordingsDir, request).then((metadata) => {
+        response.statusCode = 201;
+        response.setHeader('Cache-Control', 'no-store');
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify(metadata));
+      }).catch((error: unknown) => sendPatchStorageError(response, error));
+      return;
+    }
+
     if (path !== '/api/recordings' || request.method !== 'POST') {
       next();
       return;
@@ -507,6 +517,20 @@ async function saveUploadedRecording(recordingsDir: string, request: Connect.Inc
   const name = await uniqueSampleFilename(recordingsDir, recordingFilename(patchName));
   await writeFile(join(recordingsDir, name), data);
 
+  return { name };
+}
+
+async function saveRecordingMetadata(recordingsDir: string, request: Connect.IncomingMessage) {
+  const recordingHeader = request.headers['x-visual-fm-recording-name'];
+  const recordingName = Array.isArray(recordingHeader) ? recordingHeader[0] : recordingHeader;
+  const safeRecordingName = basename(recordingName ?? '');
+  if (!safeRecordingName.toLowerCase().endsWith('.wav')) {
+    throw new Error('Expected the associated WAV recording name.');
+  }
+  const data = await readRequestBuffer(request, 16 * 1024 * 1024, 'Recording metadata is too large.');
+  await mkdir(recordingsDir, { recursive: true });
+  const name = `${safeRecordingName.slice(0, -4)}.csv`;
+  await writeFile(join(recordingsDir, name), data);
   return { name };
 }
 
