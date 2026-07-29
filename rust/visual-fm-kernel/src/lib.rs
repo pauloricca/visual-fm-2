@@ -370,6 +370,7 @@ struct DspSampleVoiceSettings {
 #[derive(Clone)]
 struct DspSamplePlaybackState {
     sample_index: usize,
+    active_voice_limit: usize,
     voice_settings: [DspSampleVoiceSettings; MAX_DSP_SAMPLE_PLAYER_VOICES],
     playing: [bool; MAX_DSP_SAMPLE_PLAYER_VOICES],
     positions: [f64; MAX_DSP_SAMPLE_PLAYER_VOICES],
@@ -391,6 +392,7 @@ impl DspSamplePlaybackState {
     fn new(sample_index: usize) -> Self {
         Self {
             sample_index,
+            active_voice_limit: 0,
             voice_settings: [EMPTY_DSP_SAMPLE_VOICE_SETTINGS; MAX_DSP_SAMPLE_PLAYER_VOICES],
             playing: [false; MAX_DSP_SAMPLE_PLAYER_VOICES],
             positions: [0.0; MAX_DSP_SAMPLE_PLAYER_VOICES],
@@ -933,6 +935,8 @@ static mut DSP_BUFFER_BUFFERS: [Option<Box<[f32]>>; MAX_DSP_BUFFER_SLOTS] =
 static mut DSP_BUFFER_STATE_SLOTS: [i32; MAX_DSP_STATE] = [-1; MAX_DSP_STATE];
 static mut DSP_BUFFER_SLOT_STATES: [i32; MAX_DSP_BUFFER_SLOTS] = [-1; MAX_DSP_BUFFER_SLOTS];
 static mut DSP_SAMPLE_NODE_INDICES: [i32; MAX_DSP_SAMPLE_NODES] = [-1; MAX_DSP_SAMPLE_NODES];
+static mut DSP_SAMPLE_ACTIVE_VOICE_LIMITS: [usize; MAX_DSP_SAMPLE_NODES] =
+    [0; MAX_DSP_SAMPLE_NODES];
 static mut DSP_SAMPLE_VOICE_SETTINGS: [[DspSampleVoiceSettings; MAX_DSP_SAMPLE_PLAYER_VOICES];
     MAX_DSP_SAMPLE_NODES] =
     [[EMPTY_DSP_SAMPLE_VOICE_SETTINGS; MAX_DSP_SAMPLE_PLAYER_VOICES]; MAX_DSP_SAMPLE_NODES];
@@ -1812,6 +1816,7 @@ pub extern "C" fn clearDspProgram() {
         clear_dsp_resource_slots();
         for index in 0..MAX_DSP_SAMPLE_NODES {
             DSP_SAMPLE_NODE_INDICES[index] = -1;
+            DSP_SAMPLE_ACTIVE_VOICE_LIMITS[index] = 0;
         }
     }
 }
@@ -7056,6 +7061,41 @@ fn dsp_sample_voice_count(value: f64) -> usize {
     (value.round() as i32).clamp(1, MAX_DSP_SAMPLE_PLAYER_VOICES as i32) as usize
 }
 
+fn shrink_sample_voice_limit(
+    playing: &[bool; MAX_DSP_SAMPLE_PLAYER_VOICES],
+    active_voice_limit: usize,
+) -> usize {
+    let mut limit = active_voice_limit.min(MAX_DSP_SAMPLE_PLAYER_VOICES);
+    while limit > 0 && !playing[limit - 1] {
+        limit -= 1;
+    }
+    limit
+}
+
+#[cfg(test)]
+mod sample_voice_limit_tests {
+    use super::{shrink_sample_voice_limit, MAX_DSP_SAMPLE_PLAYER_VOICES};
+
+    #[test]
+    fn inactive_trailing_voices_are_removed_from_the_render_bound() {
+        let mut playing = [false; MAX_DSP_SAMPLE_PLAYER_VOICES];
+        playing[0] = true;
+        playing[3] = true;
+        assert_eq!(shrink_sample_voice_limit(&playing, 16), 4);
+        playing[3] = false;
+        assert_eq!(shrink_sample_voice_limit(&playing, 4), 1);
+        playing[0] = false;
+        assert_eq!(shrink_sample_voice_limit(&playing, 1), 0);
+    }
+
+    #[test]
+    fn an_existing_high_voice_remains_renderable_after_the_voice_control_drops() {
+        let mut playing = [false; MAX_DSP_SAMPLE_PLAYER_VOICES];
+        playing[7] = true;
+        assert_eq!(shrink_sample_voice_limit(&playing, 8), 8);
+    }
+}
+
 fn select_dsp_sample_voice(node_index: usize, voice_count: usize) -> usize {
     unsafe {
         for voice in 0..voice_count {
@@ -7108,6 +7148,12 @@ fn snapshot_dsp_sample_voice(
         };
     }
     start_sample_player(node_index, voice_slot, node, 0.0, 0.0);
+    unsafe {
+        if SAMPLE_PLAYING[voice_slot][node_index] {
+            DSP_SAMPLE_ACTIVE_VOICE_LIMITS[sample_index] =
+                DSP_SAMPLE_ACTIVE_VOICE_LIMITS[sample_index].max(voice + 1);
+        }
+    }
 }
 
 fn select_repeated_sample_voice(state: &DspSamplePlaybackState, voice_count: usize) -> usize {
@@ -7478,6 +7524,7 @@ fn render_repeated_dsp_sample(
         let voice_count = dsp_sample_voice_count(dsp_reg(op.d));
         if sample_slot_for_node(node_index).is_none() {
             *dsp_state_ptr(op.state as usize) = 0.0;
+            state.active_voice_limit = 0;
             return 0.0;
         }
         if trigger && !previous_trigger {
@@ -7493,6 +7540,9 @@ fn render_repeated_dsp_sample(
                 level: if level.is_finite() { level } else { 0.0 },
             };
             start_repeated_sample_player(state, node_index, voice, node);
+            if state.playing[voice] {
+                state.active_voice_limit = state.active_voice_limit.max(voice + 1);
+            }
             if SAMPLE_TRIGGER_EVENT_COUNT < MAX_SAMPLE_TRIGGER_EVENTS {
                 if let Some(slot) = sample_slot_for_node(node_index) {
                     let (start_frame, end_frame, _, _, _, _) =
@@ -7518,7 +7568,7 @@ fn render_repeated_dsp_sample(
         *dsp_state_ptr(op.state as usize) = if trigger { 1.0 } else { 0.0 };
 
         let mut output = 0.0;
-        for voice in 0..MAX_DSP_SAMPLE_PLAYER_VOICES {
+        for voice in 0..state.active_voice_limit {
             if !state.playing[voice] {
                 continue;
             }
@@ -7567,6 +7617,8 @@ fn render_repeated_dsp_sample(
                 sample_rate,
             );
         }
+        state.active_voice_limit =
+            shrink_sample_voice_limit(&state.playing, state.active_voice_limit);
         sanitize_sample(output, 4.0)
     }
 }
@@ -7597,6 +7649,7 @@ fn render_dsp_sample(
 
         if !has_sample {
             *dsp_state_ptr(op.state as usize) = 0.0;
+            DSP_SAMPLE_ACTIVE_VOICE_LIMITS[sample_index] = 0;
             return 0.0;
         }
 
@@ -7641,7 +7694,7 @@ fn render_dsp_sample(
         let mut output = 0.0;
         // Existing voices are allowed to finish if the voices input is reduced;
         // the current limit only controls allocation of new triggers.
-        for voice in 0..MAX_DSP_SAMPLE_PLAYER_VOICES {
+        for voice in 0..DSP_SAMPLE_ACTIVE_VOICE_LIMITS[sample_index] {
             let voice_slot = DSP_SAMPLE_VOICE_SLOT_START + voice;
             if !SAMPLE_PLAYING[voice_slot][node_index] {
                 continue;
@@ -7699,6 +7752,14 @@ fn render_dsp_sample(
                 playback_frequency,
                 sample_rate,
             );
+        }
+        while DSP_SAMPLE_ACTIVE_VOICE_LIMITS[sample_index] > 0 {
+            let last_voice = DSP_SAMPLE_ACTIVE_VOICE_LIMITS[sample_index] - 1;
+            let last_voice_slot = DSP_SAMPLE_VOICE_SLOT_START + last_voice;
+            if SAMPLE_PLAYING[last_voice_slot][node_index] {
+                break;
+            }
+            DSP_SAMPLE_ACTIVE_VOICE_LIMITS[sample_index] -= 1;
         }
         sanitize_sample(output, 4.0)
     }
