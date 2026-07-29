@@ -119,7 +119,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   SamplePlayer: {
     type: 'SamplePlayer',
     inputs: [
-      { name: 'frequency', defaultValue: 220 },
+      { name: 'frequency', defaultValue: 440 },
       { name: 'originalFrequency', defaultValue: 440, min: 0.0001 },
       { name: 'trigger', defaultValue: 0 },
       { name: 'voices', defaultValue: 1, min: 1, max: 16, integer: true },
