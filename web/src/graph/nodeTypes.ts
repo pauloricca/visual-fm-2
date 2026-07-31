@@ -156,16 +156,20 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     inputs: [
       { name: 'signal', valueEditor: false },
       { name: 'playhead', defaultValue: 0 },
-      { name: 'recordHead', defaultValue: 0 },
+      { name: 'playhead speed', defaultValue: 1 },
+      { name: 'record head', defaultValue: 0 },
+      { name: 'record head speed', defaultValue: 1 },
       { name: 'length', defaultValue: 1, min: 0.01, max: 10 },
+      { name: 'on reset', defaultValue: 0, min: 0, max: 1, integer: true, connectable: false, valueEditor: false },
     ],
-    outputs: [{ name: 'signal' }],
+    outputs: [{ name: 'signal' }, { name: 'record head out' }],
   },
   Playhead: {
     type: 'Playhead',
     inputs: [
       { name: 'start', defaultValue: 0 },
       { name: 'speed', defaultValue: 1 },
+      { name: 'length', defaultValue: 1, min: 0.001 },
     ],
     outputs: [{ name: 'playhead' }],
   },
@@ -173,6 +177,16 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     type: 'Time',
     inputs: [],
     outputs: [{ name: 'seconds' }],
+  },
+  Freq2Length: {
+    type: 'Freq2Length',
+    inputs: [{ name: 'frequency', defaultValue: 1 }],
+    outputs: [{ name: 'length' }],
+  },
+  Length2Freq: {
+    type: 'Length2Freq',
+    inputs: [{ name: 'length', defaultValue: 1 }],
+    outputs: [{ name: 'frequency' }],
   },
   Constant: {
     type: 'Constant',
@@ -513,6 +527,8 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   Buffer: 'Buffer',
   Playhead: 'Playhead',
   Time: 'Time',
+  Freq2Length: 'freq2length',
+  Length2Freq: 'length2freq',
   Constant: 'Constant',
   Pass: 'Pass',
   Slider: 'Slider',

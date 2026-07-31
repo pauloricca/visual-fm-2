@@ -943,11 +943,12 @@ function NodeEditorInner() {
 
     try {
       setSampleLibrary((current) => current && current.nodeId === nodeId ? { ...current, loading: true, error: null } : current);
-      const formData = new FormData();
-      formData.append('sample', file);
-      const response = await fetch('/api/local-samples', {
+      const response = await fetch(`/api/local-samples?name=${encodeURIComponent(file.name)}`, {
         method: 'POST',
-        body: formData,
+        headers: {
+          'Content-Type': file.type || 'application/octet-stream',
+        },
+        body: file,
       });
       if (!response.ok) {
         throw new Error(await response.text() || `Sample upload failed (${response.status}).`);
@@ -2374,10 +2375,12 @@ function NodeEditorInner() {
       : undefined;
     const showsPlaybackVisual = node.data.patchNode.type === 'CustomWave' || node.data.patchNode.type === 'SamplePlayer';
     const audioPlayheads = showsPlaybackVisual ? audio.playheads[dspNodeId] : undefined;
+    const showsBufferVisual = node.data.patchNode.type === 'Buffer';
+    const audioBuffer = showsBufferVisual ? audio.buffers[dspNodeId] : undefined;
     const audioSampleParams = node.data.patchNode.type === 'SamplePlayer'
       ? samplePlayerVisualizationParams(dspNodeId, audio.linkMeters)
       : undefined;
-    if (!hasAudioMonitor && !hasAudioOutputMeter && audioSelectorIndex === undefined && audioAccumulatorValue === undefined && !audioImagePosition && !midiControlVisual && dspErrors.length === 0 && !showsPlaybackVisual) return node;
+    if (!hasAudioMonitor && !hasAudioOutputMeter && audioSelectorIndex === undefined && audioAccumulatorValue === undefined && !audioImagePosition && !midiControlVisual && dspErrors.length === 0 && !showsPlaybackVisual && !showsBufferVisual) return node;
 
     return {
       ...node,
@@ -2394,6 +2397,7 @@ function NodeEditorInner() {
         ...(audioImagePosition ? { audioImagePosition } : {}),
         ...(monitorLinkId && node.data.patchNode.type === 'Sequencer' ? { audioSequencerStep: audio.linkMeters[monitorLinkId]?.output } : {}),
         ...(audioPlayheads !== undefined ? { audioPlayheads } : {}),
+        ...(audioBuffer !== undefined ? { audioBuffer } : {}),
         ...(audioSampleParams ? { audioSampleParams } : {}),
         ...(midiControlVisual?.sliderValue !== undefined ? { midiSliderValue: midiControlVisual.sliderValue } : {}),
         ...(midiControlVisual?.joystickX !== undefined || midiControlVisual?.joystickY !== undefined
@@ -2407,7 +2411,7 @@ function NodeEditorInner() {
         ...(midiControlVisual?.buttonPressed !== undefined ? { midiButtonPressed: midiControlVisual.buttonPressed } : {}),
       },
     };
-  }), [activeDspGroupIds, audio.linkMeters, audio.linkScopes, audio.playheads, dspDiagnostics, midiControlVisuals, monitorLinkIdByNode, nodesWithCallbacks]);
+  }), [activeDspGroupIds, audio.buffers, audio.linkMeters, audio.linkScopes, audio.playheads, dspDiagnostics, midiControlVisuals, monitorLinkIdByNode, nodesWithCallbacks]);
 
   const renderedEdges = useMemo(() => edgesWithCallbacks.map((edge) => {
     const dspErrors = dspDiagnostics.edgeErrors.get(edge.id) ?? [];
@@ -4561,7 +4565,7 @@ function NodeEditorInner() {
           </div>
           <input ref={fileInputRef} className="file-input" type="file" accept="application/json,.json" onChange={loadPatchFile} />
           <input ref={importFileInputRef} className="file-input" type="file" accept="application/json,.json" onChange={loadSubpatchImportFile} />
-          <input ref={sampleFileInputRef} className="file-input" type="file" accept="audio/*,.wav,.mp3,.aiff,.aif,.flac,.ogg,.m4a" onChange={uploadSampleFile} />
+          <input ref={sampleFileInputRef} className="file-input" type="file" accept="audio/*,video/mp4,.wav,.mp3,.aiff,.aif,.flac,.ogg,.m4a,.mp4" onChange={uploadSampleFile} />
           <input ref={imageFileInputRef} className="file-input" type="file" accept="image/avif,image/gif,image/jpeg,image/png,image/webp,.avif,.gif,.jpg,.jpeg,.png,.webp" onChange={uploadImageFile} />
           {importError ? <p className="import-error-floating">{importError}</p> : null}
           {audioGraph.errors.length > 0 ? (
@@ -5531,6 +5535,11 @@ function normalizeLegacyNodeParams(type: NodeType, params: Record<string, number
 }
 
 function normalizeLegacyInputDefinitions(type: NodeType, inputs: PortDefinition[] | undefined): PortDefinition[] | undefined {
+  if (type === 'Playhead') {
+    if (!inputs || inputs.some((input) => input.name === 'length')) return inputs;
+    return [...inputs, { name: 'length', defaultValue: 1, min: 0.001 }];
+  }
+
   if (type !== 'SamplePlayer') return inputs;
   return inputs?.map((input) => (
     input.name === 'originalPitch'

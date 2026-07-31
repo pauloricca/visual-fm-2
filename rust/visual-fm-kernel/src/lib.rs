@@ -471,6 +471,30 @@ impl DspRepeatResourceState {
             .find(|state| state.sample_index == sample_index)
     }
 
+    fn reset_for_transport(&mut self, preserved_buffer_slots: &[bool; MAX_DSP_BUFFER_SLOTS]) {
+        for sample in &mut self.samples {
+            *sample = DspSamplePlaybackState::new(sample.sample_index);
+        }
+        for effect in &mut self.effect_buffers {
+            effect.index = 0;
+            if let Some(buffer) = effect.buffer.as_mut() {
+                buffer.fill(0.0);
+            }
+        }
+        for buffer_state in &mut self.buffers {
+            if preserved_buffer_slots
+                .get(buffer_state.slot)
+                .copied()
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            if let Some(buffer) = buffer_state.buffer.as_mut() {
+                buffer.fill(0.0);
+            }
+        }
+    }
+
     unsafe fn load_into_workspace(&mut self) {
         for effect in &mut self.effect_buffers {
             core::mem::swap(&mut DSP_EFFECT_BUFFERS[effect.slot], &mut effect.buffer);
@@ -1540,6 +1564,40 @@ fn clear_dsp_buffers() {
     }
 }
 
+fn buffer_slots_preserved_on_reset() -> [bool; MAX_DSP_BUFFER_SLOTS] {
+    let mut preserved = [false; MAX_DSP_BUFFER_SLOTS];
+    unsafe {
+        for index in 0..DSP_OP_COUNT {
+            let op = DSP_OPS[index];
+            if op.opcode != DSP_OP_BUFFER || op.value < 0.5 || op.state < 0 {
+                continue;
+            }
+            let state = op.state as usize;
+            if state >= MAX_DSP_STATE {
+                continue;
+            }
+            let slot = DSP_BUFFER_STATE_SLOTS[state];
+            if slot >= 0 && (slot as usize) < MAX_DSP_BUFFER_SLOTS {
+                preserved[slot as usize] = true;
+            }
+        }
+    }
+    preserved
+}
+
+fn clear_dsp_buffers_except(preserved: &[bool; MAX_DSP_BUFFER_SLOTS]) {
+    unsafe {
+        for slot in 0..MAX_DSP_BUFFER_SLOTS {
+            if preserved[slot] {
+                continue;
+            }
+            if let Some(buffer) = DSP_BUFFER_BUFFERS[slot].as_mut() {
+                buffer.fill(0.0);
+            }
+        }
+    }
+}
+
 fn clear_dsp_resource_slots() {
     unsafe {
         for state in 0..MAX_DSP_STATE {
@@ -1847,6 +1905,7 @@ pub extern "C" fn resetDspVoiceState(slot: u32) {
 
 #[no_mangle]
 pub extern "C" fn resetDspRuntimeState() {
+    let preserved_buffer_slots = buffer_slots_preserved_on_reset();
     unsafe {
         for index in 0..MAX_DSP_REGS {
             DSP_REGS[index] = 0.0;
@@ -1863,10 +1922,8 @@ pub extern "C" fn resetDspRuntimeState() {
             if let Some(runtime) = DSP_SPREAD_RUNTIMES[spread_slot].as_mut() {
                 for context in 0..runtime.states_by_context.len() {
                     runtime.states_by_context[context].fill(0.0);
-                    if let Some(layout) = runtime.resource_layout.as_ref() {
-                        for resources in runtime.resources_by_context[context].iter_mut() {
-                            *resources = DspRepeatResourceState::new(layout);
-                        }
+                    for resources in runtime.resources_by_context[context].iter_mut() {
+                        resources.reset_for_transport(&preserved_buffer_slots);
                     }
                 }
             }
@@ -1884,7 +1941,7 @@ pub extern "C" fn resetDspRuntimeState() {
                 buffer.fill(0.0);
             }
         }
-        clear_dsp_buffers();
+        clear_dsp_buffers_except(&preserved_buffer_slots);
         reset_dsp_midi_notes();
         reset_dsp_tempo_clocks();
     }
@@ -6355,7 +6412,8 @@ fn render_dsp_playhead(op: DspOp, sample_rate: f64) -> f64 {
         let state_index = op.state as usize;
         let relative_position = normalize_phase(*dsp_state_ptr(state_index));
         let output = normalize_phase(dsp_reg(op.a) + relative_position);
-        let step = dsp_reg(op.b) / sample_rate.max(1.0);
+        let length_seconds = dsp_reg(op.c).max(0.001);
+        let step = dsp_reg(op.b) / (length_seconds * sample_rate.max(1.0));
         *dsp_state_ptr(state_index) = normalize_phase(relative_position + step);
         output
     }
@@ -6376,15 +6434,166 @@ fn render_dsp_time(op: DspOp, sample_rate: f64) -> f64 {
 
 fn render_dsp_buffer(op: DspOp, sample_rate: f64) -> f64 {
     let Some(slot) = dsp_buffer_slot(op.state) else {
+        set_dsp_reg(op.e, 0.0);
         return 0.0;
     };
 
     let length_samples = (dsp_reg(op.d).max(0.001) * sample_rate.max(1.0))
         .round()
         .clamp(2.0, MAX_DSP_BUFFER_SAMPLES as f64) as usize;
-    let output = read_dsp_buffer(slot, length_samples, dsp_reg(op.b));
-    write_dsp_buffer(slot, length_samples, dsp_reg(op.c), dsp_reg(op.a));
+    let externally_driven_heads = op.value4.round().max(0.0) as i32;
+    let playhead_is_external = externally_driven_heads & 1 != 0;
+    let record_head_is_external = externally_driven_heads & 2 != 0;
+    let (playhead, record_head) = unsafe {
+        if op.state < 0 || (op.state as usize + 6) >= MAX_DSP_STATE {
+            (
+                normalize_phase(dsp_reg(op.b)),
+                normalize_phase(dsp_reg(op.c)),
+            )
+        } else {
+            let state = op.state as usize;
+            if *dsp_state_ptr(state + 6) < 0.5 {
+                *dsp_state_ptr(state + 4) = normalize_phase(dsp_reg(op.b));
+                *dsp_state_ptr(state + 5) = normalize_phase(dsp_reg(op.c));
+                *dsp_state_ptr(state + 6) = 1.0;
+            }
+
+            let playhead = if playhead_is_external {
+                normalize_phase(dsp_reg(op.b))
+            } else {
+                normalize_phase(*dsp_state_ptr(state + 4))
+            };
+            let record_head = if record_head_is_external {
+                normalize_phase(dsp_reg(op.c))
+            } else {
+                normalize_phase(*dsp_state_ptr(state + 5))
+            };
+            let normalized_step = 1.0 / length_samples as f64;
+            if playhead_is_external {
+                *dsp_state_ptr(state + 4) = playhead;
+            } else {
+                *dsp_state_ptr(state + 4) =
+                    normalize_phase(playhead + dsp_reg(op.value2.round() as i32) * normalized_step);
+            }
+            if record_head_is_external {
+                *dsp_state_ptr(state + 5) = record_head;
+            } else {
+                *dsp_state_ptr(state + 5) = normalize_phase(
+                    record_head + dsp_reg(op.value3.round() as i32) * normalized_step,
+                );
+            }
+            (playhead, record_head)
+        }
+    };
+    let record_head_output = read_dsp_buffer(slot, length_samples, record_head);
+    set_dsp_reg(op.e, sanitize_sample(record_head_output, 8.0));
+    write_dsp_buffer(slot, length_samples, record_head, dsp_reg(op.a));
+    let output = read_dsp_buffer(slot, length_samples, playhead);
+    unsafe {
+        if op.state >= 0 && (op.state as usize + 3) < MAX_DSP_STATE {
+            let state = op.state as usize;
+            *dsp_state_ptr(state + 1) = playhead;
+            *dsp_state_ptr(state + 2) = record_head;
+            *dsp_state_ptr(state + 3) = length_samples as f64 / sample_rate.max(1.0);
+        }
+    }
     sanitize_sample(output, 8.0)
+}
+
+#[cfg(test)]
+mod buffer_tests {
+    use super::{
+        clear_dsp_resource_slots, dsp_state_ptr, prepare_dsp_buffer_slot, render_dsp_buffer, DspOp,
+        DSP_OP_BUFFER, DSP_REGS,
+    };
+
+    #[test]
+    fn coincident_playhead_reads_the_new_sample_while_record_head_output_reads_the_old_sample() {
+        clear_dsp_resource_slots();
+        let state = 200;
+        prepare_dsp_buffer_slot(state).unwrap();
+        let op = DspOp {
+            opcode: DSP_OP_BUFFER,
+            out: -1,
+            a: 0,
+            b: 1,
+            c: 2,
+            d: 3,
+            e: 4,
+            state,
+            value: 0.0,
+            value2: 5.0,
+            value3: 6.0,
+            value4: 3.0,
+        };
+
+        unsafe {
+            DSP_REGS[0] = 0.25;
+            DSP_REGS[1] = 0.0;
+            DSP_REGS[2] = 0.0;
+            DSP_REGS[3] = 1.0;
+            DSP_REGS[5] = 100.0;
+            DSP_REGS[6] = 100.0;
+        }
+        assert_eq!(render_dsp_buffer(op, 2.0), 0.25);
+        unsafe {
+            assert_eq!(DSP_REGS[4], 0.0);
+            DSP_REGS[0] = 0.75;
+        }
+
+        assert_eq!(render_dsp_buffer(op, 2.0), 0.75);
+        unsafe {
+            assert_eq!(DSP_REGS[4], 0.25);
+        }
+        clear_dsp_resource_slots();
+    }
+
+    #[test]
+    fn unconnected_heads_advance_at_independent_real_time_speeds() {
+        clear_dsp_resource_slots();
+        let state = 200;
+        prepare_dsp_buffer_slot(state).unwrap();
+        let op = DspOp {
+            opcode: DSP_OP_BUFFER,
+            out: -1,
+            a: 0,
+            b: 1,
+            c: 2,
+            d: 3,
+            e: 4,
+            state,
+            value: 0.0,
+            value2: 5.0,
+            value3: 6.0,
+            value4: 0.0,
+        };
+
+        unsafe {
+            DSP_REGS[0] = 0.0;
+            DSP_REGS[1] = 0.0;
+            DSP_REGS[2] = 0.5;
+            DSP_REGS[3] = 1.0;
+            DSP_REGS[5] = 1.0;
+            DSP_REGS[6] = -1.0;
+            *dsp_state_ptr(state as usize + 4) = 0.0;
+            *dsp_state_ptr(state as usize + 5) = 0.0;
+            *dsp_state_ptr(state as usize + 6) = 0.0;
+        }
+        render_dsp_buffer(op, 4.0);
+        unsafe {
+            assert_eq!(*dsp_state_ptr(state as usize + 1), 0.0);
+            assert_eq!(*dsp_state_ptr(state as usize + 2), 0.5);
+            assert_eq!(*dsp_state_ptr(state as usize + 4), 0.25);
+            assert_eq!(*dsp_state_ptr(state as usize + 5), 0.25);
+        }
+
+        render_dsp_buffer(op, 4.0);
+        unsafe {
+            assert_eq!(*dsp_state_ptr(state as usize + 1), 0.25);
+            assert_eq!(*dsp_state_ptr(state as usize + 2), 0.25);
+        }
+        clear_dsp_resource_slots();
+    }
 }
 
 fn render_dsp_delay(op: DspOp, sample_rate: f64) -> f64 {

@@ -129,6 +129,7 @@ cleanup() {
   docker compose down
 }
 
+npm run ensure:wasm
 trap cleanup INT TERM EXIT
 
 docker compose up --build &

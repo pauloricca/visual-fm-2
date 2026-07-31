@@ -43,11 +43,13 @@ Most node types are available from the node picker. `Ins` and `Outs` appear whil
 - `Random`: generates and holds an independent random value when playback starts, then generates a new value on each rising edge at `trigger`. Each node has its own random sequence, and playback restarts reseed all Random nodes. `rangeMin` and `rangeMax` map the held value to the requested range.
 - `Audio Input`: brings a microphone or input device into the patch with gain/level controls.
 - `Custom Wave`: generates an editable breakpoint waveform with loop, one-shot, ping-pong, and sustain modes. Its `end trigger` output emits a one-sample pulse when playback completes: at each wrap in loop modes, after the return trip in ping-pong modes, at the hold point in sustain mode, and at the endpoint in one-shot mode. Retriggering resets playback without producing an end pulse. Its `baseLevel` input (default `0`) sets the locked start/end points and the value held while a one-shot is idle or complete, clamping to the configured output range when necessary. Its scope-style grid shows that range; zooming into the canvas reveals denser grid divisions and more scale labels while the grid stays screen-thin, the waveform stroke scales with canvas zoom like a cable, and labels stay screen-relative with a small capped size increase at high zoom for legibility. Edit points retain their screen-relative size down to 70% canvas zoom, then progressively shrink to avoid overwhelming the waveform when zoomed farther out. Hovering or dragging an edit point shows its value in the configured Y-axis range. Saved curve points remain normalized and range-independent. Point drags update the live DSP at a limited rate, morph smoothly between curve revisions without rebuilding the graph, and always commit the final position after release.
-- `Sample`: plays a selected, uploaded, or microphone-recorded sample with frequency/original-frequency pitch tracking, trigger, polyphony, region, envelope, stretch, granular-style mode, and level controls. `frequency` defaults to `440` Hz. Positive frequency plays forward, negative frequency plays backward, and zero pauses the playhead. Active voices appear as playheads on the sample waveform, and stopping audio clears them. With `voices` set to `1`, playback follows live parameter changes; with more than one voice, each voice keeps the parameter values captured by its trigger. The sample picker can record from the microphone; stopping converts the capture to PCM WAV, prompts for a name, saves the `.wav` file in `samples/`, and selects it for the node.
+- `Sample`: plays a selected, uploaded, or microphone-recorded sample with frequency/original-frequency pitch tracking, trigger, polyphony, region, envelope, stretch, granular-style mode, and level controls. `frequency` defaults to `440` Hz. The picker accepts audio files and MP4 video files up to 1 GB; for an MP4, the node decodes and plays its audio track while retaining the original video file in `samples/` for future video playback support. MP4 playback requires the browser to support the file's embedded audio codec. Positive frequency plays forward, negative frequency plays backward, and zero pauses the playhead. Active voices appear as playheads on the sample waveform, and stopping audio clears them. With `voices` set to `1`, playback follows live parameter changes; with more than one voice, each voice keeps the parameter values captured by its trigger. The sample picker can record from the microphone; stopping converts the capture to PCM WAV, prompts for a name, saves the `.wav` file in `samples/`, and selects it for the node.
 - `Image`: samples brightness, RGB, hue, and saturation from an uploaded image at an `x`/`y` position.
-- `Buffer`: records and plays a rolling audio buffer from signal, playhead, record-head, and length controls.
-- `Playhead`: outputs a playback position signal from start and speed controls.
+- `Buffer`: records and plays a rolling audio buffer from signal, playhead, record-head, speed, and length controls. `playhead speed` and `record head speed` are independent rates where `1` is real time, `0` pauses, and negative values run backward. An incoming connection to `playhead` or `record head` overrides that head's speed and follows the connected position instead; without a connection, the corresponding position value is the starting point after reset. Its waveform shows the current playhead and red record head. Each sample is recorded before the main `signal` output is read, so coincident playhead and record-head positions return the newly written sample. `record head out` still reads the existing sample at the record head before the new sample is written, enabling overdub and feedback patches. `on reset` can clear the recording on each transport reset or preserve it between plays.
+- `Playhead`: outputs a wrapping playback position from `0` to `1`. `length` sets the cycle duration in seconds, `speed` is a playback-rate multiplier (`1` is real time, `2` is double speed, and negative values run backward), and `start` offsets the normalized starting position.
 - `Time`: outputs elapsed time in seconds.
+- `freq2length`: converts a frequency in hertz to the duration in seconds of one full cycle (`1 / frequency`).
+- `length2freq`: converts the duration in seconds of one full cycle back to frequency in hertz (`1 / length`).
 - `Constant`: outputs a fixed numeric value.
 - `Pass`: passes a signal through unchanged.
 - `Slider`: provides a playable UI control, optionally driven by MIDI CC, that outputs a mapped signal.
@@ -120,9 +122,11 @@ The signature notation below is `inputs -> outputs`. Port names are the names us
 | Custom Wave | `frequency`, `phase`, `trigger`, `baseLevel`, `rangeMin`, `rangeMax` | `signal`, `end trigger` |
 | Sample | `frequency`, `originalFrequency`, `trigger`, `voices`, `start`, `end`, `attack`, `release`, `stretch`, `cycleLength`, `overlapRatio`, `mode`, `level` | `signal` |
 | Image | `x`, `y` | `brightness`, `r`, `g`, `b`, `hue`, `saturation` |
-| Buffer | `signal`, `playhead`, `recordHead`, `length` | `signal` |
-| Playhead | `start`, `speed` | `playhead` |
+| Buffer | `signal`, `playhead`, `playhead speed`, `record head`, `record head speed`, `length`, `on reset` | `signal`, `record head out` |
+| Playhead | `start`, `speed`, `length` | `playhead` |
 | Time | — | `seconds` |
+| freq2length | `frequency` | `length` |
+| length2freq | `length` | `frequency` |
 | Constant | `value` | `signal` |
 | Pass | `signal` | `signal` |
 | Slider | `signal`, `value`, `min`, `max`, `direction`, `midiChannel`, `midiCc` | `signal` |
@@ -267,6 +271,16 @@ Shortcuts are ignored while editing text or numeric fields unless noted otherwis
 
 The floating controls provide play/stop (`PL`), recording, MIDI device settings (`MD`), patch save/load (`SV`/`LD`), undo/redo (`UN`/`RE`), grouping (`GR`), new patch (`NW`), subpatch import (`IM`), and selected-node scaling (`S+`/`S-`). Pressing record while playback is stopped arms recording at `0:00`; capture begins when playback starts. Each saved WAV has a same-stem CSV beside it in `recordings/` (for example, `performance.wav` and `performance.csv`). The CSV contains one row for every triggered playback from every Sample node, sorted by trigger time. Its `node_id` and `sample_name` columns identify the source; the remaining columns record source-region start/end in milliseconds, effective speed ratio (`1` is real time, including pitch and stretch), volume, attack/release in milliseconds, and trigger time relative to the start of the recording. The zoom percentage button resets zoom to 100%. Node and area header titles receive stepped size boosts below 70%, at 50%, and at 30% canvas zoom so they remain readable while zoomed out. The adjacent `CPU` meter fills from left to right while audio is running to show the DSP worklet's share of each audio-block deadline; hover it for the percentage.
 
+To turn the Sample events in one of those CSV files back into a chopped video, install `ffmpeg`/`ffprobe` and run:
+
+```bash
+npm run remix:video -- recordings/performance.csv samples/source.mp4
+```
+
+The output defaults to `recordings/performance-remixed.mp4`. The script matches `sample_name` to the supplied video's filename and preserves reverse playback, pitch-changing speed, volume, attack, release, and source audio. It warns and skips rows whose source region is empty or entirely outside the video; the export fails only when no usable rows remain. By default, each new trigger cuts off the preceding clip. Pass `--overlap-opacity` to mix every active voice while using the oldest active video as the full-strength base and layering each newer clip over it at 50% opacity; a clip returns to full opacity when it is the only active one. Pass `--overlap-split` to mix every active voice while dividing the frame into equal vertical source slices in trigger order; the remaining clips dynamically expand into the available slices as voices finish. The overlap options are mutually exclusive.
+
+Because the CSV does not contain the recording stop time, the export ends one median trigger interval after the final trigger; override that last duration with `--final-duration-ms 1000` when needed. With a single event, its full source-region duration is used. Use `-o output.mp4` to choose an output path, `--sample-name name.mp4` when a CSV contains multiple Sample sources, and `--overwrite` to replace an existing output.
+
 ## Compiler And Engine Boundary
 
 The active compiler is `web/src/audio/dspProgram.ts`. It expands subpatches, combines input links with the rule above, and emits a `DspProgram` for the worklet. The editor sends that program with `dspProgram` messages, and value-only changes use `dspValues`.
@@ -301,7 +315,7 @@ Run the app through Docker with the local helper:
 ./start
 ```
 
-`./start` serves the editor on port `5174` by default, generates a self-signed HTTPS certificate when `openssl` is available, prints LAN URLs for another device or projector, and supports `--port=PORT`, `--patch-storage=local`, and `--patch-storage=browser`.
+`./start` checks the Rust/WASM kernel before launching and rebuilds it when it is missing or older than its Rust sources or build inputs. It then serves the editor on port `5174` by default, generates a self-signed HTTPS certificate when `openssl` is available, prints LAN URLs for another device or projector, and supports `--port=PORT`, `--patch-storage=local`, and `--patch-storage=browser`. Direct `npm start`, `npm run dev`, and `npm run preview` run the same WASM preflight.
 
 Themes are selected with `--theme=NAME` (or `--theme NAME`). Available presets are `console` (green phosphor), `amber` (warm orange), and `ocean` (cool blue); for example, `./start --theme=amber`. The default theme preserves the original monochrome appearance. Sample waveform boundaries and envelope guides use contrasting colors for visibility; in the ocean theme, the start marker and attack guide are green. Palette and font tokens live in `web/src/themes.css`; add a `:root[data-theme='NAME']` block there to create another theme.
 

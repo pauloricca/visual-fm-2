@@ -22,6 +22,8 @@ export type NodeType =
   | 'Buffer'
   | 'Playhead'
   | 'Time'
+  | 'Freq2Length'
+  | 'Length2Freq'
   | 'Constant'
   | 'Pass'
   | 'Slider'

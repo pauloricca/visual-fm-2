@@ -60,6 +60,12 @@ export interface LinkScopeReading {
   samples: number[];
 }
 
+export interface BufferVisualization {
+  playhead: number;
+  recordHead: number;
+  bins: Array<{ min: number; max: number }>;
+}
+
 export interface ScopeCaptureRequest {
   id: string;
   length: number;
@@ -81,6 +87,7 @@ interface AudioEngineState {
   linkMeters: Record<string, LinkMeterReading>;
   linkScopes: Record<string, LinkScopeReading>;
   playheads: Record<string, number[]>;
+  buffers: Record<string, BufferVisualization>;
   recording: RecordingState;
   audioInput: AudioInputState;
   midiInput: MidiInputState;
@@ -307,6 +314,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   const [linkMeters, setLinkMeters] = useState<Record<string, LinkMeterReading>>({});
   const [linkScopes, setLinkScopeReadings] = useState<Record<string, LinkScopeReading>>({});
   const [playheads, setPlayheads] = useState<Record<string, number[]>>({});
+  const [buffers, setBuffers] = useState<Record<string, BufferVisualization>>({});
   const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>('idle');
   const [recordingMessage, setRecordingMessage] = useState('recording stopped');
   const [recordingFileName, setRecordingFileName] = useState<string | null>(null);
@@ -1288,6 +1296,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
               setLinkMeters(linkMetersFromPayload(payload));
               if (audioActivationRequestedRef.current) {
                 setPlayheads(playheadsFromPayload({ values: payload?.playheads }));
+                setBuffers(buffersFromPayload(payload));
               }
               setLinkScopeReadings(linkScopesFromPayload(payload));
               return;
@@ -1546,6 +1555,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     audioActivationRequestedRef.current = false;
     finishRecordingCapture();
     setPlayheads({});
+    setBuffers((current) => preservedBufferVisualizations(current, graphRef.current));
     const context = contextRef.current;
     const outputGain = outputGainRef.current;
     if (context && outputGain && context.state !== 'closed') {
@@ -1659,6 +1669,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     linkMeters,
     linkScopes,
     playheads,
+    buffers,
     recording,
     audioInput,
     midiInput,
@@ -2019,6 +2030,43 @@ function playheadsFromPayload(payload: unknown): Record<string, number[]> {
     (playheads[id] ??= []).push(clampNumber(playhead, 0, 1));
   }
   return playheads;
+}
+
+function buffersFromPayload(payload: unknown): Record<string, BufferVisualization> {
+  const values = (payload as { buffers?: unknown })?.buffers;
+  if (!Array.isArray(values)) return {};
+
+  const buffers: Record<string, BufferVisualization> = {};
+  for (const entry of values) {
+    if (!Array.isArray(entry)) continue;
+    const [id, rawPlayhead, rawRecordHead, rawBins] = entry;
+    if (typeof id !== 'string' || !Array.isArray(rawBins)) continue;
+    const bins = rawBins.flatMap((bin) => {
+      if (!Array.isArray(bin)) return [];
+      const min = Number(bin[0]);
+      const max = Number(bin[1]);
+      return Number.isFinite(min) && Number.isFinite(max) ? [{ min, max }] : [];
+    });
+    buffers[id] = {
+      playhead: clampNumber(Number(rawPlayhead), 0, 1),
+      recordHead: clampNumber(Number(rawRecordHead), 0, 1),
+      bins,
+    };
+  }
+  return buffers;
+}
+
+function preservedBufferVisualizations(
+  buffers: Record<string, BufferVisualization>,
+  program: DspProgram | null,
+): Record<string, BufferVisualization> {
+  if (!program) return {};
+  const preservedNodeIds = new Set(program.stateBindings.flatMap((binding) => {
+    if (!binding.id.endsWith(':buffer')) return [];
+    const op = program.ops.find((candidate) => candidate.opcode === DSP_OP.Buffer && candidate.state === binding.state);
+    return (op?.value ?? 0) >= 0.5 ? [binding.nodeId] : [];
+  }));
+  return Object.fromEntries(Object.entries(buffers).filter(([nodeId]) => preservedNodeIds.has(nodeId)));
 }
 
 function linkScopesFromPayload(payload: unknown): Record<string, LinkScopeReading> {

@@ -203,6 +203,7 @@ interface CompileContext {
   nodeById: Map<string, PatchNode>;
   incomingByInput: Map<string, PatchLink[]>;
   outputCache: Map<string, number>;
+  bufferRecordHeadOutputByNodeId: Map<string, number>;
   sliderUnitValueByNodeId: Map<string, number>;
   visitingOutputs: Set<string>;
   feedbackByOutput: Map<string, FeedbackBinding>;
@@ -315,6 +316,7 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
   const sequencerMonitorNodes = ordinaryNodes.filter((node) => node.type === 'Sequencer');
   const imagePreviewNodes = ordinaryNodes.filter((node) => node.type === 'Image');
   const samplePreviewNodes = ordinaryNodes.filter((node) => node.type === 'SamplePlayer');
+  const bufferPreviewNodes = ordinaryNodes.filter((node) => node.type === 'Buffer');
 
   validatePatchLinks(context);
   compileSpreadTemplates(context);
@@ -354,6 +356,9 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
   // Compile sample players even when their audio output is not routed yet so
   // linked region and envelope controls can still drive the node preview.
   for (const node of samplePreviewNodes) {
+    resolveOutput(node, 'signal', context);
+  }
+  for (const node of bufferPreviewNodes) {
     resolveOutput(node, 'signal', context);
   }
 
@@ -453,6 +458,7 @@ function createContext(patch: Patch): CompileContext {
     nodeById,
     incomingByInput,
     outputCache: new Map(),
+    bufferRecordHeadOutputByNodeId: new Map(),
     sliderUnitValueByNodeId: new Map(),
     visitingOutputs: new Set(),
     feedbackByOutput: new Map(),
@@ -852,6 +858,16 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     return resolveInput(node, 'signal', 0, context);
   }
 
+  if (node.type === 'Buffer' && port === 'record head out') {
+    resolveOutput(node, 'signal', context);
+    const output = context.bufferRecordHeadOutputByNodeId.get(node.id);
+    if (output === undefined) {
+      context.errors.push(`Could not compile record head output for node "${node.id}".`);
+      return constantRegister(0, context);
+    }
+    return output;
+  }
+
   if ((node.type === 'Envelope' || node.type === 'CustomWave') && port === 'end trigger') {
     // Compile the primary output first so the end trigger can observe the
     // exact engine state used to render this node, even when only the trigger
@@ -1232,6 +1248,7 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       out: output,
       a: resolveInput(node, 'start', 0, context),
       b: resolveInput(node, 'speed', 1, context),
+      c: resolveInput(node, 'length', 1, context),
       state,
     });
     return output;
@@ -1255,13 +1272,35 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     return output;
   }
 
+  if (node.type === 'Freq2Length') {
+    return emitBinary(
+      DSP_OP.Div,
+      constantRegister(1, context),
+      resolveInput(node, 'frequency', 1, context),
+      context,
+    );
+  }
+
+  if (node.type === 'Length2Freq') {
+    return emitBinary(
+      DSP_OP.Div,
+      constantRegister(1, context),
+      resolveInput(node, 'length', 1, context),
+      context,
+    );
+  }
+
   if (node.type === 'Buffer') {
     const output = nextRegister(context);
-    const state = nextState(context, 1);
+    const recordHeadOutput = nextRegister(context);
+    const state = nextState(context, 7);
+    const externallyDrivenHeads = (hasInput(node, 'playhead', context) ? 1 : 0)
+      | (hasInput(node, 'record head', context) ? 2 : 0);
+    context.bufferRecordHeadOutputByNodeId.set(node.id, recordHeadOutput);
     context.stateBindings.push({
       id: `${node.id}:buffer`,
       state,
-      count: 1,
+      count: 7,
       kind: 'effect',
       nodeId: node.id,
     });
@@ -1270,9 +1309,14 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       out: output,
       a: resolveInput(node, 'signal', 0, context),
       b: resolveInput(node, 'playhead', 0, context),
-      c: resolveInput(node, 'recordHead', 0, context),
+      c: resolveInput(node, 'record head', 0, context),
       d: resolveInput(node, 'length', 1, context),
+      e: recordHeadOutput,
       state,
+      value: Math.round(node.params['on reset'] ?? 0),
+      value2: resolveInput(node, 'playhead speed', 1, context),
+      value3: resolveInput(node, 'record head speed', 1, context),
+      value4: externallyDrivenHeads,
     });
     return output;
   }

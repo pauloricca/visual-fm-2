@@ -57,8 +57,8 @@ const auditedPorts = {
   Reverb: ['size', 'decay', 'mix'],
   LowpassFilter: ['cutoff', 'resonance'],
   SamplePlayer: ['start', 'end', 'attack', 'release', 'stretch', 'cycleLength', 'overlapRatio', 'originalFrequency', 'voices'],
-  Buffer: ['signal', 'playhead', 'recordHead', 'length'],
-  Playhead: ['start', 'speed'],
+  Buffer: ['signal', 'playhead', 'playhead speed', 'record head', 'record head speed', 'length'],
+  Playhead: ['start', 'speed', 'length'],
   Time: [],
   Slider: ['signal'],
   Button: ['signal'],
@@ -85,6 +85,9 @@ assert(accumulatorIncrement.integer !== true, 'Accumulator.increment should acce
 const accumulatorMode = getDefinition('Accumulator').inputs.find((entry) => entry.name === 'mode');
 assert(accumulatorMode?.defaultValue === 0, 'Accumulator.mode should default to trigger mode.');
 assert(accumulatorMode.connectable === false, 'Accumulator.mode should be selected locally.');
+const bufferResetMode = getDefinition('Buffer').inputs.find((entry) => entry.name === 'on reset');
+assert(bufferResetMode?.defaultValue === 0, 'Buffer.on reset should default to clear.');
+assert(bufferResetMode.connectable === false, 'Buffer.on reset should be selected locally.');
 const compressorSidechain = getDefinition('Compress').inputs.find((entry) => entry.name === 'sidechain');
 assert(compressorSidechain, 'Compress.sidechain is missing from node metadata.');
 assert(compressorSidechain.connectable !== false, 'Compress.sidechain should be connectable.');
@@ -162,9 +165,9 @@ const patch = {
       originalFrequency: 261.6255653005986,
       level: 0.7,
     }),
-    node('playhead', 'Playhead', { start: 0, speed: 1 }),
+    node('playhead', 'Playhead', { start: 0, speed: 1, length: 1 }),
     node('time', 'Time'),
-    node('buffer', 'Buffer', { playhead: 0, recordHead: 0.5, length: 1 }),
+    node('buffer', 'Buffer', { playhead: 0, 'playhead speed': 1, 'record head': 0.5, 'record head speed': 1, length: 1, 'on reset': 0 }),
     node('slider', 'Slider', { value: 0.25, min: 10, max: 20, direction: 0 }),
     node('clamp', 'Clamp', { min: -0.5, max: 0.5 }),
     node('pow', 'Pow', { exponent: 0.5 }),
@@ -197,6 +200,7 @@ const patch = {
     link('playhead', 'playhead', 'buffer', 'playhead'),
     link('source', 'signal', 'buffer', 'signal'),
     link('buffer', 'signal', 'out', 'both'),
+    link('buffer', 'record head out', 'out', 'both'),
     link('slider', 'signal', 'out', 'both'),
     link('button', 'signal', 'out', 'both'),
     link('accumulator', 'signal', 'out', 'both'),
@@ -472,7 +476,7 @@ assert(
 );
 assert(
   dspProgram.stateBindings.some((binding) => binding.id === 'playhead:playhead' && binding.count === 1)
-    && dspProgram.ops.some((op) => op.opcode === 33),
+    && dspProgram.ops.some((op) => op.opcode === 33 && Number.isInteger(op.c)),
   'Playhead should compile with one relative-position state slot.',
 );
 assert(
@@ -481,9 +485,18 @@ assert(
   'Time should compile with one elapsed-seconds state slot.',
 );
 assert(
-  dspProgram.stateBindings.some((binding) => binding.id === 'buffer:buffer' && binding.count === 1)
-    && dspProgram.ops.some((op) => op.opcode === 34),
-  'Buffer should compile with one buffer storage state slot.',
+  dspProgram.stateBindings.some((binding) => binding.id === 'buffer:buffer' && binding.count === 7)
+    && dspProgram.ops.filter((op) => op.opcode === 34).length === 1
+    && dspProgram.ops.some((op) => op.opcode === 34
+      && Number.isInteger(op.e)
+      && Number.isInteger(op.value2)
+      && Number.isInteger(op.value3)
+      && op.value4 === 3
+      && op.value === 0),
+  `Buffer should compile storage plus visualization state and a record-head output register: ${JSON.stringify({
+    binding: dspProgram.stateBindings.find((binding) => binding.id === 'buffer:buffer'),
+    ops: dspProgram.ops.filter((op) => op.opcode === 34),
+  })}`,
 );
 assert(
   ['pressed', 'mode', 'clicks'].every((port) => dspProgram.valueBindings.some((binding) => (

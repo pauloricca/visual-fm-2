@@ -154,11 +154,12 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     || node.type === 'MidiNoteOff';
   const showCustomWaveEditor = node.type === 'CustomWave';
   const showSampleUpload = node.type === 'SamplePlayer';
+  const showBufferDisplay = node.type === 'Buffer';
   const showImageDisplay = node.type === 'Image';
-  const showTopGraphic = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showJoystickDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay;
+  const showTopGraphic = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showJoystickDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showBufferDisplay || showImageDisplay;
   const imageX = centeredCoordinateToUnit(data.audioImagePosition?.x ?? node.params.x ?? 0);
   const imageY = centeredCoordinateToUnit(data.audioImagePosition?.y ?? node.params.y ?? 0);
-  const showResizableDisplay = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showJoystickDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showImageDisplay || showSequencerDisplay || isRuntimeContainer;
+  const showResizableDisplay = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showJoystickDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showBufferDisplay || showImageDisplay || showSequencerDisplay || isRuntimeContainer;
   const customWave = showCustomWaveEditor ? normalizeCustomWave(node.customWave, node.params) : null;
   const customWavePlayheads = data.audioPlayheads?.length
     ? data.audioPlayheads.map((playhead) => clamp(playhead, 0, 1))
@@ -185,7 +186,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     : DEFAULT_SCOPE_NODE_SIZE;
   const waveformDisplaySize = showImageDisplay
     ? clampImageNodeSize(node.scopeSize ?? DEFAULT_CUSTOM_WAVE_NODE_SIZE, imageAspectRatio)
-    : showCustomWaveEditor || showSampleUpload
+    : showCustomWaveEditor || showSampleUpload || showBufferDisplay
       ? clampCustomWaveNodeSize(node.scopeSize ?? DEFAULT_CUSTOM_WAVE_NODE_SIZE)
       : DEFAULT_CUSTOM_WAVE_NODE_SIZE;
   const sequencerDisplaySize = sequencer
@@ -199,7 +200,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     ? runtimeContainerSize(node)
     : showSequencerDisplay
     ? sequencerDisplaySize
-    : showCustomWaveEditor || showSampleUpload || showImageDisplay ? waveformDisplaySize : scopeSize;
+    : showCustomWaveEditor || showSampleUpload || showBufferDisplay || showImageDisplay ? waveformDisplaySize : scopeSize;
   const graphDetailSize = {
     width: displaySize.width * graphZoomScale,
     height: displaySize.height * graphZoomScale,
@@ -298,6 +299,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     showSequencerDisplay ? 'shader-node-sequencer' : '',
     showAudioOutputDisplay ? 'shader-node-audio-out' : '',
     showSampleUpload ? 'shader-node-sampleplayer' : '',
+    showBufferDisplay ? 'shader-node-buffer' : '',
     showImageDisplay ? 'shader-node-image' : '',
     showAudioInputDisplay ? 'shader-node-audio-input' : '',
     showMidiNoteDisplay ? 'shader-node-midi-note' : '',
@@ -465,7 +467,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
         ? clampSequencerNodeSize({ width: constrainedWidth, height: constrainedWidth * sequencer.rows / sequencer.steps }, sequencer.steps, sequencer.rows)
         : showImageDisplay
         ? clampImageNodeSize({ width: rawWidth, height: rawWidth / imageAspectRatio }, imageAspectRatio)
-        : showCustomWaveEditor || showSampleUpload
+        : showCustomWaveEditor || showSampleUpload || showBufferDisplay
         ? clampCustomWaveNodeSize(rawNextSize)
         : showKeysDisplay
           ? clampKeysNodeSize(rawNextSize)
@@ -499,7 +501,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('pointercancel', handlePointerCancel);
     };
-  }, [data, imageAspectRatio, node.id, reactFlow, sequencer, showCustomWaveEditor, showSampleUpload, showImageDisplay, showSequencerDisplay, showSliderDisplay, showJoystickDisplay, showButtonDisplay, showKeysDisplay]);
+  }, [data, imageAspectRatio, node.id, reactFlow, sequencer, showBufferDisplay, showCustomWaveEditor, showSampleUpload, showImageDisplay, showSequencerDisplay, showSliderDisplay, showJoystickDisplay, showButtonDisplay, showKeysDisplay]);
 
   useEffect(() => {
     setImageAspectRatio(DEFAULT_IMAGE_ASPECT_RATIO);
@@ -1018,6 +1020,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           const showBody = !compactPorts
             || isExpression
             || showSampleUpload
+            || showBufferDisplay
             || showImageDisplay
             || showAudioInputDisplay
             || showMidiNoteDisplay
@@ -1093,6 +1096,14 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               detail={Math.max(120, Math.round(displaySize.width))}
               onStartChange={(value) => data.onParamChange(node.id, 'start', value)}
               onEndChange={(value) => data.onParamChange(node.id, 'end', value)}
+            />
+          ) : null}
+          {showBufferDisplay ? (
+            <BufferWaveformDisplay
+              bins={data.audioBuffer?.bins ?? []}
+              playhead={data.audioBuffer?.playhead ?? normalizeUnitInterval(node.params.playhead ?? 0)}
+              recordHead={data.audioBuffer?.recordHead ?? normalizeUnitInterval(node.params['record head'] ?? 0)}
+              detail={Math.max(120, Math.round(displaySize.width))}
             />
           ) : null}
           {showSampleUpload ? (
@@ -1520,6 +1531,34 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                     <option value="2">ping-pong</option>
                   </select>
                 </>
+              ) : showBufferDisplay && input.name === 'on reset' && !input.preview ? (
+                <>
+                  <PortNameLabel
+                    name={input.name}
+                    editable={false}
+                    draggable={false}
+                    preview={false}
+                    selected={data.selectedPort?.side === 'input' && data.selectedPort.name === input.name}
+                    activeDragTarget={false}
+                    activeDragSource={false}
+                    onChange={() => undefined}
+                  />
+                  <select
+                    className="display-mode-select nodrag nopan"
+                    aria-label="Buffer on reset"
+                    value={String(clamp(Math.round(node.params['on reset'] ?? input.defaultValue ?? 0), 0, 1))}
+                    onChange={(event) => {
+                      data.onParamChange(node.id, input.name, Number(event.currentTarget.value));
+                      event.currentTarget.blur();
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    <option value="0">clear</option>
+                    <option value="1">preserve</option>
+                  </select>
+                </>
               ) : showTempoDisplay && input.name === 'source' && !input.preview ? (
                 <>
                   <PortNameLabel
@@ -1824,7 +1863,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   'audio-node-scope-resize-handle audio-node-scope-resize-handle-left nodrag nopan',
                   scopeResizeCorner === 'bottom-left' ? 'audio-node-scope-resize-handle-active' : '',
                 ].filter(Boolean).join(' ')}
-                title={showSequencerDisplay ? 'Resize sequencer' : showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showImageDisplay ? 'Resize image' : showKeysDisplay ? 'Resize keys' : showSliderDisplay ? 'Resize slider' : showJoystickDisplay ? 'Resize joystick' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : showFftDisplay ? 'Resize FFT' : 'Resize scope'}
+                title={showSequencerDisplay ? 'Resize sequencer' : showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showBufferDisplay ? 'Resize buffer waveform' : showImageDisplay ? 'Resize image' : showKeysDisplay ? 'Resize keys' : showSliderDisplay ? 'Resize slider' : showJoystickDisplay ? 'Resize joystick' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : showFftDisplay ? 'Resize FFT' : 'Resize scope'}
                 onPointerDown={(event) => handleScopeResizePointerDown(event, 'bottom-left')}
                 onClick={handleScopeResizeClick}
                 onDoubleClick={(event) => event.stopPropagation()}
@@ -1834,7 +1873,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   'audio-node-scope-resize-handle audio-node-scope-resize-handle-right nodrag nopan',
                   scopeResizeCorner === 'bottom-right' ? 'audio-node-scope-resize-handle-active' : '',
                 ].filter(Boolean).join(' ')}
-                title={showSequencerDisplay ? 'Resize sequencer' : showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showImageDisplay ? 'Resize image' : showKeysDisplay ? 'Resize keys' : showSliderDisplay ? 'Resize slider' : showJoystickDisplay ? 'Resize joystick' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : showFftDisplay ? 'Resize FFT' : 'Resize scope'}
+                title={showSequencerDisplay ? 'Resize sequencer' : showCustomWaveEditor ? 'Resize custom wave' : showSampleUpload ? 'Resize sample waveform' : showBufferDisplay ? 'Resize buffer waveform' : showImageDisplay ? 'Resize image' : showKeysDisplay ? 'Resize keys' : showSliderDisplay ? 'Resize slider' : showJoystickDisplay ? 'Resize joystick' : showButtonDisplay ? 'Resize button' : showMeterDisplay ? 'Resize meter' : showFftDisplay ? 'Resize FFT' : 'Resize scope'}
                 onPointerDown={(event) => handleScopeResizePointerDown(event, 'bottom-right')}
                 onClick={handleScopeResizeClick}
                 onDoubleClick={(event) => event.stopPropagation()}
@@ -1870,6 +1909,48 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+interface BufferWaveformDisplayProps {
+  bins: SampleWaveformBin[];
+  playhead: number;
+  recordHead: number;
+  detail: number;
+}
+
+function BufferWaveformDisplay({ bins, playhead, recordHead, detail }: BufferWaveformDisplayProps) {
+  const width = 300;
+  const height = 128;
+  const horizontalPadding = 8;
+  const waveformPath = sampleWaveformPath(
+    waveformBinsForDetail(bins, detail),
+    horizontalPadding,
+    width - horizontalPadding,
+    height,
+    0,
+  );
+  const headX = (head: number) => horizontalPadding + clamp(head, 0, 1) * (width - horizontalPadding * 2);
+
+  return (
+    <div className="sample-waveform-display buffer-waveform-display nodrag nopan">
+      <svg
+        className="sample-waveform-canvas"
+        viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="none"
+        aria-label="Buffer waveform"
+        role="img"
+      >
+        <g className="sample-waveform-chart-chrome">
+          <line className="custom-wave-grid-line" x1={horizontalPadding} y1="0" x2={width - horizontalPadding} y2="0" />
+          <line className="custom-wave-grid-line custom-wave-zero" x1={horizontalPadding} y1={height / 2} x2={width - horizontalPadding} y2={height / 2} />
+          <line className="custom-wave-grid-line" x1={horizontalPadding} y1={height} x2={width - horizontalPadding} y2={height} />
+          {waveformPath ? <path className="sample-waveform-path" d={waveformPath} /> : null}
+          <line className="wave-playhead-line" x1={headX(playhead)} y1="0" x2={headX(playhead)} y2={height}><title>Playhead</title></line>
+          <line className="buffer-record-head-line" x1={headX(recordHead)} y1="0" x2={headX(recordHead)} y2={height}><title>Record head</title></line>
+        </g>
+      </svg>
     </div>
   );
 }

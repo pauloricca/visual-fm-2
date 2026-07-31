@@ -2626,6 +2626,28 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         if (nodeId && Number.isFinite(playhead) && playhead >= 0) playheads.push([nodeId, this.clamp(playhead, 0, 1)]);
       }
     }
+    const buffers = [];
+    const repeatedRanges = repeatedOps.map((op) => ({
+      start: Math.max(0, Math.trunc(Number(op.state) || 0)),
+      end: Math.max(0, Math.trunc(Number(op.state) || 0)) + Math.max(0, Math.trunc(Number(op.value2) || 0)),
+    }));
+    const bufferLength = Math.max(0, Math.trunc(Number(this.wasm?.dspBufferLength?.()) || 0));
+    if (bufferLength > 0 && this.wasm?.dspBufferPtr && this.wasm?.memory) {
+      for (const binding of this.dspProgram?.stateBindings || []) {
+        if (!String(binding.id || "").endsWith(":buffer")) continue;
+        if (repeatedRanges.some((range) => binding.state >= range.start && binding.state < range.end)) continue;
+        const op = (this.dspProgram?.ops || []).find((candidate) => candidate.opcode === 34 && candidate.state === binding.state);
+        if (!op) continue;
+        const ptr = this.wasm.dspBufferPtr(binding.state);
+        if (!ptr) continue;
+        const lengthSeconds = Math.max(0.001, Number(this.wasm.getDspState?.(binding.state + 3)) || 0.001);
+        const sampleCount = this.clamp(Math.round(lengthSeconds * sampleRate), 2, bufferLength);
+        const samples = new Float32Array(this.wasm.memory.buffer, ptr, sampleCount);
+        const playhead = this.clamp(Number(this.wasm.getDspState?.(binding.state + 1)) || 0, 0, 1);
+        const recordHead = this.clamp(Number(this.wasm.getDspState?.(binding.state + 2)) || 0, 0, 1);
+        buffers.push([binding.nodeId, playhead, recordHead, waveformBinsFromBuffer(samples, 240)]);
+      }
+    }
     this.lastOutputPeak = 0;
     this.wasm?.clearLinkMeters?.();
     this.wasm?.resetDspMeterLevels?.();
@@ -2656,7 +2678,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     }
     this.port.postMessage({
       type: "visualizationFrame",
-      payload: { levels, playheads, scopes },
+      payload: { levels, playheads, scopes, buffers },
     });
   }
 
@@ -2881,6 +2903,29 @@ function resampleScopeSamples(samples, targetCount) {
     const fraction = sourcePosition - leftIndex;
     return samples[leftIndex] + (samples[rightIndex] - samples[leftIndex]) * fraction;
   });
+}
+
+function waveformBinsFromBuffer(samples, targetCount) {
+  const count = Math.max(1, Math.min(samples.length, Math.trunc(targetCount) || 1));
+  const maxSamplesPerBin = 64;
+  const bins = [];
+  for (let index = 0; index < count; index += 1) {
+    const start = Math.floor(index * samples.length / count);
+    const end = Math.max(start + 1, Math.floor((index + 1) * samples.length / count));
+    const stride = Math.max(1, Math.ceil((end - start) / maxSamplesPerBin));
+    let min = 0;
+    let max = 0;
+    for (let sourceIndex = start; sourceIndex < end; sourceIndex += stride) {
+      const sample = Number(samples[sourceIndex]) || 0;
+      min = Math.min(min, sample);
+      max = Math.max(max, sample);
+    }
+    const lastSample = Number(samples[end - 1]) || 0;
+    min = Math.min(min, lastSample);
+    max = Math.max(max, lastSample);
+    bins.push([min, max]);
+  }
+  return bins;
 }
 
 function dominantSpectrumPeak(samples, seconds, minFrequency = 20, maxFrequency = 20000) {

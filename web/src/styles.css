@@ -868,6 +868,11 @@ button:hover {
   background: var(--color-surface);
 }
 
+.shader-node-buffer {
+  width: max(var(--node-display-width, 372px), 220px);
+  background: var(--color-surface);
+}
+
 .shader-node-image {
   width: var(--node-display-width, 372px);
   min-width: 160px;
@@ -1806,6 +1811,12 @@ button:hover {
   vector-effect: non-scaling-stroke;
 }
 
+.buffer-record-head-line {
+  stroke: var(--color-error);
+  stroke-width: calc(2px * var(--graph-stroke-scale, 1));
+  vector-effect: non-scaling-stroke;
+}
+
 .wave-playhead-1 {
   stroke: var(--color-accent);
 }
@@ -2736,6 +2747,11 @@ button:hover {
 }
 
 .shader-node-sampleplayer .numeric-scrubber {
+  width: 100%;
+  max-width: none;
+}
+
+.shader-node-buffer .numeric-scrubber {
   width: 100%;
   max-width: none;
 }

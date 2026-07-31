@@ -1,5 +1,6 @@
-import { createReadStream, existsSync, readFileSync } from 'node:fs';
-import { appendFile, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { createReadStream, createWriteStream, existsSync, readFileSync } from 'node:fs';
+import { appendFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, type Connect, type Plugin } from 'vite';
@@ -117,7 +118,7 @@ function localSampleStoragePlugin(): Plugin {
     }
 
     if (path === '/api/local-samples' && request.method === 'POST') {
-      saveUploadedSample(samplesDir, request).then((sample) => {
+      saveUploadedSample(samplesDir, request, url.searchParams.get('name')).then((sample) => {
         response.statusCode = 201;
         response.setHeader('Cache-Control', 'no-store');
         response.setHeader('Content-Type', 'application/json');
@@ -479,7 +480,7 @@ interface DiagnosticLogEntry {
   details?: unknown;
 }
 
-const MAX_SAMPLE_UPLOAD_BYTES = 100 * 1024 * 1024;
+const MAX_SAMPLE_UPLOAD_BYTES = 1024 * 1024 * 1024;
 const MAX_IMAGE_UPLOAD_BYTES = 50 * 1024 * 1024;
 const MAX_RECORDING_UPLOAD_BYTES = 1024 * 1024 * 1024;
 const SAMPLE_AUDIO_EXTENSIONS = new Set([
@@ -489,6 +490,7 @@ const SAMPLE_AUDIO_EXTENSIONS = new Set([
   '.flac',
   '.m4a',
   '.mp3',
+  '.mp4',
   '.oga',
   '.ogg',
   '.wav',
@@ -579,15 +581,27 @@ async function readDiagnosticTail(logPath: string, url: URL): Promise<unknown[]>
   });
 }
 
-async function saveUploadedSample(samplesDir: string, request: Connect.IncomingMessage) {
+async function saveUploadedSample(
+  samplesDir: string,
+  request: Connect.IncomingMessage,
+  requestedName: string | null,
+) {
+  if (requestedName) {
+    return saveStreamedSampleUpload(samplesDir, request, requestedName);
+  }
+
   const boundary = multipartBoundary(request.headers['content-type']);
   if (!boundary) throw new Error('Expected a multipart sample upload.');
 
   const body = await readRequestBuffer(request, MAX_SAMPLE_UPLOAD_BYTES, 'Sample upload is too large.');
   const uploaded = parseMultipartSampleFile(body, boundary);
   if (!uploaded) throw new Error('Expected an audio file named "sample".');
-  if (!uploaded.contentType.startsWith('audio/') && uploaded.contentType !== 'application/octet-stream') {
-    throw new Error('Expected an audio file upload.');
+  const isSupportedMediaType = uploaded.contentType.startsWith('audio/')
+    || uploaded.contentType === 'video/mp4'
+    || uploaded.contentType === 'application/mp4'
+    || uploaded.contentType === 'application/octet-stream';
+  if (!isSupportedMediaType) {
+    throw new Error('Expected an audio file or MP4 video upload.');
   }
 
   const fileName = sanitizeSampleFilename(uploaded.name);
@@ -599,6 +613,89 @@ async function saveUploadedSample(samplesDir: string, request: Connect.IncomingM
     name: savedName,
     url: `/samples/${encodeURIComponent(savedName)}`,
   };
+}
+
+async function saveStreamedSampleUpload(
+  samplesDir: string,
+  request: Connect.IncomingMessage,
+  requestedName: string,
+) {
+  const contentTypeHeader = request.headers['content-type'];
+  const contentType = (Array.isArray(contentTypeHeader) ? contentTypeHeader[0] : contentTypeHeader)
+    ?.split(';', 1)[0]
+    ?.trim()
+    .toLowerCase() ?? 'application/octet-stream';
+  const isSupportedMediaType = contentType.startsWith('audio/')
+    || contentType === 'video/mp4'
+    || contentType === 'application/mp4'
+    || contentType === 'application/octet-stream';
+  if (!isSupportedMediaType) {
+    throw new Error('Expected an audio file or MP4 video upload.');
+  }
+
+  const fileName = sanitizeSampleFilename(requestedName);
+  await mkdir(samplesDir, { recursive: true });
+  const savedName = await uniqueSampleFilename(samplesDir, fileName);
+  const temporaryPath = join(samplesDir, `.${savedName}.${randomUUID()}.upload`);
+  const finalPath = join(samplesDir, savedName);
+
+  try {
+    await streamRequestToFile(request, temporaryPath, MAX_SAMPLE_UPLOAD_BYTES);
+    await rename(temporaryPath, finalPath);
+  } catch (error) {
+    await unlink(temporaryPath).catch(() => undefined);
+    throw error;
+  }
+
+  return {
+    name: savedName,
+    url: `/samples/${encodeURIComponent(savedName)}`,
+  };
+}
+
+function streamRequestToFile(
+  request: Connect.IncomingMessage,
+  filePath: string,
+  maxBytes: number,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const output = createWriteStream(filePath, { flags: 'wx' });
+    let byteLength = 0;
+    let tooLarge = false;
+    let settled = false;
+
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      output.destroy();
+      reject(error);
+    };
+
+    output.on('error', fail);
+    request.on('error', fail);
+    request.on('data', (chunk: Buffer) => {
+      byteLength += chunk.length;
+      if (byteLength > maxBytes) {
+        tooLarge = true;
+        return;
+      }
+      if (!output.write(chunk)) {
+        request.pause();
+        output.once('drain', () => request.resume());
+      }
+    });
+    request.on('end', () => {
+      if (tooLarge) {
+        fail(new Error('Sample upload is too large (maximum 1 GB).'));
+        return;
+      }
+      output.end(() => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      });
+    });
+  });
 }
 
 async function saveUploadedImage(imagesDir: string, request: Connect.IncomingMessage) {
@@ -885,6 +982,10 @@ function sampleContentType(fileName: string): string {
       return 'audio/mp4';
     case '.mp3':
       return 'audio/mpeg';
+    case '.mp4':
+      // Preserve the asset as video media so a future Sample video display can
+      // consume the same uploaded file; playback currently decodes its audio track.
+      return 'video/mp4';
     case '.oga':
     case '.ogg':
       return 'audio/ogg';
@@ -944,18 +1045,22 @@ function readRequestBuffer(request: Connect.IncomingMessage, maxBytes: number, t
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let byteLength = 0;
+    let tooLarge = false;
 
     request.on('data', (chunk: Buffer) => {
       byteLength += chunk.length;
       if (byteLength > maxBytes) {
-        reject(new Error(tooLargeMessage));
-        request.destroy();
+        tooLarge = true;
         return;
       }
       chunks.push(chunk);
     });
     request.on('end', () => {
-      resolve(Buffer.concat(chunks));
+      if (tooLarge) {
+        reject(new Error(tooLargeMessage));
+      } else {
+        resolve(Buffer.concat(chunks));
+      }
     });
     request.on('error', reject);
   });

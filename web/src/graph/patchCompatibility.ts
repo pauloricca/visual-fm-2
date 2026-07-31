@@ -68,6 +68,16 @@ function normalizeCompatibleLink(
   }
 
   const targetNode = nodeById.get(normalizedLink.to.node);
+  if (targetNode?.type === 'Buffer' && normalizedLink.to.port === 'recordHead') {
+    normalizedLink = {
+      ...normalizedLink,
+      to: {
+        ...normalizedLink.to,
+        port: 'record head',
+      },
+    };
+  }
+
   if (targetNode?.type === 'CustomWave' && normalizedLink.to.port === 'phaseReset') {
     normalizedLink = {
       ...normalizedLink,
@@ -194,6 +204,14 @@ function portExists(
 }
 
 function normalizeLegacyNodeParams(type: NodeType, params: Record<string, number>): Record<string, number> {
+  if (type === 'Buffer' && params.recordHead !== undefined) {
+    const { recordHead, ...nextParams } = params;
+    return {
+      ...nextParams,
+      'record head': params['record head'] ?? recordHead,
+    };
+  }
+
   if (type === 'CustomWave' && params.phaseReset !== undefined) {
     const { phaseReset, ...nextParams } = params;
     return {
@@ -214,6 +232,22 @@ function normalizeLegacyNodeParams(type: NodeType, params: Record<string, number
 }
 
 function normalizeLegacyInputDefinitions(type: NodeType, inputs: PortDefinition[] | undefined): PortDefinition[] | undefined {
+  if (type === 'Playhead') {
+    if (!inputs || inputs.some((input) => input.name === 'length')) return inputs;
+    return [...inputs, { name: 'length', defaultValue: 1, min: 0.001 }];
+  }
+
+  if (type === 'Buffer') {
+    if (!inputs) return inputs;
+    const normalized = inputs.map((input) => (
+      input.name === 'recordHead' ? { ...input, name: 'record head' } : input
+    ));
+    if (!normalized.some((input) => input.name === 'on reset')) {
+      normalized.push({ name: 'on reset', defaultValue: 0, min: 0, max: 1, integer: true, connectable: false, valueEditor: false });
+    }
+    return normalized;
+  }
+
   if (type === 'CustomWave') {
     return inputs?.map((input) => (
       input.name === 'phaseReset' ? { ...input, name: 'trigger' } : input
@@ -229,6 +263,12 @@ function normalizeLegacyInputDefinitions(type: NodeType, inputs: PortDefinition[
 }
 
 function normalizeLegacyOutputDefinitions(type: NodeType, outputs: PortDefinition[] | undefined): PortDefinition[] | undefined {
+  if (type === 'Buffer') {
+    if (!outputs) return outputs;
+    return outputs.some((output) => output.name === 'record head out')
+      ? outputs
+      : [...outputs, { name: 'record head out' }];
+  }
   if (type !== 'Reverb') return outputs;
   const nextOutputs = outputs?.filter((output) => output.name !== 'signal');
   return nextOutputs && nextOutputs.length > 0 ? nextOutputs : undefined;

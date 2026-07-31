@@ -1,5 +1,5 @@
 import type { Edge, Node } from '@xyflow/react';
-import type { AudioInputState, MidiInputState } from '../audio/useAudioEngine';
+import type { AudioInputState, BufferVisualization, MidiInputState } from '../audio/useAudioEngine';
 import { normalizeCustomWave } from '../graph/customWave';
 import { getDefinition, getNodeDefinition } from '../graph/nodeTypes';
 import { normalizePatchCompatibility } from '../graph/patchCompatibility';
@@ -52,6 +52,7 @@ export interface ShaderNodeData extends Record<string, unknown> {
   audioSelectorIndex?: number;
   audioSequencerStep?: number;
   audioPlayheads?: number[];
+  audioBuffer?: BufferVisualization;
   audioSampleParams?: Partial<{
     start: number;
     end: number;
