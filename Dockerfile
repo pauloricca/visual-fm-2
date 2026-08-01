@@ -2,6 +2,8 @@ FROM node:24-alpine
 
 WORKDIR /app
 
+RUN apk add --no-cache ffmpeg
+
 COPY package.json package-lock.json ./
 COPY web/package.json web/package.json
 RUN npm install

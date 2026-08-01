@@ -113,6 +113,8 @@ export interface PatchNode {
 export interface SampleAsset {
   name: string;
   url: string;
+  /** Original full-resolution video retained alongside an editor proxy. */
+  originalUrl?: string;
 }
 
 export interface ImageAsset {

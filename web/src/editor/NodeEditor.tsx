@@ -957,7 +957,11 @@ function NodeEditorInner() {
       if (!isRecord(payload) || typeof payload.name !== 'string' || typeof payload.url !== 'string') {
         throw new Error('Sample upload returned an invalid response.');
       }
-      const sample = { name: payload.name, url: payload.url };
+      const sample: SampleAsset = {
+        name: payload.name,
+        url: payload.url,
+        ...(typeof payload.originalUrl === 'string' ? { originalUrl: payload.originalUrl } : {}),
+      };
       updateNodeSample(nodeId, sample);
       setSampleLibrary((current) => current && current.nodeId === nodeId ? null : current);
       setImportError(null);
@@ -4990,7 +4994,11 @@ async function fetchLocalSampleLibrary(): Promise<SampleAsset[]> {
 
   return payload.samples.flatMap((entry): SampleAsset[] => (
     isRecord(entry) && typeof entry.name === 'string' && typeof entry.url === 'string'
-      ? [{ name: entry.name, url: entry.url }]
+      ? [{
+          name: entry.name,
+          url: entry.url,
+          ...(typeof entry.originalUrl === 'string' ? { originalUrl: entry.originalUrl } : {}),
+        }]
       : []
   ));
 }

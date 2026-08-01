@@ -1,6 +1,7 @@
 import { createReadStream, createWriteStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { appendFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, type Connect, type Plugin } from 'vite';
@@ -541,6 +542,7 @@ const SAMPLE_AUDIO_EXTENSIONS = new Set([
   '.webm',
 ]);
 const IMAGE_EXTENSIONS = new Set(['.avif', '.gif', '.jpeg', '.jpg', '.png', '.webp']);
+const VIDEO_PROXY_SUFFIX = '.visual-fm-proxy.mp4';
 
 async function saveUploadedRecording(recordingsDir: string, request: Connect.IncomingMessage) {
   const contentType = Array.isArray(request.headers['content-type'])
@@ -651,11 +653,7 @@ async function saveUploadedSample(
   await mkdir(samplesDir, { recursive: true });
   const savedName = await uniqueSampleFilename(samplesDir, fileName);
   await writeFile(join(samplesDir, savedName), uploaded.data);
-
-  return {
-    name: savedName,
-    url: `/samples/${encodeURIComponent(savedName)}`,
-  };
+  return finalizeUploadedSample(samplesDir, savedName);
 }
 
 async function saveStreamedSampleUpload(
@@ -690,10 +688,62 @@ async function saveStreamedSampleUpload(
     throw error;
   }
 
+  return finalizeUploadedSample(samplesDir, savedName);
+}
+
+async function finalizeUploadedSample(samplesDir: string, savedName: string) {
+  const originalUrl = `/samples/${encodeURIComponent(savedName)}`;
+  if (extname(savedName).toLowerCase() !== '.mp4') {
+    return { name: savedName, url: originalUrl };
+  }
+
+  const proxyName = `${basename(savedName, extname(savedName))}${VIDEO_PROXY_SUFFIX}`;
+  const proxyPath = join(samplesDir, proxyName);
+  try {
+    await transcodeVideoProxy(join(samplesDir, savedName), proxyPath);
+  } catch (error) {
+    await unlink(proxyPath).catch(() => undefined);
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`The original video was saved as "${savedName}", but its UI proxy could not be created: ${message}`);
+  }
+
   return {
     name: savedName,
-    url: `/samples/${encodeURIComponent(savedName)}`,
+    url: `/samples/${encodeURIComponent(proxyName)}`,
+    originalUrl,
   };
+}
+
+function transcodeVideoProxy(inputPath: string, outputPath: string): Promise<void> {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
+      '-i', inputPath,
+      '-map', '0:v:0', '-map', '0:a:0?',
+      '-vf', 'scale=640:480:force_original_aspect_ratio=decrease:force_divisible_by=2',
+      '-c:v', 'libx264', '-preset', 'fast', '-crf', '28',
+      // Every frame is independently decodable, trading some proxy size for
+      // consistently fast seeks to arbitrary frames in the editor.
+      '-g', '1', '-keyint_min', '1', '-sc_threshold', '0',
+      '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-b:a', '128k',
+      '-movflags', '+faststart',
+      outputPath,
+    ], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk: string) => {
+      if (stderr.length < 16_384) stderr += chunk;
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolvePromise();
+        return;
+      }
+      reject(new Error(stderr.trim() || `ffmpeg exited with status ${code ?? 'unknown'}.`));
+    });
+  });
 }
 
 function streamRequestToFile(
@@ -788,20 +838,30 @@ async function listLocalSamples(samplesDir: string) {
   if (!existsSync(samplesDir)) return [];
 
   const entries = await readdir(samplesDir, { withFileTypes: true });
+  const entryNames = new Set(entries.filter((entry) => entry.isFile()).map((entry) => entry.name));
   const samples = await Promise.all(entries
-    .filter((entry) => entry.isFile() && isSafePatchStorageSegment(entry.name) && SAMPLE_AUDIO_EXTENSIONS.has(extname(entry.name).toLowerCase()))
+    .filter((entry) => entry.isFile()
+      && !entry.name.endsWith(VIDEO_PROXY_SUFFIX)
+      && isSafePatchStorageSegment(entry.name)
+      && SAMPLE_AUDIO_EXTENSIONS.has(extname(entry.name).toLowerCase()))
     .map(async (entry) => {
       const fileStats = await stat(join(samplesDir, entry.name));
+      const proxyName = extname(entry.name).toLowerCase() === '.mp4'
+        ? `${basename(entry.name, extname(entry.name))}${VIDEO_PROXY_SUFFIX}`
+        : null;
       return {
         name: entry.name,
-        url: `/samples/${encodeURIComponent(entry.name)}`,
+        url: `/samples/${encodeURIComponent(proxyName && entryNames.has(proxyName) ? proxyName : entry.name)}`,
+        ...(proxyName && entryNames.has(proxyName)
+          ? { originalUrl: `/samples/${encodeURIComponent(entry.name)}` }
+          : {}),
         updatedAt: fileStats.mtime.getTime(),
       };
     }));
 
   return samples
     .sort((a, b) => b.updatedAt - a.updatedAt || a.name.localeCompare(b.name))
-    .map(({ name, url }) => ({ name, url }));
+    .map(({ name, url, originalUrl }) => ({ name, url, ...(originalUrl ? { originalUrl } : {}) }));
 }
 
 async function listLocalImages(imagesDir: string) {
