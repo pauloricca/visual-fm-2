@@ -531,7 +531,17 @@ button:hover {
   pointer-events: none;
 }
 
-.editor-shell-area-drawing .react-flow__selection {
+.editor-selection-marquee {
+  position: absolute;
+  z-index: 4;
+  box-sizing: border-box;
+  border: 1px dashed var(--color-foreground);
+  background: transparent;
+  pointer-events: none;
+}
+
+.editor-shell-area-drawing .react-flow__selection,
+.editor-shell-resumed-selection .react-flow__selection {
   display: none;
 }
 

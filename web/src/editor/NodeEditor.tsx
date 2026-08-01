@@ -408,6 +408,7 @@ function NodeEditorInner() {
   const localPatchStorageEnabled = useMemo(() => canUseLocalPatchStorage(), []);
   const [reconnectPreviewEdge, setReconnectPreviewEdge] = useState<ShaderFlowEdge | null>(null);
   const [areaDraw, setAreaDraw] = useState<AreaDrawState | null>(null);
+  const [resumedSelectionDraw, setResumedSelectionDraw] = useState<AreaDrawState | null>(null);
   const [selectedAreaId, setSelectedAreaId] = useState<string | null>(null);
   const [editingAreaId, setEditingAreaId] = useState<string | null>(null);
   const areaTitleInputRef = useRef<HTMLInputElement | null>(null);
@@ -3651,8 +3652,11 @@ function NodeEditorInner() {
     if (event.button !== 0) {
       pendingNodeDragSelectionRef.current = null;
       selectionDragStartRef.current = null;
+      setResumedSelectionDraw(null);
       return;
     }
+
+    setResumedSelectionDraw(null);
 
     if (!target?.closest('.canvas-area')) setSelectedAreaId(null);
 
@@ -3669,6 +3673,7 @@ function NodeEditorInner() {
       const draw = { start: { x: event.clientX, y: event.clientY }, current: { x: event.clientX, y: event.clientY } };
       areaDrawRef.current = draw;
       setAreaDraw(draw);
+      setResumedSelectionDraw(null);
       selectionDragStartRef.current = null;
       return;
     }
@@ -3746,6 +3751,10 @@ function NodeEditorInner() {
       areaDrawRef.current = null;
       selectionDragStartRef.current = current.start;
       setAreaDraw(null);
+      setResumedSelectionDraw({
+        start: current.start,
+        current: { x: event.clientX, y: event.clientY },
+      });
       startNativeSelection(current.start);
       return false;
     }
@@ -4099,17 +4108,22 @@ function NodeEditorInner() {
       areaDrawRef.current = draw;
       selectionDragStartRef.current = null;
       setAreaDraw(draw);
+      setResumedSelectionDraw(null);
       endNativeSelection();
       setNodes((current) => updateSelection(current, new Set()));
       setEdges((current) => updateSelection(current, new Set()));
       return;
     }
+    setResumedSelectionDraw((current) => current
+      ? { ...current, current: { x: event.clientX, y: event.clientY } }
+      : null);
     syncRectangleSelection({ x: event.clientX, y: event.clientY });
   }, [endNativeSelection, syncRectangleSelection]);
 
   const validateRectangleSelection = useCallback((event: ReactMouseEvent) => {
     syncRectangleSelection({ x: event.clientX, y: event.clientY });
     selectionDragStartRef.current = null;
+    setResumedSelectionDraw(null);
   }, [syncRectangleSelection]);
 
   useEffect(() => {
@@ -4121,6 +4135,7 @@ function NodeEditorInner() {
         areaDrawRef.current = draw;
         selectionDragStartRef.current = null;
         setAreaDraw(draw);
+        setResumedSelectionDraw(null);
         endNativeSelection();
         setNodes((current) => updateSelection(current, new Set()));
         setEdges((current) => updateSelection(current, new Set()));
@@ -4132,6 +4147,7 @@ function NodeEditorInner() {
         areaDrawRef.current = null;
         selectionDragStartRef.current = draw.start;
         setAreaDraw(null);
+        setResumedSelectionDraw({ start: draw.start, current: canvasDragPointerRef.current });
         startNativeSelection(draw.start);
         syncRectangleSelection(canvasDragPointerRef.current);
       }
@@ -4151,6 +4167,17 @@ function NodeEditorInner() {
       window.removeEventListener('keyup', handleModifierKeyUp, { capture: true });
     };
   }, [endNativeSelection, startNativeSelection, syncRectangleSelection]);
+
+  const resumedSelectionBounds = useMemo(() => {
+    if (!resumedSelectionDraw || !editorShellRef.current) return null;
+    const shellBounds = editorShellRef.current.getBoundingClientRect();
+    return {
+      left: Math.min(resumedSelectionDraw.start.x, resumedSelectionDraw.current.x) - shellBounds.left,
+      top: Math.min(resumedSelectionDraw.start.y, resumedSelectionDraw.current.y) - shellBounds.top,
+      width: Math.abs(resumedSelectionDraw.current.x - resumedSelectionDraw.start.x),
+      height: Math.abs(resumedSelectionDraw.current.y - resumedSelectionDraw.start.y),
+    };
+  }, [resumedSelectionDraw]);
 
   const handleMove = useCallback((event: globalThis.MouseEvent | TouchEvent | null, nextViewport: Viewport) => {
     if (event !== null && Math.abs(nextViewport.zoom - zoomInteractionRef.current.lastZoom) > ZOOM_CHANGE_EPSILON) {
@@ -4221,7 +4248,7 @@ function NodeEditorInner() {
       <EdgeOverlayProvider target={edgeOverlayElement}>
         <main
           ref={editorShellRef}
-          className={`editor-shell${areaDraw ? ' editor-shell-area-drawing' : ''}`}
+          className={`editor-shell${areaDraw ? ' editor-shell-area-drawing' : ''}${resumedSelectionDraw ? ' editor-shell-resumed-selection' : ''}`}
           onFocusCapture={handleEditorFocusCapture}
           onPointerDownCapture={handleEditorPointerDownCapture}
           onPointerMove={(event) => {
@@ -4239,12 +4266,14 @@ function NodeEditorInner() {
             canvasDragActiveRef.current = false;
             canvasDragPointerRef.current = null;
             canvasDragPointerIdRef.current = null;
+            setResumedSelectionDraw(null);
           }}
           onPointerCancelCapture={() => {
             clearPendingNodeDragSelection();
             canvasDragActiveRef.current = false;
             canvasDragPointerRef.current = null;
             canvasDragPointerIdRef.current = null;
+            setResumedSelectionDraw(null);
           }}
           onDoubleClick={(event) => {
             const target = event.target as HTMLElement;
@@ -4501,6 +4530,13 @@ function NodeEditorInner() {
               </div>
             </Controls>
           </ReactFlow>
+          {resumedSelectionBounds ? (
+            <div
+              className="editor-selection-marquee"
+              style={resumedSelectionBounds}
+              aria-hidden="true"
+            />
+          ) : null}
           <div ref={setEdgeOverlayElement} className="edge-overlay-layer" />
           <div className="viewport-buttons">
             <input
