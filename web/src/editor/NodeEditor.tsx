@@ -152,6 +152,7 @@ interface AreaDrawState {
 interface AreaDragState {
   areaId: string;
   start: ScreenPoint;
+  captureTarget: HTMLElement;
   areaPositions: Record<string, { x: number; y: number }>;
   nodePositions: Record<string, { x: number; y: number }>;
   historyCommitted: boolean;
@@ -3800,9 +3801,13 @@ function NodeEditorInner() {
     return true;
   }, [commitHistory, screenToFlow]);
 
-  const startAreaDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>, area: EditorArea) => {
+  const startAreaDrag = useCallback((
+    event: ReactPointerEvent<HTMLElement>,
+    area: EditorArea,
+    preserveClick = false,
+  ) => {
     if (event.button !== 0) return;
-    event.preventDefault();
+    if (!preserveClick) event.preventDefault();
     event.stopPropagation();
     setSelectedAreaId(area.id);
     const movedAreaIds = connectedAreaIds(areas, area.id);
@@ -3816,6 +3821,7 @@ function NodeEditorInner() {
     areaDragRef.current = {
       areaId: area.id,
       start: { x: event.clientX, y: event.clientY },
+      captureTarget: event.currentTarget,
       areaPositions,
       nodePositions,
       historyCommitted: false,
@@ -3842,9 +3848,12 @@ function NodeEditorInner() {
     }));
   }, [commitHistory, viewport.zoom]);
 
-  const stopAreaDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!areaDragRef.current) return;
-    event.currentTarget.releasePointerCapture(event.pointerId);
+  const stopAreaDrag = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    const drag = areaDragRef.current;
+    if (!drag) return;
+    if (drag.captureTarget.hasPointerCapture(event.pointerId)) {
+      drag.captureTarget.releasePointerCapture(event.pointerId);
+    }
     areaDragRef.current = null;
   }, []);
 
@@ -4404,6 +4413,7 @@ function NodeEditorInner() {
                           type="button"
                           onPointerDown={(event) => {
                             areaTitlePointerStartRef.current = { x: event.clientX, y: event.clientY };
+                            startAreaDrag(event, area, true);
                           }}
                           onPointerCancel={() => {
                             areaTitlePointerStartRef.current = null;
