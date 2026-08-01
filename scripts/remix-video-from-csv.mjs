@@ -18,23 +18,26 @@ const REQUIRED_COLUMNS = [
 ];
 
 const HELP = `Usage:
-  node scripts/remix-video-from-csv.mjs [options] <events.csv> <source-video>
+  node scripts/remix-video-from-csv.mjs [options] <events.csv>
 
 Options:
   -o, --output <file>             Output path (default: <csv-stem>-remixed.mp4)
       --final-duration-ms <ms>    Duration of the final chop
+      --samples-dir <directory>   Sample directory (default: samples)
       --sample-name <name>        Use only rows with this sample_name
       --overlap-opacity           Mix overlaps; layer newer video at 50%
       --overlap-split             Mix overlaps; show equal-width video slices
+      --overlap-grid              Mix overlaps; resize video into a fixed grid
       --overwrite                 Replace an existing output file
   -h, --help                      Show this help
 
-The script requires ffmpeg and ffprobe. For every selected CSV row it takes the
-corresponding source-video region, applies the recorded direction, speed,
-volume, attack, and release, and joins the chops in trigger order. Each chop
+The script requires ffmpeg and ffprobe. It loads each CSV sample_name from the
+samples directory. For every selected row it takes the corresponding video
+region, applies the recorded direction, speed, volume, attack, and release,
+and joins the chops in trigger order. Each chop
 lasts until the next trigger. When --final-duration-ms is omitted, the final
 chop uses the median preceding trigger interval (or its full region if it is
-the only row). By default a new trigger cuts off the previous clip. The two
+the only row). By default a new trigger cuts off the previous clip. The
 overlap modes instead keep every voice audible until its source region ends.
 `;
 
@@ -51,48 +54,45 @@ async function main() {
   }
 
   const csvPath = resolve(options.csvPath);
-  const videoPath = resolve(options.videoPath);
+  const samplesDirectory = resolve(options.samplesDirectory);
   await assertFile(csvPath, 'CSV');
-  await assertFile(videoPath, 'source video');
 
   const outputPath = resolve(options.outputPath ?? defaultOutputPath(csvPath));
-  if (outputPath === videoPath) {
-    throw new Error('The output path must not replace the source video.');
-  }
   if (!options.overwrite && await fileExists(outputPath)) {
     throw new Error(`Output already exists: ${outputPath}\nPass --overwrite to replace it.`);
   }
 
   const rows = parseEventRows(await readFile(csvPath, 'utf8'));
-  const selectedEvents = selectVideoEvents(rows, videoPath, options.sampleName);
-  if (selectedEvents.length === 0) {
-    throw new Error('The CSV contains no usable playback events for this video.');
+  const { events: selectedEvents, sources } = await resolveEventSources(
+    rows,
+    samplesDirectory,
+    options.sampleName,
+  );
+  if (sources.some((source) => source.path === outputPath)) {
+    throw new Error('The output path must not replace a source video.');
   }
-
-  const media = await probeMedia(videoPath);
-  if (!media.hasVideo) throw new Error('The source file has no video stream.');
-  if (!media.hasAudio) throw new Error('The source file has no audio stream.');
-  const events = skipInvalidSourceRegions(selectedEvents, media.durationSeconds);
+  const events = skipInvalidSourceRegions(selectedEvents);
   if (events.length === 0) {
     throw new Error('The CSV contains no playback events with a usable source region.');
   }
+  const outputMedia = sources[0].media;
 
   const segments = options.overlapMode
     ? null
-    : makeSegments(events, options.finalDurationMs, media.durationSeconds);
+    : makeSegments(events, options.finalDurationMs);
   const temporaryDirectory = await mkdtemp(join(tmpdir(), 'visual-fm-video-remix-'));
   const filterPath = join(temporaryDirectory, 'filter-complex.txt');
 
   try {
     const filter = options.overlapMode
-      ? makeOverlapFilterGraph(events, options.finalDurationMs, media, options.overlapMode)
-      : makeFilterGraph(segments, media.audioSampleRate);
+      ? makeOverlapFilterGraph(events, options.finalDurationMs, outputMedia, options.overlapMode, sources)
+      : makeFilterGraph(segments, outputMedia, sources);
     await writeFile(filterPath, filter);
 
     const ffmpegArguments = [
       '-hide_banner',
       options.overwrite ? '-y' : '-n',
-      '-i', videoPath,
+      ...sources.flatMap((source) => ['-i', source.path]),
       '-filter_complex_script', filterPath,
       '-map', '[outv]',
       '-map', '[outa]',
@@ -109,7 +109,8 @@ async function main() {
 
   process.stdout.write(
     `Created ${outputPath}\n`
-    + `Used ${events.length} event${events.length === 1 ? '' : 's'} from ${events[0].sampleName}`
+    + `Used ${events.length} event${events.length === 1 ? '' : 's'} from `
+    + `${sources.length} video${sources.length === 1 ? '' : 's'}`
     + `${options.overlapMode ? ` in overlap-${options.overlapMode} mode` : ''}.\n`,
   );
 }
@@ -121,6 +122,7 @@ function parseArguments(arguments_) {
     overwrite: false,
     outputPath: null,
     finalDurationMs: null,
+    samplesDirectory: 'samples',
     sampleName: null,
     overlapMode: null,
   };
@@ -139,12 +141,18 @@ function parseArguments(arguments_) {
         throw new Error('--final-duration-ms must be a positive number.');
       }
       options.finalDurationMs = value;
+    } else if (argument === '--samples-dir') {
+      options.samplesDirectory = requiredOptionValue(arguments_, ++index, argument);
     } else if (argument === '--sample-name') {
       options.sampleName = requiredOptionValue(arguments_, ++index, argument);
-    } else if (argument === '--overlap-opacity' || argument === '--overlap-split') {
-      const overlapMode = argument === '--overlap-opacity' ? 'opacity' : 'split';
+    } else if (
+      argument === '--overlap-opacity'
+      || argument === '--overlap-split'
+      || argument === '--overlap-grid'
+    ) {
+      const overlapMode = argument.slice('--overlap-'.length);
       if (options.overlapMode && options.overlapMode !== overlapMode) {
-        throw new Error('--overlap-opacity and --overlap-split cannot be used together.');
+        throw new Error('The overlap options cannot be used together.');
       }
       options.overlapMode = overlapMode;
     } else if (argument.startsWith('-')) {
@@ -154,13 +162,12 @@ function parseArguments(arguments_) {
     }
   }
 
-  if (!options.help && positional.length !== 2) {
-    throw new Error(`Expected one CSV file and one source video.\n\n${HELP}`);
+  if (!options.help && positional.length !== 1) {
+    throw new Error(`Expected one CSV file.\n\n${HELP}`);
   }
   return {
     ...options,
     csvPath: positional[0],
-    videoPath: positional[1],
   };
 }
 
@@ -270,28 +277,34 @@ function parseCsv(text) {
   return records;
 }
 
-function selectVideoEvents(rows, videoPath, requestedSampleName) {
-  if (requestedSampleName) {
-    const selected = rows.filter((row) => row.sampleName === requestedSampleName);
-    if (selected.length === 0) throw new Error(`No CSV rows match sample_name "${requestedSampleName}".`);
-    return sortEvents(selected);
+async function resolveEventSources(rows, samplesDirectory, requestedSampleName) {
+  const selected = requestedSampleName
+    ? rows.filter((row) => row.sampleName === requestedSampleName)
+    : rows;
+  if (selected.length === 0) {
+    throw new Error(requestedSampleName
+      ? `No CSV rows match sample_name "${requestedSampleName}".`
+      : 'The CSV contains no playback events.');
   }
 
-  const videoName = basename(videoPath).toLocaleLowerCase();
-  const matching = rows.filter((row) => basename(row.sampleName).toLocaleLowerCase() === videoName);
-  if (matching.length > 0) return sortEvents(matching);
-
-  const names = [...new Set(rows.map((row) => row.sampleName))];
-  if (names.length === 1) {
-    process.stderr.write(
-      `remix-video: CSV sample_name "${names[0]}" does not match "${basename(videoPath)}"; using it because it is the only sample.\n`,
-    );
-    return sortEvents(rows);
+  const sampleNames = [...new Set(selected.map((event) => basename(event.sampleName)))];
+  if (sampleNames.some((name) => name.length === 0)) {
+    throw new Error('The CSV contains an empty sample_name.');
   }
-  throw new Error(
-    `The CSV refers to multiple samples and none matches "${basename(videoPath)}". `
-    + 'Pass --sample-name to choose one.',
-  );
+  const sources = await Promise.all(sampleNames.map(async (sampleName, index) => {
+    const path = join(samplesDirectory, sampleName);
+    await assertFile(path, `sample "${sampleName}"`);
+    const media = await probeMedia(path);
+    if (!media.hasVideo) throw new Error(`Sample "${sampleName}" has no video stream.`);
+    if (!media.hasAudio) throw new Error(`Sample "${sampleName}" has no audio stream.`);
+    return { index, sampleName, path, media };
+  }));
+  const sourceByName = new Map(sources.map((source) => [source.sampleName, source]));
+  const events = sortEvents(selected).map((event) => {
+    const source = sourceByName.get(basename(event.sampleName));
+    return { ...event, sourceIndex: source.index, media: source.media };
+  });
+  return { events, sources };
 }
 
 function sortEvents(events) {
@@ -300,10 +313,10 @@ function sortEvents(events) {
   ));
 }
 
-function skipInvalidSourceRegions(events, mediaDurationSeconds) {
+function skipInvalidSourceRegions(events) {
   return events.filter((event) => {
     const lowMs = Math.max(0, Math.min(event.startMs, event.endMs));
-    const highMs = Math.min(mediaDurationSeconds * 1000, Math.max(event.startMs, event.endMs));
+    const highMs = Math.min(event.media.durationSeconds * 1000, Math.max(event.startMs, event.endMs));
     if (highMs > lowMs) return true;
     process.stderr.write(
       `remix-video: skipping CSV row ${event.captureOrder + 2}; it selects an empty or out-of-range source region.\n`,
@@ -312,7 +325,7 @@ function skipInvalidSourceRegions(events, mediaDurationSeconds) {
   });
 }
 
-function makeSegments(events, finalDurationMs, mediaDurationSeconds) {
+function makeSegments(events, finalDurationMs) {
   const positiveIntervals = [];
   for (let index = 1; index < events.length; index += 1) {
     const interval = events[index].triggerTimeMs - events[index - 1].triggerTimeMs;
@@ -338,7 +351,7 @@ function makeSegments(events, finalDurationMs, mediaDurationSeconds) {
     }
 
     const lowMs = Math.max(0, Math.min(event.startMs, event.endMs));
-    const highMs = Math.min(mediaDurationSeconds * 1000, Math.max(event.startMs, event.endMs));
+    const highMs = Math.min(event.media.durationSeconds * 1000, Math.max(event.startMs, event.endMs));
     if (highMs <= lowMs) {
       throw new Error(`CSV row ${event.captureOrder + 2} selects an empty or out-of-range source region.`);
     }
@@ -409,22 +422,20 @@ function validFrameRate(value) {
   return numerator > 0 && denominator > 0;
 }
 
-function makeOverlapFilterGraph(events, finalDurationMs, media, mode) {
-  const prepared = prepareOverlapEvents(events, media.durationSeconds);
+function makeOverlapFilterGraph(events, finalDurationMs, media, mode, sources) {
+  const prepared = prepareOverlapEvents(events);
   const outputDurationSeconds = overlapOutputDurationSeconds(prepared, finalDurationMs);
   const timelineEvents = prepared.filter((event) => event.triggerSeconds < outputDurationSeconds);
   if (timelineEvents.length === 0) throw new Error('No playback event begins before the output ends.');
 
   const intervals = makeOverlapIntervals(timelineEvents, outputDurationSeconds);
-  const videoPieceCount = intervals.reduce((count, interval) => count + interval.active.length, 0);
-  const videoInputs = labels('ovin', videoPieceCount);
-  const audioInputs = labels('oain', timelineEvents.length);
+  const grid = mode === 'grid'
+    ? makeOverlapGrid(timelineEvents, intervals)
+    : null;
   const lines = [];
-
-  if (videoPieceCount > 0) {
-    lines.push(`[0:v]split=${videoPieceCount}${videoInputs.map(bracket).join('')}`);
-  }
-  lines.push(`[0:a]asplit=${timelineEvents.length}${audioInputs.map(bracket).join('')}`);
+  const videoPieceEvents = intervals.flatMap((interval) => interval.active);
+  const videoInputs = allocateSourceInputs(videoPieceEvents, sources, 'v', 'ovin', lines);
+  const audioInputs = allocateSourceInputs(timelineEvents, sources, 'a', 'oain', lines);
 
   let videoInputIndex = 0;
   intervals.forEach((interval, intervalIndex) => {
@@ -432,13 +443,15 @@ function makeOverlapFilterGraph(events, finalDurationMs, media, mode) {
       const input = videoInputs[videoInputIndex];
       videoInputIndex += 1;
       const label = `opiece${intervalIndex}_${activeIndex}`;
-      lines.push(makeOverlapVideoPiece(input, label, event, interval, media.frameRate));
+      lines.push(makeOverlapVideoPiece(input, label, event, interval, media));
       return label;
     });
     if (mode === 'opacity') {
       composeOpacityInterval(lines, pieceLabels, interval, intervalIndex, media);
-    } else {
+    } else if (mode === 'split') {
       composeSplitInterval(lines, pieceLabels, interval, intervalIndex, media);
+    } else {
+      composeGridInterval(lines, pieceLabels, interval, intervalIndex, media, grid);
     }
   });
 
@@ -463,9 +476,9 @@ function makeOverlapFilterGraph(events, finalDurationMs, media, mode) {
   return `${lines.join(';\n')}\n`;
 }
 
-function prepareOverlapEvents(events, mediaDurationSeconds) {
+function prepareOverlapEvents(events) {
   return events.map((event) => {
-    const source = sourceRegion(event, mediaDurationSeconds);
+    const source = sourceRegion(event);
     return {
       ...event,
       ...source,
@@ -475,10 +488,10 @@ function prepareOverlapEvents(events, mediaDurationSeconds) {
   });
 }
 
-function sourceRegion(event, mediaDurationSeconds) {
+function sourceRegion(event) {
   const lowSeconds = Math.max(0, Math.min(event.startMs, event.endMs) / 1000);
   const highSeconds = Math.min(
-    mediaDurationSeconds,
+    event.media.durationSeconds,
     Math.max(event.startMs, event.endMs) / 1000,
   );
   if (highSeconds <= lowSeconds) {
@@ -535,7 +548,7 @@ function makeOverlapIntervals(events, outputDurationSeconds) {
   }).filter((interval) => interval.duration > 0);
 }
 
-function makeOverlapVideoPiece(input, output, event, interval, frameRate) {
+function makeOverlapVideoPiece(input, output, event, interval, media) {
   const elapsedStart = Math.max(0, interval.start - event.triggerSeconds);
   const elapsedEnd = Math.min(
     event.contentDurationSeconds,
@@ -554,7 +567,8 @@ function makeOverlapVideoPiece(input, output, event, interval, frameRate) {
     `setpts=PTS/${decimal(event.speed)}`,
     `tpad=stop_mode=clone:stop_duration=${decimal(interval.duration)}`,
     `trim=duration=${decimal(interval.duration)}`,
-    `fps=${frameRate}`,
+    `scale=w=${media.width}:h=${media.height}:flags=lanczos`,
+    `fps=${media.frameRate}`,
     'settb=AVTB',
     'setpts=PTS-STARTPTS',
     'setsar=1',
@@ -618,6 +632,55 @@ function composeSplitInterval(lines, pieces, interval, intervalIndex, media) {
   });
 }
 
+function makeOverlapGrid(events, intervals) {
+  const maximumOverlap = Math.max(1, ...intervals.map((interval) => interval.active.length));
+  const columns = Math.ceil(Math.sqrt(maximumOverlap));
+  const rows = Math.ceil(maximumOverlap / columns);
+  const slots = new Map();
+  const occupiedUntil = Array.from({ length: maximumOverlap }, () => 0);
+
+  events.forEach((event) => {
+    const slot = occupiedUntil.findIndex((end) => end <= event.triggerSeconds);
+    if (slot < 0) throw new Error('Could not assign an overlap-grid cell.');
+    slots.set(event, slot);
+    occupiedUntil[slot] = event.triggerSeconds + event.contentDurationSeconds;
+  });
+
+  return { columns, rows, slots };
+}
+
+function composeGridInterval(lines, pieces, interval, intervalIndex, media, grid) {
+  const output = `ointerval${intervalIndex}`;
+  if (pieces.length === 0) {
+    lines.push(blackInterval(output, interval.duration, media));
+    return;
+  }
+
+  const background = `ogridbase${intervalIndex}`;
+  lines.push(blackInterval(background, interval.duration, media, 'rgba'));
+  let base = background;
+  pieces.forEach((piece, index) => {
+    const slot = grid.slots.get(interval.active[index]);
+    const column = slot % grid.columns;
+    const row = Math.floor(slot / grid.columns);
+    const x = Math.floor(media.width * column / grid.columns);
+    const y = Math.floor(media.height * row / grid.rows);
+    const nextX = Math.floor(media.width * (column + 1) / grid.columns);
+    const nextY = Math.floor(media.height * (row + 1) / grid.rows);
+    const resized = `ogridcell${intervalIndex}_${index}`;
+    const composite = index === pieces.length - 1 ? output : `ogridcomposite${intervalIndex}_${index}`;
+    lines.push(
+      `[${piece}]scale=w=${nextX - x}:h=${nextY - y}:flags=lanczos,setsar=1[${resized}]`,
+    );
+    lines.push(
+      `[${base}][${resized}]overlay=x=${x}:y=${y}:shortest=1:format=auto,`
+      + `${index === pieces.length - 1 ? 'format=yuv420p,' : ''}`
+      + `setsar=1[${composite}]`,
+    );
+    base = composite;
+  });
+}
+
 function blackInterval(output, duration, media, format = 'yuv420p') {
   return `color=c=black:s=${media.width}x${media.height}:r=${media.frameRate}:d=${decimal(duration)},`
     + `settb=AVTB,setpts=PTS-STARTPTS,setsar=1,format=${format}[${output}]`;
@@ -643,6 +706,7 @@ function makeOverlapAudioVoice(input, output, event, outputDurationSeconds, audi
     ...(event.reverse ? ['areverse'] : []),
     `asetrate=${Math.max(1, Math.round(audioSampleRate * event.speed))}`,
     `aresample=${audioSampleRate}`,
+    `aformat=sample_rates=${audioSampleRate}:channel_layouts=stereo`,
     `atrim=duration=${decimal(availableDuration)}`,
     `volume=${decimal(Math.max(0, event.volume))}`,
     ...(attack > 0 ? [`afade=t=in:st=0:d=${decimal(attack)}`] : []),
@@ -655,14 +719,11 @@ function makeOverlapAudioVoice(input, output, event, outputDurationSeconds, audi
   return `${bracket(input)}${filters.join(',')}[${output}]`;
 }
 
-function makeFilterGraph(segments, audioSampleRate) {
+function makeFilterGraph(segments, media, sources) {
   const count = segments.length;
-  const videoInputs = labels('vin', count);
-  const audioInputs = labels('ain', count);
-  const lines = [
-    `[0:v]split=${count}${videoInputs.map(bracket).join('')}`,
-    `[0:a]asplit=${count}${audioInputs.map(bracket).join('')}`,
-  ];
+  const lines = [];
+  const videoInputs = allocateSourceInputs(segments, sources, 'v', 'vin', lines);
+  const audioInputs = allocateSourceInputs(segments, sources, 'a', 'ain', lines);
 
   segments.forEach((segment, index) => {
     const speed = Math.abs(segment.speed);
@@ -676,14 +737,20 @@ function makeFilterGraph(segments, audioSampleRate) {
       `setpts=PTS/${decimal(speed)}`,
       `tpad=stop_mode=clone:stop_duration=${decimal(segment.durationSeconds)}`,
       `trim=duration=${decimal(segment.durationSeconds)}`,
+      `scale=w=${media.width}:h=${media.height}:flags=lanczos`,
+      `fps=${media.frameRate}`,
+      'settb=AVTB',
       'setpts=PTS-STARTPTS',
+      'setsar=1',
+      'format=yuv420p',
     ];
     const audioFilters = [
       `atrim=start=${decimal(segment.sourceStartSeconds)}:end=${decimal(segment.sourceEndSeconds)}`,
       'asetpts=PTS-STARTPTS',
       ...(segment.reverse ? ['areverse'] : []),
-      `asetrate=${Math.max(1, Math.round(audioSampleRate * speed))}`,
-      `aresample=${audioSampleRate}`,
+      `asetrate=${Math.max(1, Math.round(media.audioSampleRate * speed))}`,
+      `aresample=${media.audioSampleRate}`,
+      `aformat=sample_rates=${media.audioSampleRate}:channel_layouts=stereo`,
       `volume=${decimal(Math.max(0, segment.volume))}`,
       ...(attack > 0 ? [`afade=t=in:st=0:d=${decimal(attack)}`] : []),
       ...(release > 0 ? [`afade=t=out:st=${decimal(releaseStart)}:d=${decimal(release)}`] : []),
@@ -702,6 +769,22 @@ function makeFilterGraph(segments, audioSampleRate) {
 
 function labels(prefix, count) {
   return Array.from({ length: count }, (_, index) => `${prefix}${index}`);
+}
+
+function allocateSourceInputs(items, sources, stream, prefix, lines) {
+  const outputLabels = labels(prefix, items.length);
+  sources.forEach((source) => {
+    const itemIndexes = items.flatMap((item, index) => (
+      item.sourceIndex === source.index ? [index] : []
+    ));
+    if (itemIndexes.length === 0) return;
+    const filter = stream === 'v' ? 'split' : 'asplit';
+    lines.push(
+      `[${source.index}:${stream}]${filter}=${itemIndexes.length}`
+      + itemIndexes.map((index) => bracket(outputLabels[index])).join(''),
+    );
+  });
+  return outputLabels;
 }
 
 function bracket(label) {
