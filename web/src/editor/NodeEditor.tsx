@@ -1454,7 +1454,7 @@ function NodeEditorInner() {
     ));
   }, [commitHistory]);
 
-  const updateNodeScopeSize = useCallback((nodeId: string, size: ScopeNodeSize, anchor: 'left' | 'right') => {
+  const updateNodeScopeSize = useCallback((nodeId: string, size: ScopeNodeSize, anchor: 'left' | 'right', renderedPreviousSize?: ScopeNodeSize) => {
     const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
     if (
       !relatedNode ||
@@ -1464,6 +1464,7 @@ function NodeEditorInner() {
         relatedNode.data.patchNode.type !== 'FFT' &&
         relatedNode.data.patchNode.type !== 'CustomWave' &&
         relatedNode.data.patchNode.type !== 'SamplePlayer' &&
+        relatedNode.data.patchNode.type !== 'Buffer' &&
         relatedNode.data.patchNode.type !== 'Image' &&
         relatedNode.data.patchNode.type !== 'Slider' &&
         relatedNode.data.patchNode.type !== 'Joystick' &&
@@ -1492,7 +1493,7 @@ function NodeEditorInner() {
         })()
       : relatedNode.data.patchNode.type === 'Image'
       ? clampImageNodeSize(size, size.width / Math.max(1, size.height))
-      : relatedNode.data.patchNode.type === 'CustomWave' || relatedNode.data.patchNode.type === 'SamplePlayer'
+      : relatedNode.data.patchNode.type === 'CustomWave' || relatedNode.data.patchNode.type === 'SamplePlayer' || relatedNode.data.patchNode.type === 'Buffer'
       ? clampCustomWaveNodeSize(size)
       : relatedNode.data.patchNode.type === 'Keys'
         ? clampKeysNodeSize(size)
@@ -1511,7 +1512,7 @@ function NodeEditorInner() {
     setNodes((current) => current.map((node) => {
       if (node.id !== nodeId) return node;
 
-      const currentSize = node.data.patchNode.scopeSize ?? (
+      const currentSize = renderedPreviousSize ?? node.data.patchNode.scopeSize ?? (
         node.data.patchNode.type === 'Spread' || node.data.patchNode.type === 'Spawn'
           ? (node.data.patchNode.type === 'Spawn' ? DEFAULT_SPAWN_SIZE : DEFAULT_SPREAD_SIZE)
         : node.data.patchNode.type === 'Sequencer'
@@ -1524,7 +1525,7 @@ function NodeEditorInner() {
           ? DEFAULT_KEYS_NODE_SIZE
         : node.data.patchNode.type === 'FFT'
           ? DEFAULT_FFT_NODE_SIZE
-        : node.data.patchNode.type === 'CustomWave' || node.data.patchNode.type === 'SamplePlayer' || node.data.patchNode.type === 'Image'
+        : node.data.patchNode.type === 'CustomWave' || node.data.patchNode.type === 'SamplePlayer' || node.data.patchNode.type === 'Buffer' || node.data.patchNode.type === 'Image'
           ? DEFAULT_CUSTOM_WAVE_NODE_SIZE
         : node.data.patchNode.type === 'Joystick'
           ? DEFAULT_JOYSTICK_NODE_SIZE
@@ -5585,7 +5586,7 @@ function parseNodeDisplaySize(value: unknown, nodeId: string, type: NodeType): S
 
   const size = { width: value.width, height: value.height };
   if (type === 'Image') return clampImageNodeSize(size, size.width / Math.max(1, size.height));
-  if (type === 'CustomWave' || type === 'SamplePlayer') return clampCustomWaveNodeSize(size);
+  if (type === 'CustomWave' || type === 'SamplePlayer' || type === 'Buffer') return clampCustomWaveNodeSize(size);
   if (type === 'Slider' || type === 'Joystick' || type === 'Button') return clampControlNodeSize(size);
   return clampScopeNodeSize(size);
 }
@@ -6507,7 +6508,7 @@ function viewportNodeSize(node: ShaderFlowNode): { width: number; height: number
     return { width: size.width, height: size.height + NODE_HEADER_HEIGHT };
   }
 
-  if (patchNode.type === 'CustomWave' || patchNode.type === 'SamplePlayer') {
+  if (patchNode.type === 'CustomWave' || patchNode.type === 'SamplePlayer' || patchNode.type === 'Buffer') {
     const size = clampCustomWaveNodeSize(patchNode.scopeSize ?? DEFAULT_CUSTOM_WAVE_NODE_SIZE);
     return { width: size.width, height: size.height + NODE_HEADER_HEIGHT };
   }

@@ -2616,6 +2616,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     }
     for (let slot = 0; slot < (this.dspProgram?.sampleBindings?.length || 0); slot += 1) {
       const nodeId = this.dspProgram.sampleBindings[slot]?.nodeId;
+      const samplePlayheads = [];
       const playheadCount = this.wasm?.dspSamplePlayheadCount
         ? Math.max(0, Math.trunc(Number(this.wasm.dspSamplePlayheadCount(slot)) || 0))
         : MAX_SAMPLE_PLAYER_VOICES;
@@ -2623,7 +2624,24 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         const playhead = Number(this.wasm?.dspSamplePlayheadValue
           ? this.wasm.dspSamplePlayheadValue(slot, index)
           : this.wasm?.dspSamplePlayheadVoice?.(slot, index));
-        if (nodeId && Number.isFinite(playhead) && playhead >= 0) playheads.push([nodeId, this.clamp(playhead, 0, 1)]);
+        if (nodeId && Number.isFinite(playhead) && playhead >= 0) {
+          const entry = [nodeId, this.clamp(playhead, 0, 1), false];
+          samplePlayheads.push(entry);
+          playheads.push(entry);
+        }
+      }
+      const latestPlayhead = Number(this.wasm?.dspSampleLatestPlayhead?.(slot));
+      if (samplePlayheads.length > 0 && Number.isFinite(latestPlayhead) && latestPlayhead >= 0) {
+        let latestEntry = samplePlayheads[0];
+        let smallestDistance = Math.abs(latestEntry[1] - latestPlayhead);
+        for (let index = 1; index < samplePlayheads.length; index += 1) {
+          const distance = Math.abs(samplePlayheads[index][1] - latestPlayhead);
+          if (distance <= smallestDistance) {
+            latestEntry = samplePlayheads[index];
+            smallestDistance = distance;
+          }
+        }
+        latestEntry[2] = true;
       }
     }
     const buffers = [];

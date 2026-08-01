@@ -92,6 +92,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const headerTitleScale = canvasHeaderTitleScale(data.canvasZoom ?? Number.NaN);
   const customWavePointScale = customWaveEditPointScreenScale(graphZoomScale);
   const updateNodeInternals = useUpdateNodeInternals();
+  const nodeElementRef = useRef<HTMLDivElement | null>(null);
   const draggedPortRef = useRef<{ side: 'input' | 'output'; port: string; pointerId: number } | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const scopeResizeRef = useRef<{
@@ -99,6 +100,8 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     corner: 'bottom-left' | 'bottom-right';
     startPointer: { x: number; y: number };
     startSize: ScopeNodeSize;
+    lastSize: ScopeNodeSize;
+    coordinateScale: number;
     minWidth?: number;
   } | null>(null);
   const customWaveEditorRef = useRef<SVGSVGElement | null>(null);
@@ -118,6 +121,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const [dragSource, setDragSource] = useState<{ side: 'input' | 'output'; port: string } | null>(null);
   const [dragTarget, setDragTarget] = useState<{ side: 'input' | 'output'; port: string } | null>(null);
   const [scopeResizeCorner, setScopeResizeCorner] = useState<'bottom-left' | 'bottom-right' | null>(null);
+  const [autoDisplayWidth, setAutoDisplayWidth] = useState<number | null>(null);
   const [customWaveDragPointIndex, setCustomWaveDragPointIndex] = useState<number | null>(null);
   const [expressionDraft, setExpressionDraft] = useState(node.expression ?? '');
   const [imageAspectRatio, setImageAspectRatio] = useState(DEFAULT_IMAGE_ASPECT_RATIO);
@@ -154,12 +158,25 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     || node.type === 'MidiNoteOff';
   const showCustomWaveEditor = node.type === 'CustomWave';
   const showSampleUpload = node.type === 'SamplePlayer';
+  const showSampleVideo = showSampleUpload && Boolean(node.sample?.url && isVideoSampleUrl(node.sample.url));
   const showBufferDisplay = node.type === 'Buffer';
   const showImageDisplay = node.type === 'Image';
   const showTopGraphic = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showJoystickDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showBufferDisplay || showImageDisplay;
   const imageX = centeredCoordinateToUnit(data.audioImagePosition?.x ?? node.params.x ?? 0);
   const imageY = centeredCoordinateToUnit(data.audioImagePosition?.y ?? node.params.y ?? 0);
   const showResizableDisplay = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showJoystickDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showBufferDisplay || showImageDisplay || showSequencerDisplay || isRuntimeContainer;
+  const usesAutoInitialWidth = node.scopeSize === undefined && (
+    showMeterDisplay
+    || showScopeDisplay
+    || showFftDisplay
+    || showSliderDisplay
+    || showJoystickDisplay
+    || showButtonDisplay
+    || showKeysDisplay
+    || showCustomWaveEditor
+    || showSampleUpload
+    || showBufferDisplay
+  );
   const customWave = showCustomWaveEditor ? normalizeCustomWave(node.customWave, node.params) : null;
   const customWavePlayheads = data.audioPlayheads?.length
     ? data.audioPlayheads.map((playhead) => clamp(playhead, 0, 1))
@@ -196,11 +213,14 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
         sequencer.rows,
       )
     : DEFAULT_SCOPE_NODE_SIZE;
-  const displaySize = isRuntimeContainer
+  const defaultDisplaySize = isRuntimeContainer
     ? runtimeContainerSize(node)
     : showSequencerDisplay
     ? sequencerDisplaySize
     : showCustomWaveEditor || showSampleUpload || showBufferDisplay || showImageDisplay ? waveformDisplaySize : scopeSize;
+  const displaySize = usesAutoInitialWidth && autoDisplayWidth !== null
+    ? { ...defaultDisplaySize, width: autoDisplayWidth }
+    : defaultDisplaySize;
   const graphDetailSize = {
     width: displaySize.width * graphZoomScale,
     height: displaySize.height * graphZoomScale,
@@ -232,7 +252,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const fftGridRows = showFftDisplay ? chartGridRows(graphDetailSize.height) : [];
   const nodeSizeStyle = showResizableDisplay
     ? ({
-        '--node-display-width': `${displaySize.width}px`,
+        ...(!usesAutoInitialWidth ? { '--node-display-width': `${displaySize.width}px` } : {}),
         '--node-display-height': `${displaySize.height}px`,
         ...(showImageDisplay ? { '--image-aspect-ratio': String(imageAspectRatio) } : {}),
         ...(sequencer ? { '--sequencer-steps': String(sequencer.steps), '--sequencer-rows': String(sequencer.rows) } : {}),
@@ -313,7 +333,26 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     compactPorts ? 'shader-node-compact' : '',
     isAreaCollapsedPresentation ? 'shader-node-area-hidden' : '',
     isAreaUiCollapsedPresentation ? 'shader-node-area-ui-collapsed' : '',
+    usesAutoInitialWidth ? 'shader-node-auto-width' : '',
   ].filter(Boolean).join(' ');
+
+  useLayoutEffect(() => {
+    if (!usesAutoInitialWidth) {
+      setAutoDisplayWidth(null);
+      return;
+    }
+
+    const element = nodeElementRef.current;
+    if (!element) return;
+    const updateWidth = () => {
+      const width = Math.max(1, element.clientWidth);
+      setAutoDisplayWidth((current) => current === width ? current : width);
+    };
+    updateWidth();
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [usesAutoInitialWidth]);
 
   useLayoutEffect(() => {
     const animationFrame = requestAnimationFrame(() => updateNodeInternals(node.id));
@@ -334,6 +373,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     showHeaderInputPort,
     showHeaderOutputPort,
     showAllPorts,
+    showSampleVideo,
     displaySize.height,
     displaySize.width,
     node.scale,
@@ -455,9 +495,8 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
       if (!resize || resize.pointerId !== event.pointerId) return;
 
       event.preventDefault();
-      const zoom = reactFlow.getZoom() || 1;
-      const deltaX = (event.clientX - resize.startPointer.x) / zoom;
-      const deltaY = (event.clientY - resize.startPointer.y) / zoom;
+      const deltaX = (event.clientX - resize.startPointer.x) / resize.coordinateScale;
+      const deltaY = (event.clientY - resize.startPointer.y) / resize.coordinateScale;
       const rawWidth = resize.corner === 'bottom-left'
         ? resize.startSize.width - deltaX
         : resize.startSize.width + deltaX;
@@ -474,7 +513,9 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
         : showSliderDisplay || showJoystickDisplay || showButtonDisplay
           ? clampControlNodeSize(rawNextSize)
           : clampScopeNodeSize(rawNextSize);
-      data.onScopeResize(node.id, nextSize, resize.corner === 'bottom-left' ? 'left' : 'right');
+      const previousSize = resize.lastSize;
+      resize.lastSize = nextSize;
+      data.onScopeResize(node.id, nextSize, resize.corner === 'bottom-left' ? 'left' : 'right', previousSize);
     }
 
     function stopResizing(pointerId: number) {
@@ -590,25 +631,30 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
-    const sequencerPanel = showSequencerDisplay
-      ? event.currentTarget.closest('.shader-node-sequencer')?.querySelector<HTMLElement>('.sequencer-node-panel')
-      : null;
     const sequencerBody = event.currentTarget.closest('.shader-node-sequencer')?.querySelector<HTMLElement>('.shader-node-body-sequencer');
     const sequencerInputs = sequencerBody?.querySelector<HTMLElement>('.shader-inputs');
     const sequencerOutputs = sequencerBody?.querySelector<HTMLElement>('.shader-outputs');
-    const sequencerPanelRect = sequencerPanel?.getBoundingClientRect();
     const hasVisibleSequencerInputs = sequencerInputs?.querySelector('.shader-port') !== null;
     const hasVisibleSequencerOutputs = sequencerOutputs?.querySelector('.shader-port') !== null;
+    const coordinateScale = Math.max(0.0001, (reactFlow.getZoom() || 1) * (node.scale ?? 1));
     const sequencerMinWidth = hasVisibleSequencerInputs && hasVisibleSequencerOutputs
-      ? Math.ceil((sequencerInputs?.getBoundingClientRect().width ?? 0) + (sequencerOutputs?.getBoundingClientRect().width ?? 0) + 10)
+      ? Math.ceil(
+          ((sequencerInputs?.getBoundingClientRect().width ?? 0) + (sequencerOutputs?.getBoundingClientRect().width ?? 0))
+          / coordinateScale
+          + 10,
+        )
       : undefined;
+    const renderedWidth = usesAutoInitialWidth ? nodeElementRef.current?.clientWidth : undefined;
+    const startSize = renderedWidth && renderedWidth > 0
+      ? { ...displaySize, width: renderedWidth }
+      : displaySize;
     scopeResizeRef.current = {
       pointerId: event.pointerId,
       corner,
       startPointer: { x: event.clientX, y: event.clientY },
-      startSize: sequencerPanelRect
-        ? { width: sequencerPanelRect.width, height: sequencerPanelRect.height }
-        : displaySize,
+      startSize,
+      lastSize: startSize,
+      coordinateScale,
       minWidth: sequencerMinWidth
         ?? (isRuntimeContainer
           ? (isSpawn ? MIN_SPAWN_WIDTH : MIN_RUNTIME_CONTAINER_WIDTH)
@@ -899,6 +945,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
 
   return (
     <div
+      ref={nodeElementRef}
       className={className}
       style={nodeStyle}
       onPointerEnter={() => setPointerOver(true)}
@@ -1544,7 +1591,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                     onChange={() => undefined}
                   />
                   <select
-                    className="display-mode-select nodrag nopan"
+                    className="buffer-reset-select nodrag nopan"
                     aria-label="Buffer on reset"
                     value={String(clamp(Math.round(node.params['on reset'] ?? input.defaultValue ?? 0), 0, 1))}
                     onChange={(event) => {
@@ -2071,6 +2118,13 @@ function SampleWaveformDisplay({
 
   return (
     <div className="sample-waveform-display nodrag nopan">
+      {sampleUrl && isVideoSampleUrl(sampleUrl) ? (
+        <SampleVideoPreview
+          sampleUrl={sampleUrl}
+          startPosition={safeStart}
+          playbackPosition={activePlayheads.length > 0 ? activePlayheads[activePlayheads.length - 1] : undefined}
+        />
+      ) : null}
       <svg
         ref={canvasRef}
         className="sample-waveform-canvas"
@@ -2132,6 +2186,136 @@ function SampleWaveformDisplay({
       </svg>
     </div>
   );
+}
+
+interface SampleVideoPreviewProps {
+  sampleUrl: string;
+  startPosition: number;
+  playbackPosition?: number;
+}
+
+const MAX_SAMPLE_VIDEO_CACHED_FRAMES = 24;
+const SAMPLE_VIDEO_CACHE_WIDTH = 720;
+
+function SampleVideoPreview({ sampleUrl, startPosition, playbackPosition }: SampleVideoPreviewProps) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const preloaderRef = useRef<HTMLVideoElement | null>(null);
+  const cachedFrameRef = useRef<HTMLCanvasElement | null>(null);
+  const frameCacheRef = useRef(new Map<string, HTMLCanvasElement>());
+  const displayPosition = clamp(playbackPosition ?? startPosition, 0, 1);
+  const targetPositionRef = useRef(displayPosition);
+  const preloadPositionRef = useRef(clamp(startPosition, 0, 1));
+  targetPositionRef.current = displayPosition;
+  preloadPositionRef.current = clamp(startPosition, 0, 1);
+
+  function seekToPosition(video: HTMLVideoElement, position: number) {
+    if (!Number.isFinite(video.duration) || video.duration <= 0) return;
+    const targetTime = clamp(position, 0, 1) * video.duration;
+    // currentTime requests an exact seek. fastSeek() is intentionally avoided
+    // because browsers may resolve it to a nearby keyframe instead.
+    if (Math.abs(video.currentTime - targetTime) > 1 / 240) video.currentTime = targetTime;
+  }
+
+  function showCachedFrame(position: number): boolean {
+    const frame = frameCacheRef.current.get(sampleVideoFrameCacheKey(position));
+    const output = cachedFrameRef.current;
+    if (!frame || !output) return false;
+    output.width = frame.width;
+    output.height = frame.height;
+    output.getContext('2d')?.drawImage(frame, 0, 0);
+    output.classList.add('is-visible');
+    return true;
+  }
+
+  function hideCachedFrameIfCurrent(video: HTMLVideoElement) {
+    if (!Number.isFinite(video.duration) || video.duration <= 0) return;
+    const targetTime = targetPositionRef.current * video.duration;
+    if (Math.abs(video.currentTime - targetTime) <= 1 / 60) {
+      cachedFrameRef.current?.classList.remove('is-visible');
+    }
+  }
+
+  function cachePreloadedFrame(video: HTMLVideoElement) {
+    if (!Number.isFinite(video.duration) || video.duration <= 0 || video.videoWidth <= 0 || video.videoHeight <= 0) return;
+    const targetPosition = preloadPositionRef.current;
+    const targetTime = targetPosition * video.duration;
+    if (Math.abs(video.currentTime - targetTime) > 1 / 60) return;
+
+    const scale = Math.min(1, SAMPLE_VIDEO_CACHE_WIDTH / video.videoWidth);
+    const frame = document.createElement('canvas');
+    frame.width = Math.max(1, Math.round(video.videoWidth * scale));
+    frame.height = Math.max(1, Math.round(video.videoHeight * scale));
+    frame.getContext('2d')?.drawImage(video, 0, 0, frame.width, frame.height);
+    const cache = frameCacheRef.current;
+    const key = sampleVideoFrameCacheKey(targetPosition);
+    cache.delete(key);
+    cache.set(key, frame);
+    while (cache.size > MAX_SAMPLE_VIDEO_CACHED_FRAMES) {
+      const oldestKey = cache.keys().next().value;
+      if (oldestKey === undefined) break;
+      cache.delete(oldestKey);
+    }
+    if (Math.abs(targetPositionRef.current - targetPosition) <= 1 / 10_000) showCachedFrame(targetPosition);
+  }
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!showCachedFrame(displayPosition)) cachedFrameRef.current?.classList.remove('is-visible');
+    if (video) seekToPosition(video, displayPosition);
+  }, [displayPosition, sampleUrl]);
+
+  useEffect(() => {
+    const preloader = preloaderRef.current;
+    if (preloader) seekToPosition(preloader, preloadPositionRef.current);
+  }, [startPosition, sampleUrl]);
+
+  useEffect(() => {
+    frameCacheRef.current.clear();
+    cachedFrameRef.current?.classList.remove('is-visible');
+  }, [sampleUrl]);
+
+  return (
+    <div className="sample-video-preview-frame">
+      <video
+        ref={videoRef}
+        className="sample-video-preview"
+        src={sampleUrl}
+        aria-label="Sample video preview"
+        muted
+        playsInline
+        preload="auto"
+        disablePictureInPicture
+        onLoadedMetadata={(event) => seekToPosition(event.currentTarget, targetPositionRef.current)}
+        onSeeked={(event) => hideCachedFrameIfCurrent(event.currentTarget)}
+      />
+      <canvas ref={cachedFrameRef} className="sample-video-cached-frame" aria-hidden="true" />
+      <video
+        ref={preloaderRef}
+        className="sample-video-preloader"
+        src={sampleUrl}
+        muted
+        playsInline
+        preload="auto"
+        disablePictureInPicture
+        aria-hidden="true"
+        onLoadedMetadata={(event) => seekToPosition(event.currentTarget, preloadPositionRef.current)}
+        onLoadedData={(event) => cachePreloadedFrame(event.currentTarget)}
+        onSeeked={(event) => cachePreloadedFrame(event.currentTarget)}
+      />
+    </div>
+  );
+}
+
+function sampleVideoFrameCacheKey(position: number): string {
+  return clamp(position, 0, 1).toFixed(5);
+}
+
+function isVideoSampleUrl(url: string): boolean {
+  try {
+    return new URL(url, window.location.href).pathname.toLowerCase().endsWith('.mp4');
+  } catch {
+    return /\.mp4(?:$|[?#])/i.test(url);
+  }
 }
 
 function sampleWaveformPath(

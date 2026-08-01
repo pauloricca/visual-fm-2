@@ -91,7 +91,7 @@ export interface ShaderNodeData extends Record<string, unknown> {
   onPortNameChange: (nodeId: string, side: 'input' | 'output', port: string, nextPort: string) => void;
   onPortMove: (nodeId: string, side: 'input' | 'output', port: string, direction: -1 | 1) => void;
   onCompactToggle: (nodeId: string, compact: boolean) => void;
-  onScopeResize: (nodeId: string, size: ScopeNodeSize, anchor: 'left' | 'right') => void;
+  onScopeResize: (nodeId: string, size: ScopeNodeSize, anchor: 'left' | 'right', previousSize?: ScopeNodeSize) => void;
   onSelectorInputAdd?: (nodeId: string) => void;
   onSelectorInputClear?: (nodeId: string, port: string) => void;
   onPortSelect?: (nodeId: string, side: 'input' | 'output', port: string) => void;
@@ -365,8 +365,8 @@ export function clampImageNodeSize(size: ScopeNodeSize, aspectRatio: number): Sc
 export function clampSequencerNodeSize(size: ScopeNodeSize, steps: number, rows: number): ScopeNodeSize {
   const safeSteps = Number.isFinite(steps) && steps > 0 ? steps : 1;
   const safeRows = Number.isFinite(rows) && rows > 0 ? rows : 1;
-  const cellSize = Math.max(1, Math.round(normalizeNodeDimension(size.width) / safeSteps));
-  return { width: cellSize * safeSteps, height: cellSize * safeRows };
+  const width = normalizeNodeDimension(size.width);
+  return { width, height: normalizeNodeDimension(width * safeRows / safeSteps) };
 }
 
 function normalizeNodeSize(size: ScopeNodeSize): ScopeNodeSize {

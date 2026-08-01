@@ -2327,6 +2327,65 @@ pub extern "C" fn dspSamplePlayheadValue(slot: u32, target: u32) -> f64 {
 }
 
 #[no_mangle]
+pub extern "C" fn dspSampleLatestPlayhead(slot: u32) -> f64 {
+    let slot = slot as usize;
+    let mut latest_playhead = -1.0;
+    let mut youngest_age = f64::INFINITY;
+    unsafe {
+        if !dsp_sample_slot_is_repeated(slot) && slot < MAX_DSP_SAMPLE_NODES {
+            let node_index = DSP_SAMPLE_NODE_INDICES[slot];
+            if node_index >= 0 && (node_index as usize) < MAX_NODES {
+                for voice in 0..MAX_DSP_SAMPLE_PLAYER_VOICES {
+                    let playhead = dsp_sample_playhead_for_voice(slot, voice);
+                    if playhead < 0.0 {
+                        continue;
+                    }
+                    let voice_slot = DSP_SAMPLE_VOICE_SLOT_START + voice;
+                    let age = SAMPLE_PLAYBACK_AGES[voice_slot][node_index as usize];
+                    if age <= youngest_age {
+                        youngest_age = age;
+                        latest_playhead = playhead;
+                    }
+                }
+            }
+        }
+        for runtime_slot in 0..MAX_DSP_SPREADS {
+            let Some(runtime) = DSP_SPREAD_RUNTIMES[runtime_slot].as_ref() else {
+                continue;
+            };
+            for resources in runtime.resources_by_context.iter().flatten() {
+                for state in &resources.samples {
+                    for voice in 0..MAX_DSP_SAMPLE_PLAYER_VOICES {
+                        let playhead = dsp_sample_playhead_from_state(slot, state, voice);
+                        if playhead >= 0.0 && state.playback_ages[voice] <= youngest_age {
+                            youngest_age = state.playback_ages[voice];
+                            latest_playhead = playhead;
+                        }
+                    }
+                }
+            }
+        }
+        for runtime_slot in 0..MAX_DSP_SPREADS {
+            let Some(runtime) = DSP_SPAWN_RUNTIMES[runtime_slot].as_ref() else {
+                continue;
+            };
+            for instance in runtime.instances_by_context.iter().flatten() {
+                for state in &instance.resources.samples {
+                    for voice in 0..MAX_DSP_SAMPLE_PLAYER_VOICES {
+                        let playhead = dsp_sample_playhead_from_state(slot, state, voice);
+                        if playhead >= 0.0 && state.playback_ages[voice] <= youngest_age {
+                            youngest_age = state.playback_ages[voice];
+                            latest_playhead = playhead;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    latest_playhead
+}
+
+#[no_mangle]
 pub extern "C" fn dspRepeatedStateValueCount(state: u32) -> u32 {
     let state = state as usize;
     let mut count = 0usize;

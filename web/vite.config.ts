@@ -1,4 +1,4 @@
-import { createReadStream, createWriteStream, existsSync, readFileSync } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { appendFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, extname, join, resolve } from 'node:path';
@@ -144,14 +144,31 @@ function localSampleStoragePlugin(): Plugin {
         return;
       }
 
-      response.statusCode = 200;
+      const fileSize = statSync(filePath).size;
+      const byteRange = requestedByteRange(request.headers.range, fileSize);
+      if (byteRange === 'unsatisfiable') {
+        response.statusCode = 416;
+        response.setHeader('Accept-Ranges', 'bytes');
+        response.setHeader('Content-Range', `bytes */${fileSize}`);
+        response.end();
+        return;
+      }
+
+      response.statusCode = byteRange ? 206 : 200;
       response.setHeader('Cache-Control', 'no-store');
       response.setHeader('Content-Type', sampleContentType(fileName));
+      response.setHeader('Accept-Ranges', 'bytes');
+      if (byteRange) {
+        response.setHeader('Content-Range', `bytes ${byteRange.start}-${byteRange.end}/${fileSize}`);
+        response.setHeader('Content-Length', byteRange.end - byteRange.start + 1);
+      } else {
+        response.setHeader('Content-Length', fileSize);
+      }
       if (request.method === 'HEAD') {
         response.end();
         return;
       }
-      createReadStream(filePath).pipe(response);
+      createReadStream(filePath, byteRange ?? undefined).pipe(response);
       return;
     }
 
@@ -167,6 +184,32 @@ function localSampleStoragePlugin(): Plugin {
       server.middlewares.use(middleware);
     },
   };
+}
+
+interface ByteRange {
+  start: number;
+  end: number;
+}
+
+function requestedByteRange(header: string | undefined, fileSize: number): ByteRange | 'unsatisfiable' | null {
+  if (!header) return null;
+  if (fileSize <= 0 || header.includes(',')) return 'unsatisfiable';
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(header.trim());
+  if (!match || (!match[1] && !match[2])) return 'unsatisfiable';
+
+  if (!match[1]) {
+    const suffixLength = Number(match[2]);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) return 'unsatisfiable';
+    return { start: Math.max(0, fileSize - suffixLength), end: fileSize - 1 };
+  }
+
+  const start = Number(match[1]);
+  const requestedEnd = match[2] ? Number(match[2]) : fileSize - 1;
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(requestedEnd) || start >= fileSize) {
+    return 'unsatisfiable';
+  }
+  const end = Math.min(requestedEnd, fileSize - 1);
+  return end >= start ? { start, end } : 'unsatisfiable';
 }
 
 function localImageStoragePlugin(): Plugin {

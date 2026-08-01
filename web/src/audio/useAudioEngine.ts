@@ -2022,13 +2022,17 @@ function playheadsFromPayload(payload: unknown): Record<string, number[]> {
   if (!Array.isArray(values)) return {};
 
   const playheads: Record<string, number[]> = {};
+  const latestPlayheads: Record<string, number> = {};
   for (const entry of values) {
     if (!Array.isArray(entry)) continue;
-    const [id, value] = entry;
+    const [id, value, isLatest] = entry;
     const playhead = Number(value);
     if (typeof id !== 'string' || !Number.isFinite(playhead)) continue;
-    (playheads[id] ??= []).push(clampNumber(playhead, 0, 1));
+    const safePlayhead = clampNumber(playhead, 0, 1);
+    if (isLatest === true) latestPlayheads[id] = safePlayhead;
+    else (playheads[id] ??= []).push(safePlayhead);
   }
+  for (const [id, playhead] of Object.entries(latestPlayheads)) (playheads[id] ??= []).push(playhead);
   return playheads;
 }
 
