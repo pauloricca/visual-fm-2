@@ -87,6 +87,7 @@ const STORAGE_KEY = 'visual-fm-2.editor-state.v1';
 const HISTORY_LIMIT = 100;
 const DRAFT_NODE_PREVIEW_ID = '__draft_node_preview__';
 const DUPLICATE_NODE_PREVIEW_PREFIX = '__duplicate_node_preview__:';
+const DUPLICATE_AREA_PREVIEW_PREFIX = '__duplicate_area_preview__:';
 const COMPACT_NODE_Z_INDEX = 0;
 const EXPANDED_NODE_Z_INDEX = 1;
 const SELECTED_NODE_Z_INDEX = 2;
@@ -163,6 +164,10 @@ interface AreaDragState {
   captureTarget: HTMLElement;
   areaPositions: Record<string, { x: number; y: number }>;
   nodePositions: Record<string, { x: number; y: number }>;
+  currentAreaPositions: Record<string, { x: number; y: number }>;
+  currentNodePositions: Record<string, { x: number; y: number }>;
+  duplicating: boolean;
+  linkExternal: boolean;
   historyCommitted: boolean;
 }
 
@@ -374,6 +379,7 @@ function NodeEditorInner() {
   const pendingBoundaryPortRef = useRef<BoundaryPortSelection | null>(null);
   const [draftNodeConnection, setDraftNodeConnection] = useState<DraftNodeConnection | null>(null);
   const [duplicateDrag, setDuplicateDrag] = useState<DuplicateDragState | null>(null);
+  const [areaDuplicateDrag, setAreaDuplicateDrag] = useState<AreaDragState | null>(null);
   const [editingStack, setEditingStack] = useState<SubpatchEditFrame[]>([]);
   const [pendingBoundaryPort, setPendingBoundaryPort] = useState<BoundaryPortSelection | null>(null);
   const [selectedBoundaryPort, setSelectedBoundaryPort] = useState<BoundaryPortSelection | null>(null);
@@ -2715,6 +2721,10 @@ function NodeEditorInner() {
       draggable: false,
       selectable: false,
       connectable: node.data.patchNode.type === 'Spread' || node.data.patchNode.type === 'Spawn',
+      // React Flow disables pointer events when a node is neither selectable nor
+      // draggable. This presentation is intentionally canvas-locked, but its
+      // surfaced controls must remain operable.
+      style: { ...node.style, pointerEvents: 'all' as const },
       data: { ...node.data, isAreaUiCollapsedPresentation: true },
     } : node
   )), [collapsedAreaByNode, collapsedUiAreaByNode, renderedNodes]);
@@ -2823,6 +2833,68 @@ function NodeEditorInner() {
     return { nodes: previewNodes, edges: previewEdges };
   }, [duplicateDrag, renderedEdges, renderedNodes]);
 
+  const areaDuplicatePreview = useMemo(() => {
+    if (!areaDuplicateDrag?.duplicating) return null;
+
+    const sourceAreaIds = new Set(Object.keys(areaDuplicateDrag.areaPositions));
+    const sourceNodeIds = new Set(Object.keys(areaDuplicateDrag.nodePositions));
+    const nodeIdMap = new Map([...sourceNodeIds].map((nodeId) => [nodeId, duplicatePreviewNodeId(nodeId)]));
+    const nodes = collapsedRenderedNodes
+      .filter((node) => sourceNodeIds.has(node.id))
+      .map((node): ShaderFlowNode => {
+        const id = nodeIdMap.get(node.id) ?? duplicatePreviewNodeId(node.id);
+        const position = areaDuplicateDrag.currentNodePositions[node.id] ?? node.position;
+        return {
+          ...node,
+          id,
+          position,
+          draggable: false,
+          selectable: false,
+          connectable: false,
+          deletable: false,
+          className: ['shader-node-preview', node.className ?? ''].filter(Boolean).join(' '),
+          data: {
+            ...node.data,
+            patchNode: { ...node.data.patchNode, position },
+            ...nodeCallbacksPlaceholder(),
+            isTypePickerOpen: false,
+          },
+        };
+      });
+    const edges = renderedEdges.flatMap((edge) => {
+      const link = linkFromEdge(edge);
+      if (!link) return [];
+      const fromSelected = sourceNodeIds.has(link.from.node);
+      const toSelected = sourceNodeIds.has(link.to.node);
+      if (!fromSelected && !toSelected) return [];
+      if (fromSelected !== toSelected && !areaDuplicateDrag.linkExternal) return [];
+      const fromNode = nodeIdMap.get(link.from.node) ?? link.from.node;
+      const toNode = nodeIdMap.get(link.to.node) ?? link.to.node;
+      if (fromNode === link.from.node && toNode === link.to.node) return [];
+      return [{
+        ...edgeFromLink({
+          from: { ...link.from, node: fromNode },
+          to: { ...link.to, node: toNode },
+          weight: link.weight,
+          mode: link.mode,
+          enabled: link.enabled,
+        }, updateEdgeWeightPlaceholder, updateEdgeModePlaceholder, insertNodeOnEdgePlaceholder),
+        selectable: false,
+        deletable: false,
+        className: 'shader-edge shader-edge-preview',
+      }];
+    });
+    const previewAreas = areas
+      .filter((area) => sourceAreaIds.has(area.id))
+      .map((area): EditorArea => ({
+        ...area,
+        id: `${DUPLICATE_AREA_PREVIEW_PREFIX}${area.id}`,
+        position: areaDuplicateDrag.currentAreaPositions[area.id] ?? area.position,
+        ...(area.spreadNodeId ? { spreadNodeId: nodeIdMap.get(area.spreadNodeId) ?? area.spreadNodeId } : {}),
+      }));
+    return { areas: previewAreas, nodes, edges };
+  }, [areaDuplicateDrag, areas, collapsedRenderedNodes, renderedEdges]);
+
   const draftNodePreview = useMemo(() => {
     if (!draftNodeConnection?.modifierActive || !reactFlow) return null;
 
@@ -2866,15 +2938,17 @@ function NodeEditorInner() {
   const displayNodes = useMemo(() => [
     ...collapsedRenderedNodes,
     ...(duplicateDragPreview?.nodes ?? []),
+    ...(areaDuplicatePreview?.nodes ?? []),
     ...(draftNodePreview ? [draftNodePreview.node] : []),
-  ], [collapsedRenderedNodes, draftNodePreview, duplicateDragPreview]);
+  ], [areaDuplicatePreview, collapsedRenderedNodes, draftNodePreview, duplicateDragPreview]);
 
   const displayEdges = useMemo(() => [
     ...collapsedRenderedEdges,
     ...(duplicateDragPreview?.edges ?? []),
+    ...(areaDuplicatePreview?.edges ?? []),
     ...(reconnectPreviewEdge ? [reconnectPreviewEdge] : []),
     ...(draftNodePreview ? [draftNodePreview.edge] : []),
-  ], [collapsedRenderedEdges, draftNodePreview, duplicateDragPreview, reconnectPreviewEdge]);
+  ], [areaDuplicatePreview, collapsedRenderedEdges, draftNodePreview, duplicateDragPreview, reconnectPreviewEdge]);
 
   const panTranslateExtent = useMemo(
     () => translateExtentForVisibleContent(renderedNodes, viewport, editorSize),
@@ -3089,9 +3163,7 @@ function NodeEditorInner() {
   useEffect(() => {
     const updateModifier = (event: KeyboardEvent) => {
       const dragState = duplicateDragRef.current;
-      if (!dragState) return;
-
-      if (event.key === 'Alt') {
+      if (dragState && event.key === 'Alt') {
         if (event.altKey && !dragState.duplicating) {
           setNodes((current) => restoreGraphNodePositions(current, dragState.originalPositions));
           updateDuplicateDrag({ ...dragState, duplicating: true });
@@ -3105,8 +3177,41 @@ function NodeEditorInner() {
           return;
         }
       }
-      if (event.key === 'Meta' || event.key === 'Control' || event.key === 'Shift') {
+      if (dragState && (event.key === 'Meta' || event.key === 'Control' || event.key === 'Shift')) {
         updateDuplicateDrag({ ...dragState, linkExternal: isCommandModifierPressed(event) });
+      }
+
+      const areaDrag = areaDragRef.current;
+      if (!areaDrag) return;
+      if (event.key === 'Alt') {
+        if (event.altKey && !areaDrag.duplicating) {
+          setAreas((current) => current.map((area) => {
+            const position = areaDrag.areaPositions[area.id];
+            return position ? { ...area, position: { ...position } } : area;
+          }));
+          setNodes((current) => applyGraphNodePositions(current, areaDrag.nodePositions));
+          areaDrag.duplicating = true;
+          setAreaDuplicateDrag({ ...areaDrag });
+          return;
+        }
+        if (!event.altKey && areaDrag.duplicating) {
+          if (!areaDrag.historyCommitted) {
+            commitHistory();
+            areaDrag.historyCommitted = true;
+          }
+          setAreas((current) => current.map((area) => {
+            const position = areaDrag.currentAreaPositions[area.id];
+            return position ? { ...area, position: { ...position } } : area;
+          }));
+          setNodes((current) => applyGraphNodePositions(current, areaDrag.currentNodePositions));
+          areaDrag.duplicating = false;
+          setAreaDuplicateDrag(null);
+          return;
+        }
+      }
+      if (event.key === 'Meta' || event.key === 'Control' || event.key === 'Shift') {
+        areaDrag.linkExternal = isCommandModifierPressed(event);
+        if (areaDrag.duplicating) setAreaDuplicateDrag({ ...areaDrag });
       }
     };
 
@@ -4008,6 +4113,7 @@ function NodeEditorInner() {
   }, []);
 
   const handleEditorFocusCapture = useCallback((event: ReactFocusEvent<HTMLElement>) => {
+    if (isSurfacedControlTarget(event.target)) return;
     promoteNodeFromTarget(event.target);
     promoteAreaFromTarget(event.target);
   }, [promoteAreaFromTarget, promoteNodeFromTarget]);
@@ -4015,6 +4121,15 @@ function NodeEditorInner() {
   const handleEditorPointerDownCapture = useCallback((event: ReactPointerEvent<HTMLElement>) => {
     if (!event.nativeEvent.isTrusted && ignoreSyntheticSelectionPointerDownRef.current) {
       ignoreSyntheticSelectionPointerDownRef.current = false;
+      return;
+    }
+    if (isSurfacedControlTarget(event.target)) {
+      pendingNodeDragSelectionRef.current = null;
+      selectionDragStartRef.current = null;
+      canvasDragActiveRef.current = false;
+      canvasDragPointerRef.current = null;
+      canvasDragPointerIdRef.current = null;
+      setResumedSelectionDraw(null);
       return;
     }
     promoteNodeFromTarget(event.target);
@@ -4191,14 +4306,20 @@ function NodeEditorInner() {
         areaContainsNode(candidate, node) || candidate.spreadNodeId === node.id
       )))
       .map((node) => [node.id, { ...node.position }]));
-    areaDragRef.current = {
+    const dragState: AreaDragState = {
       areaId: area.id,
       start: { x: event.clientX, y: event.clientY },
       captureTarget: event.currentTarget,
       areaPositions,
       nodePositions,
+      currentAreaPositions: structuredClone(areaPositions),
+      currentNodePositions: structuredClone(nodePositions),
+      duplicating: event.altKey,
+      linkExternal: isCommandModifierPressed(event),
       historyCommitted: false,
     };
+    areaDragRef.current = dragState;
+    setAreaDuplicateDrag(dragState.duplicating ? { ...dragState } : null);
     event.currentTarget.setPointerCapture(event.pointerId);
   }, [areas]);
 
@@ -4207,17 +4328,30 @@ function NodeEditorInner() {
     if (!drag) return;
     event.preventDefault();
     const delta = { x: (event.clientX - drag.start.x) / viewport.zoom, y: (event.clientY - drag.start.y) / viewport.zoom };
+    drag.currentAreaPositions = Object.fromEntries(Object.entries(drag.areaPositions).map(([id, position]) => [id, {
+      x: position.x + delta.x,
+      y: position.y + delta.y,
+    }]));
+    drag.currentNodePositions = Object.fromEntries(Object.entries(drag.nodePositions).map(([id, position]) => [id, {
+      x: position.x + delta.x,
+      y: position.y + delta.y,
+    }]));
+    drag.linkExternal = isCommandModifierPressed(event);
+    if (drag.duplicating) {
+      setAreaDuplicateDrag({ ...drag });
+      return;
+    }
     if (!drag.historyCommitted && (delta.x !== 0 || delta.y !== 0)) {
       commitHistory();
       drag.historyCommitted = true;
     }
     setAreas((current) => current.map((area) => {
-      const original = drag.areaPositions[area.id];
-      return original ? { ...area, position: { x: original.x + delta.x, y: original.y + delta.y } } : area;
+      const position = drag.currentAreaPositions[area.id];
+      return position ? { ...area, position } : area;
     }));
     setNodes((current) => current.map((node) => {
-      const original = drag.nodePositions[node.id];
-      return original ? { ...node, position: { x: original.x + delta.x, y: original.y + delta.y } } : node;
+      const position = drag.currentNodePositions[node.id];
+      return position ? { ...node, position } : node;
     }));
   }, [commitHistory, viewport.zoom]);
 
@@ -4228,7 +4362,42 @@ function NodeEditorInner() {
       drag.captureTarget.releasePointerCapture(event.pointerId);
     }
     areaDragRef.current = null;
-  }, []);
+    setAreaDuplicateDrag(null);
+    if (!drag.duplicating) return;
+
+    const duplicated = duplicateAreaHierarchy(
+      areasRef.current,
+      nodesRef.current,
+      edgesRef.current,
+      drag,
+      updateEdgeWeight,
+      updateEdgeMode,
+      insertNodeOnEdgePlaceholder,
+    );
+    if (duplicated.nodes.length === 0 && duplicated.areas.length === 0) return;
+    const sourceNodes = nodesRef.current.filter((node) => Object.hasOwn(drag.nodePositions, node.id));
+    const bufferCopies = duplicatedBufferCopies(
+      sourceNodes,
+      duplicated.nodes,
+      nodesRef.current,
+      [...nodesRef.current, ...duplicated.nodes],
+      activeDspGroupIds,
+    );
+    commitHistory();
+    setNodes((current) => [
+      ...current.map((node) => ({ ...node, selected: false })),
+      ...duplicated.nodes.map((node) => ({ ...node, selected: false })),
+    ]);
+    setEdges((current) => dedupeEdges([
+      ...current.map((edge) => ({ ...edge, selected: false })),
+      ...duplicated.edges,
+    ]));
+    setAreas((current) => [...current, ...duplicated.areas]);
+    setSelectedAreaId(duplicated.rootAreaId);
+    setNodeStackOrder((current) => [...current, ...duplicated.nodes.map((node) => node.id)]);
+    copyBufferAssets(bufferCopies, bufferAssetsRef.current, replaceBufferAssets);
+    audio.copyBuffers(bufferCopies);
+  }, [activeDspGroupIds, audio.copyBuffers, commitHistory, replaceBufferAssets, updateEdgeMode, updateEdgeWeight]);
 
   const startAreaResize = useCallback((
     event: ReactPointerEvent<HTMLDivElement>,
@@ -4737,6 +4906,18 @@ function NodeEditorInner() {
                     style={{ left: areaDrawBounds.x, top: areaDrawBounds.y, width: areaDrawBounds.width, height: areaDrawBounds.height }}
                   />
                 )}
+                {areaDuplicatePreview?.areas.map((area) => (
+                  <div
+                    key={area.id}
+                    className={`canvas-area canvas-area-preview${area.kind === 'spread' ? ' canvas-area-spread' : ''}${area.collapsed ? ' canvas-area-collapsed' : ''}`}
+                    style={{ left: area.position.x, top: area.position.y, width: area.size.width, height: area.collapsed ? NODE_HEADER_HEIGHT + (area.uiHeight ?? 0) : area.size.height }}
+                    aria-hidden="true"
+                  >
+                    <div className="canvas-area-header">
+                      <span className="canvas-area-title">{area.title}</span>
+                    </div>
+                  </div>
+                ))}
                 {areas.map((area) => (
                   <div
                     key={area.id}
@@ -7508,6 +7689,12 @@ function areaContainsPoint(area: EditorArea, point: { x: number; y: number }): b
     && point.y < area.position.y + area.size.height;
 }
 
+function isSurfacedControlTarget(eventTarget: EventTarget | null): boolean {
+  const target = eventTarget instanceof Element ? eventTarget : null;
+  return target !== null
+    && target.closest('.shader-node-area-ui-collapsed, .group-ui-preview') !== null;
+}
+
 function collapsedAreaContainingNode(areas: EditorArea[], node: ShaderFlowNode): EditorArea | undefined {
   return areas
     // UI controls are intentionally position-owned: older saved areas can have a
@@ -7969,6 +8156,114 @@ function draftNodePosition(
   return {
     x,
     y: pointer.y - DRAFT_NODE_FIRST_PORT_Y,
+  };
+}
+
+function duplicateAreaHierarchy(
+  areas: EditorArea[],
+  nodes: ShaderFlowNode[],
+  edges: ShaderFlowEdge[],
+  dragState: AreaDragState,
+  onWeightChange: (edgeId: string, weight: number) => void,
+  onModeChange: (edgeId: string, mode: LinkMode) => void,
+  onInsertNode: (edgeId: string) => void,
+): { rootAreaId: string; areas: EditorArea[]; nodes: ShaderFlowNode[]; edges: ShaderFlowEdge[] } {
+  const sourceAreaIds = new Set(Object.keys(dragState.areaPositions));
+  const sourceNodeIds = new Set(Object.keys(dragState.nodePositions));
+  const existingNodeIds = new Set(nodes.map((node) => node.id));
+  const existingAreaIds = new Set(areas.map((area) => area.id));
+  const nodeIdMap = new Map<string, string>();
+  const areaIdMap = new Map<string, string>();
+
+  for (const node of nodes) {
+    if (!sourceNodeIds.has(node.id)) continue;
+    const nextId = makeNodeId(node.data.patchNode.type ?? 'node', existingNodeIds);
+    existingNodeIds.add(nextId);
+    nodeIdMap.set(node.id, nextId);
+  }
+  for (const area of areas) {
+    if (!sourceAreaIds.has(area.id)) continue;
+    let nextId = `area-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    while (existingAreaIds.has(nextId)) {
+      nextId = `area-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    }
+    existingAreaIds.add(nextId);
+    areaIdMap.set(area.id, nextId);
+  }
+
+  const duplicatedNodes = nodes.flatMap((node): ShaderFlowNode[] => {
+    const nextId = nodeIdMap.get(node.id);
+    if (!nextId) return [];
+    const position = dragState.currentNodePositions[node.id] ?? node.position;
+    const patchNode = structuredClone(node.data.patchNode);
+    return [{
+      ...node,
+      id: nextId,
+      position,
+      selected: false,
+      data: {
+        ...node.data,
+        patchNode: {
+          ...patchNode,
+          id: nextId,
+          position,
+          ...(patchNode.spreadNodeIds ? {
+            spreadNodeIds: patchNode.spreadNodeIds.flatMap((nodeId) => {
+              const mapped = nodeIdMap.get(nodeId);
+              return mapped ? [mapped] : [];
+            }),
+          } : {}),
+        },
+        isTypePickerOpen: false,
+      },
+    }];
+  });
+
+  const duplicatedAreas = areas.flatMap((area): EditorArea[] => {
+    const nextId = areaIdMap.get(area.id);
+    if (!nextId) return [];
+    const spreadNodeId = area.spreadNodeId ? nodeIdMap.get(area.spreadNodeId) : undefined;
+    return [{
+      ...structuredClone(area),
+      id: nextId,
+      position: dragState.currentAreaPositions[area.id] ?? area.position,
+      ...(spreadNodeId ? { spreadNodeId } : {}),
+      ...(area.nodeIds ? {
+        nodeIds: area.nodeIds.flatMap((nodeId) => {
+          const mapped = nodeIdMap.get(nodeId);
+          return mapped ? [mapped] : [];
+        }),
+      } : {}),
+    }];
+  });
+
+  const duplicatedEdges = edges.flatMap((edge): ShaderFlowEdge[] => {
+    const link = linkFromEdge(edge);
+    if (!link) return [];
+    const fromSelected = sourceNodeIds.has(link.from.node);
+    const toSelected = sourceNodeIds.has(link.to.node);
+    if (!fromSelected && !toSelected) return [];
+    if (fromSelected !== toSelected && !dragState.linkExternal) return [];
+    const fromNode = nodeIdMap.get(link.from.node) ?? link.from.node;
+    const toNode = nodeIdMap.get(link.to.node) ?? link.to.node;
+    if (fromNode === link.from.node && toNode === link.to.node) return [];
+    return [{
+      ...edgeFromLink({
+        from: { ...link.from, node: fromNode },
+        to: { ...link.to, node: toNode },
+        weight: link.weight,
+        mode: link.mode,
+        enabled: link.enabled,
+      }, onWeightChange, onModeChange, onInsertNode),
+      selected: false,
+    }];
+  });
+
+  return {
+    rootAreaId: areaIdMap.get(dragState.areaId) ?? dragState.areaId,
+    areas: duplicatedAreas,
+    nodes: duplicatedNodes,
+    edges: duplicatedEdges,
   };
 }
 

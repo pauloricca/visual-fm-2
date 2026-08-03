@@ -4195,9 +4195,12 @@ function CollapsedNodeLabel({ nodeType, customLabel, displaySuffix, onChange }: 
 
   return (
     <button
-      className="collapsed-node-label nodrag nopan"
+      className={[
+        'collapsed-node-label nodrag nopan',
+        displaySuffix ? 'node-title-with-live-readout' : '',
+      ].filter(Boolean).join(' ')}
       type="button"
-      title="Click to name this collapsed node"
+      title={displaySuffix ? undefined : 'Click to name this collapsed node'}
       onMouseDown={(event) => event.stopPropagation()}
       onPointerDown={(event) => event.stopPropagation()}
       onDoubleClick={(event) => event.stopPropagation()}
@@ -4207,7 +4210,8 @@ function CollapsedNodeLabel({ nodeType, customLabel, displaySuffix, onChange }: 
         setEditing(true);
       }}
     >
-      {displayLabel}{displaySuffix}
+      {displayLabel}
+      {displaySuffix ? <span className="slider-node-title-readout" aria-hidden="true">{displaySuffix}</span> : null}
     </button>
   );
 }
@@ -4489,7 +4493,11 @@ function NodeTypePicker({
   if (!open) {
     return (
       <button
-        className={dragIntent ? 'node-type-picker-button node-type-picker-button-drag-intent' : 'node-type-picker-button'}
+        className={[
+          'node-type-picker-button',
+          dragIntent ? 'node-type-picker-button-drag-intent' : '',
+          closedSuffix ? 'node-title-with-live-readout' : '',
+        ].filter(Boolean).join(' ')}
         type="button"
         onPointerDown={(event) => {
           pointerStartRef.current = { x: event.clientX, y: event.clientY };
@@ -4527,7 +4535,8 @@ function NodeTypePicker({
           onOpen();
         }}
       >
-        {pickerLabel}{closedSuffix}
+        {pickerLabel}
+        {closedSuffix ? <span className="slider-node-title-readout" aria-hidden="true">{closedSuffix}</span> : null}
       </button>
     );
   }
