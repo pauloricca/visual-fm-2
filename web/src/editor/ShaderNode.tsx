@@ -129,6 +129,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const definition = node.type ? getNodeDefinition(node as PatchNode) : null;
   const isExpression = node.type === 'Expression';
   const isGroup = node.type === 'Group';
+  const groupUiPreview = isGroup ? data.groupUiPreview : undefined;
   const isSpread = node.type === 'Spread';
   const isSpawn = node.type === 'Spawn';
   const isRuntimeContainer = isSpread || isSpawn;
@@ -161,7 +162,15 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   const showSampleVideo = showSampleUpload && Boolean(node.sample?.url && isVideoSampleUrl(node.sample.url));
   const showBufferDisplay = node.type === 'Buffer';
   const showImageDisplay = node.type === 'Image';
-  const showTopGraphic = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showJoystickDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showBufferDisplay || showImageDisplay;
+  const sliderUnitValue = showSliderDisplay
+    ? clamp(data.midiSliderValue ?? data.audioSliderValue ?? node.params.value ?? 0.5, 0, 1)
+    : 0;
+  const sliderAbsoluteValue = (node.params.min ?? 0)
+    + sliderUnitValue * ((node.params.max ?? 1) - (node.params.min ?? 0));
+  const sliderTitleSuffix = showSliderDisplay && pointerOver
+    ? `: ${formatSliderReadoutValue(sliderAbsoluteValue)} (${formatUnitValue(sliderUnitValue)})`
+    : undefined;
+  const showTopGraphic = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showJoystickDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showBufferDisplay || showImageDisplay || Boolean(groupUiPreview);
   const imageX = centeredCoordinateToUnit(data.audioImagePosition?.x ?? node.params.x ?? 0);
   const imageY = centeredCoordinateToUnit(data.audioImagePosition?.y ?? node.params.y ?? 0);
   const showResizableDisplay = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showJoystickDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showBufferDisplay || showImageDisplay || showSequencerDisplay || isRuntimeContainer;
@@ -304,6 +313,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     '--custom-wave-point-screen-scale': String(customWavePointScale),
     '--graph-screen-scale': String(graphScreenEmphasis / graphZoomScale),
     '--graph-stroke-scale': String(1 / graphZoomScale),
+    ...(groupUiPreview ? { '--group-ui-width': `${groupUiPreview.width}px` } : {}),
   } as CSSProperties;
   const className = [
     'shader-node',
@@ -333,6 +343,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     compactPorts ? 'shader-node-compact' : '',
     isAreaCollapsedPresentation ? 'shader-node-area-hidden' : '',
     isAreaUiCollapsedPresentation ? 'shader-node-area-ui-collapsed' : '',
+    data.onHeaderDoubleClick ? 'shader-node-resettable-header' : '',
     usesAutoInitialWidth ? 'shader-node-auto-width' : '',
   ].filter(Boolean).join(' ');
 
@@ -953,7 +964,18 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
       onDragOver={handleSampleDragOver}
       onDrop={handleSampleDrop}
     >
-      <div className="shader-node-title">
+      <div
+        className="shader-node-title"
+        title={data.onHeaderDoubleClick ? 'Double-click to reset this control to the subpatch defaults' : undefined}
+        onPointerDown={data.onHeaderDoubleClick ? (event) => event.stopPropagation() : undefined}
+        onMouseDown={data.onHeaderDoubleClick ? (event) => event.stopPropagation() : undefined}
+        onClick={data.onHeaderDoubleClick ? (event) => event.stopPropagation() : undefined}
+        onDoubleClickCapture={data.onHeaderDoubleClick ? (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          data.onHeaderDoubleClick?.(node.id);
+        } : undefined}
+      >
         {showHeaderInputPort && headerInputPort ? (
           <Handle
             id={`in:${headerInputPort}`}
@@ -973,12 +995,14 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           <CollapsedNodeLabel
             nodeType={node.type}
             customLabel={node.customLabel}
+            displaySuffix={sliderTitleSuffix}
             onChange={(label) => data.onCustomLabelChange?.(node.id, label)}
           />
         ) : (
           <NodeTypePicker
             nodeType={node.type}
             displayLabel={isGroup ? node.subpatchName ?? node.id : undefined}
+            closedSuffix={sliderTitleSuffix}
             isEditingSubpatch={data.isEditingSubpatch === true}
             open={data.isTypePickerOpen}
             onOpen={() => data.onTypeEditStart(node.id)}
@@ -1056,10 +1080,10 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               : []),
           ];
           const visibleInputPorts = inputPorts.filter((input) => (
-            showAllPorts || connectedInputPorts.has(input.name)
+            input.preview || showAllPorts || connectedInputPorts.has(input.name)
           ));
           const visibleOutputPorts = outputPorts.filter((output) => (
-            showAllPorts || connectedOutputPorts.has(output.name)
+            output.preview || showAllPorts || connectedOutputPorts.has(output.name)
           ));
           const normalOutputPorts = showSequencerDisplay
             ? visibleOutputPorts.filter((output) => output.name === SEQUENCER_INDEX_OUTPUT)
@@ -1131,6 +1155,23 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             />
           ) : null}
           <div className={showTopGraphic ? 'shader-node-content-graphic' : 'shader-node-content-graphic-empty'}>
+          {groupUiPreview ? (
+            <div
+              className="group-ui-preview nodrag nopan"
+              style={{ width: groupUiPreview.width, height: groupUiPreview.height }}
+              onDoubleClick={(event) => event.stopPropagation()}
+            >
+              {groupUiPreview.nodes.map((previewNode) => (
+                <div
+                  key={previewNode.id}
+                  className="group-ui-preview-node"
+                  style={{ left: previewNode.position.x, top: previewNode.position.y }}
+                >
+                  <ShaderNode {...({ data: previewNode.data, selected: false, dragging: false } as NodeProps<ShaderFlowNode>)} />
+                </div>
+              ))}
+            </div>
+          ) : null}
           {isRuntimeContainer ? <div className="spread-node-fill" aria-hidden="true" /> : null}
           {showSampleUpload ? (
             <SampleWaveformDisplay
@@ -4058,6 +4099,12 @@ function formatUnitValue(value: number): string {
   return trimTrailingZeros(clamp(value, 0, 1).toFixed(3));
 }
 
+function formatSliderReadoutValue(value: number): string {
+  if (!Number.isFinite(value)) return '0';
+  if (Object.is(value, -0)) return '0';
+  return String(Number(value.toPrecision(6)));
+}
+
 function buttonModeFromValue(value: number): ButtonMode {
   const mode = Math.round(value);
   if (mode === 1) return 'trigger';
@@ -4073,6 +4120,7 @@ function clamp(value: number, min: number, max: number): number {
 interface NodeTypePickerProps {
   nodeType: NodeType | null;
   displayLabel?: string;
+  closedSuffix?: string;
   isEditingSubpatch: boolean;
   open: boolean;
   onOpen: () => void;
@@ -4087,10 +4135,11 @@ interface NodeTypePickerProps {
 interface CollapsedNodeLabelProps {
   nodeType: NodeType | null;
   customLabel?: string;
+  displaySuffix?: string;
   onChange: (label: string) => void;
 }
 
-function CollapsedNodeLabel({ nodeType, customLabel, onChange }: CollapsedNodeLabelProps) {
+function CollapsedNodeLabel({ nodeType, customLabel, displaySuffix, onChange }: CollapsedNodeLabelProps) {
   const defaultLabel = nodeType ? getNodeTypeLabel(nodeType) : 'type';
   const displayLabel = customLabel || defaultLabel;
   const [editing, setEditing] = useState(false);
@@ -4135,7 +4184,9 @@ function CollapsedNodeLabel({ nodeType, customLabel, onChange }: CollapsedNodeLa
           if (event.key === 'Enter') commit();
           if (event.key === 'Escape') cancel();
         }}
+        onMouseDown={(event) => event.stopPropagation()}
         onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
         onDoubleClick={(event) => event.stopPropagation()}
         spellCheck={false}
       />
@@ -4147,6 +4198,7 @@ function CollapsedNodeLabel({ nodeType, customLabel, onChange }: CollapsedNodeLa
       className="collapsed-node-label nodrag nopan"
       type="button"
       title="Click to name this collapsed node"
+      onMouseDown={(event) => event.stopPropagation()}
       onPointerDown={(event) => event.stopPropagation()}
       onDoubleClick={(event) => event.stopPropagation()}
       onClick={(event) => {
@@ -4155,7 +4207,7 @@ function CollapsedNodeLabel({ nodeType, customLabel, onChange }: CollapsedNodeLa
         setEditing(true);
       }}
     >
-      {displayLabel}
+      {displayLabel}{displaySuffix}
     </button>
   );
 }
@@ -4304,6 +4356,7 @@ function canLearnMidiCc(nodeType: NodeType | null, inputName: string): boolean {
 function NodeTypePicker({
   nodeType,
   displayLabel,
+  closedSuffix,
   isEditingSubpatch,
   open,
   onOpen,
@@ -4474,7 +4527,7 @@ function NodeTypePicker({
           onOpen();
         }}
       >
-        {pickerLabel}
+        {pickerLabel}{closedSuffix}
       </button>
     );
   }

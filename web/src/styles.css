@@ -1084,6 +1084,41 @@ button:hover {
   color: var(--color-background);
 }
 
+.shader-node-group:has(.group-ui-preview) {
+  width: max(var(--group-ui-width, 0px), 160px);
+}
+
+.group-ui-preview {
+  position: relative;
+  box-sizing: border-box;
+  overflow: hidden;
+  border-bottom: 1px dashed var(--color-foreground);
+  background: var(--color-background);
+}
+
+.group-ui-preview-node {
+  position: absolute;
+}
+
+.group-ui-preview-node > .shader-node {
+  pointer-events: auto;
+}
+
+.react-flow__node.selected .group-ui-preview-node > .shader-node,
+.shader-node-selected .group-ui-preview-node > .shader-node {
+  outline: 0;
+  box-shadow: none;
+}
+
+.shader-node-resettable-header .shader-node-title,
+.react-flow__node.selected .shader-node-resettable-header .shader-node-title,
+.shader-node-selected .shader-node-resettable-header .shader-node-title {
+  pointer-events: auto;
+  cursor: pointer;
+  background: var(--color-background);
+  color: var(--color-foreground);
+}
+
 .shader-node-dsp-error {
   border-color: var(--color-error);
 }

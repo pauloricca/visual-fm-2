@@ -412,6 +412,15 @@ impl DspSamplePlaybackState {
     }
 }
 
+fn remap_dsp_sample_playback_state(
+    state: &DspSamplePlaybackState,
+    sample_index: usize,
+) -> DspSamplePlaybackState {
+    let mut remapped = state.clone();
+    remapped.sample_index = sample_index;
+    remapped
+}
+
 struct DspRepeatResourceLayout {
     state_start: usize,
     state_count: usize,
@@ -561,8 +570,7 @@ fn migrate_dsp_repeat_resources(
         else {
             continue;
         };
-        *target = source.clone();
-        target.sample_index = *new_slot;
+        *target = remap_dsp_sample_playback_state(source, *new_slot);
     }
     for (old_slot, new_slot) in &plan.effect_slots {
         let Some(source) = old
@@ -900,6 +908,7 @@ static mut DSP_PENDING_SPREAD_RUNTIMES: [Option<DspSpreadRuntime>; MAX_DSP_SPREA
     [const { None }; MAX_DSP_SPREADS];
 static mut DSP_PENDING_SPAWN_RUNTIMES: [Option<DspSpawnRuntime>; MAX_DSP_SPREADS] =
     [const { None }; MAX_DSP_SPREADS];
+static mut DSP_PENDING_SAMPLE_STATES: Option<Vec<DspSamplePlaybackState>> = None;
 static mut DSP_REPEAT_MIGRATION_PLAN: Option<DspRepeatMigrationPlan> = None;
 static mut DSP_SPREAD_ITEM_INDEX: usize = 0;
 static mut DSP_SPAWN_INSTANCE_GATE: f64 = 0.0;
@@ -1679,13 +1688,107 @@ pub extern "C" fn setDspSequencerEvent(
     }
 }
 
+unsafe fn capture_dsp_sample_program_states() -> Vec<DspSamplePlaybackState> {
+    let mut states = Vec::new();
+    for sample_index in 0..MAX_DSP_SAMPLE_NODES {
+        let node_index = DSP_SAMPLE_NODE_INDICES[sample_index];
+        if node_index < 0 || node_index as usize >= MAX_NODES {
+            continue;
+        }
+        let node_index = node_index as usize;
+        let mut state = DspSamplePlaybackState::new(sample_index);
+        state.active_voice_limit = DSP_SAMPLE_ACTIVE_VOICE_LIMITS[sample_index];
+        state.voice_settings = DSP_SAMPLE_VOICE_SETTINGS[sample_index];
+        for voice in 0..MAX_DSP_SAMPLE_PLAYER_VOICES {
+            let voice_slot = DSP_SAMPLE_VOICE_SLOT_START + voice;
+            state.playing[voice] = SAMPLE_PLAYING[voice_slot][node_index];
+            state.positions[voice] = SAMPLE_POSITIONS[voice_slot][node_index];
+            state.directions[voice] = SAMPLE_DIRECTIONS[voice_slot][node_index];
+            state.frequency_directions[voice] = SAMPLE_FREQUENCY_DIRECTIONS[voice_slot][node_index];
+            state.has_advanced[voice] = SAMPLE_HAS_ADVANCED[voice_slot][node_index];
+            state.playback_ages[voice] = SAMPLE_PLAYBACK_AGES[voice_slot][node_index];
+            state.release_ages[voice] = SAMPLE_RELEASE_AGES[voice_slot][node_index];
+            state.start_values[voice] = SAMPLE_START_VALUES[voice_slot][node_index];
+            state.last_outputs[voice] = SAMPLE_LAST_OUTPUTS[voice_slot][node_index];
+            state.retrigger_outputs[voice] = SAMPLE_RETRIGGER_OUTPUTS[voice_slot][node_index];
+            state.retrigger_fade_ages[voice] = SAMPLE_RETRIGGER_FADE_AGES[voice_slot][node_index];
+            state.retrigger_fade_durations[voice] =
+                SAMPLE_RETRIGGER_FADE_DURATIONS[voice_slot][node_index];
+            state.stretch_phases[voice] = SAMPLE_STRETCH_PHASES[voice_slot][node_index];
+            state.stretch_anchors[voice] = SAMPLE_STRETCH_ANCHORS[voice_slot][node_index];
+        }
+        states.push(state);
+    }
+    states
+}
+
+unsafe fn restore_dsp_sample_program_state(
+    source: &DspSamplePlaybackState,
+    sample_index: usize,
+) -> bool {
+    if sample_index >= MAX_DSP_SAMPLE_NODES {
+        return false;
+    }
+    let node_index = DSP_SAMPLE_NODE_INDICES[sample_index];
+    if node_index < 0 || node_index as usize >= MAX_NODES {
+        return false;
+    }
+    let node_index = node_index as usize;
+    let state = remap_dsp_sample_playback_state(source, sample_index);
+    DSP_SAMPLE_ACTIVE_VOICE_LIMITS[sample_index] =
+        state.active_voice_limit.min(MAX_DSP_SAMPLE_PLAYER_VOICES);
+    DSP_SAMPLE_VOICE_SETTINGS[sample_index] = state.voice_settings;
+    for voice in 0..MAX_DSP_SAMPLE_PLAYER_VOICES {
+        let voice_slot = DSP_SAMPLE_VOICE_SLOT_START + voice;
+        SAMPLE_PLAYING[voice_slot][node_index] = state.playing[voice];
+        SAMPLE_POSITIONS[voice_slot][node_index] = state.positions[voice];
+        SAMPLE_DIRECTIONS[voice_slot][node_index] = state.directions[voice];
+        SAMPLE_FREQUENCY_DIRECTIONS[voice_slot][node_index] = state.frequency_directions[voice];
+        SAMPLE_HAS_ADVANCED[voice_slot][node_index] = state.has_advanced[voice];
+        SAMPLE_PLAYBACK_AGES[voice_slot][node_index] = state.playback_ages[voice];
+        SAMPLE_RELEASE_AGES[voice_slot][node_index] = state.release_ages[voice];
+        SAMPLE_START_VALUES[voice_slot][node_index] = state.start_values[voice];
+        SAMPLE_LAST_OUTPUTS[voice_slot][node_index] = state.last_outputs[voice];
+        SAMPLE_RETRIGGER_OUTPUTS[voice_slot][node_index] = state.retrigger_outputs[voice];
+        SAMPLE_RETRIGGER_FADE_AGES[voice_slot][node_index] = state.retrigger_fade_ages[voice];
+        SAMPLE_RETRIGGER_FADE_DURATIONS[voice_slot][node_index] =
+            state.retrigger_fade_durations[voice];
+        SAMPLE_STRETCH_PHASES[voice_slot][node_index] = state.stretch_phases[voice];
+        SAMPLE_STRETCH_ANCHORS[voice_slot][node_index] = state.stretch_anchors[voice];
+    }
+    true
+}
+
 #[no_mangle]
 pub extern "C" fn beginDspProgramUpdate() {
     unsafe {
+        DSP_PENDING_SAMPLE_STATES = Some(capture_dsp_sample_program_states());
         DSP_REPEAT_MIGRATION_PLAN = None;
         for slot in 0..MAX_DSP_SPREADS {
             DSP_PENDING_SPREAD_RUNTIMES[slot] = DSP_SPREAD_RUNTIMES[slot].take();
             DSP_PENDING_SPAWN_RUNTIMES[slot] = DSP_SPAWN_RUNTIMES[slot].take();
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn migrateDspSampleState(old_slot: u32, new_slot: u32) -> i32 {
+    let old_slot = old_slot as usize;
+    let new_slot = new_slot as usize;
+    if old_slot >= MAX_DSP_SAMPLE_NODES || new_slot >= MAX_DSP_SAMPLE_NODES {
+        return -1;
+    }
+    unsafe {
+        let Some(states) = (*core::ptr::addr_of!(DSP_PENDING_SAMPLE_STATES)).as_ref() else {
+            return -1;
+        };
+        let Some(source) = states.iter().find(|state| state.sample_index == old_slot) else {
+            return -1;
+        };
+        if restore_dsp_sample_program_state(source, new_slot) {
+            new_slot as i32
+        } else {
+            -1
         }
     }
 }
@@ -1833,6 +1936,7 @@ pub extern "C" fn finishDspRepeatRuntimeMigration(
 #[no_mangle]
 pub extern "C" fn finishDspProgramUpdate() {
     unsafe {
+        DSP_PENDING_SAMPLE_STATES = None;
         DSP_REPEAT_MIGRATION_PLAN = None;
         for slot in 0..MAX_DSP_SPREADS {
             DSP_PENDING_SPREAD_RUNTIMES[slot] = None;
@@ -4170,9 +4274,41 @@ fn sample_player_start_boundary(start_frame: f64, end_frame: f64, frequency_dire
     }
 }
 
+fn sample_player_frequency_direction(frequency: f64) -> f64 {
+    if frequency.is_finite() && frequency < 0.0 {
+        -1.0
+    } else {
+        1.0
+    }
+}
+
 #[cfg(test)]
 mod sample_player_direction_tests {
-    use super::{sample_player_before_start, sample_player_start_boundary};
+    use super::{
+        sample_player_before_start, sample_player_frequency_direction, sample_player_start_boundary,
+    };
+
+    #[test]
+    fn negative_frequency_swaps_the_effective_sample_boundaries() {
+        let frequency_direction = sample_player_frequency_direction(-440.0);
+        assert_eq!(
+            sample_player_start_boundary(20.0, 80.0, frequency_direction),
+            80.0
+        );
+        assert_eq!(
+            sample_player_start_boundary(80.0, 20.0, frequency_direction),
+            20.0
+        );
+    }
+
+    #[test]
+    fn zero_frequency_uses_the_forward_start_boundary_while_paused() {
+        let frequency_direction = sample_player_frequency_direction(0.0);
+        assert_eq!(
+            sample_player_start_boundary(20.0, 80.0, frequency_direction),
+            20.0
+        );
+    }
 
     #[test]
     fn reversing_inside_the_region_does_not_restart_the_sample() {
@@ -7414,6 +7550,8 @@ fn snapshot_dsp_sample_voice(
             },
             level: if level.is_finite() { level } else { 0.0 },
         };
+        SAMPLE_FREQUENCY_DIRECTIONS[voice_slot][node_index] =
+            sample_player_frequency_direction(frequency);
     }
     start_sample_player(node_index, voice_slot, node, 0.0, 0.0);
     unsafe {
@@ -7797,16 +7935,18 @@ fn render_repeated_dsp_sample(
         }
         if trigger && !previous_trigger {
             let voice = select_repeated_sample_voice(state, voice_count);
+            let frequency = if dsp_reg(op.b).is_finite() {
+                dsp_reg(op.b)
+            } else {
+                220.0
+            };
             let level = if op.e >= 0 { dsp_reg(op.e) } else { 1.0 };
             state.voice_settings[voice] = DspSampleVoiceSettings {
                 node,
-                frequency: if dsp_reg(op.b).is_finite() {
-                    dsp_reg(op.b)
-                } else {
-                    220.0
-                },
+                frequency,
                 level: if level.is_finite() { level } else { 0.0 },
             };
+            state.frequency_directions[voice] = sample_player_frequency_direction(frequency);
             start_repeated_sample_player(state, node_index, voice, node);
             if state.playing[voice] {
                 state.active_voice_limit = state.active_voice_limit.max(voice + 1);
@@ -9436,10 +9576,29 @@ unsafe fn dsp_template_resource_layout(
 mod repeated_resource_state_tests {
     use super::{
         clear_dsp_repeat_state, clear_dsp_resource_slots, dsp_state_ptr, migrate_dsp_repeat_state,
-        prepare_dsp_effect_slot, set_dsp_repeat_state, DspRepeatMigrationPlan,
-        DspRepeatResourceLayout, DspRepeatResourceState, DSP_BUFFER_BUFFERS, DSP_EFFECT_BUFFERS,
-        DSP_EFFECT_INDICES,
+        prepare_dsp_effect_slot, remap_dsp_sample_playback_state, set_dsp_repeat_state,
+        DspRepeatMigrationPlan, DspRepeatResourceLayout, DspRepeatResourceState,
+        DspSamplePlaybackState, DSP_BUFFER_BUFFERS, DSP_EFFECT_BUFFERS, DSP_EFFECT_INDICES,
     };
+
+    #[test]
+    fn sample_playback_remap_preserves_active_voice_state() {
+        let mut source = DspSamplePlaybackState::new(2);
+        source.active_voice_limit = 3;
+        source.playing[2] = true;
+        source.positions[2] = 1234.5;
+        source.playback_ages[2] = 0.75;
+        source.stretch_phases[2] = 64.0;
+
+        let remapped = remap_dsp_sample_playback_state(&source, 7);
+
+        assert_eq!(remapped.sample_index, 7);
+        assert_eq!(remapped.active_voice_limit, 3);
+        assert!(remapped.playing[2]);
+        assert_eq!(remapped.positions[2], 1234.5);
+        assert_eq!(remapped.playback_ages[2], 0.75);
+        assert_eq!(remapped.stretch_phases[2], 64.0);
+    }
 
     #[test]
     fn repeated_instances_keep_sample_state_directly_owned() {

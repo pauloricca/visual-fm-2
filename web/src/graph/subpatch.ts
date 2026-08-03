@@ -23,7 +23,10 @@ function expandGroupNodes(patch: Patch, prefix: string): Patch {
       continue;
     }
 
-    const groupPatch = expandGroupNodes(node.subpatch, `${prefix}${node.id}__`);
+    const groupPatch = expandGroupNodes(
+      applySubpatchUiOverrides(node.subpatch, node.subpatchUiOverrides),
+      `${prefix}${node.id}__`,
+    );
     const insNodes = groupPatch.nodes.filter((candidate) => candidate.type === 'Ins');
     const outsNodes = groupPatch.nodes.filter((candidate) => candidate.type === 'Outs');
     const boundaryNodeIds = new Set([...insNodes, ...outsNodes].map((candidate) => candidate.id));
@@ -213,6 +216,7 @@ function cloneNode(node: PatchNode): PatchNode {
     ...(node.customLabel ? { customLabel: node.customLabel } : {}),
     ...(node.subpatchName ? { subpatchName: node.subpatchName } : {}),
     ...(node.subpatchCloneId ? { subpatchCloneId: node.subpatchCloneId } : {}),
+    ...(node.subpatchUiOverrides ? { subpatchUiOverrides: structuredClone(node.subpatchUiOverrides) } : {}),
     ...(node.expression !== undefined ? { expression: node.expression } : {}),
     ...(node.sample ? { sample: { ...node.sample } } : {}),
     ...(node.image ? { image: { ...node.image } } : {}),
@@ -230,8 +234,30 @@ function cloneNode(node: PatchNode): PatchNode {
   };
 }
 
+function applySubpatchUiOverrides(
+  patch: Patch,
+  overrides: PatchNode['subpatchUiOverrides'],
+): Patch {
+  if (!overrides) return patch;
+
+  return {
+    ...patch,
+    nodes: patch.nodes.map((node) => {
+      const override = overrides[node.id];
+      if (!override) return node;
+      const params = { ...node.params, ...override.params };
+      return {
+        ...node,
+        params,
+        ...(override.customWave ? { customWave: normalizeCustomWave(override.customWave, params) } : {}),
+      };
+    }),
+  };
+}
+
 function clonePatch(patch: Patch): Patch {
   return {
+    ...(patch.areas ? { areas: structuredClone(patch.areas) } : {}),
     nodes: patch.nodes.map(cloneNode),
     links: patch.links.map((link) => ({
       from: { ...link.from },

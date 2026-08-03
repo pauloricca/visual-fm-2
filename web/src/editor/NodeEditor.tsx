@@ -68,6 +68,7 @@ import {
   type ScopeNodeSize,
   type ShaderFlowEdge,
   type ShaderFlowNode,
+  type ShaderNodeData,
   toFlowEdges,
   toFlowNodes,
 } from './flowPatch';
@@ -178,6 +179,7 @@ interface SubpatchEditFrame {
   groupId: string;
   parentNodes: ShaderFlowNode[];
   parentEdges: ShaderFlowEdge[];
+  parentAreas: EditorArea[];
   parentPatchName: string;
   parentHistory: HistoryState;
 }
@@ -219,6 +221,11 @@ interface SampleLibraryState {
   selectedUrl: string | null;
   loading: boolean;
   error: string | null;
+}
+
+interface BufferSamplePromptState {
+  nodeId: string;
+  name: string;
 }
 
 type SampleRecordingStatus = 'idle' | 'requesting' | 'recording' | 'processing' | 'naming' | 'saving';
@@ -367,6 +374,7 @@ function NodeEditorInner() {
   const [saveFeedbackActive, setSaveFeedbackActive] = useState(false);
   const [localPatchLibrary, setLocalPatchLibrary] = useState<LocalPatchLibraryState | null>(null);
   const [sampleLibrary, setSampleLibrary] = useState<SampleLibraryState | null>(null);
+  const [bufferSamplePrompt, setBufferSamplePrompt] = useState<BufferSamplePromptState | null>(null);
   const [sampleRecording, setSampleRecording] = useState<SampleRecordingState>(IDLE_SAMPLE_RECORDING);
   const [imageLibrary, setImageLibrary] = useState<ImageLibraryState | null>(null);
   const [subpatchImportModal, setSubpatchImportModal] = useState<SubpatchImportModalState | null>(null);
@@ -383,6 +391,7 @@ function NodeEditorInner() {
   const sampleFileInputRef = useRef<HTMLInputElement | null>(null);
   const imageFileInputRef = useRef<HTMLInputElement | null>(null);
   const pendingSampleUploadNodeIdRef = useRef<string | null>(null);
+  const bufferSamplePromptResolverRef = useRef<((name: string | null) => void) | null>(null);
   const sampleRecorderRef = useRef<MediaRecorder | null>(null);
   const sampleRecordingStreamRef = useRef<MediaStream | null>(null);
   const sampleRecordingChunksRef = useRef<Blob[]>([]);
@@ -398,6 +407,27 @@ function NodeEditorInner() {
   const reconnectingEdgeSnapshotRef = useRef<ShaderFlowEdge | null>(null);
   const rootPatchName = editingStack[0]?.parentPatchName ?? patchName;
   const audio = useAudioEngine({ selectedMidiInputDeviceIds, recordingPatchName: rootPatchName });
+
+  const requestBufferSampleName = useCallback((nodeId: string, defaultName: string): Promise<string | null> => {
+    bufferSamplePromptResolverRef.current?.(null);
+    return new Promise((resolve) => {
+      bufferSamplePromptResolverRef.current = resolve;
+      setBufferSamplePrompt({ nodeId, name: defaultName });
+    });
+  }, []);
+
+  const answerBufferSamplePrompt = useCallback((useBufferContent: boolean) => {
+    const resolver = bufferSamplePromptResolverRef.current;
+    bufferSamplePromptResolverRef.current = null;
+    const name = useBufferContent ? bufferSamplePrompt?.name.trim() || null : null;
+    setBufferSamplePrompt(null);
+    resolver?.(name);
+  }, [bufferSamplePrompt]);
+
+  useEffect(() => () => {
+    bufferSamplePromptResolverRef.current?.(null);
+    bufferSamplePromptResolverRef.current = null;
+  }, []);
   const selectedMidiInputDeviceKey = useMemo(() => selectedMidiInputDeviceIds.join('\n'), [selectedMidiInputDeviceIds]);
   const audioPlaybackActive = audio.status === 'running' || audio.status === 'starting';
   const cpuLoad = audio.status === 'running' ? Math.min(1, audio.cpuLoad) : 0;
@@ -945,25 +975,7 @@ function NodeEditorInner() {
 
     try {
       setSampleLibrary((current) => current && current.nodeId === nodeId ? { ...current, loading: true, error: null } : current);
-      const response = await fetch(`/api/local-samples?name=${encodeURIComponent(file.name)}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': file.type || 'application/octet-stream',
-        },
-        body: file,
-      });
-      if (!response.ok) {
-        throw new Error(await response.text() || `Sample upload failed (${response.status}).`);
-      }
-      const payload = await response.json() as unknown;
-      if (!isRecord(payload) || typeof payload.name !== 'string' || typeof payload.url !== 'string') {
-        throw new Error('Sample upload returned an invalid response.');
-      }
-      const sample: SampleAsset = {
-        name: payload.name,
-        url: payload.url,
-        ...(typeof payload.originalUrl === 'string' ? { originalUrl: payload.originalUrl } : {}),
-      };
+      const sample = await uploadLocalSample(file);
       updateNodeSample(nodeId, sample);
       setSampleLibrary((current) => current && current.nodeId === nodeId ? null : current);
       setImportError(null);
@@ -1235,9 +1247,51 @@ function NodeEditorInner() {
     setEditingTypeNodeId((current) => current === nodeId ? nextId : current);
   }, [commitHistory]);
 
-  const updateNodeType = useCallback((nodeId: string, type: NodeType) => {
-    const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
+  const updateNodeType = useCallback(async (nodeId: string, type: NodeType) => {
+    let relatedNode = nodesRef.current.find((node) => node.id === nodeId);
     if (!relatedNode) return;
+
+    let convertedBufferSample: SampleAsset | undefined;
+    if (relatedNode.data.patchNode.type === 'Buffer' && type === 'SamplePlayer') {
+      const dspNodeId = runtimeDspNodeIdForFlowNode(
+        relatedNode,
+        nodesRef.current,
+        editingStack.map((frame) => frame.groupId),
+      );
+      const snapshot = await audio.captureBuffer(dspNodeId);
+      relatedNode = nodesRef.current.find((node) => node.id === nodeId);
+      if (!relatedNode || relatedNode.data.patchNode.type !== 'Buffer') return;
+
+      if (!snapshot && bufferVisualizationContainsAudio(audio.buffers[dspNodeId])) {
+        setImportError('The recorded Buffer could not be read, so it was kept unchanged. Try switching it to Sample again.');
+        return;
+      }
+
+      if (snapshot && bufferContainsAudio(snapshot.samples)) {
+        const requestedName = await requestBufferSampleName(
+          nodeId,
+          relatedNode.data.patchNode.customLabel?.trim() || `${nodeId}-buffer`,
+        );
+        relatedNode = nodesRef.current.find((node) => node.id === nodeId);
+        if (!relatedNode || relatedNode.data.patchNode.type !== 'Buffer') return;
+
+        if (requestedName === null) {
+          convertedBufferSample = undefined;
+        } else {
+          try {
+            const wav = encodeMonoSamplesAsWav(snapshot.samples, snapshot.sampleRate);
+            const file = new File([wav], sampleRecordingFileName(requestedName, '.wav'), { type: 'audio/wav' });
+            convertedBufferSample = await uploadLocalSample(file);
+            relatedNode = nodesRef.current.find((node) => node.id === nodeId);
+            if (!relatedNode || relatedNode.data.patchNode.type !== 'Buffer') return;
+            setImportError(null);
+          } catch (error) {
+            setImportError(error instanceof Error ? error.message : String(error));
+            return;
+          }
+        }
+      }
+    }
 
     provisionalNodeIdsRef.current.delete(nodeId);
 
@@ -1296,6 +1350,7 @@ function NodeEditorInner() {
               ...(type === 'CustomWave' ? {
                 customWave: normalizeCustomWave(node.data.patchNode.customWave, node.data.patchNode.params),
               } : {}),
+              ...(type === 'SamplePlayer' && convertedBufferSample ? { sample: convertedBufferSample } : {}),
               ...((type === 'Spread' || type === 'Spawn') ? {
                 scopeSize: { ...(type === 'Spawn' ? DEFAULT_SPAWN_SIZE : DEFAULT_SPREAD_SIZE) },
               } : {}),
@@ -1330,7 +1385,7 @@ function NodeEditorInner() {
       })];
     });
     setEditingTypeNodeId((current) => current === nodeId ? nextId : current);
-  }, [commitHistory]);
+  }, [audio, commitHistory, editingStack, requestBufferSampleName]);
 
   const convertNodeToArea = useCallback((nodeId: string) => {
     const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
@@ -2074,6 +2129,7 @@ function NodeEditorInner() {
         groupId: node.id,
         parentNodes: nodesRef.current.map(cloneFlowNodeSnapshot),
         parentEdges: edgesRef.current.map(cloneFlowEdgeSnapshot),
+        parentAreas: structuredClone(areasRef.current),
         parentPatchName: patchName,
         parentHistory: history,
       },
@@ -2081,6 +2137,7 @@ function NodeEditorInner() {
     const callbacks = nodeCallbacksPlaceholder();
     setNodes(toFlowNodes(subpatch, callbacks, null));
     setEdges(toFlowEdges(subpatch, updateEdgeWeight, updateEdgeMode, insertNodeOnEdgePlaceholder));
+    setAreas(structuredClone(subpatch.areas ?? []));
     setPatchName(patchNode.subpatchName ?? node.id);
     setEditingTypeNodeId(null);
     setPendingBoundaryPort(null);
@@ -2095,13 +2152,14 @@ function NodeEditorInner() {
     const frame = editingStack[editingStack.length - 1];
     if (!frame) return false;
 
-    const subpatch = patchFromFlow(nodesRef.current, edgesRef.current);
+    const subpatch = patchFromFlow(nodesRef.current, edgesRef.current, areasRef.current);
     const parentGraph = applySubpatchToParent(frame, subpatch, patchName);
-    const previousParentSnapshot = graphSnapshot(frame.parentNodes, frame.parentEdges, areasRef.current);
+    const previousParentSnapshot = graphSnapshot(frame.parentNodes, frame.parentEdges, frame.parentAreas);
 
     setEditingStack((current) => current.slice(0, -1));
     setNodes(parentGraph.nodes);
     setEdges(parentGraph.edges);
+    setAreas(structuredClone(frame.parentAreas));
     setPatchName(frame.parentPatchName);
     setEditingTypeNodeId(null);
     setPendingBoundaryPort(null);
@@ -2114,6 +2172,57 @@ function NodeEditorInner() {
     });
     return true;
   }, [editingStack, patchName]);
+
+  const updateGroupUiNodeOverride = useCallback((
+    groupId: string,
+    innerNodeId: string,
+    historyKey: string,
+    update: (override: NonNullable<PatchNode['subpatchUiOverrides']>[string]) => NonNullable<PatchNode['subpatchUiOverrides']>[string],
+  ) => {
+    const group = nodesRef.current.find((node) => node.id === groupId)?.data.patchNode;
+    if (group?.type !== 'Group' || !group.subpatch) return;
+    commitHistory(`group-ui:${groupId}:${historyKey}`);
+    setNodes((current) => current.map((node) => {
+      const patchNode = node.data.patchNode;
+      if (node.id !== groupId || patchNode.type !== 'Group' || !patchNode.subpatch) return node;
+      const currentOverrides = patchNode.subpatchUiOverrides ?? {};
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          patchNode: {
+            ...patchNode,
+            subpatchUiOverrides: {
+              ...currentOverrides,
+              [innerNodeId]: update(currentOverrides[innerNodeId] ?? {}),
+            },
+          },
+        },
+      };
+    }));
+  }, [commitHistory]);
+
+  const resetGroupUiNodeOverride = useCallback((groupId: string, innerNodeId: string) => {
+    const group = nodesRef.current.find((node) => node.id === groupId)?.data.patchNode;
+    if (group?.type !== 'Group' || !group.subpatchUiOverrides?.[innerNodeId]) return;
+
+    commitHistory();
+    setNodes((current) => current.map((node) => {
+      const patchNode = node.data.patchNode;
+      if (node.id !== groupId || patchNode.type !== 'Group' || !patchNode.subpatchUiOverrides?.[innerNodeId]) return node;
+      const { [innerNodeId]: _removed, ...remainingOverrides } = patchNode.subpatchUiOverrides;
+      const { subpatchUiOverrides: _previousOverrides, ...sharedPatchNode } = patchNode;
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          patchNode: Object.keys(remainingOverrides).length > 0
+            ? { ...sharedPatchNode, subpatchUiOverrides: remainingOverrides }
+            : sharedPatchNode,
+        },
+      };
+    }));
+  }, [commitHistory]);
 
   const selectedLinkPortsByNode = useMemo(() => {
     const portsByNode = new Map<string, { inputs: Set<string>; outputs: Set<string> }>();
@@ -2319,8 +2428,8 @@ function NodeEditorInner() {
   }, [edges, insertNodeOnEdge, updateEdgeEnabled, updateEdgeMode, updateEdgeWeight]);
 
   const materializedGraph = useMemo(
-    () => materializeRootGraph(nodesWithCallbacks, edgesWithCallbacks, editingStack, patchName),
-    [edgesWithCallbacks, editingStack, nodesWithCallbacks, patchName],
+    () => materializeRootGraph(nodesWithCallbacks, edgesWithCallbacks, areas, editingStack, patchName),
+    [areas, edgesWithCallbacks, editingStack, nodesWithCallbacks, patchName],
   );
   const isEditingSubpatch = editingStack.length > 0;
   const canGroupSelection = useMemo(() => (
@@ -2329,12 +2438,12 @@ function NodeEditorInner() {
   ), [nodes]);
   const canScaleSelection = selectedNodeCount > 0;
   const patch = useMemo(() => ({
-    ...patchFromFlow(materializedGraph.nodes, materializedGraph.edges),
+    ...patchFromFlow(materializedGraph.nodes, materializedGraph.edges, editingStack.length === 0 ? areas : editingStack[0]?.parentAreas),
     name: rootPatchName,
     ...(selectedMidiInputDeviceIds.length > 0
       ? { midiInput: { selectedDeviceIds: selectedMidiInputDeviceIds } }
       : {}),
-  }), [materializedGraph, rootPatchName, selectedMidiInputDeviceIds]);
+  }), [areas, editingStack, materializedGraph, rootPatchName, selectedMidiInputDeviceIds]);
   const patchJson = useMemo(() => patchToJson(patch), [patch]);
   const trimmedRootPatchName = rootPatchName.trim();
   const selectedLocalPatch = localPatchLibrary?.patches.find((entry) => entry.name === localPatchLibrary.selectedPatchName) ?? null;
@@ -2356,8 +2465,78 @@ function NodeEditorInner() {
   }, [audioGraph]);
   const activeDspGroupIds = useMemo(() => editingStack.map((frame) => frame.groupId), [editingStack]);
 
-  const renderedNodes = useMemo(() => nodesWithCallbacks.map((node) => {
-    const dspNodeId = runtimeDspNodeIdForFlowNode(node, nodesWithCallbacks, activeDspGroupIds);
+  const nodesWithGroupUi = useMemo(() => nodesWithCallbacks.map((node) => {
+    const groupNode = node.data.patchNode;
+    if (groupNode.type !== 'Group' || !groupNode.subpatch) return node;
+    const layout = groupUiPreviewLayout(groupNode.subpatch);
+    if (!layout) return node;
+    const previewNodes = layout.nodes.map((innerNode) => {
+      const previewId = `__group_ui__${node.id}__${innerNode.id}`;
+      const override = groupNode.subpatchUiOverrides?.[innerNode.id];
+      const effectiveParams = { ...innerNode.params, ...override?.params };
+      const effectiveInnerNode = {
+        ...innerNode,
+        params: effectiveParams,
+        ...(override?.customWave ? { customWave: normalizeCustomWave(override.customWave, effectiveParams) } : {}),
+      };
+      const dspNodeId = scopedDspNodeId(innerNode.id, [...activeDspGroupIds, node.id]);
+      const monitorLinkId = monitorLinkIdByNode.get(dspNodeId);
+      const data = {
+        ...nodeCallbacksPlaceholder(),
+        patchNode: { ...effectiveInnerNode, id: previewId, position: undefined },
+        canvasZoom: settledGraphZoom,
+        isAreaUiCollapsedPresentation: true,
+        isTypePickerOpen: false,
+        onParamChange: (_previewNodeId: string, port: string, value: number) => updateGroupUiNodeOverride(
+          node.id, innerNode.id, `param:${innerNode.id}:${port}`,
+          (current) => ({ ...current, params: { ...current.params, [port]: value } }),
+        ),
+        onParamsChange: (_previewNodeId: string, values: Record<string, number>) => updateGroupUiNodeOverride(
+          node.id, innerNode.id, `params:${innerNode.id}`,
+          (current) => ({ ...current, params: { ...current.params, ...values } }),
+        ),
+        onCustomWaveChange: (_previewNodeId: string, customWave: CustomWaveSettings, historyKey?: string) => updateGroupUiNodeOverride(
+          node.id, innerNode.id, historyKey ?? `custom-wave:${innerNode.id}`,
+          (current) => ({ ...current, customWave: normalizeCustomWave(customWave, { ...innerNode.params, ...current.params }) }),
+        ),
+        onHeaderDoubleClick: () => resetGroupUiNodeOverride(node.id, innerNode.id),
+        ...(monitorLinkId && innerNode.type === 'Meter' ? { audioMeter: audio.linkMeters[monitorLinkId] } : {}),
+        ...(monitorLinkId && innerNode.type === 'Scope' ? { audioScope: audio.linkScopes[dspNodeId] } : {}),
+        ...(monitorLinkId && innerNode.type === 'FFT' ? { audioSpectrum: audio.linkScopes[dspNodeId] } : {}),
+        ...(monitorLinkId && innerNode.type === 'Slider' ? { audioSliderValue: audio.linkMeters[monitorLinkId]?.output } : {}),
+        ...(monitorLinkId && innerNode.type === 'Sequencer' ? { audioSequencerStep: audio.linkMeters[monitorLinkId]?.output } : {}),
+        ...((innerNode.type === 'CustomWave' || innerNode.type === 'SamplePlayer') ? { audioPlayheads: audio.playheads[dspNodeId] } : {}),
+        ...(innerNode.type === 'Buffer' ? { audioBuffer: audio.buffers[dspNodeId] } : {}),
+        ...(innerNode.type === 'SamplePlayer' ? { audioSampleParams: samplePlayerVisualizationParams(dspNodeId, audio.linkMeters) } : {}),
+      } satisfies ShaderNodeData;
+      return {
+        id: previewId,
+        position: {
+          x: (innerNode.position?.x ?? 0) - layout.position.x,
+          y: (innerNode.position?.y ?? 0) - layout.position.y,
+        },
+        data,
+      };
+    });
+    return {
+      ...node,
+      data: { ...node.data, groupUiPreview: { width: layout.size.width, height: layout.size.height, nodes: previewNodes } },
+    };
+  }), [
+    activeDspGroupIds,
+    audio.buffers,
+    audio.linkMeters,
+    audio.linkScopes,
+    audio.playheads,
+    monitorLinkIdByNode,
+    nodesWithCallbacks,
+    settledGraphZoom,
+    resetGroupUiNodeOverride,
+    updateGroupUiNodeOverride,
+  ]);
+
+  const renderedNodes = useMemo(() => nodesWithGroupUi.map((node) => {
+    const dspNodeId = runtimeDspNodeIdForFlowNode(node, nodesWithGroupUi, activeDspGroupIds);
     const monitorLinkId = monitorLinkIdByNode.get(dspNodeId);
     const audioOutputLeft = audio.linkMeters[`${dspNodeId}:left`]?.output ?? 0;
     const audioOutputRight = audio.linkMeters[`${dspNodeId}:right`]?.output ?? 0;
@@ -2418,7 +2597,7 @@ function NodeEditorInner() {
         ...(midiControlVisual?.buttonPressed !== undefined ? { midiButtonPressed: midiControlVisual.buttonPressed } : {}),
       },
     };
-  }), [activeDspGroupIds, audio.buffers, audio.linkMeters, audio.linkScopes, audio.playheads, dspDiagnostics, midiControlVisuals, monitorLinkIdByNode, nodesWithCallbacks]);
+  }), [activeDspGroupIds, audio.buffers, audio.linkMeters, audio.linkScopes, audio.playheads, dspDiagnostics, midiControlVisuals, monitorLinkIdByNode, nodesWithGroupUi]);
 
   const renderedEdges = useMemo(() => edgesWithCallbacks.map((edge) => {
     const dspErrors = dspDiagnostics.edgeErrors.get(edge.id) ?? [];
@@ -2881,7 +3060,6 @@ function NodeEditorInner() {
   const onConnectStart = useCallback((event: globalThis.MouseEvent | TouchEvent, params: OnConnectStartParams) => {
     if (reconnectingEdgeRef.current) {
       updateDraftNodeConnection(null);
-      setPendingBoundaryPort(null);
       return;
     }
 
@@ -2902,7 +3080,7 @@ function NodeEditorInner() {
         nextPending = {
           nodeId: insNode.id,
           side: 'output',
-          port: uniquePortName('new_input', usedNames),
+          port: uniquePortName('new input', usedNames),
         };
       }
 
@@ -2911,7 +3089,7 @@ function NodeEditorInner() {
         nextPending = {
           nodeId: outsNode.id,
           side: 'input',
-          port: uniquePortName('new_output', usedNames),
+          port: uniquePortName('new output', usedNames),
         };
       }
 
@@ -2983,19 +3161,50 @@ function NodeEditorInner() {
     };
   }, [updateDraftNodeConnection]);
 
-  const onReconnectStart = useCallback((event: ReactMouseEvent, edge?: ShaderFlowEdge) => {
+  const onReconnectStart = useCallback((event: ReactMouseEvent, edge: ShaderFlowEdge, handleType: HandleType) => {
     const duplicateActive = isReconnectDuplicateModifierPressed(event);
     reconnectingEdgeRef.current = true;
     reconnectDuplicateRef.current = duplicateActive;
-    reconnectingEdgeSnapshotRef.current = edge ? cloneFlowEdgeSnapshot(edge) : null;
-    setReconnectPreviewEdge(duplicateActive && edge ? reconnectPreviewEdgeFromEdge(edge) : null);
+    reconnectingEdgeSnapshotRef.current = cloneFlowEdgeSnapshot(edge);
+    setReconnectPreviewEdge(duplicateActive ? reconnectPreviewEdgeFromEdge(edge) : null);
+
+    let nextPending: BoundaryPortSelection | null = null;
+    if (editingStack.length > 0) {
+      // React Flow reports the endpoint that stays attached during a reconnect,
+      // so a fixed target means the source endpoint is the one being moved.
+      if (handleType === 'target') {
+        const insNode = nodesRef.current.find((node) => node.data.patchNode.type === 'Ins');
+        if (insNode && edge.target !== insNode.id) {
+          const usedNames = new Set((insNode.data.patchNode.outputs ?? []).map((port) => port.name));
+          nextPending = {
+            nodeId: insNode.id,
+            side: 'output',
+            port: uniquePortName('new input', usedNames),
+          };
+        }
+      } else {
+        const outsNode = nodesRef.current.find((node) => node.data.patchNode.type === 'Outs');
+        if (outsNode && edge.source !== outsNode.id) {
+          const usedNames = new Set((outsNode.data.patchNode.inputs ?? []).map((port) => port.name));
+          nextPending = {
+            nodeId: outsNode.id,
+            side: 'input',
+            port: uniquePortName('new output', usedNames),
+          };
+        }
+      }
+    }
+    pendingBoundaryPortRef.current = nextPending;
+    setPendingBoundaryPort(nextPending);
     updateDraftNodeConnection(null);
-  }, [updateDraftNodeConnection]);
+  }, [editingStack.length, updateDraftNodeConnection]);
 
   const onReconnectEnd = useCallback(() => {
     reconnectingEdgeRef.current = false;
     reconnectDuplicateRef.current = false;
     reconnectingEdgeSnapshotRef.current = null;
+    pendingBoundaryPortRef.current = null;
+    setPendingBoundaryPort(null);
     setReconnectPreviewEdge(null);
     updateDraftNodeConnection(null);
   }, [updateDraftNodeConnection]);
@@ -3048,6 +3257,18 @@ function NodeEditorInner() {
 
     const shouldDuplicate = reconnectDuplicateRef.current;
     commitHistory();
+    const pending = pendingBoundaryPortRef.current;
+    if (pending) {
+      const isPendingSource = pending.side === 'output'
+        && connection.source === pending.nodeId
+        && connection.sourceHandle === `out:${pending.port}`;
+      const isPendingTarget = pending.side === 'input'
+        && connection.target === pending.nodeId
+        && connection.targetHandle === `in:${pending.port}`;
+      if (isPendingSource || isPendingTarget) {
+        materializePendingBoundaryPort(pending);
+      }
+    }
     setNodes((current) => current.map((node) => ({ ...node, selected: false })));
     setEdges((current) => {
       const duplicate = current.find((edge) => {
@@ -3073,7 +3294,7 @@ function NodeEditorInner() {
         edge.id === oldEdge.id ? nextEdge : { ...edge, selected: false }
       )));
     });
-  }, [commitHistory, insertNodeOnEdge, updateEdgeMode, updateEdgeWeight]);
+  }, [commitHistory, insertNodeOnEdge, materializePendingBoundaryPort, updateEdgeMode, updateEdgeWeight]);
 
   const addNodeAt = useCallback((event: ReactMouseEvent) => {
     if (!reactFlow) return;
@@ -3106,6 +3327,9 @@ function NodeEditorInner() {
     setPendingBoundaryPort(null);
     setNodes(toFlowNodes(loadedPatch, callbacks, null));
     setEdges(toFlowEdges(loadedPatch, updateEdgeWeight, updateEdgeMode, insertNodeOnEdgePlaceholder));
+    setAreas(structuredClone(loadedPatch.areas ?? []));
+    setSelectedAreaId(null);
+    setEditingAreaId(null);
     setPatchName(loadedPatch.name ?? 'single-patch');
     setSelectedMidiInputDeviceIds(normalizeSelectedMidiDeviceIds(loadedPatch.midiInput?.selectedDeviceIds));
     setMidiControlVisuals({});
@@ -4644,6 +4868,53 @@ function NodeEditorInner() {
               onClose={() => setMidiSettingsOpen(false)}
             />
           ) : null}
+          {bufferSamplePrompt ? (
+            <div
+              className="import-modal-backdrop"
+              role="presentation"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget) answerBufferSamplePrompt(false);
+              }}
+            >
+              <section
+                className="import-modal confirm-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="buffer-sample-modal-title"
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') answerBufferSamplePrompt(false);
+                }}
+              >
+                <header className="import-modal-header">
+                  <h2 id="buffer-sample-modal-title">Use buffer content as sample?</h2>
+                </header>
+                <p className="import-modal-message">The Buffer contains recorded audio. Save it as a permanent sample before converting the node?</p>
+                <form
+                  className="sample-recording-name-form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    answerBufferSamplePrompt(true);
+                  }}
+                >
+                  <label htmlFor="buffer-sample-name">Sample name</label>
+                  <div className="sample-recording-name-row">
+                    <input
+                      id="buffer-sample-name"
+                      type="text"
+                      value={bufferSamplePrompt.name}
+                      onChange={(event) => setBufferSamplePrompt((current) => current ? { ...current, name: event.target.value } : current)}
+                      autoFocus
+                    />
+                    <span>.wav</span>
+                  </div>
+                  <footer className="import-modal-actions">
+                    <button type="button" onClick={() => answerBufferSamplePrompt(false)}>No</button>
+                    <button type="submit" disabled={!bufferSamplePrompt.name.trim()}>Yes</button>
+                  </footer>
+                </form>
+              </section>
+            </div>
+          ) : null}
           {sampleLibrary ? (
             <div
               className="import-modal-backdrop"
@@ -5168,6 +5439,66 @@ function sampleRecordingFileName(name: string, extension: string): string {
   return `${stem}${extension}`;
 }
 
+async function uploadLocalSample(file: File): Promise<SampleAsset> {
+  const response = await fetch(`/api/local-samples?name=${encodeURIComponent(file.name)}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': file.type || 'application/octet-stream',
+    },
+    body: file,
+  });
+  if (!response.ok) {
+    throw new Error(await response.text() || `Sample upload failed (${response.status}).`);
+  }
+  const payload = await response.json() as unknown;
+  if (!isRecord(payload) || typeof payload.name !== 'string' || typeof payload.url !== 'string') {
+    throw new Error('Sample upload returned an invalid response.');
+  }
+  return {
+    name: payload.name,
+    url: payload.url,
+    ...(typeof payload.originalUrl === 'string' ? { originalUrl: payload.originalUrl } : {}),
+  };
+}
+
+function bufferContainsAudio(samples: Float32Array): boolean {
+  return samples.some((sample) => Number.isFinite(sample) && sample !== 0);
+}
+
+function bufferVisualizationContainsAudio(buffer: { bins: Array<{ min: number; max: number }> } | undefined): boolean {
+  return buffer?.bins.some((bin) => bin.min !== 0 || bin.max !== 0) === true;
+}
+
+function encodeMonoSamplesAsWav(samples: Float32Array, sampleRate: number): Blob {
+  const safeSampleRate = Math.max(1, Math.round(sampleRate));
+  const bytesPerSample = 2;
+  const dataSize = samples.length * bytesPerSample;
+  const wav = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(wav);
+
+  writeWavText(view, 0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeWavText(view, 8, 'WAVE');
+  writeWavText(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, safeSampleRate, true);
+  view.setUint32(28, safeSampleRate * bytesPerSample, true);
+  view.setUint16(32, bytesPerSample, true);
+  view.setUint16(34, bytesPerSample * 8, true);
+  writeWavText(view, 36, 'data');
+  view.setUint32(40, dataSize, true);
+
+  let offset = 44;
+  for (const value of samples) {
+    const sample = Math.max(-1, Math.min(1, Number.isFinite(value) ? value : 0));
+    view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+    offset += bytesPerSample;
+  }
+  return new Blob([view], { type: 'audio/wav' });
+}
+
 async function convertRecordedAudioToWav(recording: Blob): Promise<Blob> {
   const context = new AudioContext();
   try {
@@ -5349,12 +5680,43 @@ function parsePatchObject(value: unknown, label: string): Patch {
   return normalizePatchCompatibility({
     ...(typeof value.name === 'string' ? { name: value.name } : {}),
     ...parseMidiInputPreferences(value.midiInput),
+    ...parsePatchAreas(value.areas, label),
     nodes: value.nodes.flatMap((node, index) => {
       const parsedNode = parsePatchNode(node, index);
       return parsedNode ? [parsedNode] : [];
     }),
     links: value.links.map((link, index) => parsePatchLink(link, index)),
   });
+}
+
+function parsePatchAreas(value: unknown, label: string): Pick<Patch, 'areas'> {
+  if (value === undefined) return {};
+  if (!Array.isArray(value)) throw new Error(`${label} areas must be an array.`);
+  const areas = value.map((area, index): EditorArea => {
+    if (!isRecord(area) || typeof area.id !== 'string' || typeof area.title !== 'string') {
+      throw new Error(`${label} area ${index} needs string id and title values.`);
+    }
+    if (!isRecord(area.position) || !isRecord(area.size)
+      || typeof area.position.x !== 'number' || typeof area.position.y !== 'number'
+      || typeof area.size.width !== 'number' || typeof area.size.height !== 'number') {
+      throw new Error(`${label} area ${index} needs numeric position and size values.`);
+    }
+    return {
+      id: area.id,
+      title: area.title,
+      position: { x: area.position.x, y: area.position.y },
+      size: { width: area.size.width, height: area.size.height },
+      ...(area.kind === 'spread' ? { kind: 'spread' as const } : {}),
+      ...(typeof area.spreadNodeId === 'string' ? { spreadNodeId: area.spreadNodeId } : {}),
+      ...(typeof area.uiHeight === 'number' ? { uiHeight: area.uiHeight } : {}),
+      ...(typeof area.collapsed === 'boolean' ? { collapsed: area.collapsed } : {}),
+      ...(typeof area.locked === 'boolean' ? { locked: area.locked } : {}),
+      ...(Array.isArray(area.nodeIds) && area.nodeIds.every((entry) => typeof entry === 'string')
+        ? { nodeIds: area.nodeIds as string[] }
+        : {}),
+    };
+  });
+  return areas.length > 0 ? { areas } : {};
 }
 
 function parseMidiInputPreferences(value: unknown): Pick<Patch, 'midiInput'> {
@@ -5479,6 +5841,7 @@ function stripPatchNodeForDsp(node: PatchNode): PatchNode {
     type: node.type,
     ...(node.subpatchName ? { subpatchName: node.subpatchName } : {}),
     ...(node.subpatchCloneId ? { subpatchCloneId: node.subpatchCloneId } : {}),
+    ...(node.subpatchUiOverrides ? { subpatchUiOverrides: structuredClone(node.subpatchUiOverrides) } : {}),
     ...(node.expression !== undefined ? { expression: node.expression } : {}),
     ...(node.sample ? { sample: { ...node.sample } } : {}),
     ...(node.image ? { image: { ...node.image } } : {}),
@@ -5518,6 +5881,7 @@ function parsePatchNode(value: unknown, index: number): PatchNode | null {
   if (value.subpatchCloneId !== undefined && typeof value.subpatchCloneId !== 'string') {
     throw new Error(`Node "${value.id}" subpatchCloneId must be a string.`);
   }
+  const subpatchUiOverrides = parseSubpatchUiOverrides(value.subpatchUiOverrides, value.id);
   if (value.sample !== undefined && !isSampleAsset(value.sample)) {
     throw new Error(`Node "${value.id}" sample must include a string name and url.`);
   }
@@ -5561,6 +5925,7 @@ function parsePatchNode(value: unknown, index: number): PatchNode | null {
     ...(typeof value.customLabel === 'string' && value.customLabel.trim() ? { customLabel: value.customLabel.trim() } : {}),
     ...(value.subpatchName ? { subpatchName: value.subpatchName } : {}),
     ...(value.subpatchCloneId ? { subpatchCloneId: value.subpatchCloneId } : {}),
+    ...(subpatchUiOverrides ? { subpatchUiOverrides } : {}),
     ...(expression !== undefined ? { expression } : {}),
     ...(isSampleAsset(value.sample) ? { sample: value.sample } : {}),
     ...(isImageAsset(value.image) ? { image: value.image } : {}),
@@ -5694,6 +6059,31 @@ function isNodeType(value: unknown): value is NodeType {
 function isNumberRecord(value: unknown): value is Record<string, number> {
   if (!isRecord(value)) return false;
   return Object.values(value).every((entry) => typeof entry === 'number' && Number.isFinite(entry));
+}
+
+function parseSubpatchUiOverrides(
+  value: unknown,
+  groupNodeId: string,
+): PatchNode['subpatchUiOverrides'] | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) {
+    throw new Error(`Node "${groupNodeId}" subpatchUiOverrides must be an object.`);
+  }
+
+  return Object.fromEntries(Object.entries(value).map(([innerNodeId, rawOverride]) => {
+    if (!isRecord(rawOverride)) {
+      throw new Error(`Node "${groupNodeId}" UI override for "${innerNodeId}" must be an object.`);
+    }
+    if (rawOverride.params !== undefined && !isNumberRecord(rawOverride.params)) {
+      throw new Error(`Node "${groupNodeId}" UI override params for "${innerNodeId}" must be numeric.`);
+    }
+    const params = rawOverride.params as Record<string, number> | undefined;
+    const customWave = parseCustomWaveLike(rawOverride.customWave, `${groupNodeId}:${innerNodeId}`);
+    return [innerNodeId, {
+      ...(params ? { params } : {}),
+      ...(customWave ? { customWave: normalizeCustomWave(customWave, params) } : {}),
+    }];
+  }));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -6097,6 +6487,7 @@ function samePatchLink(a: PatchLink, b: PatchLink): boolean {
 function materializeRootGraph(
   activeNodes: ShaderFlowNode[],
   activeEdges: ShaderFlowEdge[],
+  activeAreas: EditorArea[],
   editingStack: SubpatchEditFrame[],
   activePatchName: string,
 ): { nodes: ShaderFlowNode[]; edges: ShaderFlowEdge[] } {
@@ -6104,14 +6495,14 @@ function materializeRootGraph(
     return { nodes: activeNodes, edges: activeEdges };
   }
 
-  let subpatch = patchFromFlow(activeNodes, activeEdges);
+  let subpatch = patchFromFlow(activeNodes, activeEdges, activeAreas);
   let requestedGroupName = activePatchName;
   let materialized: { nodes: ShaderFlowNode[]; edges: ShaderFlowEdge[] } | null = null;
 
   for (let index = editingStack.length - 1; index >= 0; index -= 1) {
     const frame = editingStack[index];
     materialized = applySubpatchToParent(frame, subpatch, requestedGroupName);
-    subpatch = patchFromFlow(materialized.nodes, materialized.edges);
+    subpatch = patchFromFlow(materialized.nodes, materialized.edges, frame.parentAreas);
     requestedGroupName = frame.parentPatchName;
   }
 
@@ -6154,12 +6545,15 @@ function applySubpatchToParent(
   const nodes: ShaderFlowNode[] = frame.parentNodes.map((node) => {
     if (!linkedGroupIds.has(node.id)) return { ...node, selected: false };
 
-    const previousParams = node.data.patchNode.params;
-    const previousInputs = new Map((node.data.patchNode.inputs ?? []).map((port) => [port.name, port]));
+    const previousPatchNode = node.data.patchNode;
+    const previousParams = previousPatchNode.params;
+    const previousInputs = new Map((previousPatchNode.inputs ?? []).map((port) => [port.name, port]));
     const params = Object.fromEntries(inputDefinitions.map((port) => [
       port.name,
       nextGroupInputParam(previousParams, previousInputs.get(port.name), port),
     ]));
+    const subpatchUiOverrides = pruneSubpatchUiOverrides(previousPatchNode.subpatchUiOverrides, subpatch);
+    const { subpatchUiOverrides: _previousOverrides, ...sharedPatchNode } = previousPatchNode;
 
     return {
       ...node,
@@ -6167,7 +6561,7 @@ function applySubpatchToParent(
       data: {
         ...node.data,
         patchNode: {
-          ...node.data.patchNode,
+          ...sharedPatchNode,
           id: node.id,
           type: 'Group',
           subpatchName: nextSubpatchName,
@@ -6176,6 +6570,7 @@ function applySubpatchToParent(
           inputs: inputDefinitions,
           outputs: outputDefinitions,
           subpatch: clonePatch(subpatch),
+          ...(subpatchUiOverrides ? { subpatchUiOverrides } : {}),
         },
       },
     };
@@ -6190,6 +6585,17 @@ function applySubpatchToParent(
   }));
 
   return { nodes, edges };
+}
+
+function pruneSubpatchUiOverrides(
+  overrides: PatchNode['subpatchUiOverrides'],
+  subpatch: Patch,
+): PatchNode['subpatchUiOverrides'] | undefined {
+  if (!overrides) return undefined;
+  const nodeIds = new Set(subpatch.nodes.map((node) => node.id));
+  const retained = Object.fromEntries(Object.entries(overrides)
+    .filter(([nodeId]) => nodeIds.has(nodeId)));
+  return Object.keys(retained).length > 0 ? retained : undefined;
 }
 
 function emptySubpatchForGroup(groupNode: PatchNode, position: { x: number; y: number }): ReturnType<typeof patchFromFlow> {
@@ -6381,6 +6787,7 @@ function patchNodeFromFlowNode(node: ShaderFlowNode): PatchNode {
     ...(patchNode.customLabel ? { customLabel: patchNode.customLabel } : {}),
     ...(patchNode.subpatchName ? { subpatchName: patchNode.subpatchName } : {}),
     ...(patchNode.subpatchCloneId ? { subpatchCloneId: patchNode.subpatchCloneId } : {}),
+    ...(patchNode.subpatchUiOverrides ? { subpatchUiOverrides: structuredClone(patchNode.subpatchUiOverrides) } : {}),
     ...(patchNode.expression !== undefined ? { expression: patchNode.expression } : {}),
     ...(patchNode.sample ? { sample: { ...patchNode.sample } } : {}),
     ...(patchNode.image ? { image: { ...patchNode.image } } : {}),
@@ -6398,12 +6805,14 @@ function patchNodeFromFlowNode(node: ShaderFlowNode): PatchNode {
 
 function clonePatch(patch: ReturnType<typeof patchFromFlow>): ReturnType<typeof patchFromFlow> {
   return {
+    ...(patch.areas ? { areas: structuredClone(patch.areas) } : {}),
     nodes: patch.nodes.map((node) => ({
       id: node.id,
       type: node.type,
       ...(node.customLabel ? { customLabel: node.customLabel } : {}),
       ...(node.subpatchName ? { subpatchName: node.subpatchName } : {}),
       ...(node.subpatchCloneId ? { subpatchCloneId: node.subpatchCloneId } : {}),
+      ...(node.subpatchUiOverrides ? { subpatchUiOverrides: structuredClone(node.subpatchUiOverrides) } : {}),
       ...(node.expression !== undefined ? { expression: node.expression } : {}),
       ...(node.sample ? { sample: { ...node.sample } } : {}),
       ...(node.image ? { image: { ...node.image } } : {}),
@@ -6878,6 +7287,44 @@ function nodeIsInAreaUiSection(area: EditorArea, node: ShaderFlowNode): boolean 
     && node.position.y < area.position.y + NODE_HEADER_HEIGHT + area.uiHeight;
 }
 
+function groupUiPreviewLayout(patch: Patch): {
+  position: { x: number; y: number };
+  size: { width: number; height: number };
+  nodes: PatchNode[];
+} | null {
+  const controlAreas = (patch.areas ?? []).filter((area) => {
+    const title = area.title.trim().toLocaleLowerCase();
+    return area.kind !== 'spread' && (title === 'ui' || title === 'controls');
+  });
+  if (controlAreas.length === 0) return null;
+
+  const left = Math.min(...controlAreas.map((area) => area.position.x));
+  const top = Math.min(...controlAreas.map((area) => area.position.y + NODE_HEADER_HEIGHT));
+  const right = Math.max(...controlAreas.map((area) => area.position.x + area.size.width));
+  const bottom = Math.max(...controlAreas.map((area) => area.position.y + area.size.height));
+  const nodeIds = new Set<string>();
+  for (const area of controlAreas) {
+    if (area.locked) {
+      for (const nodeId of area.nodeIds ?? []) nodeIds.add(nodeId);
+      continue;
+    }
+    for (const node of patch.nodes) {
+      const position = node.position ?? { x: 0, y: 0 };
+      if (
+        position.x >= area.position.x
+        && position.x < area.position.x + area.size.width
+        && position.y >= area.position.y
+        && position.y < area.position.y + area.size.height
+      ) nodeIds.add(node.id);
+    }
+  }
+  return {
+    position: { x: left, y: top },
+    size: { width: right - left, height: bottom - top },
+    nodes: patch.nodes.filter((node) => nodeIds.has(node.id)),
+  };
+}
+
 function collapsedAreaInputPin(area: EditorArea): { x: number; y: number } {
   return { x: area.position.x, y: area.position.y + NODE_HEADER_HEIGHT / 2 };
 }
@@ -7127,6 +7574,9 @@ function cloneFlowNodeSnapshot(node: ShaderFlowNode): ShaderFlowNode {
         position,
         ...(node.data.patchNode.inputs ? { inputs: node.data.patchNode.inputs.map((port) => ({ ...port })) } : {}),
         ...(node.data.patchNode.outputs ? { outputs: node.data.patchNode.outputs.map((port) => ({ ...port })) } : {}),
+        ...(node.data.patchNode.subpatchUiOverrides
+          ? { subpatchUiOverrides: structuredClone(node.data.patchNode.subpatchUiOverrides) }
+          : {}),
         ...(node.data.patchNode.subpatch ? { subpatch: clonePatch(node.data.patchNode.subpatch) } : {}),
       },
     },

@@ -196,6 +196,7 @@ function cloneSpreadNode(node: PatchNode, spreadId: string, itemIndex: number): 
     params: { ...node.params },
     ...(node.inputs ? { inputs: node.inputs.map((port) => ({ ...port })) } : {}),
     ...(node.outputs ? { outputs: node.outputs.map((port) => ({ ...port })) } : {}),
+    ...(node.subpatchUiOverrides ? { subpatchUiOverrides: structuredClone(node.subpatchUiOverrides) } : {}),
     ...(node.subpatch ? { subpatch: structuredClone(node.subpatch) } : {}),
     runtimeSpread: { spreadId, itemIndex, originalNodeId: node.id },
   };

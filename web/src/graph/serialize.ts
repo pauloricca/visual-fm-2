@@ -5,6 +5,12 @@ export function normalizePatch(patch: Patch): Patch {
   return {
     ...(patch.name ? { name: patch.name } : {}),
     ...(patch.midiInput ? { midiInput: { selectedDeviceIds: [...patch.midiInput.selectedDeviceIds].sort() } } : {}),
+    ...(patch.areas ? { areas: patch.areas.map((area) => ({
+      ...area,
+      position: { ...area.position },
+      size: { ...area.size },
+      ...(area.nodeIds ? { nodeIds: [...area.nodeIds].sort() } : {}),
+    })) } : {}),
     nodes: [...patch.nodes]
       .map((node) => ({
         id: node.id,
@@ -12,6 +18,7 @@ export function normalizePatch(patch: Patch): Patch {
         ...(node.customLabel ? { customLabel: node.customLabel } : {}),
         ...(node.subpatchName ? { subpatchName: node.subpatchName } : {}),
         ...(node.subpatchCloneId ? { subpatchCloneId: node.subpatchCloneId } : {}),
+        ...(node.subpatchUiOverrides ? { subpatchUiOverrides: normalizeSubpatchUiOverrides(node.subpatchUiOverrides) } : {}),
         ...(node.expression !== undefined ? { expression: node.expression } : {}),
         ...(node.sample ? { sample: { ...node.sample } } : {}),
         ...(node.image ? { image: { ...node.image } } : {}),
@@ -47,6 +54,17 @@ function sortRecord(record: Record<string, number>): Record<string, number> {
   return Object.fromEntries(
     Object.entries(record).sort(([a], [b]) => a.localeCompare(b)),
   );
+}
+
+function normalizeSubpatchUiOverrides(
+  overrides: NonNullable<Patch['nodes'][number]['subpatchUiOverrides']>,
+): NonNullable<Patch['nodes'][number]['subpatchUiOverrides']> {
+  return Object.fromEntries(Object.entries(overrides)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([nodeId, override]) => [nodeId, {
+      ...(override.params ? { params: sortRecord(override.params) } : {}),
+      ...(override.customWave ? { customWave: normalizeCustomWave(override.customWave, override.params) } : {}),
+    }]));
 }
 
 function compareLinks(a: Patch['links'][number], b: Patch['links'][number]): number {

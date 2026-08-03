@@ -197,6 +197,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.monitorScopeStates = new Map();
     this.dspScopeStates = new Map();
     this.dspMeterStates = new Map();
+    this.bufferSampleCounts = new Map();
     this.midiButtonControlValues = new Map();
     this.graphVersion = 0;
     this.linkScopeSamples = null;
@@ -247,6 +248,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         this.startRecordingCapture(payload);
       } else if (type === "stopRecording") {
         this.stopRecordingCapture(payload);
+      } else if (type === "captureBuffer") {
+        this.captureBuffer(payload);
       } else if (type === "setLinkScope") {
         this.setLinkScopes(payload);
       } else if (type === "setLinkScopes") {
@@ -255,6 +258,38 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     };
 
     this.loadWasm(options.processorOptions || {});
+  }
+
+  captureBuffer(payload = {}) {
+    const requestId = Number(payload?.requestId);
+    const nodeId = String(payload?.nodeId || "");
+    let samples = null;
+    if (Number.isFinite(requestId) && nodeId && this.wasm?.memory && this.wasm?.dspBufferPtr) {
+      const binding = (this.dspProgram?.stateBindings || []).find((candidate) => (
+        candidate.nodeId === nodeId && String(candidate.id || "").endsWith(":buffer")
+      ));
+      const bufferLength = Math.max(0, Math.trunc(Number(this.wasm.dspBufferLength?.()) || 0));
+      if (binding && bufferLength > 0) {
+        const ptr = this.wasm.dspBufferPtr(binding.state);
+        if (ptr) {
+          const lengthSeconds = Number(this.wasm.getDspState?.(binding.state + 3));
+          const renderedSampleCount = Number.isFinite(lengthSeconds) && lengthSeconds > 0
+            ? Math.round(lengthSeconds * sampleRate)
+            : 0;
+          const sampleCount = this.clamp(
+            renderedSampleCount || this.bufferSampleCounts.get(nodeId) || 2,
+            2,
+            bufferLength,
+          );
+          samples = new Float32Array(this.wasm.memory.buffer, ptr, sampleCount).slice();
+        }
+      }
+    }
+    const message = {
+      type: "bufferSnapshot",
+      payload: { requestId, nodeId, sampleRate, samples },
+    };
+    this.port.postMessage(message, samples ? [samples.buffer] : []);
   }
 
   normalizeGraphUpdateCrossfade(config = {}) {
@@ -482,6 +517,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     const hasTransition = this.prepareGraphUpdateCrossfade();
     const nextProgram = this.normalizeDspProgram(program);
     const repeatMigration = this.captureDspRepeatMigration(previousProgram, nextProgram);
+    const sampleMigration = this.captureDspSampleMigration(previousProgram, nextProgram);
     this.dspProgram = nextProgram;
     if (!hasTransition) {
       this.outputLifecycleGain = 0;
@@ -493,7 +529,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.monitorScopeStates.clear();
     this.customWaveMorphEndSamples.clear();
     this.pendingCustomWaveUpdates.clear();
-    this.syncDspProgram(preservedState, repeatMigration);
+    this.syncDspProgram(preservedState, repeatMigration, sampleMigration);
     this.refreshWasmViews(true);
     this.configureDspScopes();
     this.configureDspMeters();
@@ -941,6 +977,27 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     });
   }
 
+  captureDspSampleMigration(previousProgram, nextProgram) {
+    if (
+      !previousProgram
+      || !nextProgram
+      || !this.wasm?.beginDspProgramUpdate
+      || !this.wasm?.migrateDspSampleState
+      || !this.wasm?.finishDspProgramUpdate
+    ) {
+      return null;
+    }
+    const nextByNodeId = new Map((nextProgram.sampleBindings || [])
+      .map((binding, slot) => [binding.nodeId, { binding, slot }]));
+    return (previousProgram.sampleBindings || []).flatMap((binding, oldSlot) => {
+      const next = nextByNodeId.get(binding.nodeId);
+      if (!next || JSON.stringify(binding.sample || {}) !== JSON.stringify(next.binding.sample || {})) {
+        return [];
+      }
+      return [{ oldSlot, newSlot: next.slot }];
+    });
+  }
+
   repeatTemplateOps(program, binding) {
     const opcode = binding.type === "Spawn" ? 46 : 42;
     const beginIndex = (program.ops || []).findIndex((op) => (
@@ -1096,10 +1153,11 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     }
   }
 
-  syncDspProgram(preservedState = null, repeatMigration = null) {
+  syncDspProgram(preservedState = null, repeatMigration = null, sampleMigration = null) {
     if (!this.wasm?.clearDspProgram || !this.dspProgram) return;
 
-    if (repeatMigration) this.wasm.beginDspProgramUpdate();
+    const hasProgramMigration = repeatMigration !== null || sampleMigration !== null;
+    if (hasProgramMigration) this.wasm.beginDspProgramUpdate();
     this.wasm.clearDspProgram();
     this.wasm.clearGraph?.();
     this.maxVoices = this.dspProgram.maxVoices;
@@ -1107,7 +1165,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.nodesById = new Map();
     this.midiButtonControlValues.clear();
     if (this.dspProgram.errors.length > 0) {
-      if (repeatMigration) this.wasm.finishDspProgramUpdate();
+      if (hasProgramMigration) this.wasm.finishDspProgramUpdate();
       return;
     }
 
@@ -1234,7 +1292,10 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     }
 
     this.applyDspRepeatMigration(repeatMigration);
-    if (repeatMigration) this.wasm.finishDspProgramUpdate();
+    for (const mapping of sampleMigration || []) {
+      this.wasm.migrateDspSampleState?.(mapping.oldSlot, mapping.newSlot);
+    }
+    if (hasProgramMigration) this.wasm.finishDspProgramUpdate();
     this.syncDspSequencers();
     this.restoreDspState(preservedState);
 
@@ -2658,8 +2719,16 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         if (!op) continue;
         const ptr = this.wasm.dspBufferPtr(binding.state);
         if (!ptr) continue;
-        const lengthSeconds = Math.max(0.001, Number(this.wasm.getDspState?.(binding.state + 3)) || 0.001);
-        const sampleCount = this.clamp(Math.round(lengthSeconds * sampleRate), 2, bufferLength);
+        const lengthSeconds = Number(this.wasm.getDspState?.(binding.state + 3));
+        const renderedSampleCount = Number.isFinite(lengthSeconds) && lengthSeconds > 0
+          ? Math.round(lengthSeconds * sampleRate)
+          : 0;
+        const sampleCount = this.clamp(
+          renderedSampleCount || this.bufferSampleCounts.get(binding.nodeId) || 2,
+          2,
+          bufferLength,
+        );
+        if (renderedSampleCount > 0) this.bufferSampleCounts.set(binding.nodeId, sampleCount);
         const samples = new Float32Array(this.wasm.memory.buffer, ptr, sampleCount);
         const playhead = this.clamp(Number(this.wasm.getDspState?.(binding.state + 1)) || 0, 0, 1);
         const recordHead = this.clamp(Number(this.wasm.getDspState?.(binding.state + 2)) || 0, 0, 1);

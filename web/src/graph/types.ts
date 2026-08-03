@@ -87,6 +87,8 @@ export interface PatchNode {
   customLabel?: string;
   subpatchName?: string;
   subpatchCloneId?: string;
+  /** Per-Group-instance values for controls projected from the shared subpatch UI. */
+  subpatchUiOverrides?: Record<string, SubpatchUiNodeOverride>;
   expression?: string;
   sample?: SampleAsset;
   image?: ImageAsset;
@@ -108,6 +110,11 @@ export interface PatchNode {
     itemIndex: number;
     originalNodeId: string;
   };
+}
+
+export interface SubpatchUiNodeOverride {
+  params?: Record<string, number>;
+  customWave?: CustomWaveSettings;
 }
 
 export interface SampleAsset {
@@ -155,8 +162,23 @@ export interface PatchLink {
 export interface Patch {
   nodes: PatchNode[];
   links: PatchLink[];
+  /** Visual editor areas owned by this patch, including subpatch control panels. */
+  areas?: PatchArea[];
   name?: string;
   midiInput?: MidiInputPreferences;
+}
+
+export interface PatchArea {
+  id: string;
+  title: string;
+  kind?: 'area' | 'spread';
+  spreadNodeId?: string;
+  position: Vec2;
+  size: NodeDisplaySize;
+  uiHeight?: number;
+  collapsed?: boolean;
+  locked?: boolean;
+  nodeIds?: string[];
 }
 
 export interface MidiInputPreferences {

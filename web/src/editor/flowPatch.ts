@@ -3,7 +3,7 @@ import type { AudioInputState, BufferVisualization, MidiInputState } from '../au
 import { normalizeCustomWave } from '../graph/customWave';
 import { getDefinition, getNodeDefinition } from '../graph/nodeTypes';
 import { normalizePatchCompatibility } from '../graph/patchCompatibility';
-import type { LinkMode, NodeType, Patch, PatchLink, PatchNode, PortDefinition } from '../graph/types';
+import type { LinkMode, NodeType, Patch, PatchArea, PatchLink, PatchNode, PortDefinition } from '../graph/types';
 
 export interface ScopeNodeSize {
   width: number;
@@ -79,6 +79,7 @@ export interface ShaderNodeData extends Record<string, unknown> {
   onTypeChange: (nodeId: string, type: NodeType) => void;
   onConvertToArea: (nodeId: string) => void;
   onCustomLabelChange?: (nodeId: string, label: string) => void;
+  onHeaderDoubleClick?: (nodeId: string) => void;
   onSubpatchNameChange?: (nodeId: string, nextName: string) => void;
   onSampleSelect?: (nodeId: string) => void;
   onSampleDrop?: (nodeId: string, files: FileList) => void;
@@ -106,6 +107,16 @@ export interface ShaderNodeData extends Record<string, unknown> {
   isAreaCollapsedPresentation?: boolean;
   /** This node remains visible in the UI portion of a collapsed area, but has no pins. */
   isAreaUiCollapsedPresentation?: boolean;
+  /** Static, externally operable controls projected from a UI/Controls area in a Group subpatch. */
+  groupUiPreview?: {
+    width: number;
+    height: number;
+    nodes: Array<{
+      id: string;
+      position: { x: number; y: number };
+      data: ShaderNodeData;
+    }>;
+  };
 }
 
 export type ShaderFlowNode = Node<ShaderNodeData, 'shaderNode'>;
@@ -149,6 +160,7 @@ export interface PersistedEditorState {
     customLabel?: string;
     subpatchName?: string;
     subpatchCloneId?: string;
+    subpatchUiOverrides?: PatchNode['subpatchUiOverrides'];
     expression?: string;
     sample?: PatchNode['sample'];
     image?: PatchNode['image'];
@@ -175,21 +187,7 @@ export interface PersistedEditorState {
   }>;
 }
 
-export interface EditorArea {
-  id: string;
-  title: string;
-  /** Spreads reuse the complete area interaction model and add a DSP endpoint. */
-  kind?: 'area' | 'spread';
-  spreadNodeId?: string;
-  position: { x: number; y: number };
-  size: { width: number; height: number };
-  /** Height of the user-facing section below the area header. Omit for a conventional area. */
-  uiHeight?: number;
-  collapsed?: boolean;
-  /** A locked area retains this snapshot instead of dynamically owning every node in its bounds. */
-  locked?: boolean;
-  nodeIds?: string[];
-}
+export type EditorArea = PatchArea;
 
 type NodeCallbacks = Pick<
   ShaderNodeData,
@@ -254,6 +252,7 @@ export function editorStateToFlowNodes(
         customLabel: node.customLabel,
         subpatchName: node.subpatchName,
         subpatchCloneId: node.subpatchCloneId,
+        subpatchUiOverrides: node.subpatchUiOverrides,
         expression: node.expression,
         sample: node.sample,
         image: node.image,
@@ -311,6 +310,7 @@ export function flowToEditorState(
       customLabel: node.data.patchNode.customLabel,
       subpatchName: node.data.patchNode.subpatchName,
       subpatchCloneId: node.data.patchNode.subpatchCloneId,
+      subpatchUiOverrides: node.data.patchNode.subpatchUiOverrides,
       expression: node.data.patchNode.expression,
       sample: node.data.patchNode.sample,
       image: node.data.patchNode.image,
@@ -380,7 +380,7 @@ function normalizeNodeDimension(value: number): number {
   return Number.isFinite(value) ? Math.max(1, Math.round(value)) : 1;
 }
 
-export function patchFromFlow(nodes: ShaderFlowNode[], edges: ShaderFlowEdge[]): Patch {
+export function patchFromFlow(nodes: ShaderFlowNode[], edges: ShaderFlowEdge[], areas?: EditorArea[]): Patch {
   const typedNodeIds = new Set<string>();
   const passthroughNodeIds = new Set<string>();
   const patchNodes: PatchNode[] = [];
@@ -399,6 +399,7 @@ export function patchFromFlow(nodes: ShaderFlowNode[], edges: ShaderFlowEdge[]):
       ...(patchNode.customLabel ? { customLabel: patchNode.customLabel } : {}),
       ...(patchNode.subpatchName ? { subpatchName: patchNode.subpatchName } : {}),
       ...(patchNode.subpatchCloneId ? { subpatchCloneId: patchNode.subpatchCloneId } : {}),
+      ...(patchNode.subpatchUiOverrides ? { subpatchUiOverrides: structuredClone(patchNode.subpatchUiOverrides) } : {}),
       ...(patchNode.expression !== undefined ? { expression: patchNode.expression } : {}),
       ...(patchNode.sample ? { sample: patchNode.sample } : {}),
       ...(patchNode.image ? { image: patchNode.image } : {}),
@@ -422,6 +423,7 @@ export function patchFromFlow(nodes: ShaderFlowNode[], edges: ShaderFlowEdge[]):
   return {
     nodes: patchNodes,
     links: materializeTypedLinks(links, typedNodeIds, passthroughNodeIds),
+    ...(areas && areas.length > 0 ? { areas: structuredClone(areas) } : {}),
   };
 }
 
@@ -582,6 +584,7 @@ function normalizePersistedState(state: PersistedEditorState): PersistedEditorSt
       ...(node.customLabel ? { customLabel: node.customLabel } : {}),
       ...(node.subpatchName ? { subpatchName: node.subpatchName } : {}),
       ...(node.subpatchCloneId ? { subpatchCloneId: node.subpatchCloneId } : {}),
+      ...(node.subpatchUiOverrides ? { subpatchUiOverrides: structuredClone(node.subpatchUiOverrides) } : {}),
       ...(node.expression !== undefined ? { expression: node.expression } : {}),
       ...(node.sample ? { sample: node.sample } : {}),
       ...(node.image ? { image: node.image } : {}),
@@ -789,6 +792,7 @@ function persistedNodeFromPatchNode(
     customLabel: node.customLabel,
     subpatchName: node.subpatchName,
     subpatchCloneId: node.subpatchCloneId,
+    subpatchUiOverrides: node.subpatchUiOverrides,
     expression: node.expression,
     sample: node.sample,
     image: node.image,

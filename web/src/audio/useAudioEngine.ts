@@ -66,6 +66,11 @@ export interface BufferVisualization {
   bins: Array<{ min: number; max: number }>;
 }
 
+export interface BufferSnapshot {
+  samples: Float32Array;
+  sampleRate: number;
+}
+
 export interface ScopeCaptureRequest {
   id: string;
   length: number;
@@ -95,6 +100,7 @@ interface AudioEngineState {
   stop: () => void;
   startRecording: () => void;
   stopRecording: () => void;
+  captureBuffer: (nodeId: string) => Promise<BufferSnapshot | null>;
   syncGraph: (program: DspProgram) => void;
   setLinkScopes: (requests: ScopeCaptureRequest[]) => void;
   setAudioInputDeviceId: (deviceId: string) => void;
@@ -174,7 +180,7 @@ interface ImageDataRequest {
 // Keep this in step with public/audio/visual-fm-kernel.wasm. AudioWorklet
 // modules and WASM are aggressively cached, so an older kernel can silently
 // omit newer DSP behavior or exports while the current UI is running.
-const AUDIO_ENGINE_ASSET_VERSION = '2026-07-29-midi-event-nodes-1';
+const AUDIO_ENGINE_ASSET_VERSION = '2026-08-03-sample-dsp-migration-1';
 const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const METER_UPDATE_INTERVAL_MS = 80;
@@ -368,6 +374,11 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   const recordingCaptureRef = useRef<RecordingCapture | null>(null);
   const recordingSessionIdRef = useRef(0);
   const recordingSaveIdRef = useRef(0);
+  const bufferSnapshotRequestIdRef = useRef(0);
+  const bufferSnapshotRequestsRef = useRef(new Map<number, {
+    resolve: (snapshot: BufferSnapshot | null) => void;
+    timeout: number;
+  }>());
   const recordingStartedAtRef = useRef(0);
   const recordingTimerRef = useRef<number | null>(null);
 
@@ -1292,6 +1303,19 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
               }
               return;
             }
+            if (type === 'bufferSnapshot') {
+              const requestId = Number(payload?.requestId);
+              const request = bufferSnapshotRequestsRef.current.get(requestId);
+              if (!request) return;
+              window.clearTimeout(request.timeout);
+              bufferSnapshotRequestsRef.current.delete(requestId);
+              const samples = float32ArrayFromUnknown(payload?.samples);
+              const snapshotSampleRate = Number(payload?.sampleRate);
+              request.resolve(samples && samples.length > 0 && Number.isFinite(snapshotSampleRate)
+                ? { samples, sampleRate: snapshotSampleRate }
+                : null);
+              return;
+            }
             if (type === 'visualizationFrame') {
               setLinkMeters(linkMetersFromPayload(payload));
               if (audioActivationRequestedRef.current) {
@@ -1523,6 +1547,25 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     });
   }, []);
 
+  const captureBuffer = useCallback((nodeId: string): Promise<BufferSnapshot | null> => {
+    const node = nodeRef.current;
+    if (!node || !nodeId) return Promise.resolve(null);
+
+    const requestId = bufferSnapshotRequestIdRef.current + 1;
+    bufferSnapshotRequestIdRef.current = requestId;
+    return new Promise((resolve) => {
+      const timeout = window.setTimeout(() => {
+        bufferSnapshotRequestsRef.current.delete(requestId);
+        resolve(null);
+      }, 2000);
+      bufferSnapshotRequestsRef.current.set(requestId, { resolve, timeout });
+      node.port.postMessage({
+        type: 'captureBuffer',
+        payload: { requestId, nodeId },
+      });
+    });
+  }, []);
+
   const start = useCallback(async () => {
     try {
       logDiagnosticEvent('audio-start-clicked', {
@@ -1677,6 +1720,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     stop,
     startRecording,
     stopRecording,
+    captureBuffer,
     syncGraph,
     setLinkScopes,
     setAudioInputDeviceId: setSelectedAudioInputDeviceId,
