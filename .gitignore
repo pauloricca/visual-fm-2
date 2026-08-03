@@ -6,6 +6,7 @@ patches/
 recordings/
 samples/
 images/
+buffers/
 
 # Build output
 dist/

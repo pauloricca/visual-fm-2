@@ -1235,11 +1235,11 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
 
   if (node.type === 'Playhead') {
     const output = nextRegister(context);
-    const state = nextState(context, 1);
+    const state = nextState(context, 2);
     context.stateBindings.push({
       id: `${node.id}:playhead`,
       state,
-      count: 1,
+      count: 2,
       kind: 'effect',
       nodeId: node.id,
     });
@@ -1249,6 +1249,7 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       a: resolveInput(node, 'start', 0, context),
       b: resolveInput(node, 'speed', 1, context),
       c: resolveInput(node, 'length', 1, context),
+      e: resolveInput(node, 'reset trigger', 0, context),
       state,
     });
     return output;

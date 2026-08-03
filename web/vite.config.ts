@@ -1,6 +1,6 @@
 import { createReadStream, createWriteStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { appendFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,7 +15,7 @@ export default defineConfig({
     localSampleStoragePlugin(),
     localImageStoragePlugin(),
     localRecordingStoragePlugin(),
-    ...(patchStorageMode() === 'browser' ? [] : [localPatchStoragePlugin()]),
+    ...(patchStorageMode() === 'browser' ? [] : [localBufferStoragePlugin(), localPatchStoragePlugin()]),
   ],
   server: {
     https: viteHttpsConfig(),
@@ -493,6 +493,103 @@ function localPatchStoragePlugin(): Plugin {
       server.middlewares.use(middleware);
     },
   };
+}
+
+const BUFFER_HASH_PATTERN = /^[a-f0-9]{64}$/;
+const MAX_LOCAL_BUFFER_BYTES = 960_000 * Float32Array.BYTES_PER_ELEMENT;
+
+function localBufferStoragePlugin(): Plugin {
+  const buffersDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'buffers');
+
+  const middleware: Connect.NextHandleFunction = (request, response, next) => {
+    const url = new URL(request.url ?? '/', 'http://localhost');
+    const path = url.pathname;
+    if (!path.startsWith('/api/local-buffers')) {
+      next();
+      return;
+    }
+
+    if (path === '/api/local-buffers/missing' && request.method === 'POST') {
+      readRequestBuffer(request, 16 * 1024, 'Buffer hash request is too large.').then((body) => {
+        const payload = JSON.parse(body.toString('utf8')) as unknown;
+        if (!isRecord(payload) || !Array.isArray(payload.hashes)) throw new Error('Expected Buffer hashes.');
+        const hashes = [...new Set(payload.hashes)];
+        if (!hashes.every((hash): hash is string => typeof hash === 'string' && BUFFER_HASH_PATTERN.test(hash))) {
+          throw new Error('Invalid Buffer hash.');
+        }
+        response.statusCode = 200;
+        response.setHeader('Cache-Control', 'no-store');
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify({ missing: hashes.filter((hash) => !existsSync(bufferFilePath(buffersDir, hash))) }));
+      }).catch((error: unknown) => sendPatchStorageError(response, error));
+      return;
+    }
+
+    const hash = safeDecodedPathSegment(path.slice('/api/local-buffers/'.length));
+    if (!hash || !BUFFER_HASH_PATTERN.test(hash)) {
+      response.statusCode = 404;
+      response.end();
+      return;
+    }
+
+    if (request.method === 'GET') {
+      const filePath = bufferFilePath(buffersDir, hash);
+      if (!existsSync(filePath)) {
+        response.statusCode = 404;
+        response.end();
+        return;
+      }
+      response.statusCode = 200;
+      response.setHeader('Cache-Control', 'no-store');
+      response.setHeader('Content-Type', 'application/octet-stream');
+      response.setHeader('Content-Length', statSync(filePath).size);
+      createReadStream(filePath).pipe(response);
+      return;
+    }
+
+    if (request.method === 'PUT') {
+      readRequestBuffer(request, MAX_LOCAL_BUFFER_BYTES, 'Buffer content is too large.').then(async (body) => {
+        if (body.length === 0 || body.length % Float32Array.BYTES_PER_ELEMENT !== 0) {
+          throw new Error('Buffer content must contain raw Float32 samples.');
+        }
+        if (createHash('sha256').update(body).digest('hex') !== hash) {
+          throw new Error('Buffer content does not match its hash.');
+        }
+        await mkdir(buffersDir, { recursive: true });
+        const filePath = bufferFilePath(buffersDir, hash);
+        if (!existsSync(filePath)) {
+          const temporaryPath = join(buffersDir, `.${hash}.${randomUUID()}.upload`);
+          try {
+            await writeFile(temporaryPath, body);
+            if (!existsSync(filePath)) await rename(temporaryPath, filePath);
+          } finally {
+            if (existsSync(temporaryPath)) await unlink(temporaryPath);
+          }
+        }
+        response.statusCode = 204;
+        response.end();
+      }).catch((error: unknown) => sendPatchStorageError(response, error));
+      return;
+    }
+
+    response.statusCode = 405;
+    response.setHeader('Allow', 'GET, PUT');
+    response.end();
+  };
+
+  return {
+    name: 'visual-visual-local-buffer-storage',
+    configureServer(server) {
+      server.middlewares.use(middleware);
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(middleware);
+    },
+  };
+}
+
+function bufferFilePath(buffersDir: string, hash: string): string {
+  return join(buffersDir, `${hash}.f32`);
 }
 
 interface LocalPatchVersion {

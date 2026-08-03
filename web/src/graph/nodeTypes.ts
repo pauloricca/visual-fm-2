@@ -170,6 +170,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
       { name: 'start', defaultValue: 0 },
       { name: 'speed', defaultValue: 1 },
       { name: 'length', defaultValue: 1, min: 0.001 },
+      { name: 'reset trigger', defaultValue: 0, valueEditor: false },
     ],
     outputs: [{ name: 'playhead' }],
   },

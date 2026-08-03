@@ -20,8 +20,14 @@ import {
   type CoordinateExtent,
 } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type DragEvent, type FocusEvent as ReactFocusEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { compilePatchToDspProgram } from '../audio/dspProgram';
-import { useAudioEngine, type LinkMeterReading, type MidiControlChange, type MidiInputState } from '../audio/useAudioEngine';
+import { DSP_OP, compilePatchToDspProgram, type DspProgram } from '../audio/dspProgram';
+import {
+  loadBufferSnapshot,
+  removeUnreferencedBufferContents,
+  storeBufferAssetData,
+  storeBufferSnapshot,
+} from '../audio/bufferStorage';
+import { useAudioEngine, type BufferCopy, type BufferSnapshot, type LinkMeterReading, type MidiControlChange, type MidiInputState } from '../audio/useAudioEngine';
 import { normalizeCustomWave } from '../graph/customWave';
 import { demoPatch } from '../graph/demoPatch';
 import { extractExpressionInputs } from '../graph/expression';
@@ -39,7 +45,7 @@ import {
   runtimeContainerSize,
   spreadCloneNodeId,
 } from '../graph/spread';
-import type { CustomWaveSettings, ImageAsset, LinkMode, NodeType, Patch, PatchLink, PatchNode, PortDefinition, SampleAsset } from '../graph/types';
+import type { BufferAsset, CustomWaveSettings, ImageAsset, LinkMode, NodeType, Patch, PatchLink, PatchNode, PortDefinition, SampleAsset } from '../graph/types';
 import { EdgeOverlayProvider } from './EdgeOverlayContext';
 import { canvasHeaderTitleScale, USER_ZOOM_BASELINE } from './canvasZoom';
 import { scopedDspNodeId } from './dspNodeScope';
@@ -91,6 +97,7 @@ const ZOOM_RESET_TARGET = USER_ZOOM_BASELINE;
 const ZOOM_SETTLE_THRESHOLD = USER_ZOOM_BASELINE * 0.1;
 const ZOOM_CHANGE_EPSILON = 0.0001;
 const GRAPH_DETAIL_ZOOM_SETTLE_MS = 80;
+const BUFFER_CHECKPOINT_INTERVAL_MS = 5000;
 const PASTE_OFFSET = { x: 36, y: 36 };
 const DRAFT_NODE_WIDTH = 168;
 const DRAFT_NODE_HANDLE_X_OFFSET = 13;
@@ -384,6 +391,7 @@ function NodeEditorInner() {
     normalizeSelectedMidiDeviceIds(initialState?.ui?.midiInput?.selectedDeviceIds)
   ));
   const [midiControlVisuals, setMidiControlVisuals] = useState<Record<string, MidiControlVisualState>>({});
+  const [bufferAssets, setBufferAssets] = useState<Record<string, BufferAsset>>(() => initialState?.buffers ?? {});
   const copiedGraphRef = useRef<CopiedGraph | null>(null);
   const pasteCountRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -401,12 +409,53 @@ function NodeEditorInner() {
   const sampleRecordingSessionIdRef = useRef(0);
   const pendingImageUploadNodeIdRef = useRef<string | null>(null);
   const saveFeedbackTimeoutRef = useRef<number | null>(null);
+  const bufferAssetsRef = useRef(bufferAssets);
+  const bufferCheckpointRef = useRef<Promise<Record<string, BufferAsset>> | null>(null);
+  const bufferLoadGenerationRef = useRef(0);
+  const persistedEditorStateJsonRef = useRef<string | null>(null);
   const selectedLocalPatchOptionRef = useRef<HTMLButtonElement | null>(null);
   const reconnectingEdgeRef = useRef(false);
   const reconnectDuplicateRef = useRef(false);
   const reconnectingEdgeSnapshotRef = useRef<ShaderFlowEdge | null>(null);
   const rootPatchName = editingStack[0]?.parentPatchName ?? patchName;
   const audio = useAudioEngine({ selectedMidiInputDeviceIds, recordingPatchName: rootPatchName });
+
+  useEffect(() => {
+    bufferAssetsRef.current = bufferAssets;
+  }, [bufferAssets]);
+
+  const replaceBufferAssets = useCallback((assets: Record<string, BufferAsset>) => {
+    bufferAssetsRef.current = assets;
+    setBufferAssets(assets);
+  }, []);
+
+  const restoreBufferAssets = useCallback(async (assets: Record<string, BufferAsset>) => {
+    const generation = bufferLoadGenerationRef.current + 1;
+    bufferLoadGenerationRef.current = generation;
+    replaceBufferAssets(assets);
+    audio.restoreBuffers({});
+
+    const snapshots: Record<string, BufferSnapshot> = {};
+    await Promise.all(Object.entries(assets).map(async ([nodeId, asset]) => {
+      let snapshot = await loadBufferSnapshot(asset);
+      if (!snapshot) {
+        const data = await fetchLocalBufferContent(asset.hash);
+        await storeBufferAssetData(asset, data);
+        snapshot = { samples: new Float32Array(data), sampleRate: asset.sampleRate };
+      }
+      snapshots[nodeId] = snapshot;
+    }));
+    if (bufferLoadGenerationRef.current !== generation) return;
+    audio.restoreBuffers(snapshots);
+    await removeUnreferencedBufferContents(Object.values(assets).map((asset) => asset.hash));
+  }, [audio.restoreBuffers, replaceBufferAssets]);
+
+  useEffect(() => {
+    if (Object.keys(bufferAssetsRef.current).length === 0) return;
+    void restoreBufferAssets(bufferAssetsRef.current).catch((error) => {
+      setImportError(error instanceof Error ? error.message : String(error));
+    });
+  }, [restoreBufferAssets]);
 
   const requestBufferSampleName = useCallback((nodeId: string, defaultName: string): Promise<string | null> => {
     bufferSamplePromptResolverRef.current?.(null);
@@ -1321,8 +1370,8 @@ function NodeEditorInner() {
       ? syncParamsToInputs({}, expressionInputs)
       : defaultParamsFor(type);
 
-    previousDefinition?.inputs.forEach((input, index) => {
-      const nextInput = nextDefinition.inputs[index];
+    previousDefinition?.inputs.forEach((input) => {
+      const nextInput = nextDefinition.inputs.find((candidate) => candidate.name === input.name);
       if (!nextInput) return;
       const previousValue = relatedNode.data.patchNode.params[input.name];
       if (previousValue !== undefined) nextParams[nextInput.name] = previousValue;
@@ -2037,6 +2086,14 @@ function NodeEditorInner() {
     );
     if (duplicatedGraph.nodes.length === 0) return false;
 
+    const bufferCopies = duplicatedBufferCopies(
+      copiedGraph.nodes,
+      duplicatedGraph.nodes,
+      nodesRef.current,
+      [...nodesRef.current, ...duplicatedGraph.nodes],
+      editingStack.map((frame) => frame.groupId),
+    );
+
     pasteCountRef.current += 1;
     commitHistory();
     setNodes((current) => [
@@ -2047,9 +2104,11 @@ function NodeEditorInner() {
       ...current.map((edge) => ({ ...edge, selected: false })),
       ...duplicatedGraph.edges,
     ]));
+    copyBufferAssets(bufferCopies, bufferAssetsRef.current, replaceBufferAssets);
+    audio.copyBuffers(bufferCopies);
     setEditingTypeNodeId(null);
     return true;
-  }, [commitHistory, updateEdgeMode, updateEdgeWeight]);
+  }, [audio.copyBuffers, commitHistory, editingStack, replaceBufferAssets, updateEdgeMode, updateEdgeWeight]);
 
   const createDraftNodeFromConnection = useCallback((draftConnection = draftNodeConnectionRef.current) => {
     if (!draftConnection || !draftConnection.modifierActive || !reactFlow) return;
@@ -2444,7 +2503,6 @@ function NodeEditorInner() {
       ? { midiInput: { selectedDeviceIds: selectedMidiInputDeviceIds } }
       : {}),
   }), [areas, editingStack, materializedGraph, rootPatchName, selectedMidiInputDeviceIds]);
-  const patchJson = useMemo(() => patchToJson(patch), [patch]);
   const trimmedRootPatchName = rootPatchName.trim();
   const selectedLocalPatch = localPatchLibrary?.patches.find((entry) => entry.name === localPatchLibrary.selectedPatchName) ?? null;
   const selectedSample = sampleLibrary?.samples.find((sample) => sample.url === sampleLibrary.selectedUrl) ?? null;
@@ -2455,6 +2513,21 @@ function NodeEditorInner() {
   const liveDspPatch = useMemo(() => patchWithMidiControlVisuals(dspPatch, midiControlVisuals), [dspPatch, midiControlVisuals]);
   const dspPatchKey = useMemo(() => patchToDspKey(liveDspPatch), [liveDspPatch]);
   const audioGraph = useMemo(() => compilePatchToDspProgram(liveDspPatch), [dspPatchKey, liveDspPatch]);
+  const preservedBufferNodeIds = useMemo(() => preservedBufferIds(audioGraph), [audioGraph]);
+  const referencedBufferAssets = useMemo(() => filterBufferAssets(bufferAssets, preservedBufferNodeIds), [bufferAssets, preservedBufferNodeIds]);
+  const persistedEditorStateJson = useMemo(() => {
+    const state = flowToEditorState(materializedGraph.nodes, materializedGraph.edges, {
+      patchName: rootPatchName,
+      viewport,
+      ...(selectedMidiInputDeviceIds.length > 0
+        ? { midiInput: { selectedDeviceIds: selectedMidiInputDeviceIds } }
+        : {}),
+    });
+    state.areas = areas;
+    state.buffers = referencedBufferAssets;
+    return JSON.stringify(state);
+  }, [areas, materializedGraph, referencedBufferAssets, rootPatchName, selectedMidiInputDeviceIds, viewport]);
+  persistedEditorStateJsonRef.current = persistedEditorStateJson;
   const dspDiagnostics = useMemo(() => classifyDspErrors(audioGraph.errors, dspPatch), [audioGraph.errors, dspPatch]);
   const monitorLinkIdByNode = useMemo(() => {
     const linkIdsByNode = new Map<string, string>();
@@ -2812,6 +2885,53 @@ function NodeEditorInner() {
     audio.syncGraph(audioGraph);
   }, [audio.syncGraph, audioGraph]);
 
+  const checkpointPreservedBuffers = useCallback((): Promise<Record<string, BufferAsset>> => {
+    if (bufferCheckpointRef.current) return bufferCheckpointRef.current;
+    const loadGeneration = bufferLoadGenerationRef.current;
+    const checkpoint = (async () => {
+      const nextAssets = filterBufferAssets(bufferAssetsRef.current, preservedBufferIds(audioGraph));
+      await Promise.all([...preservedBufferIds(audioGraph)].map(async (nodeId) => {
+        const snapshot = await audio.captureBuffer(nodeId);
+        if (snapshot) nextAssets[nodeId] = await storeBufferSnapshot(snapshot);
+      }));
+      if (bufferLoadGenerationRef.current !== loadGeneration) return bufferAssetsRef.current;
+      replaceBufferAssets(nextAssets);
+      await removeUnreferencedBufferContents(Object.values(nextAssets).map((asset) => asset.hash));
+      return nextAssets;
+    })().finally(() => {
+      bufferCheckpointRef.current = null;
+    });
+    bufferCheckpointRef.current = checkpoint;
+    return checkpoint;
+  }, [audio.captureBuffer, audioGraph, replaceBufferAssets]);
+
+  useEffect(() => {
+    if (audio.status !== 'running' || preservedBufferNodeIds.size === 0) return;
+    const interval = window.setInterval(() => {
+      void checkpointPreservedBuffers().catch(() => undefined);
+    }, BUFFER_CHECKPOINT_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, [audio.status, checkpointPreservedBuffers, preservedBufferNodeIds]);
+
+  const previousAudioStatusRef = useRef(audio.status);
+  useEffect(() => {
+    const previousStatus = previousAudioStatusRef.current;
+    previousAudioStatusRef.current = audio.status;
+    if (previousStatus === 'running' && audio.status !== 'running' && preservedBufferNodeIds.size > 0) {
+      void checkpointPreservedBuffers().catch(() => undefined);
+    }
+  }, [audio.status, checkpointPreservedBuffers, preservedBufferNodeIds]);
+
+  useEffect(() => {
+    const checkpointWhenHidden = () => {
+      if (document.visibilityState === 'hidden' && preservedBufferNodeIds.size > 0) {
+        void checkpointPreservedBuffers().catch(() => undefined);
+      }
+    };
+    document.addEventListener('visibilitychange', checkpointWhenHidden);
+    return () => document.removeEventListener('visibilitychange', checkpointWhenHidden);
+  }, [checkpointPreservedBuffers, preservedBufferNodeIds]);
+
   useEffect(() => {
     if (!reactFlow || !isFiniteCoordinateExtent(panTranslateExtent)) return;
 
@@ -2839,16 +2959,17 @@ function NodeEditorInner() {
   }, [activeDspGroupIds, audio.setLinkScopes, monitorLinkIdByNode, nodesWithCallbacks]);
 
   useEffect(() => {
-    const state = flowToEditorState(materializedGraph.nodes, materializedGraph.edges, {
-      patchName: rootPatchName,
-      viewport,
-      ...(selectedMidiInputDeviceIds.length > 0
-        ? { midiInput: { selectedDeviceIds: selectedMidiInputDeviceIds } }
-        : {}),
-    });
-    state.areas = areas;
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }, [areas, materializedGraph, rootPatchName, selectedMidiInputDeviceIds, viewport]);
+    window.localStorage.setItem(STORAGE_KEY, persistedEditorStateJson);
+  }, [persistedEditorStateJson]);
+
+  useEffect(() => {
+    const persistLatestEditorState = () => {
+      const json = persistedEditorStateJsonRef.current;
+      if (json !== null) window.localStorage.setItem(STORAGE_KEY, json);
+    };
+    window.addEventListener('pagehide', persistLatestEditorState);
+    return () => window.removeEventListener('pagehide', persistLatestEditorState);
+  }, []);
 
   const onNodesChange = useCallback((changes: NodeChange<ShaderFlowNode>[]) => {
     const duplicateState = duplicateDragRef.current;
@@ -2941,6 +3062,15 @@ function NodeEditorInner() {
     );
     if (duplicatedGraph.nodes.length === 0) return;
 
+    const sourceNodes = restoredNodes.filter((node) => dragState.nodeIds.has(node.id));
+    const bufferCopies = duplicatedBufferCopies(
+      sourceNodes,
+      duplicatedGraph.nodes,
+      restoredNodes,
+      [...restoredNodes, ...duplicatedGraph.nodes],
+      activeDspGroupIds,
+    );
+
     commitHistory();
     setNodes((current) => [
       ...restoreGraphNodePositions(current, dragState.originalPositions)
@@ -2951,8 +3081,10 @@ function NodeEditorInner() {
       ...current.map((edge) => ({ ...edge, selected: false })),
       ...duplicatedGraph.edges,
     ]));
+    copyBufferAssets(bufferCopies, bufferAssetsRef.current, replaceBufferAssets);
+    audio.copyBuffers(bufferCopies);
     setEditingTypeNodeId(null);
-  }, [commitHistory, updateDuplicateDrag, updateEdgeMode, updateEdgeWeight]);
+  }, [activeDspGroupIds, audio.copyBuffers, commitHistory, replaceBufferAssets, updateDuplicateDrag, updateEdgeMode, updateEdgeWeight]);
 
   useEffect(() => {
     const updateModifier = (event: KeyboardEvent) => {
@@ -3335,7 +3467,10 @@ function NodeEditorInner() {
     setMidiControlVisuals({});
     setEditingTypeNodeId(null);
     setImportError(null);
-  }, [commitHistory, updateEdgeMode, updateEdgeWeight]);
+    void restoreBufferAssets(loadedPatch.buffers ?? {}).catch((error) => {
+      setImportError(error instanceof Error ? error.message : String(error));
+    });
+  }, [commitHistory, restoreBufferAssets, updateEdgeMode, updateEdgeWeight]);
 
   const openLocalPatchLibrary = useCallback(async () => {
     setLocalPatchLibrary({
@@ -3459,6 +3594,18 @@ function NodeEditorInner() {
   }, []);
 
   const savePatchJson = useCallback(async () => {
+    let savedBufferAssets: Record<string, BufferAsset>;
+    try {
+      savedBufferAssets = await checkpointPreservedBuffers();
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : String(error));
+      return;
+    }
+    const savedPatchJson = patchToJson({
+      ...patch,
+      ...(Object.keys(savedBufferAssets).length > 0 ? { buffers: savedBufferAssets } : {}),
+    });
+
     if (localPatchStorageEnabled) {
       if (trimmedRootPatchName.length === 0) {
         setImportError('Enter a patch name before saving locally.');
@@ -3466,7 +3613,8 @@ function NodeEditorInner() {
       }
 
       try {
-        await saveLocalPatchVersion(trimmedRootPatchName, patchJson);
+        await uploadLocalBufferContents(savedBufferAssets);
+        await saveLocalPatchVersion(trimmedRootPatchName, savedPatchJson);
         setImportError(null);
         showSaveFeedback();
       } catch (error) {
@@ -3475,7 +3623,7 @@ function NodeEditorInner() {
       return;
     }
 
-    const blob = new Blob([patchJson], { type: 'application/json' });
+    const blob = new Blob([savedPatchJson], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -3485,7 +3633,7 @@ function NodeEditorInner() {
     link.remove();
     URL.revokeObjectURL(url);
     showSaveFeedback();
-  }, [localPatchStorageEnabled, patchJson, rootPatchName, showSaveFeedback, trimmedRootPatchName]);
+  }, [checkpointPreservedBuffers, localPatchStorageEnabled, patch, rootPatchName, showSaveFeedback, trimmedRootPatchName]);
 
   const requestPatchLoad = useCallback(() => {
     if (localPatchStorageEnabled) {
@@ -3643,7 +3791,8 @@ function NodeEditorInner() {
     setSelectedAreaId(null);
     setEditingAreaId(null);
     setEditingTypeNodeId(null);
-  }, [commitHistory, insertNodeOnEdge, updateEdgeMode, updateEdgeWeight]);
+    void restoreBufferAssets({}).catch(() => undefined);
+  }, [commitHistory, insertNodeOnEdge, restoreBufferAssets, updateEdgeMode, updateEdgeWeight]);
 
   useEffect(() => {
     const handleHistoryKeyDown = (event: KeyboardEvent) => {
@@ -5360,6 +5509,44 @@ async function saveLocalPatchVersion(patchName: string, patchJson: string): Prom
   }
 }
 
+async function uploadLocalBufferContents(assets: Record<string, BufferAsset>): Promise<void> {
+  const uniqueAssets = [...new Map(Object.values(assets).map((asset) => [asset.hash, asset])).values()];
+  if (uniqueAssets.length === 0) return;
+  const missingResponse = await fetch('/api/local-buffers/missing', {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hashes: uniqueAssets.map((asset) => asset.hash) }),
+  });
+  if (!missingResponse.ok) throw new Error(await localPatchStorageError(missingResponse));
+  const missingPayload = await missingResponse.json() as unknown;
+  if (!isRecord(missingPayload) || !Array.isArray(missingPayload.missing)) {
+    throw new Error('Local Buffer storage response was not valid.');
+  }
+  const missing = new Set(missingPayload.missing.filter((hash): hash is string => typeof hash === 'string'));
+  await Promise.all(uniqueAssets.filter((asset) => missing.has(asset.hash)).map(async (asset) => {
+    const snapshot = await loadBufferSnapshot(asset);
+    if (!snapshot) throw new Error(`Buffer ${asset.hash} is missing from browser storage.`);
+    const bytes = new Uint8Array(snapshot.samples.byteLength);
+    bytes.set(new Uint8Array(snapshot.samples.buffer, snapshot.samples.byteOffset, snapshot.samples.byteLength));
+    const data = bytes.buffer;
+    const response = await fetch(`/api/local-buffers/${asset.hash}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: data,
+    });
+    if (!response.ok) throw new Error(await localPatchStorageError(response));
+  }));
+}
+
+async function fetchLocalBufferContent(hash: string): Promise<ArrayBuffer> {
+  const response = await fetch(`/api/local-buffers/${hash}`, {
+    method: 'GET',
+    headers: { Accept: 'application/octet-stream' },
+  });
+  if (!response.ok) throw new Error(await localPatchStorageError(response));
+  return response.arrayBuffer();
+}
+
 async function fetchLocalPatchVersion(patchName: string, versionId: string): Promise<string> {
   const params = new URLSearchParams({ patch: patchName, version: versionId });
   const response = await fetch(`/api/local-patches/version?${params.toString()}`, {
@@ -5463,6 +5650,33 @@ async function uploadLocalSample(file: File): Promise<SampleAsset> {
 
 function bufferContainsAudio(samples: Float32Array): boolean {
   return samples.some((sample) => Number.isFinite(sample) && sample !== 0);
+}
+
+function preservedBufferIds(program: DspProgram): Set<string> {
+  const repeatedStateRanges = program.repeatBindings.map((binding) => ({
+    start: binding.stateStart,
+    end: binding.stateStart + binding.stateCount,
+  }));
+  const preservedStates = new Set(program.ops.flatMap((op) => (
+    op.opcode === DSP_OP.Buffer
+      && (op.value ?? 0) >= 0.5
+      && op.state !== undefined
+      && !repeatedStateRanges.some((range) => op.state! >= range.start && op.state! < range.end)
+      ? [op.state]
+      : []
+  )));
+  return new Set(program.stateBindings.flatMap((binding) => (
+    binding.id.endsWith(':buffer') && preservedStates.has(binding.state)
+      ? [binding.nodeId]
+      : []
+  )));
+}
+
+function filterBufferAssets(
+  assets: Record<string, BufferAsset>,
+  nodeIds: ReadonlySet<string>,
+): Record<string, BufferAsset> {
+  return Object.fromEntries(Object.entries(assets).filter(([nodeId]) => nodeIds.has(nodeId)));
 }
 
 function bufferVisualizationContainsAudio(buffer: { bins: Array<{ min: number; max: number }> } | undefined): boolean {
@@ -5679,6 +5893,7 @@ function parsePatchObject(value: unknown, label: string): Patch {
 
   return normalizePatchCompatibility({
     ...(typeof value.name === 'string' ? { name: value.name } : {}),
+    ...parseBufferAssets(value.buffers, label),
     ...parseMidiInputPreferences(value.midiInput),
     ...parsePatchAreas(value.areas, label),
     nodes: value.nodes.flatMap((node, index) => {
@@ -5687,6 +5902,35 @@ function parsePatchObject(value: unknown, label: string): Patch {
     }),
     links: value.links.map((link, index) => parsePatchLink(link, index)),
   });
+}
+
+function parseBufferAssets(value: unknown, label: string): Pick<Patch, 'buffers'> {
+  if (value === undefined) return {};
+  if (!isRecord(value)) throw new Error(`${label} buffers must be an object.`);
+  const buffers: Record<string, BufferAsset> = {};
+  for (const [nodeId, entry] of Object.entries(value)) {
+    if (
+      !nodeId
+      || !isRecord(entry)
+      || typeof entry.hash !== 'string'
+      || !/^[a-f0-9]{64}$/.test(entry.hash)
+      || typeof entry.sampleRate !== 'number'
+      || !Number.isFinite(entry.sampleRate)
+      || entry.sampleRate <= 0
+      || typeof entry.sampleCount !== 'number'
+      || !Number.isSafeInteger(entry.sampleCount)
+      || entry.sampleCount < 2
+      || entry.sampleCount > 960_000
+    ) {
+      throw new Error(`${label} has an invalid Buffer reference for "${nodeId}".`);
+    }
+    buffers[nodeId] = {
+      hash: entry.hash,
+      sampleRate: entry.sampleRate,
+      sampleCount: entry.sampleCount,
+    };
+  }
+  return Object.keys(buffers).length > 0 ? { buffers } : {};
 }
 
 function parsePatchAreas(value: unknown, label: string): Pick<Patch, 'areas'> {
@@ -7897,6 +8141,36 @@ function duplicateCopiedGraph(
   });
 
   return { nodes, edges };
+}
+
+function duplicatedBufferCopies(
+  sourceNodes: ShaderFlowNode[],
+  targetNodes: ShaderFlowNode[],
+  sourceGraphNodes: ShaderFlowNode[],
+  targetGraphNodes: ShaderFlowNode[],
+  groupIds: readonly string[],
+): BufferCopy[] {
+  return sourceNodes.flatMap((sourceNode, index) => {
+    const targetNode = targetNodes[index];
+    if (sourceNode.data.patchNode.type !== 'Buffer' || targetNode?.data.patchNode.type !== 'Buffer') return [];
+    return [{
+      sourceNodeId: runtimeDspNodeIdForFlowNode(sourceNode, sourceGraphNodes, groupIds),
+      targetNodeId: runtimeDspNodeIdForFlowNode(targetNode, targetGraphNodes, groupIds),
+    }];
+  });
+}
+
+function copyBufferAssets(
+  copies: BufferCopy[],
+  currentAssets: Record<string, BufferAsset>,
+  replaceAssets: (assets: Record<string, BufferAsset>) => void,
+): void {
+  const copiedAssets = copies.flatMap(({ sourceNodeId, targetNodeId }) => {
+    const asset = currentAssets[sourceNodeId];
+    return asset ? [[targetNodeId, asset] as const] : [];
+  });
+  if (copiedAssets.length === 0) return;
+  replaceAssets({ ...currentAssets, ...Object.fromEntries(copiedAssets) });
 }
 
 function cloneFlowNodeForClipboard(node: ShaderFlowNode): ShaderFlowNode {

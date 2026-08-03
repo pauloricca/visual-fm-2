@@ -6600,17 +6600,67 @@ fn write_dsp_buffer(slot: usize, length: usize, head: f64, sample: f64) {
 
 fn render_dsp_playhead(op: DspOp, sample_rate: f64) -> f64 {
     unsafe {
-        if op.state < 0 || (op.state as usize) >= MAX_DSP_STATE {
+        if op.state < 0 || (op.state as usize + 1) >= MAX_DSP_STATE {
             return normalize_phase(dsp_reg(op.a));
         }
 
         let state_index = op.state as usize;
-        let relative_position = normalize_phase(*dsp_state_ptr(state_index));
+        let reset_trigger = dsp_reg(op.e) >= ENVELOPE_TRIGGER_THRESHOLD;
+        let previous_reset_trigger = *dsp_state_ptr(state_index + 1) >= ENVELOPE_TRIGGER_THRESHOLD;
+        let relative_position = if reset_trigger && !previous_reset_trigger {
+            0.0
+        } else {
+            normalize_phase(*dsp_state_ptr(state_index))
+        };
         let output = normalize_phase(dsp_reg(op.a) + relative_position);
         let length_seconds = dsp_reg(op.c).max(0.001);
         let step = dsp_reg(op.b) / (length_seconds * sample_rate.max(1.0));
         *dsp_state_ptr(state_index) = normalize_phase(relative_position + step);
+        *dsp_state_ptr(state_index + 1) = if reset_trigger { 1.0 } else { 0.0 };
         output
+    }
+}
+
+#[cfg(test)]
+mod playhead_tests {
+    use super::{dsp_state_ptr, render_dsp_playhead, DspOp, DSP_OP_PLAYHEAD, DSP_REGS};
+
+    #[test]
+    fn reset_trigger_restarts_on_rising_edges_only() {
+        let state = 3000;
+        let op = DspOp {
+            opcode: DSP_OP_PLAYHEAD,
+            out: -1,
+            a: 20,
+            b: 21,
+            c: 22,
+            d: -1,
+            e: 23,
+            state,
+            value: 0.0,
+            value2: 0.0,
+            value3: 0.0,
+            value4: 0.0,
+        };
+
+        unsafe {
+            DSP_REGS[20] = 0.2;
+            DSP_REGS[21] = 1.0;
+            DSP_REGS[22] = 1.0;
+            DSP_REGS[23] = 0.0;
+            *dsp_state_ptr(state as usize) = 0.5;
+            *dsp_state_ptr(state as usize + 1) = 0.0;
+        }
+        assert!((render_dsp_playhead(op, 4.0) - 0.7).abs() < 0.000001);
+
+        unsafe { DSP_REGS[23] = 1.0 };
+        assert!((render_dsp_playhead(op, 4.0) - 0.2).abs() < 0.000001);
+        assert!((render_dsp_playhead(op, 4.0) - 0.45).abs() < 0.000001);
+
+        unsafe { DSP_REGS[23] = 0.0 };
+        assert!((render_dsp_playhead(op, 4.0) - 0.7).abs() < 0.000001);
+        unsafe { DSP_REGS[23] = 1.0 };
+        assert!((render_dsp_playhead(op, 4.0) - 0.2).abs() < 0.000001);
     }
 }
 

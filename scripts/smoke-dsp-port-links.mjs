@@ -58,7 +58,7 @@ const auditedPorts = {
   LowpassFilter: ['cutoff', 'resonance'],
   SamplePlayer: ['start', 'end', 'attack', 'release', 'stretch', 'cycleLength', 'overlapRatio', 'originalFrequency', 'voices'],
   Buffer: ['signal', 'playhead', 'playhead speed', 'record head', 'record head speed', 'length'],
-  Playhead: ['start', 'speed', 'length'],
+  Playhead: ['start', 'speed', 'length', 'reset trigger'],
   Time: [],
   Slider: ['signal'],
   Button: ['signal'],
@@ -165,7 +165,7 @@ const patch = {
       originalFrequency: 261.6255653005986,
       level: 0.7,
     }),
-    node('playhead', 'Playhead', { start: 0, speed: 1, length: 1 }),
+    node('playhead', 'Playhead', { start: 0, speed: 1, length: 1, 'reset trigger': 0 }),
     node('time', 'Time'),
     node('buffer', 'Buffer', { playhead: 0, 'playhead speed': 1, 'record head': 0.5, 'record head speed': 1, length: 1, 'on reset': 0 }),
     node('slider', 'Slider', { value: 0.25, min: 10, max: 20, direction: 0 }),
@@ -475,9 +475,9 @@ assert(
   'Button signal gating should compile with a declick slew.',
 );
 assert(
-  dspProgram.stateBindings.some((binding) => binding.id === 'playhead:playhead' && binding.count === 1)
-    && dspProgram.ops.some((op) => op.opcode === 33 && Number.isInteger(op.c)),
-  'Playhead should compile with one relative-position state slot.',
+  dspProgram.stateBindings.some((binding) => binding.id === 'playhead:playhead' && binding.count === 2)
+    && dspProgram.ops.some((op) => op.opcode === 33 && Number.isInteger(op.c) && Number.isInteger(op.e)),
+  'Playhead should compile with relative-position and reset-edge state slots.',
 );
 assert(
   timeProgram.stateBindings.some((binding) => binding.id === 'time:time' && binding.count === 1)

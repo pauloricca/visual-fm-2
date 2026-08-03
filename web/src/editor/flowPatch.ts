@@ -143,6 +143,8 @@ export type ShaderFlowEdge = Edge<ShaderEdgeData, 'shaderEdge'>;
 
 export interface PersistedEditorState {
   version: 1;
+  /** Binary data lives in IndexedDB; this map keeps the content-addressed references. */
+  buffers?: Patch['buffers'];
   /** Visual-only canvas groupings. They deliberately do not affect the patch graph. */
   areas?: EditorArea[];
   ui?: {

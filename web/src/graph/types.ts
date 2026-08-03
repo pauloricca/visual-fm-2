@@ -162,10 +162,19 @@ export interface PatchLink {
 export interface Patch {
   nodes: PatchNode[];
   links: PatchLink[];
+  /** Content-addressed snapshots for Buffer nodes whose `on reset` mode is preserve. */
+  buffers?: Record<string, BufferAsset>;
   /** Visual editor areas owned by this patch, including subpatch control panels. */
   areas?: PatchArea[];
   name?: string;
   midiInput?: MidiInputPreferences;
+}
+
+export interface BufferAsset {
+  /** SHA-256 of the raw little-endian Float32 sample bytes. */
+  hash: string;
+  sampleRate: number;
+  sampleCount: number;
 }
 
 export interface PatchArea {

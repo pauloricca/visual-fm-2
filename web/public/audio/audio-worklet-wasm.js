@@ -198,6 +198,9 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.dspScopeStates = new Map();
     this.dspMeterStates = new Map();
     this.bufferSampleCounts = new Map();
+    this.pendingBufferRestores = new Map();
+    this.pendingBufferCopies = new Map();
+    this.bufferRestoreReplacementPending = false;
     this.midiButtonControlValues = new Map();
     this.graphVersion = 0;
     this.linkScopeSamples = null;
@@ -250,6 +253,10 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         this.stopRecordingCapture(payload);
       } else if (type === "captureBuffer") {
         this.captureBuffer(payload);
+      } else if (type === "copyBuffers") {
+        this.copyBuffers(payload);
+      } else if (type === "restoreBuffers") {
+        this.setBufferRestores(payload);
       } else if (type === "setLinkScope") {
         this.setLinkScopes(payload);
       } else if (type === "setLinkScopes") {
@@ -290,6 +297,114 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       payload: { requestId, nodeId, sampleRate, samples },
     };
     this.port.postMessage(message, samples ? [samples.buffer] : []);
+  }
+
+  setBufferRestores(payload = {}) {
+    this.pendingBufferRestores.clear();
+    this.bufferRestoreReplacementPending = true;
+    for (const entry of Array.isArray(payload?.buffers) ? payload.buffers : []) {
+      const nodeId = String(entry?.nodeId || "");
+      const sourceSampleRate = Number(entry?.sampleRate);
+      const samples = entry?.samples instanceof Float32Array
+        ? entry.samples
+        : entry?.samples instanceof ArrayBuffer
+          ? new Float32Array(entry.samples)
+          : null;
+      if (!nodeId || !samples?.length || !Number.isFinite(sourceSampleRate) || sourceSampleRate <= 0) continue;
+      this.pendingBufferRestores.set(nodeId, { samples, sampleRate: sourceSampleRate });
+    }
+    this.applyPendingBufferRestores();
+  }
+
+  copyBuffers(payload = {}) {
+    for (const entry of Array.isArray(payload?.copies) ? payload.copies : []) {
+      const sourceNodeId = String(entry?.sourceNodeId || "");
+      const targetNodeId = String(entry?.targetNodeId || "");
+      if (!sourceNodeId || !targetNodeId || sourceNodeId === targetNodeId) continue;
+      this.pendingBufferCopies.set(targetNodeId, sourceNodeId);
+    }
+    this.applyPendingBufferCopies();
+  }
+
+  applyPendingBufferCopies() {
+    if (!this.wasm?.memory || !this.wasm?.dspBufferPtr || !this.dspProgram) return;
+    const bufferLength = Math.max(0, Math.trunc(Number(this.wasm.dspBufferLength?.()) || 0));
+    if (bufferLength <= 0) return;
+
+    for (const [targetNodeId, sourceNodeId] of this.pendingBufferCopies) {
+      const sourceBinding = (this.dspProgram.stateBindings || []).find((candidate) => (
+        candidate.nodeId === sourceNodeId && String(candidate.id || "").endsWith(":buffer")
+      ));
+      const targetBinding = (this.dspProgram.stateBindings || []).find((candidate) => (
+        candidate.nodeId === targetNodeId && String(candidate.id || "").endsWith(":buffer")
+      ));
+      if (!sourceBinding || !targetBinding) continue;
+
+      const sourcePtr = this.wasm.dspBufferPtr(sourceBinding.state);
+      const targetPtr = this.wasm.dspBufferPtr(targetBinding.state);
+      if (!sourcePtr || !targetPtr) continue;
+
+      const source = new Float32Array(this.wasm.memory.buffer, sourcePtr, bufferLength);
+      const target = new Float32Array(this.wasm.memory.buffer, targetPtr, bufferLength);
+      target.set(source);
+      const lengthSeconds = Number(this.wasm.getDspState?.(sourceBinding.state + 3));
+      if (Number.isFinite(lengthSeconds)) {
+        this.wasm.setDspState?.(targetBinding.state + 3, lengthSeconds);
+      }
+      const sourceSampleCount = this.bufferSampleCounts.get(sourceNodeId);
+      if (sourceSampleCount !== undefined) {
+        this.bufferSampleCounts.set(targetNodeId, sourceSampleCount);
+      }
+      this.pendingBufferCopies.delete(targetNodeId);
+    }
+  }
+
+  applyPendingBufferRestores() {
+    if (!this.wasm?.memory || !this.wasm?.dspBufferPtr || !this.dspProgram) return;
+    const bufferLength = Math.max(0, Math.trunc(Number(this.wasm.dspBufferLength?.()) || 0));
+    if (bufferLength <= 0) return;
+
+    if (this.bufferRestoreReplacementPending) {
+      for (const binding of this.dspProgram.stateBindings || []) {
+        if (!String(binding.id || "").endsWith(":buffer")) continue;
+        const ptr = this.wasm.dspBufferPtr(binding.state);
+        if (ptr) new Float32Array(this.wasm.memory.buffer, ptr, bufferLength).fill(0);
+      }
+      this.bufferSampleCounts.clear();
+      this.bufferRestoreReplacementPending = false;
+    }
+
+    for (const [nodeId, snapshot] of this.pendingBufferRestores) {
+      const binding = (this.dspProgram.stateBindings || []).find((candidate) => (
+        candidate.nodeId === nodeId && String(candidate.id || "").endsWith(":buffer")
+      ));
+      if (!binding) continue;
+      const ptr = this.wasm.dspBufferPtr(binding.state);
+      if (!ptr) continue;
+      const target = new Float32Array(this.wasm.memory.buffer, ptr, bufferLength);
+      target.fill(0);
+      const targetCount = this.clamp(
+        Math.round(snapshot.samples.length * sampleRate / snapshot.sampleRate),
+        2,
+        bufferLength,
+      );
+      if (targetCount === snapshot.samples.length && snapshot.sampleRate === sampleRate) {
+        target.set(snapshot.samples.subarray(0, targetCount));
+      } else {
+        for (let index = 0; index < targetCount; index += 1) {
+          const sourcePosition = targetCount <= 1
+            ? 0
+            : index * (snapshot.samples.length - 1) / (targetCount - 1);
+          const sourceIndex = Math.floor(sourcePosition);
+          const nextIndex = Math.min(snapshot.samples.length - 1, sourceIndex + 1);
+          const mix = sourcePosition - sourceIndex;
+          target[index] = snapshot.samples[sourceIndex] * (1 - mix) + snapshot.samples[nextIndex] * mix;
+        }
+      }
+      this.wasm.setDspState?.(binding.state + 3, targetCount / sampleRate);
+      this.bufferSampleCounts.set(nodeId, targetCount);
+      this.pendingBufferRestores.delete(nodeId);
+    }
   }
 
   normalizeGraphUpdateCrossfade(config = {}) {
@@ -1298,6 +1413,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     if (hasProgramMigration) this.wasm.finishDspProgramUpdate();
     this.syncDspSequencers();
     this.restoreDspState(preservedState);
+    this.applyPendingBufferRestores();
+    this.applyPendingBufferCopies();
 
     // A newly created one-shot custom wave is an event-driven source. It must
     // stay silent until its trigger input receives a rising edge. Preserve the

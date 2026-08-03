@@ -4,6 +4,7 @@ import { normalizeCustomWave } from './customWave';
 export function normalizePatch(patch: Patch): Patch {
   return {
     ...(patch.name ? { name: patch.name } : {}),
+    ...(patch.buffers ? { buffers: normalizeBufferAssets(patch.buffers) } : {}),
     ...(patch.midiInput ? { midiInput: { selectedDeviceIds: [...patch.midiInput.selectedDeviceIds].sort() } } : {}),
     ...(patch.areas ? { areas: patch.areas.map((area) => ({
       ...area,
@@ -44,6 +45,12 @@ export function normalizePatch(patch: Patch): Patch {
       }))
       .sort(compareLinks),
   };
+}
+
+function normalizeBufferAssets(buffers: NonNullable<Patch['buffers']>): NonNullable<Patch['buffers']> {
+  return Object.fromEntries(Object.entries(buffers)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([nodeId, buffer]) => [nodeId, { ...buffer }]));
 }
 
 export function patchToJson(patch: Patch): string {

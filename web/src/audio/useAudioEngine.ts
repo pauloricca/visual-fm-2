@@ -71,6 +71,11 @@ export interface BufferSnapshot {
   sampleRate: number;
 }
 
+export interface BufferCopy {
+  sourceNodeId: string;
+  targetNodeId: string;
+}
+
 export interface ScopeCaptureRequest {
   id: string;
   length: number;
@@ -101,6 +106,8 @@ interface AudioEngineState {
   startRecording: () => void;
   stopRecording: () => void;
   captureBuffer: (nodeId: string) => Promise<BufferSnapshot | null>;
+  copyBuffers: (copies: BufferCopy[]) => void;
+  restoreBuffers: (snapshots: Record<string, BufferSnapshot>) => void;
   syncGraph: (program: DspProgram) => void;
   setLinkScopes: (requests: ScopeCaptureRequest[]) => void;
   setAudioInputDeviceId: (deviceId: string) => void;
@@ -162,6 +169,13 @@ interface SampleDataCacheEntry {
 interface SampleDataRequest {
   key: string;
   promise: Promise<SampleDataCacheEntry | null>;
+}
+
+interface AudioInputRequest {
+  id: number;
+  deviceId: string;
+  context: AudioContext;
+  node: AudioWorkletNode;
 }
 
 interface ImageDataCacheEntry {
@@ -341,6 +355,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   const inputStreamRef = useRef<MediaStream | null>(null);
   const stopTimeoutRef = useRef<number | null>(null);
   const inputRequestIdRef = useRef(0);
+  const inputRequestRef = useRef<AudioInputRequest | null>(null);
   const currentInputDeviceIdRef = useRef('');
   const midiAccessRef = useRef<MidiAccessLike | null>(null);
   const midiRequestRef = useRef<Promise<MidiAccessLike> | null>(null);
@@ -379,6 +394,8 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     resolve: (snapshot: BufferSnapshot | null) => void;
     timeout: number;
   }>());
+  const bufferRestoresRef = useRef<Record<string, BufferSnapshot>>({});
+  const pendingBufferCopiesRef = useRef(new Map<string, BufferCopy>());
   const recordingStartedAtRef = useRef(0);
   const recordingTimerRef = useRef<number | null>(null);
 
@@ -660,6 +677,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
 
   const disconnectAudioInput = useCallback((nextStatus: AudioInputStatus = 'inactive', nextMessage = 'Audio input is not used by this patch.') => {
     inputRequestIdRef.current += 1;
+    inputRequestRef.current = null;
     inputSourceRef.current?.disconnect();
     inputStreamRef.current?.getTracks().forEach((track) => track.stop());
     inputSourceRef.current = null;
@@ -821,6 +839,16 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
       disconnectAudioInput('requesting', 'Switching audio input device...');
     }
 
+    const pendingRequest = inputRequestRef.current;
+    if (
+      pendingRequest
+      && pendingRequest.deviceId === selectedAudioInputDeviceId
+      && pendingRequest.context === context
+      && pendingRequest.node === node
+    ) {
+      return;
+    }
+
     const mediaDevices = navigator.mediaDevices;
     if (!mediaDevices?.getUserMedia) {
       setAudioInputStatus('unsupported');
@@ -835,6 +863,12 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
       : 'Requesting microphone permission...');
     const requestId = inputRequestIdRef.current + 1;
     inputRequestIdRef.current = requestId;
+    inputRequestRef.current = {
+      id: requestId,
+      deviceId: selectedAudioInputDeviceId,
+      context,
+      node,
+    };
     const audioConstraints: MediaTrackConstraints = {
       echoCancellation: false,
       noiseSuppression: false,
@@ -844,6 +878,9 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     void mediaDevices.getUserMedia({
       audio: audioConstraints,
     }).then((stream) => {
+      if (inputRequestRef.current?.id === requestId) {
+        inputRequestRef.current = null;
+      }
       const stillCurrent = (
         inputRequestIdRef.current === requestId &&
         contextRef.current === context &&
@@ -885,6 +922,9 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
         },
       });
       if (inputRequestIdRef.current !== requestId) return;
+      if (inputRequestRef.current?.id === requestId) {
+        inputRequestRef.current = null;
+      }
       const errorName = error instanceof DOMException ? error.name : '';
       if (errorName === 'NotAllowedError' || errorName === 'SecurityError') {
         setAudioInputStatus('denied');
@@ -1187,6 +1227,10 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
             outputChannelCount: [2],
             processorOptions: { wasmBytes, audioConfig: AUDIO_ENGINE_CONFIG },
           });
+          postBufferRestores(node, bufferRestoresRef.current);
+          const pendingBufferCopies = [...pendingBufferCopiesRef.current.values()];
+          pendingBufferCopiesRef.current.clear();
+          postBufferCopies(node, pendingBufferCopies);
           node.addEventListener('processorerror', () => {
             logDiagnosticEvent('audio-worklet-processor-error', {
               level: 'error',
@@ -1566,6 +1610,22 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     });
   }, []);
 
+  const restoreBuffers = useCallback((snapshots: Record<string, BufferSnapshot>) => {
+    bufferRestoresRef.current = snapshots;
+    const node = nodeRef.current;
+    if (node) postBufferRestores(node, snapshots);
+  }, []);
+
+  const copyBuffers = useCallback((copies: BufferCopy[]) => {
+    if (copies.length === 0) return;
+    const node = nodeRef.current;
+    if (node) {
+      postBufferCopies(node, copies);
+      return;
+    }
+    for (const copy of copies) pendingBufferCopiesRef.current.set(copy.targetNodeId, copy);
+  }, []);
+
   const start = useCallback(async () => {
     try {
       logDiagnosticEvent('audio-start-clicked', {
@@ -1634,6 +1694,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
       disconnectMidiInput();
     }
     inputRequestIdRef.current += 1;
+    inputRequestRef.current = null;
     currentInputDeviceIdRef.current = '';
     stopMeter();
     setLinkMeters({});
@@ -1721,12 +1782,35 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     startRecording,
     stopRecording,
     captureBuffer,
+    copyBuffers,
+    restoreBuffers,
     syncGraph,
     setLinkScopes,
     setAudioInputDeviceId: setSelectedAudioInputDeviceId,
     refreshAudioInputDevices,
     refreshMidiInputDevices,
   };
+}
+
+function postBufferRestores(node: AudioWorkletNode, snapshots: Record<string, BufferSnapshot>): void {
+  node.port.postMessage({
+    type: 'restoreBuffers',
+    payload: {
+      buffers: Object.entries(snapshots).map(([nodeId, snapshot]) => ({
+        nodeId,
+        sampleRate: snapshot.sampleRate,
+        samples: snapshot.samples,
+      })),
+    },
+  });
+}
+
+function postBufferCopies(node: AudioWorkletNode, copies: BufferCopy[]): void {
+  if (copies.length === 0) return;
+  node.port.postMessage({
+    type: 'copyBuffers',
+    payload: { copies },
+  });
 }
 
 function encodeWav(chunks: Float32Array[][], sampleRate: number, channelCount: number): Blob {

@@ -233,8 +233,15 @@ function normalizeLegacyNodeParams(type: NodeType, params: Record<string, number
 
 function normalizeLegacyInputDefinitions(type: NodeType, inputs: PortDefinition[] | undefined): PortDefinition[] | undefined {
   if (type === 'Playhead') {
-    if (!inputs || inputs.some((input) => input.name === 'length')) return inputs;
-    return [...inputs, { name: 'length', defaultValue: 1, min: 0.001 }];
+    if (!inputs) return inputs;
+    const normalized = [...inputs];
+    if (!normalized.some((input) => input.name === 'length')) {
+      normalized.push({ name: 'length', defaultValue: 1, min: 0.001 });
+    }
+    if (!normalized.some((input) => input.name === 'reset trigger')) {
+      normalized.push({ name: 'reset trigger', defaultValue: 0, valueEditor: false });
+    }
+    return normalized;
   }
 
   if (type === 'Buffer') {
