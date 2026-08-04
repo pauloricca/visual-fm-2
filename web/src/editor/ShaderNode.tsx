@@ -1192,6 +1192,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               playhead={data.audioBuffer?.playhead ?? normalizeUnitInterval(node.params.playhead ?? 0)}
               recordHead={data.audioBuffer?.recordHead ?? normalizeUnitInterval(node.params['record head'] ?? 0)}
               detail={Math.max(120, Math.round(displaySize.width))}
+              onClear={data.onBufferClear}
             />
           ) : null}
           {showSampleUpload ? (
@@ -2006,9 +2007,10 @@ interface BufferWaveformDisplayProps {
   playhead: number;
   recordHead: number;
   detail: number;
+  onClear?: () => void;
 }
 
-function BufferWaveformDisplay({ bins, playhead, recordHead, detail }: BufferWaveformDisplayProps) {
+function BufferWaveformDisplay({ bins, playhead, recordHead, detail, onClear }: BufferWaveformDisplayProps) {
   const width = 300;
   const height = 128;
   const horizontalPadding = 8;
@@ -2039,6 +2041,14 @@ function BufferWaveformDisplay({ bins, playhead, recordHead, detail }: BufferWav
           <line className="buffer-record-head-line" x1={headX(recordHead)} y1="0" x2={headX(recordHead)} y2={height}><title>Record head</title></line>
         </g>
       </svg>
+      <button
+        className="buffer-clear-button nodrag nopan"
+        type="button"
+        onClick={onClear}
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        CLEAR
+      </button>
     </div>
   );
 }

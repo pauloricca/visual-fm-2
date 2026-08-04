@@ -435,6 +435,16 @@ function NodeEditorInner() {
     setBufferAssets(assets);
   }, []);
 
+  const clearBufferRecording = useCallback((nodeId: string) => {
+    audio.clearBuffer(nodeId);
+    bufferLoadGenerationRef.current += 1;
+    if (!bufferAssetsRef.current[nodeId]) return;
+    const nextAssets = { ...bufferAssetsRef.current };
+    delete nextAssets[nodeId];
+    replaceBufferAssets(nextAssets);
+    void removeUnreferencedBufferContents(Object.values(nextAssets).map((asset) => asset.hash));
+  }, [audio.clearBuffer, replaceBufferAssets]);
+
   const restoreBufferAssets = useCallback(async (assets: Record<string, BufferAsset>) => {
     const generation = bufferLoadGenerationRef.current + 1;
     bufferLoadGenerationRef.current = generation;
@@ -496,6 +506,7 @@ function NodeEditorInner() {
   const [areaDraw, setAreaDraw] = useState<AreaDrawState | null>(null);
   const [resumedSelectionDraw, setResumedSelectionDraw] = useState<AreaDrawState | null>(null);
   const [selectedAreaId, setSelectedAreaId] = useState<string | null>(null);
+  const [surfacedAreaId, setSurfacedAreaId] = useState<string | null>(null);
   const [editingAreaId, setEditingAreaId] = useState<string | null>(null);
   const areaTitleInputRef = useRef<HTMLInputElement | null>(null);
   const areaTitlePointerStartRef = useRef<ScreenPoint | null>(null);
@@ -1464,6 +1475,7 @@ function NodeEditorInner() {
     }]);
     setEditingTypeNodeId(null);
     setSelectedAreaId(areaId);
+    setSurfacedAreaId(areaId);
   }, [commitHistory]);
 
   const updateNodeCustomLabel = useCallback((nodeId: string, requestedLabel: string) => {
@@ -2203,6 +2215,8 @@ function NodeEditorInner() {
     setNodes(toFlowNodes(subpatch, callbacks, null));
     setEdges(toFlowEdges(subpatch, updateEdgeWeight, updateEdgeMode, insertNodeOnEdgePlaceholder));
     setAreas(structuredClone(subpatch.areas ?? []));
+    setSelectedAreaId(null);
+    setSurfacedAreaId(null);
     setPatchName(patchNode.subpatchName ?? node.id);
     setEditingTypeNodeId(null);
     setPendingBoundaryPort(null);
@@ -2225,6 +2239,8 @@ function NodeEditorInner() {
     setNodes(parentGraph.nodes);
     setEdges(parentGraph.edges);
     setAreas(structuredClone(frame.parentAreas));
+    setSelectedAreaId(null);
+    setSurfacedAreaId(null);
     setPatchName(frame.parentPatchName);
     setEditingTypeNodeId(null);
     setPendingBoundaryPort(null);
@@ -2361,21 +2377,40 @@ function NodeEditorInner() {
 
     return new Map(orderedNodeIds.map((nodeId, index) => [nodeId, index]));
   }, [nodes, nodeStackOrder]);
+  const surfacedAreaIds = useMemo(() => (
+    surfacedAreaId ? connectedAreaIds(areas, surfacedAreaId) : new Set<string>()
+  ), [areas, surfacedAreaId]);
+  const surfacedAreaNodeIds = useMemo(() => (
+    surfacedAreaId
+      ? nodeIdsContainedByAreaHierarchy(areas, nodes, surfacedAreaId)
+      : new Set<string>()
+  ), [areas, nodes, surfacedAreaId]);
+  const surfacedAreaRanks = useMemo(() => new Map(
+    areas
+      .filter((area) => surfacedAreaIds.has(area.id))
+      .map((area, index) => [area.id, index]),
+  ), [areas, surfacedAreaIds]);
+  const baseNodeLayerSize = Math.max(1, nodes.length);
+  const surfacedAreaLayerBase = (SELECTED_NODE_Z_INDEX + 1) * baseNodeLayerSize + 1;
+  const surfacedNodeLayerBase = surfacedAreaLayerBase + surfacedAreaIds.size;
 
   const nodesWithCallbacks = useMemo(() => nodes.map((node) => {
     const compactPorts = node.data.patchNode.compactPorts === true;
+    const baseZIndex = node.data.patchNode.type === 'Spread' || node.data.patchNode.type === 'Spawn'
+      ? 0
+      : 1 + nodeZIndex(
+          node.selected === true || selectedAreaNodeIds.has(node.id),
+          compactPorts,
+          nodeStackRanks.get(node.id) ?? 0,
+          nodes.length,
+        );
 
     return {
       ...node,
       ...((node.data.patchNode.type === 'Spread' || node.data.patchNode.type === 'Spawn') ? { draggable: false, selectable: false } : {}),
-      zIndex: node.data.patchNode.type === 'Spread' || node.data.patchNode.type === 'Spawn'
-        ? 0
-        : 1 + nodeZIndex(
-            node.selected === true || selectedAreaNodeIds.has(node.id),
-            compactPorts,
-            nodeStackRanks.get(node.id) ?? 0,
-            nodes.length,
-          ),
+      zIndex: surfacedAreaNodeIds.has(node.id)
+        ? surfacedNodeLayerBase + baseZIndex
+        : baseZIndex,
       data: {
         ...node.data,
         onParamChange: updateNodeParam,
@@ -2445,6 +2480,8 @@ function NodeEditorInner() {
     openImageLibrary,
     nodeStackRanks,
     selectedAreaNodeIds,
+    surfacedAreaNodeIds,
+    surfacedNodeLayerBase,
     selectedBoundaryPort,
     selectedLinkPortsByNode,
     settledGraphZoom,
@@ -2586,6 +2623,7 @@ function NodeEditorInner() {
         ...(monitorLinkId && innerNode.type === 'Sequencer' ? { audioSequencerStep: audio.linkMeters[monitorLinkId]?.output } : {}),
         ...((innerNode.type === 'CustomWave' || innerNode.type === 'SamplePlayer') ? { audioPlayheads: audio.playheads[dspNodeId] } : {}),
         ...(innerNode.type === 'Buffer' ? { audioBuffer: audio.buffers[dspNodeId] } : {}),
+        ...(innerNode.type === 'Buffer' ? { onBufferClear: () => clearBufferRecording(dspNodeId) } : {}),
         ...(innerNode.type === 'SamplePlayer' ? { audioSampleParams: samplePlayerVisualizationParams(dspNodeId, audio.linkMeters) } : {}),
       } satisfies ShaderNodeData;
       return {
@@ -2604,6 +2642,7 @@ function NodeEditorInner() {
   }), [
     activeDspGroupIds,
     audio.buffers,
+    clearBufferRecording,
     audio.linkMeters,
     audio.linkScopes,
     audio.playheads,
@@ -2663,6 +2702,7 @@ function NodeEditorInner() {
         ...(monitorLinkId && node.data.patchNode.type === 'Sequencer' ? { audioSequencerStep: audio.linkMeters[monitorLinkId]?.output } : {}),
         ...(audioPlayheads !== undefined ? { audioPlayheads } : {}),
         ...(audioBuffer !== undefined ? { audioBuffer } : {}),
+        ...(showsBufferVisual ? { onBufferClear: () => clearBufferRecording(dspNodeId) } : {}),
         ...(audioSampleParams ? { audioSampleParams } : {}),
         ...(midiControlVisual?.sliderValue !== undefined ? { midiSliderValue: midiControlVisual.sliderValue } : {}),
         ...(midiControlVisual?.joystickX !== undefined || midiControlVisual?.joystickY !== undefined
@@ -2676,7 +2716,7 @@ function NodeEditorInner() {
         ...(midiControlVisual?.buttonPressed !== undefined ? { midiButtonPressed: midiControlVisual.buttonPressed } : {}),
       },
     };
-  }), [activeDspGroupIds, audio.buffers, audio.linkMeters, audio.linkScopes, audio.playheads, dspDiagnostics, midiControlVisuals, monitorLinkIdByNode, nodesWithGroupUi]);
+  }), [activeDspGroupIds, audio.buffers, audio.linkMeters, audio.linkScopes, audio.playheads, clearBufferRecording, dspDiagnostics, midiControlVisuals, monitorLinkIdByNode, nodesWithGroupUi]);
 
   const renderedEdges = useMemo(() => edgesWithCallbacks.map((edge) => {
     const dspErrors = dspDiagnostics.edgeErrors.get(edge.id) ?? [];
@@ -2694,7 +2734,7 @@ function NodeEditorInner() {
   const collapsedAreaByNode = useMemo(() => {
     const collapsedAreas = areas.filter((area) => area.collapsed);
     return new Map(renderedNodes.flatMap((node) => {
-      const area = collapsedAreaContainingNode(collapsedAreas, node);
+      const area = innermostAreaContainingNode(collapsedAreas, node);
       return area ? [[node.id, area] as const] : [];
     }));
   }, [areas, renderedNodes]);
@@ -3566,6 +3606,7 @@ function NodeEditorInner() {
     setEdges(toFlowEdges(loadedPatch, updateEdgeWeight, updateEdgeMode, insertNodeOnEdgePlaceholder));
     setAreas(structuredClone(loadedPatch.areas ?? []));
     setSelectedAreaId(null);
+    setSurfacedAreaId(null);
     setEditingAreaId(null);
     setPatchName(loadedPatch.name ?? 'single-patch');
     setSelectedMidiInputDeviceIds(normalizeSelectedMidiDeviceIds(loadedPatch.midiInput?.selectedDeviceIds));
@@ -3858,6 +3899,7 @@ function NodeEditorInner() {
       const now = graphSnapshot(nodesRef.current, edgesRef.current, areasRef.current);
       restoreGraphSnapshot(previous, setNodes, setEdges, setAreas);
       setSelectedAreaId(null);
+      setSurfacedAreaId(null);
       setEditingAreaId(null);
       return {
         past: current.past.slice(0, -1),
@@ -3873,6 +3915,7 @@ function NodeEditorInner() {
       const now = graphSnapshot(nodesRef.current, edgesRef.current, areasRef.current);
       restoreGraphSnapshot(next, setNodes, setEdges, setAreas);
       setSelectedAreaId(null);
+      setSurfacedAreaId(null);
       setEditingAreaId(null);
       return {
         past: [...current.past, now].slice(-HISTORY_LIMIT),
@@ -3894,6 +3937,7 @@ function NodeEditorInner() {
     setEdges(toFlowEdges(demoPatch, updateEdgeWeight, updateEdgeMode, insertNodeOnEdge));
     setAreas([]);
     setSelectedAreaId(null);
+    setSurfacedAreaId(null);
     setEditingAreaId(null);
     setEditingTypeNodeId(null);
     void restoreBufferAssets({}).catch(() => undefined);
@@ -4086,7 +4130,31 @@ function NodeEditorInner() {
     const nodeId = nodeElement?.dataset.id;
     if (!nodeId) return;
 
+    const node = nodesRef.current.find((candidate) => candidate.id === nodeId);
+    const containingArea = node
+      ? innermostAreaContainingNode(areasRef.current, node)
+      : undefined;
+    setSurfacedAreaId(containingArea?.id ?? null);
+
     setNodeStackOrder((current) => {
+      if (containingArea) {
+        const containedNodeIds = nodeIdsContainedByAreaHierarchy(
+          areasRef.current,
+          nodesRef.current,
+          containingArea.id,
+        );
+        const promotedAreaOrder = promoteNodeIdsInStackOrder(
+          current,
+          nodesRef.current.map((candidate) => candidate.id),
+          containedNodeIds,
+        );
+        return promoteNodeIdsInStackOrder(
+          promotedAreaOrder,
+          nodesRef.current.map((candidate) => candidate.id),
+          new Set([nodeId]),
+        );
+      }
+
       const currentNodeIds = new Set(nodesRef.current.map((node) => node.id));
       const activeOrder = current.filter((entry) => entry !== nodeId && currentNodeIds.has(entry));
       if (activeOrder.length === current.length - 1 && current.at(-1) === nodeId) return current;
@@ -4105,6 +4173,7 @@ function NodeEditorInner() {
       areaId,
     );
     setSelectedAreaId(areaId);
+    setSurfacedAreaId(areaId);
     setNodeStackOrder((current) => promoteNodeIdsInStackOrder(
       current,
       nodesRef.current.map((node) => node.id),
@@ -4137,6 +4206,7 @@ function NodeEditorInner() {
     const target = event.target instanceof Element ? event.target : null;
     const nodeElement = target?.closest<HTMLElement>('.react-flow__node[data-id]');
     const nodeId = nodeElement?.dataset.id;
+    if (!nodeId && !target?.closest('.canvas-area')) setSurfacedAreaId(null);
 
     if (event.button !== 0) {
       pendingNodeDragSelectionRef.current = null;
@@ -4278,6 +4348,7 @@ function NodeEditorInner() {
       const containedNodeIds = nodeIdsContainedByAreaHierarchy(nextAreas, nodesRef.current, id);
       setAreas((current) => [...current, newArea]);
       setSelectedAreaId(id);
+      setSurfacedAreaId(id);
       setNodeStackOrder((current) => promoteNodeIdsInStackOrder(
         current,
         nodesRef.current.map((node) => node.id),
@@ -4394,6 +4465,7 @@ function NodeEditorInner() {
     ]));
     setAreas((current) => [...current, ...duplicated.areas]);
     setSelectedAreaId(duplicated.rootAreaId);
+    setSurfacedAreaId(duplicated.rootAreaId);
     setNodeStackOrder((current) => [...current, ...duplicated.nodes.map((node) => node.id)]);
     copyBufferAssets(bufferCopies, bufferAssetsRef.current, replaceBufferAssets);
     audio.copyBuffers(bufferCopies);
@@ -4577,9 +4649,26 @@ function NodeEditorInner() {
   }, []);
 
   const toggleAreaCollapsed = useCallback((areaId: string) => {
+    const area = areasRef.current.find((candidate) => candidate.id === areaId);
+    if (!area) return;
+
     commitHistory(`area-collapse:${areaId}`);
     setEditingAreaId(null);
     setEditingTypeNodeId(null);
+    if (area.collapsed) {
+      const containedNodeIds = nodeIdsContainedByAreaHierarchy(
+        areasRef.current,
+        nodesRef.current,
+        areaId,
+      );
+      setSurfacedAreaId(areaId);
+      setSelectedAreaId(areaId);
+      setNodeStackOrder((current) => promoteNodeIdsInStackOrder(
+        current,
+        nodesRef.current.map((node) => node.id),
+        containedNodeIds,
+      ));
+    }
     setAreas((current) => current.map((area) => {
       if (area.id !== areaId) return area;
       if (area.collapsed || area.locked) return { ...area, collapsed: !area.collapsed };
@@ -4590,6 +4679,7 @@ function NodeEditorInner() {
         nodeIds: nodesRef.current
           .filter((node) => areaContainsPoint(area, node.position))
           .map((node) => node.id),
+        areaIds: areaIdsWithinBounds(current, area),
       };
     }));
   }, [commitHistory]);
@@ -4601,13 +4691,19 @@ function NodeEditorInner() {
     commitHistory(`area-lock:${areaId}`);
     setAreas((current) => current.map((candidate) => {
       if (candidate.id !== areaId) return candidate;
-      if (candidate.locked) return { ...candidate, locked: false };
+      if (candidate.locked) return {
+        ...candidate,
+        locked: false,
+        nodeIds: undefined,
+        areaIds: undefined,
+      };
       return {
         ...candidate,
         locked: true,
         nodeIds: nodesRef.current
           .filter((node) => areaContainsPoint(candidate, node.position))
           .map((node) => node.id),
+        areaIds: areaIdsWithinBounds(current, candidate),
       };
     }));
   }, [commitHistory]);
@@ -4788,6 +4884,7 @@ function NodeEditorInner() {
       }
       setAreas((current) => current.filter((area) => area.id !== selectedAreaId));
       setSelectedAreaId(null);
+      setSurfacedAreaId((current) => current === selectedAreaId ? null : current);
     };
 
     window.addEventListener('keydown', deleteSelectedArea, { capture: true });
@@ -4923,7 +5020,15 @@ function NodeEditorInner() {
                     key={area.id}
                     data-area-id={area.id}
                     className={`canvas-area${area.kind === 'spread' ? ' canvas-area-spread' : ''}${area.collapsed ? ' canvas-area-collapsed' : ''}${selectedAreaId === area.id ? ' canvas-area-selected' : ''}`}
-                    style={{ left: area.position.x, top: area.position.y, width: area.size.width, height: area.collapsed ? NODE_HEADER_HEIGHT + (area.uiHeight ?? 0) : area.size.height }}
+                    style={{
+                      left: area.position.x,
+                      top: area.position.y,
+                      width: area.size.width,
+                      height: area.collapsed ? NODE_HEADER_HEIGHT + (area.uiHeight ?? 0) : area.size.height,
+                      zIndex: surfacedAreaRanks.has(area.id)
+                        ? surfacedAreaLayerBase + (surfacedAreaRanks.get(area.id) ?? 0)
+                        : -1,
+                    }}
                   >
                     <div
                       className="canvas-area-header nodrag nopan"
@@ -6138,6 +6243,9 @@ function parsePatchAreas(value: unknown, label: string): Pick<Patch, 'areas'> {
       ...(typeof area.locked === 'boolean' ? { locked: area.locked } : {}),
       ...(Array.isArray(area.nodeIds) && area.nodeIds.every((entry) => typeof entry === 'string')
         ? { nodeIds: area.nodeIds as string[] }
+        : {}),
+      ...(Array.isArray(area.areaIds) && area.areaIds.every((entry) => typeof entry === 'string')
+        ? { areaIds: area.areaIds as string[] }
         : {}),
     };
   });
@@ -7574,7 +7682,7 @@ function connectedAreaIds(areas: EditorArea[], rootId: string): Set<string> {
     changed = false;
     for (const candidate of areas) {
       if (connected.has(candidate.id)) continue;
-      if (!areas.some((area) => connected.has(area.id) && areaContainsPoint(area, candidate.position))) continue;
+      if (!areas.some((area) => connected.has(area.id) && areaContainsArea(area, candidate))) continue;
       connected.add(candidate.id);
       changed = true;
     }
@@ -7689,22 +7797,36 @@ function areaContainsPoint(area: EditorArea, point: { x: number; y: number }): b
     && point.y < area.position.y + area.size.height;
 }
 
+function areaContainsArea(area: EditorArea, candidate: EditorArea): boolean {
+  if (area.id === candidate.id) return false;
+  // Once locked, the saved membership is authoritative. Geometry must never
+  // allow a container dragged across unrelated content to absorb it.
+  return area.locked
+    ? area.areaIds?.includes(candidate.id) === true
+    : areaContainsPoint(area, candidate.position);
+}
+
+function areaIdsWithinBounds(areas: EditorArea[], area: EditorArea): string[] {
+  return areas
+    .filter((candidate) => candidate.id !== area.id && areaContainsPoint(area, candidate.position))
+    .map((candidate) => candidate.id);
+}
+
 function isSurfacedControlTarget(eventTarget: EventTarget | null): boolean {
   const target = eventTarget instanceof Element ? eventTarget : null;
   return target !== null
     && target.closest('.shader-node-area-ui-collapsed, .group-ui-preview') !== null;
 }
 
-function collapsedAreaContainingNode(areas: EditorArea[], node: ShaderFlowNode): EditorArea | undefined {
+function innermostAreaContainingNode(areas: EditorArea[], node: ShaderFlowNode): EditorArea | undefined {
   return areas
-    // UI controls are intentionally position-owned: older saved areas can have a
-    // stale locked-node snapshot, but a control in their UI section must still
-    // receive the collapsed presentation.
-    .filter((area) => areaContainsNode(area, node) || nodeIsInAreaUiSection(area, node))
+    .filter((area) => area.spreadNodeId === node.id || areaContainsNode(area, node))
     .sort((left, right) => (left.size.width * left.size.height) - (right.size.width * right.size.height))[0];
 }
 
 function areaContainsNode(area: EditorArea, node: ShaderFlowNode): boolean {
+  // Locked membership is an explicit snapshot, including an explicitly empty
+  // one. Never fall back to overlap for a locked Area, Spread, or Spawn.
   return area.locked
     ? area.nodeIds?.includes(node.id) === true
     : areaContainsPoint(area, node.position);
@@ -8231,6 +8353,12 @@ function duplicateAreaHierarchy(
       ...(area.nodeIds ? {
         nodeIds: area.nodeIds.flatMap((nodeId) => {
           const mapped = nodeIdMap.get(nodeId);
+          return mapped ? [mapped] : [];
+        }),
+      } : {}),
+      ...(area.areaIds ? {
+        areaIds: area.areaIds.flatMap((areaId) => {
+          const mapped = areaIdMap.get(areaId);
           return mapped ? [mapped] : [];
         }),
       } : {}),

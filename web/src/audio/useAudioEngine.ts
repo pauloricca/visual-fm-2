@@ -106,6 +106,7 @@ interface AudioEngineState {
   startRecording: () => void;
   stopRecording: () => void;
   captureBuffer: (nodeId: string) => Promise<BufferSnapshot | null>;
+  clearBuffer: (nodeId: string) => void;
   copyBuffers: (copies: BufferCopy[]) => void;
   restoreBuffers: (snapshots: Record<string, BufferSnapshot>) => void;
   syncGraph: (program: DspProgram) => void;
@@ -194,7 +195,7 @@ interface ImageDataRequest {
 // Keep this in step with public/audio/visual-fm-kernel.wasm. AudioWorklet
 // modules and WASM are aggressively cached, so an older kernel can silently
 // omit newer DSP behavior or exports while the current UI is running.
-const AUDIO_ENGINE_ASSET_VERSION = '2026-08-03-sample-dsp-migration-1';
+const AUDIO_ENGINE_ASSET_VERSION = '2026-08-03-buffer-clear-1';
 const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const METER_UPDATE_INTERVAL_MS = 80;
@@ -395,6 +396,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     timeout: number;
   }>());
   const bufferRestoresRef = useRef<Record<string, BufferSnapshot>>({});
+  const pendingBufferClearsRef = useRef(new Set<string>());
   const pendingBufferCopiesRef = useRef(new Map<string, BufferCopy>());
   const recordingStartedAtRef = useRef(0);
   const recordingTimerRef = useRef<number | null>(null);
@@ -479,7 +481,6 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
         ) {
           lastSilenceReportAtRef.current = timestamp;
           logDiagnosticEvent('audio-output-silent-after-signal', {
-            level: 'warn',
             details: {
               generation: audioEngineGenerationRef.current,
               contextState: contextRef.current.state,
@@ -1231,6 +1232,8 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
           const pendingBufferCopies = [...pendingBufferCopiesRef.current.values()];
           pendingBufferCopiesRef.current.clear();
           postBufferCopies(node, pendingBufferCopies);
+          postBufferClears(node, [...pendingBufferClearsRef.current]);
+          pendingBufferClearsRef.current.clear();
           node.addEventListener('processorerror', () => {
             logDiagnosticEvent('audio-worklet-processor-error', {
               level: 'error',
@@ -1616,6 +1619,29 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     if (node) postBufferRestores(node, snapshots);
   }, []);
 
+  const clearBuffer = useCallback((nodeId: string) => {
+    if (!nodeId) return;
+    const restored = bufferRestoresRef.current[nodeId];
+    if (restored) restored.samples.fill(0);
+    setBuffers((current) => {
+      const visualization = current[nodeId];
+      if (!visualization) return current;
+      return {
+        ...current,
+        [nodeId]: {
+          ...visualization,
+          bins: visualization.bins.map(() => ({ min: 0, max: 0 })),
+        },
+      };
+    });
+    const node = nodeRef.current;
+    if (node) {
+      postBufferClears(node, [nodeId]);
+    } else {
+      pendingBufferClearsRef.current.add(nodeId);
+    }
+  }, []);
+
   const copyBuffers = useCallback((copies: BufferCopy[]) => {
     if (copies.length === 0) return;
     const node = nodeRef.current;
@@ -1782,6 +1808,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     startRecording,
     stopRecording,
     captureBuffer,
+    clearBuffer,
     copyBuffers,
     restoreBuffers,
     syncGraph,
@@ -1810,6 +1837,14 @@ function postBufferCopies(node: AudioWorkletNode, copies: BufferCopy[]): void {
   node.port.postMessage({
     type: 'copyBuffers',
     payload: { copies },
+  });
+}
+
+function postBufferClears(node: AudioWorkletNode, nodeIds: string[]): void {
+  if (nodeIds.length === 0) return;
+  node.port.postMessage({
+    type: 'clearBuffers',
+    payload: { nodeIds },
   });
 }
 
@@ -1908,18 +1943,25 @@ async function uploadRecording(blob: Blob, patchName: string, sampleEvents: Samp
   if (!isRecord(payload) || typeof payload.name !== 'string') {
     throw new Error('Recording save returned an invalid response.');
   }
-  const metadataResponse = await fetch('/api/recording-metadata', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'text/csv; charset=utf-8',
-      'X-Visual-Fm-Recording-Name': payload.name,
-    },
-    body: samplePlaybackEventsCsv(sampleEvents),
-  });
-  if (!metadataResponse.ok) {
-    throw new Error(await metadataResponse.text() || `Recording metadata save failed (${metadataResponse.status}).`);
+  const videoSampleEvents = sampleEvents.filter(isVideoSamplePlaybackEvent);
+  if (videoSampleEvents.length > 0) {
+    const metadataResponse = await fetch('/api/recording-metadata', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'X-Visual-Fm-Recording-Name': payload.name,
+      },
+      body: samplePlaybackEventsCsv(videoSampleEvents),
+    });
+    if (!metadataResponse.ok) {
+      throw new Error(await metadataResponse.text() || `Recording metadata save failed (${metadataResponse.status}).`);
+    }
   }
   return { name: payload.name };
+}
+
+function isVideoSamplePlaybackEvent(event: SamplePlaybackEvent): boolean {
+  return event.sampleName.toLowerCase().endsWith('.mp4');
 }
 
 function samplePlaybackEventsFromPayload(value: unknown): SamplePlaybackEvent[] {

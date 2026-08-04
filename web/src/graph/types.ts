@@ -188,6 +188,7 @@ export interface PatchArea {
   collapsed?: boolean;
   locked?: boolean;
   nodeIds?: string[];
+  areaIds?: string[];
 }
 
 export interface MidiInputPreferences {

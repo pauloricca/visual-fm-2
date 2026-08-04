@@ -83,6 +83,7 @@ export interface ShaderNodeData extends Record<string, unknown> {
   onSubpatchNameChange?: (nodeId: string, nextName: string) => void;
   onSampleSelect?: (nodeId: string) => void;
   onSampleDrop?: (nodeId: string, files: FileList) => void;
+  onBufferClear?: () => void;
   onImageSelect?: (nodeId: string) => void;
   onTypeEditStart: (nodeId: string) => void;
   onTypeEditEnd: () => void;

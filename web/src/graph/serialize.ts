@@ -11,6 +11,7 @@ export function normalizePatch(patch: Patch): Patch {
       position: { ...area.position },
       size: { ...area.size },
       ...(area.nodeIds ? { nodeIds: [...area.nodeIds].sort() } : {}),
+      ...(area.areaIds ? { areaIds: [...area.areaIds].sort() } : {}),
     })) } : {}),
     nodes: [...patch.nodes]
       .map((node) => ({

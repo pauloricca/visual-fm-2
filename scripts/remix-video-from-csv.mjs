@@ -32,7 +32,8 @@ Options:
   -h, --help                      Show this help
 
 The script requires ffmpeg and ffprobe. It loads each CSV sample_name from the
-samples directory. For every selected row it takes the corresponding video
+samples directory, ignoring samples without a video stream. For every remaining
+row it takes the corresponding video
 region, applies the recorded direction, speed, volume, attack, and release,
 and joins the chops in trigger order. Each chop
 lasts until the next trigger. When --final-duration-ms is omitted, the final
@@ -291,18 +292,27 @@ async function resolveEventSources(rows, samplesDirectory, requestedSampleName) 
   if (sampleNames.some((name) => name.length === 0)) {
     throw new Error('The CSV contains an empty sample_name.');
   }
-  const sources = await Promise.all(sampleNames.map(async (sampleName, index) => {
+  const probedSources = await Promise.all(sampleNames.map(async (sampleName) => {
     const path = join(samplesDirectory, sampleName);
     await assertFile(path, `sample "${sampleName}"`);
     const media = await probeMedia(path);
-    if (!media.hasVideo) throw new Error(`Sample "${sampleName}" has no video stream.`);
+    if (!media.hasVideo) {
+      process.stderr.write(`remix-video: skipping sample "${sampleName}" because it has no video stream.\n`);
+      return null;
+    }
     if (!media.hasAudio) throw new Error(`Sample "${sampleName}" has no audio stream.`);
-    return { index, sampleName, path, media };
+    return { sampleName, path, media };
   }));
+  const sources = probedSources
+    .filter((source) => source !== null)
+    .map((source, index) => ({ ...source, index }));
+  if (sources.length === 0) {
+    throw new Error('The selected CSV rows contain no samples with a video stream.');
+  }
   const sourceByName = new Map(sources.map((source) => [source.sampleName, source]));
-  const events = sortEvents(selected).map((event) => {
+  const events = sortEvents(selected).flatMap((event) => {
     const source = sourceByName.get(basename(event.sampleName));
-    return { ...event, sourceIndex: source.index, media: source.media };
+    return source ? [{ ...event, sourceIndex: source.index, media: source.media }] : [];
   });
   return { events, sources };
 }
@@ -466,7 +476,11 @@ function makeOverlapFilterGraph(events, finalDurationMs, media, mode, sources) {
   });
 
   const intervalInputs = intervals.map((_, index) => `[ointerval${index}]`).join('');
-  lines.push(`${intervalInputs}concat=n=${intervals.length}:v=1:a=0[outv]`);
+  lines.push(`${intervalInputs}concat=n=${intervals.length}:v=1:a=0[orawv]`);
+  // Quantizing every interval independently makes each boundary round up to a
+  // whole frame. Apply the output frame rate once so those errors cannot build
+  // into visible drift over a sequence of short clips.
+  lines.push(`[orawv]fps=${media.frameRate},settb=AVTB,setpts=PTS-STARTPTS[outv]`);
   const voiceInputs = timelineEvents.map((_, index) => `[ovoice${index}]`).join('');
   lines.push(
     `${voiceInputs}amix=inputs=${timelineEvents.length}:duration=longest:normalize=0:dropout_transition=0,`
@@ -568,7 +582,6 @@ function makeOverlapVideoPiece(input, output, event, interval, media) {
     `tpad=stop_mode=clone:stop_duration=${decimal(interval.duration)}`,
     `trim=duration=${decimal(interval.duration)}`,
     `scale=w=${media.width}:h=${media.height}:flags=lanczos`,
-    `fps=${media.frameRate}`,
     'settb=AVTB',
     'setpts=PTS-STARTPTS',
     'setsar=1',
@@ -738,7 +751,6 @@ function makeFilterGraph(segments, media, sources) {
       `tpad=stop_mode=clone:stop_duration=${decimal(segment.durationSeconds)}`,
       `trim=duration=${decimal(segment.durationSeconds)}`,
       `scale=w=${media.width}:h=${media.height}:flags=lanczos`,
-      `fps=${media.frameRate}`,
       'settb=AVTB',
       'setpts=PTS-STARTPTS',
       'setsar=1',
@@ -763,7 +775,11 @@ function makeFilterGraph(segments, media, sources) {
   });
 
   const concatInputs = segments.map((_, index) => `[v${index}][a${index}]`).join('');
-  lines.push(`${concatInputs}concat=n=${count}:v=1:a=1[outv][outa]`);
+  lines.push(`${concatInputs}concat=n=${count}:v=1:a=1[rawv][outa]`);
+  // Audio keeps the concatenated boundaries sample-accurate. Converting the
+  // completed video timeline to a constant frame rate avoids adding up one
+  // frame-rounding error for every chop.
+  lines.push(`[rawv]fps=${media.frameRate},settb=AVTB,setpts=PTS-STARTPTS[outv]`);
   return `${lines.join(';\n')}\n`;
 }
 

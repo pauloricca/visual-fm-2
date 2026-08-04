@@ -200,6 +200,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.bufferSampleCounts = new Map();
     this.pendingBufferRestores = new Map();
     this.pendingBufferCopies = new Map();
+    this.pendingBufferClears = new Set();
     this.bufferRestoreReplacementPending = false;
     this.midiButtonControlValues = new Map();
     this.graphVersion = 0;
@@ -255,6 +256,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         this.captureBuffer(payload);
       } else if (type === "copyBuffers") {
         this.copyBuffers(payload);
+      } else if (type === "clearBuffers") {
+        this.clearBuffers(payload);
       } else if (type === "restoreBuffers") {
         this.setBufferRestores(payload);
       } else if (type === "setLinkScope") {
@@ -324,6 +327,31 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       this.pendingBufferCopies.set(targetNodeId, sourceNodeId);
     }
     this.applyPendingBufferCopies();
+  }
+
+  clearBuffers(payload = {}) {
+    for (const nodeIdValue of Array.isArray(payload?.nodeIds) ? payload.nodeIds : []) {
+      const nodeId = String(nodeIdValue || "");
+      if (nodeId) this.pendingBufferClears.add(nodeId);
+    }
+    this.applyPendingBufferClears();
+  }
+
+  applyPendingBufferClears() {
+    if (!this.wasm?.memory || !this.wasm?.dspBufferPtr || !this.dspProgram) return;
+    const bufferLength = Math.max(0, Math.trunc(Number(this.wasm.dspBufferLength?.()) || 0));
+    if (bufferLength <= 0) return;
+
+    for (const nodeId of this.pendingBufferClears) {
+      const binding = this.dspProgram.stateBindings?.find((candidate) => (
+        candidate.nodeId === nodeId && String(candidate.id || "").endsWith(":buffer")
+      ));
+      if (!binding) continue;
+      const ptr = this.wasm.dspBufferPtr(binding.state);
+      if (!ptr) continue;
+      new Float32Array(this.wasm.memory.buffer, ptr, bufferLength).fill(0);
+      this.pendingBufferClears.delete(nodeId);
+    }
   }
 
   applyPendingBufferCopies() {
@@ -1415,6 +1443,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.restoreDspState(preservedState);
     this.applyPendingBufferRestores();
     this.applyPendingBufferCopies();
+    this.applyPendingBufferClears();
 
     // A newly created one-shot custom wave is an event-driven source. It must
     // stay silent until its trigger input receives a rising edge. Preserve the

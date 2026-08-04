@@ -46,6 +46,8 @@ export function installDiagnostics(): void {
   });
 
   window.addEventListener('error', (event) => {
+    if (isBenignResizeObserverError(event.message)) return;
+
     logDiagnosticEvent('window-error', {
       level: 'error',
       details: {
@@ -97,7 +99,7 @@ export function installDiagnostics(): void {
     logDiagnosticEvent('network-online');
   });
   window.addEventListener('offline', () => {
-    logDiagnosticEvent('network-offline', { level: 'warn' });
+    logDiagnosticEvent('network-offline');
   });
 
   window.setInterval(() => {
@@ -240,6 +242,11 @@ function performanceTimelineSnapshot(cleared: boolean) {
 function navigatorDeviceMemory(): number | null {
   const navigatorWithMemory = navigator as Navigator & { deviceMemory?: number };
   return typeof navigatorWithMemory.deviceMemory === 'number' ? navigatorWithMemory.deviceMemory : null;
+}
+
+function isBenignResizeObserverError(message: string): boolean {
+  return message === 'ResizeObserver loop limit exceeded'
+    || message === 'ResizeObserver loop completed with undelivered notifications.';
 }
 
 function gpuSnapshot() {
