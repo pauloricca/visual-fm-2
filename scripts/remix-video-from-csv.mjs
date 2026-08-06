@@ -34,7 +34,7 @@ Options:
       --faded-extensions          Make pre/post grayscale at 50% opacity
       --overlap-opacity           Mix overlaps; layer newer video at 50%
       --overlap-split             Mix overlaps; show equal-width video slices
-      --overlap-grid              Mix overlaps; resize video into a fixed grid
+      --overlap-grid              Mix overlaps; reflow video in a dynamic grid
       --overwrite                 Replace an existing output file
   -h, --help                      Show this help
 
@@ -92,7 +92,7 @@ async function main() {
   const filterPath = join(temporaryDirectory, 'filter-complex.txt');
 
   try {
-    const filter = options.overlapMode
+    const plan = options.overlapMode
       ? makeOverlapFilterGraph(
         events,
         options.finalDurationMs,
@@ -104,12 +104,13 @@ async function main() {
         options.fadedExtensions,
       )
       : makeFilterGraph(segments, outputMedia, sources, options.fadedExtensions);
-    await writeFile(filterPath, filter);
+    await writeFile(filterPath, plan.filter);
 
     const ffmpegArguments = [
       '-hide_banner',
       options.overwrite ? '-y' : '-n',
-      ...sources.flatMap((source) => ['-i', source.path]),
+      ...plan.inputArguments,
+      '-filter_complex_threads', '4',
       '-filter_complex_script', filterPath,
       '-map', '[outv]',
       '-map', '[outa]',
@@ -417,7 +418,6 @@ function makeSegments(events, finalDurationMs, preSeconds, postSeconds) {
     const sourceEndMs = playbackDirection > 0
       ? audioSourceEndMs + postSourceMs
       : audioSourceEndMs + preSourceMs;
-
     segments.push({
       ...event,
       durationSeconds: actualPreSeconds + durationMs / 1000 + actualPostSeconds,
@@ -495,42 +495,119 @@ function makeOverlapFilterGraph(
   const outputDurationSeconds = audioOutputDurationSeconds + prepared.at(-1).videoPostSeconds;
   const timelineEvents = prepared.filter((event) => event.triggerSeconds < outputDurationSeconds);
   if (timelineEvents.length === 0) throw new Error('No playback event begins before the output ends.');
+  warnAboutOverlapComplexity(timelineEvents, outputDurationSeconds);
 
-  const intervals = makeOverlapIntervals(timelineEvents, outputDurationSeconds, fadedExtensions);
-  const grid = mode === 'grid'
-    ? makeOverlapGrid(timelineEvents, intervals)
-    : null;
+  const intervals = makeOverlapIntervals(
+    timelineEvents,
+    outputDurationSeconds,
+    fadedExtensions,
+    media.frameRate,
+  );
   const lines = [];
-  const videoPieceEvents = intervals.flatMap((interval) => interval.active);
-  const videoInputs = allocateSourceInputs(videoPieceEvents, sources, 'v', 'ovin', lines);
-  const audioInputs = allocateSourceInputs(timelineEvents, sources, 'a', 'oain', lines);
+  const boundedInputs = makeBoundedInputs(
+    timelineEvents,
+    sources,
+    (event) => event.videoLowSeconds,
+    (event) => event.videoHighSeconds,
+  );
+  const eventVideoInputs = allocateInputConsumers(
+    boundedInputs.inputs,
+    'v',
+    'oveventin',
+    lines,
+  );
+  const audioInputs = allocateInputConsumers(
+    boundedInputs.inputs,
+    'a',
+    'oain',
+    lines,
+  );
 
-  let videoInputIndex = 0;
-  intervals.forEach((interval, intervalIndex) => {
-    const pieceLabels = interval.active.map((event, activeIndex) => {
-      const input = videoInputs[videoInputIndex];
-      videoInputIndex += 1;
-      const label = `opiece${intervalIndex}_${activeIndex}`;
-      lines.push(makeOverlapVideoPiece(input, label, event, interval, media, fadedExtensions));
-      return label;
-    });
-    if (mode === 'opacity') {
-      composeOpacityInterval(lines, pieceLabels, interval, intervalIndex, media);
-    } else if (mode === 'split') {
-      composeSplitInterval(lines, pieceLabels, interval, intervalIndex, media);
-    } else {
-      composeGridInterval(lines, pieceLabels, interval, intervalIndex, media, grid);
-    }
-    // The concat filter otherwise derives each video-only interval's length
-    // from its last decoded frame. Pre/post creates many more boundaries, so
-    // those sub-frame losses can accumulate into visible A/V drift. This
-    // silent stream is only an internal sample-accurate clock; it is discarded
-    // after concatenation and never reaches the remix audio.
-    lines.push(
-      `anullsrc=r=${media.audioSampleRate}:cl=stereo,`
-      + `atrim=duration=${decimal(interval.duration)},asetpts=PTS-STARTPTS[oclock${intervalIndex}]`,
+  if (mode === 'grid') {
+    composeContinuousGrid(
+      lines,
+      eventVideoInputs,
+      timelineEvents,
+      intervals,
+      outputDurationSeconds,
+      media,
+      boundedInputs.inputs,
+      fadedExtensions,
     );
-  });
+  } else {
+    const preparedVideoByEvent = new Map();
+    const videoPieceEvents = intervals.flatMap((interval) => interval.active);
+    const visibleVideoEvents = new Set(videoPieceEvents);
+    timelineEvents.forEach((event, index) => {
+      if (!visibleVideoEvents.has(event)) {
+        lines.push(`${bracket(eventVideoInputs[index])}nullsink`);
+        return;
+      }
+      const label = `ovprepared${index}`;
+      const sourceInput = boundedInputs.inputs[index];
+      lines.push(makeOverlapVideoVoice(
+        eventVideoInputs[index],
+        label,
+        event,
+        outputDurationSeconds,
+        media,
+        sourceInput.startSeconds,
+      ));
+      preparedVideoByEvent.set(event, { video: label });
+    });
+    const videoInputs = allocateInputConsumers(
+      videoPieceEvents.map((event) => preparedVideoByEvent.get(event)),
+      'v',
+      'ovin',
+      lines,
+    );
+    let videoInputIndex = 0;
+    intervals.forEach((interval, intervalIndex) => {
+      const pieceLabels = interval.active.map((event, activeIndex) => {
+        const input = videoInputs[videoInputIndex];
+        videoInputIndex += 1;
+        const label = `opiece${intervalIndex}_${activeIndex}`;
+        lines.push(makeOverlapVideoPiece(
+          input,
+          label,
+          event,
+          interval,
+          media,
+          fadedExtensions,
+          null,
+        ));
+        return label;
+      });
+      if (mode === 'opacity') {
+        composeOpacityInterval(lines, pieceLabels, interval, intervalIndex, media);
+      } else {
+        composeSplitInterval(lines, pieceLabels, interval, intervalIndex, media);
+      }
+      lines.push(
+        `[ointerval${intervalIndex}]fps=${media.frameRate}:start_time=0:round=near,`
+        + `tpad=stop_mode=clone:stop_duration=${decimal(interval.duration)},`
+        + `trim=duration=${decimal(interval.duration)},settb=AVTB,`
+        + `setpts=PTS-STARTPTS[otimed${intervalIndex}]`,
+      );
+      lines.push(
+        `anullsrc=r=${media.audioSampleRate}:cl=stereo,`
+        + `atrim=duration=${decimal(interval.duration)},asetpts=PTS-STARTPTS[oclock${intervalIndex}]`,
+      );
+    });
+
+    const intervalInputs = intervals
+      .map((_, index) => `[otimed${index}][oclock${index}]`)
+      .join('');
+    lines.push(`${intervalInputs}concat=n=${intervals.length}:v=1:a=1[orawv][oclockout]`);
+    lines.push('[oclockout]anullsink');
+    const videoOutputDurationSeconds = intervals.at(-1).end;
+    lines.push(
+      `[orawv]fps=${media.frameRate},`
+      + `tpad=stop_mode=clone:stop_duration=${decimal(frameDurationSeconds(media.frameRate))},`
+      + `trim=duration=${decimal(videoOutputDurationSeconds)},`
+      + 'settb=AVTB,setpts=PTS-STARTPTS[outv]',
+    );
+  }
 
   timelineEvents.forEach((event, index) => {
     lines.push(makeOverlapAudioVoice(
@@ -539,25 +616,29 @@ function makeOverlapFilterGraph(
       event,
       audioOutputDurationSeconds,
       media.audioSampleRate,
+      boundedInputs.inputs[index].startSeconds,
     ));
   });
 
-  const intervalInputs = intervals
-    .map((_, index) => `[ointerval${index}][oclock${index}]`)
-    .join('');
-  lines.push(`${intervalInputs}concat=n=${intervals.length}:v=1:a=1[orawv][oclockout]`);
-  lines.push('[oclockout]anullsink');
-  // Quantizing every interval independently makes each boundary round up to a
-  // whole frame. Apply the output frame rate once so those errors cannot build
-  // into visible drift over a sequence of short clips.
-  lines.push(`[orawv]fps=${media.frameRate},settb=AVTB,setpts=PTS-STARTPTS[outv]`);
+  // Keep the mixer clock alive even when every delayed event voice initially
+  // reports EOF. `apad` cannot create output when its upstream filter has not
+  // emitted a first frame, which otherwise produces only AAC encoder padding.
+  lines.push(
+    `anullsrc=r=${media.audioSampleRate}:cl=stereo,`
+    + `atrim=duration=${decimal(outputDurationSeconds)},`
+    + 'asetpts=PTS-STARTPTS[oaudiobed]',
+  );
   const voiceInputs = timelineEvents.map((_, index) => `[ovoice${index}]`).join('');
   lines.push(
-    `${voiceInputs}amix=inputs=${timelineEvents.length}:duration=longest:normalize=0:dropout_transition=0,`
+    `${voiceInputs}[oaudiobed]amix=inputs=${timelineEvents.length + 1}:`
+    + 'duration=longest:normalize=0:dropout_transition=0,'
     + `apad=pad_dur=${decimal(outputDurationSeconds)},`
     + `atrim=duration=${decimal(outputDurationSeconds)},asetpts=PTS-STARTPTS[outa]`,
   );
-  return `${lines.join(';\n')}\n`;
+  return {
+    filter: `${lines.join(';\n')}\n`,
+    inputArguments: boundedInputs.arguments,
+  };
 }
 
 function prepareOverlapEvents(events, preSeconds, postSeconds) {
@@ -625,8 +706,40 @@ function overlapOutputDurationSeconds(events, finalDurationMs) {
   return last.triggerSeconds + finalTailMs / 1000;
 }
 
-function makeOverlapIntervals(events, outputDurationSeconds, fadedExtensions) {
-  const boundaries = [0, outputDurationSeconds];
+function warnAboutOverlapComplexity(events, outputDurationSeconds) {
+  const boundaries = [];
+  let layerSeconds = 0;
+  events.forEach((event) => {
+    const start = Math.max(0, event.videoStartSeconds);
+    const end = Math.min(
+      outputDurationSeconds,
+      event.videoStartSeconds + event.videoDurationSeconds,
+    );
+    if (end <= start) return;
+    layerSeconds += end - start;
+    boundaries.push([start, 1], [end, -1]);
+  });
+  boundaries.sort((left, right) => left[0] - right[0] || left[1] - right[1]);
+  let active = 0;
+  let maximumActive = 0;
+  boundaries.forEach(([, change]) => {
+    active += change;
+    maximumActive = Math.max(maximumActive, active);
+  });
+  const averageLayers = layerSeconds / outputDurationSeconds;
+  if (maximumActive <= 16 && averageLayers <= 8) return;
+  process.stderr.write(
+    `remix-video: warning: overlap composition reaches ${maximumActive} simultaneous video voices `
+    + `and ${decimal(layerSeconds)} layer-seconds across ${decimal(outputDurationSeconds)} seconds `
+    + `of output (average ${decimal(averageLayers)} layers); feedback-expanded source regions may `
+    + 'take substantially longer to render.\n',
+  );
+}
+
+function makeOverlapIntervals(events, outputDurationSeconds, fadedExtensions, frameRate) {
+  const frameDuration = frameDurationSeconds(frameRate);
+  const videoOutputDurationSeconds = Math.ceil(outputDurationSeconds / frameDuration) * frameDuration;
+  const boundaries = [0, videoOutputDurationSeconds];
   events.forEach((event) => {
     const end = Math.min(
       outputDurationSeconds,
@@ -644,53 +757,110 @@ function makeOverlapIntervals(events, outputDurationSeconds, fadedExtensions) {
       if (contentEnd > 0 && contentEnd < outputDurationSeconds) boundaries.push(contentEnd);
     }
   });
-  const sorted = [...new Set(boundaries.map((value) => decimal(value)))].map(Number)
+  const quantizedBoundaries = boundaries.map((value) => Math.min(
+    videoOutputDurationSeconds,
+    Math.max(0, Math.round(value / frameDuration) * frameDuration),
+  ));
+  const sorted = [...new Set(quantizedBoundaries.map((value) => decimal(value)))].map(Number)
     .sort((left, right) => left - right);
 
   return sorted.slice(0, -1).map((start, index) => {
     const end = sorted[index + 1];
+    const sampleTime = (start + end) / 2;
     return {
       start,
       end,
       duration: end - start,
       active: events.filter((event) => (
-        event.videoStartSeconds < end
-        && event.videoStartSeconds + event.videoDurationSeconds > start
+        event.videoStartSeconds <= sampleTime
+        && event.videoStartSeconds + event.videoDurationSeconds > sampleTime
       )),
     };
   }).filter((interval) => interval.duration > 0);
 }
 
-function makeOverlapVideoPiece(input, output, event, interval, media, fadedExtensions) {
+function frameDurationSeconds(frameRate) {
+  const [numerator, denominator = '1'] = frameRate.split('/').map(Number);
+  return denominator / numerator;
+}
+
+function makeOverlapVideoPiece(
+  input,
+  output,
+  event,
+  interval,
+  media,
+  fadedExtensions,
+  gridCell,
+) {
   const elapsedStart = Math.max(0, interval.start - event.videoStartSeconds);
   const elapsedEnd = Math.min(
     event.videoDurationSeconds,
     interval.end - event.videoStartSeconds,
   );
-  const sourceStart = event.reverse
-    ? event.videoHighSeconds - elapsedEnd * event.speed
-    : event.videoLowSeconds + elapsedStart * event.speed;
-  const sourceEnd = event.reverse
-    ? event.videoHighSeconds - elapsedStart * event.speed
-    : event.videoLowSeconds + elapsedEnd * event.speed;
   const contentEnd = event.triggerSeconds + event.contentDurationSeconds;
   const isExtension = fadedExtensions && (
     interval.end <= event.triggerSeconds + 0.000001
     || interval.start >= contentEnd - 0.000001
   );
   const filters = [
-    `trim=start=${decimal(sourceStart)}:end=${decimal(sourceEnd)}`,
+    `trim=start=${decimal(elapsedStart)}:end=${decimal(elapsedEnd)}`,
     'setpts=PTS-STARTPTS',
-    ...(event.reverse ? ['reverse'] : []),
-    `setpts=PTS/${decimal(event.speed)}`,
     `tpad=stop_mode=clone:stop_duration=${decimal(interval.duration)}`,
     `trim=duration=${decimal(interval.duration)}`,
-    `scale=w=${media.width}:h=${media.height}:flags=lanczos`,
+    ...(gridCell
+      ? [
+        `scale=w=${gridCell.width}:h=${gridCell.height}:`
+          + 'force_original_aspect_ratio=increase:flags=lanczos',
+        `crop=w=${gridCell.width}:h=${gridCell.height}`,
+      ]
+      : [`scale=w=${media.width}:h=${media.height}:flags=lanczos`]),
     'settb=AVTB',
     'setpts=PTS-STARTPTS',
     'setsar=1',
-    'format=rgba',
-    ...(isExtension ? [fadedExtensionAlphaFilter()] : []),
+    ...(gridCell
+      ? [
+        'format=yuv420p',
+        ...(isExtension ? [fadedExtensionYuvOnBlackFilter()] : []),
+      ]
+      : [
+        'format=rgba',
+        ...(isExtension ? [fadedExtensionAlphaFilter()] : []),
+      ]),
+  ];
+  return `${bracket(input)}${filters.join(',')}[${output}]`;
+}
+
+function makeOverlapVideoVoice(
+  input,
+  output,
+  event,
+  outputDurationSeconds,
+  media,
+  inputStartSeconds,
+) {
+  const availableDuration = Math.min(
+    event.videoDurationSeconds,
+    outputDurationSeconds - event.videoStartSeconds,
+  );
+  const sourceNeeded = availableDuration * event.speed;
+  const sourceStart = event.reverse
+    ? event.videoHighSeconds - sourceNeeded
+    : event.videoLowSeconds;
+  const sourceEnd = event.reverse
+    ? event.videoHighSeconds
+    : event.videoLowSeconds + sourceNeeded;
+  const filters = [
+    `trim=start=${decimal(sourceStart - inputStartSeconds)}:`
+      + `end=${decimal(sourceEnd - inputStartSeconds)}`,
+    'setpts=PTS-STARTPTS',
+    ...(event.reverse ? ['reverse'] : []),
+    `setpts=PTS/${decimal(event.speed)}`,
+    `fps=${media.frameRate}:start_time=0:round=near`,
+    `tpad=stop_mode=clone:stop_duration=${decimal(availableDuration)}`,
+    `trim=duration=${decimal(availableDuration)}`,
+    'settb=AVTB',
+    'setpts=PTS-STARTPTS',
   ];
   return `${bracket(input)}${filters.join(',')}[${output}]`;
 }
@@ -748,57 +918,178 @@ function composeSplitInterval(lines, pieces, interval, intervalIndex, media) {
   });
 }
 
-function makeOverlapGrid(events, intervals) {
-  const maximumOverlap = Math.max(1, ...intervals.map((interval) => interval.active.length));
-  const columns = Math.ceil(Math.sqrt(maximumOverlap));
-  const rows = Math.ceil(maximumOverlap / columns);
-  const slots = new Map();
-  const occupiedUntil = Array.from({ length: maximumOverlap }, () => 0);
-
-  [...events].sort((left, right) => (
-    left.videoStartSeconds - right.videoStartSeconds
-    || left.captureOrder - right.captureOrder
-  )).forEach((event) => {
-    const slot = occupiedUntil.findIndex((end) => end <= event.videoStartSeconds);
-    if (slot < 0) throw new Error('Could not assign an overlap-grid cell.');
-    slots.set(event, slot);
-    occupiedUntil[slot] = event.videoStartSeconds + event.videoDurationSeconds;
+function makeDynamicGridCells(count, media) {
+  if (count === 0) return [];
+  const columns = Math.ceil(Math.sqrt(count));
+  const rows = Math.ceil(count / columns);
+  const width = Math.max(2, Math.floor(media.width / columns / 2) * 2);
+  const height = Math.max(2, Math.floor(media.height / rows / 2) * 2);
+  return Array.from({ length: count }, (_, index) => {
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+    return { x: column * width, y: row * height, width, height };
   });
-
-  return { columns, rows, slots };
 }
 
-function composeGridInterval(lines, pieces, interval, intervalIndex, media, grid) {
-  const output = `ointerval${intervalIndex}`;
-  if (pieces.length === 0) {
-    lines.push(blackInterval(output, interval.duration, media));
-    return;
-  }
+function composeContinuousGrid(
+  lines,
+  inputs,
+  events,
+  intervals,
+  outputDurationSeconds,
+  media,
+  boundedInputs,
+  fadedExtensions,
+) {
+  const videoOutputDurationSeconds = intervals.at(-1).end;
+  lines.push(blackInterval('ogridbase', videoOutputDurationSeconds, media));
+  let base = 'ogridbase';
+  let compositeIndex = 0;
 
-  const background = `ogridbase${intervalIndex}`;
-  lines.push(blackInterval(background, interval.duration, media, 'rgba'));
-  let base = background;
-  pieces.forEach((piece, index) => {
-    const slot = grid.slots.get(interval.active[index]);
-    const column = slot % grid.columns;
-    const row = Math.floor(slot / grid.columns);
-    const x = Math.floor(media.width * column / grid.columns);
-    const y = Math.floor(media.height * row / grid.rows);
-    const nextX = Math.floor(media.width * (column + 1) / grid.columns);
-    const nextY = Math.floor(media.height * (row + 1) / grid.rows);
-    const resized = `ogridcell${intervalIndex}_${index}`;
-    const composite = index === pieces.length - 1 ? output : `ogridcomposite${intervalIndex}_${index}`;
-    lines.push(
-      `[${piece}]scale=w=${nextX - x}:h=${nextY - y}:force_original_aspect_ratio=increase:flags=lanczos,`
-      + `crop=w=${nextX - x}:h=${nextY - y},setsar=1[${resized}]`,
-    );
-    lines.push(
-      `[${base}][${resized}]overlay=x=${x}:y=${y}:shortest=1:format=auto,`
-      + `${index === pieces.length - 1 ? 'format=yuv420p,' : ''}`
-      + `setsar=1[${composite}]`,
-    );
-    base = composite;
+  events.forEach((event, eventIndex) => {
+    const ranges = [];
+    intervals.forEach((interval) => {
+      const activeIndex = interval.active.indexOf(event);
+      if (activeIndex < 0) return;
+      const cell = makeDynamicGridCells(interval.active.length, media)[activeIndex];
+      const previous = ranges.at(-1);
+      if (
+        previous
+        && Math.abs(previous.end - interval.start) < 0.0000001
+        && previous.x === cell.x
+        && previous.y === cell.y
+        && previous.width === cell.width
+        && previous.height === cell.height
+      ) {
+        previous.end = interval.end;
+      } else {
+        ranges.push({ start: interval.start, end: interval.end, ...cell });
+      }
+    });
+    if (ranges.length === 0) {
+      lines.push(`${bracket(inputs[eventIndex])}nullsink`);
+      return;
+    }
+
+    const voice = `ogridvoice${eventIndex}`;
+    lines.push(makeContinuousGridVoice(
+      inputs[eventIndex],
+      voice,
+      event,
+      ranges,
+      outputDurationSeconds,
+      media,
+      boundedInputs[eventIndex].startSeconds,
+      fadedExtensions,
+    ));
+    const variantsBySize = new Map();
+    ranges.forEach((range) => {
+      const key = `${range.width}x${range.height}`;
+      const variantRanges = variantsBySize.get(key) ?? [];
+      variantRanges.push(range);
+      variantsBySize.set(key, variantRanges);
+    });
+    const variants = [...variantsBySize.values()];
+    const variantInputs = variants.map((_, variantIndex) => `ogridvariantin${eventIndex}_${variantIndex}`);
+    if (variants.length === 1) {
+      lines.push(`[${voice}]null[${variantInputs[0]}]`);
+    } else {
+      lines.push(
+        `[${voice}]split=${variants.length}`
+        + variantInputs.map((label) => `[${label}]`).join(''),
+      );
+    }
+    variants.forEach((variantRanges, variantIndex) => {
+      const { width, height } = variantRanges[0];
+      const variant = `ogridvariant${eventIndex}_${variantIndex}`;
+      lines.push(
+        `[${variantInputs[variantIndex]}]`
+        + `scale=w=${width}:h=${height}:force_original_aspect_ratio=increase:flags=lanczos,`
+        + `crop=w=${width}:h=${height},`
+        + `tpad=start_mode=add:start_duration=${decimal(ranges[0].start)}:color=black,`
+        + `settb=AVTB,setpts=PTS-STARTPTS,setsar=1,format=yuv420p[${variant}]`,
+      );
+      const output = `ogridcomposite${compositeIndex}`;
+      compositeIndex += 1;
+      const x = timelineValueExpression(variantRanges, 'x');
+      const y = timelineValueExpression(variantRanges, 'y');
+      const enable = variantRanges.map((range) => (
+        `gte(t,${decimal(range.start)})*lt(t,${decimal(range.end)})`
+      )).join('+');
+      lines.push(
+        `[${base}][${variant}]overlay=x='${x}':y='${y}':eval=frame:`
+        + 'eof_action=pass:repeatlast=0:shortest=0:format=yuv420:'
+        + `enable='${enable}'[${output}]`,
+      );
+      base = output;
+    });
   });
+
+  lines.push(
+    `[${base}]fps=${media.frameRate}:start_time=0:round=near,`
+    + `tpad=stop_mode=clone:stop_duration=${decimal(frameDurationSeconds(media.frameRate))},`
+    + `trim=duration=${decimal(videoOutputDurationSeconds)},`
+    + 'settb=AVTB,setpts=PTS-STARTPTS,format=yuv420p[outv]',
+  );
+}
+
+function makeContinuousGridVoice(
+  input,
+  output,
+  event,
+  ranges,
+  outputDurationSeconds,
+  media,
+  inputStartSeconds,
+  fadedExtensions,
+) {
+  const availableDuration = Math.min(
+    event.videoDurationSeconds,
+    outputDurationSeconds - event.videoStartSeconds,
+  );
+  const visualStart = ranges[0].start;
+  const visualDuration = ranges.at(-1).end - visualStart;
+  const sourceNeeded = availableDuration * event.speed;
+  const sourceStart = event.reverse
+    ? event.videoHighSeconds - sourceNeeded
+    : event.videoLowSeconds;
+  const sourceEnd = event.reverse
+    ? event.videoHighSeconds
+    : event.videoLowSeconds + sourceNeeded;
+  const fadedRanges = [];
+  const videoPreSeconds = event.triggerSeconds - event.videoStartSeconds;
+  if (fadedExtensions && videoPreSeconds > 0) {
+    fadedRanges.push(`lt(t,${decimal(videoPreSeconds)})`);
+  }
+  if (fadedExtensions && event.videoPostSeconds > 0) {
+    fadedRanges.push(`gte(t,${decimal(videoPreSeconds + event.contentDurationSeconds)})`);
+  }
+  const filters = [
+    `trim=start=${decimal(sourceStart - inputStartSeconds)}:`
+      + `end=${decimal(sourceEnd - inputStartSeconds)}`,
+    'setpts=PTS-STARTPTS',
+    ...(event.reverse ? ['reverse'] : []),
+    `setpts=PTS/${decimal(event.speed)}`,
+    `fps=${media.frameRate}:start_time=0:round=near`,
+    `tpad=stop_mode=clone:stop_duration=${decimal(frameDurationSeconds(media.frameRate))}`,
+    `trim=duration=${decimal(visualDuration)}`,
+    ...(fadedRanges.length > 0
+      ? [fadedExtensionYuvOnBlackFilter(fadedRanges.join('+'))]
+      : []),
+    'settb=AVTB',
+    'setpts=PTS-STARTPTS',
+    'setsar=1',
+    'format=yuv420p',
+  ];
+  return `${bracket(input)}${filters.join(',')}[${output}]`;
+}
+
+function timelineValueExpression(ranges, property) {
+  let expression = decimal(ranges.at(-1)[property]);
+  for (let index = ranges.length - 2; index >= 0; index -= 1) {
+    expression = `if(lt(t,${decimal(ranges[index].end)}),${decimal(ranges[index][property])},${expression})`;
+  }
+  return expression;
 }
 
 function blackInterval(output, duration, media, format = 'yuv420p') {
@@ -806,7 +1097,14 @@ function blackInterval(output, duration, media, format = 'yuv420p') {
     + `settb=AVTB,setpts=PTS-STARTPTS,setsar=1,format=${format}[${output}]`;
 }
 
-function makeOverlapAudioVoice(input, output, event, outputDurationSeconds, audioSampleRate) {
+function makeOverlapAudioVoice(
+  input,
+  output,
+  event,
+  outputDurationSeconds,
+  audioSampleRate,
+  inputStartSeconds,
+) {
   const availableDuration = Math.min(
     event.contentDurationSeconds,
     outputDurationSeconds - event.triggerSeconds,
@@ -821,7 +1119,8 @@ function makeOverlapAudioVoice(input, output, event, outputDurationSeconds, audi
     : 0;
   const delaySamples = Math.max(0, Math.round(event.triggerSeconds * audioSampleRate));
   const filters = [
-    `atrim=start=${decimal(sourceStart)}:end=${decimal(sourceEnd)}`,
+    `atrim=start=${decimal(sourceStart - inputStartSeconds)}:`
+      + `end=${decimal(sourceEnd - inputStartSeconds)}`,
     'asetpts=PTS-STARTPTS',
     ...(event.reverse ? ['areverse'] : []),
     `asetrate=${Math.max(1, Math.round(audioSampleRate * event.speed))}`,
@@ -852,13 +1151,27 @@ function fadedExtensionOnBlackFilter(enable) {
     + `:enable='${enable}'`;
 }
 
+function fadedExtensionYuvOnBlackFilter(enable = null) {
+  return "lutyuv=y='(val+16)/2':u=128:v=128"
+    + (enable ? `:enable='${enable}'` : '');
+}
+
 function makeFilterGraph(segments, media, sources, fadedExtensions) {
-  const count = segments.length;
+  const leadingDurationSeconds = Math.max(0, segments[0].triggerTimeMs / 1000);
+  const hasLeadingInterval = leadingDurationSeconds > 0;
+  const count = segments.length + (hasLeadingInterval ? 1 : 0);
   const lines = [];
-  const videoInputs = allocateSourceInputs(segments, sources, 'v', 'vin', lines);
-  const audioInputs = allocateSourceInputs(segments, sources, 'a', 'ain', lines);
+  const boundedInputs = makeBoundedInputs(
+    segments,
+    sources,
+    (segment) => segment.sourceStartSeconds,
+    (segment) => segment.sourceEndSeconds,
+  );
+  const videoInputs = allocateInputConsumers(boundedInputs.inputs, 'v', 'vin', lines);
+  const audioInputs = allocateInputConsumers(boundedInputs.inputs, 'a', 'ain', lines);
 
   segments.forEach((segment, index) => {
+    const inputStartSeconds = boundedInputs.inputs[index].startSeconds;
     const speed = Math.abs(segment.speed);
     const attack = Math.min(Math.max(0, segment.attackMs / 1000), segment.contentDurationSeconds);
     const release = Math.min(Math.max(0, segment.releaseMs / 1000), segment.contentDurationSeconds);
@@ -871,7 +1184,8 @@ function makeFilterGraph(segments, media, sources, fadedExtensions) {
       fadedRanges.push(`gte(t,${decimal(segment.preSeconds + segment.contentDurationSeconds)})`);
     }
     const videoFilters = [
-      `trim=start=${decimal(segment.sourceStartSeconds)}:end=${decimal(segment.sourceEndSeconds)}`,
+      `trim=start=${decimal(segment.sourceStartSeconds - inputStartSeconds)}:`
+        + `end=${decimal(segment.sourceEndSeconds - inputStartSeconds)}`,
       'setpts=PTS-STARTPTS',
       ...(segment.reverse ? ['reverse'] : []),
       `setpts=PTS/${decimal(speed)}`,
@@ -886,7 +1200,8 @@ function makeFilterGraph(segments, media, sources, fadedExtensions) {
         : ['format=yuv420p']),
     ];
     const audioFilters = [
-      `atrim=start=${decimal(segment.audioSourceStartSeconds)}:end=${decimal(segment.audioSourceEndSeconds)}`,
+      `atrim=start=${decimal(segment.audioSourceStartSeconds - inputStartSeconds)}:`
+        + `end=${decimal(segment.audioSourceEndSeconds - inputStartSeconds)}`,
       'asetpts=PTS-STARTPTS',
       ...(segment.reverse ? ['areverse'] : []),
       `asetrate=${Math.max(1, Math.round(media.audioSampleRate * speed))}`,
@@ -906,30 +1221,93 @@ function makeFilterGraph(segments, media, sources, fadedExtensions) {
     lines.push(`${bracket(audioInputs[index])}${audioFilters.join(',')}[a${index}]`);
   });
 
-  const concatInputs = segments.map((_, index) => `[v${index}][a${index}]`).join('');
+  if (hasLeadingInterval) {
+    lines.push(blackInterval('vlead', leadingDurationSeconds, media));
+    lines.push(
+      `anullsrc=r=${media.audioSampleRate}:cl=stereo,`
+      + `atrim=duration=${decimal(leadingDurationSeconds)},asetpts=PTS-STARTPTS[alead]`,
+    );
+  }
+  const concatInputs = (hasLeadingInterval ? '[vlead][alead]' : '')
+    + segments.map((_, index) => `[v${index}][a${index}]`).join('');
   lines.push(`${concatInputs}concat=n=${count}:v=1:a=1[rawv][outa]`);
   // Audio keeps the concatenated boundaries sample-accurate. Converting the
   // completed video timeline to a constant frame rate avoids adding up one
   // frame-rounding error for every chop.
   lines.push(`[rawv]fps=${media.frameRate},settb=AVTB,setpts=PTS-STARTPTS[outv]`);
-  return `${lines.join(';\n')}\n`;
+  return {
+    filter: `${lines.join(';\n')}\n`,
+    inputArguments: boundedInputs.arguments,
+  };
 }
 
-function labels(prefix, count) {
-  return Array.from({ length: count }, (_, index) => `${prefix}${index}`);
-}
-
-function allocateSourceInputs(items, sources, stream, prefix, lines) {
-  const outputLabels = labels(prefix, items.length);
+function makeBoundedInputs(items, sources, startSecondsFor, endSecondsFor) {
+  const arguments_ = [];
+  const requests = items.map((item) => {
+    const source = sources[item.sourceIndex];
+    if (!source) throw new Error(`Could not resolve source input ${item.sourceIndex}.`);
+    const startSeconds = startSecondsFor(item);
+    const endSeconds = endSecondsFor(item);
+    if (endSeconds <= startSeconds) {
+      throw new Error(`CSV row ${item.captureOrder + 2} selects an empty source input.`);
+    }
+    return { source, startSeconds, endSeconds, input: null };
+  });
+  const regions = [];
   sources.forEach((source) => {
-    const itemIndexes = items.flatMap((item, index) => (
-      item.sourceIndex === source.index ? [index] : []
-    ));
-    if (itemIndexes.length === 0) return;
+    const sourceRequests = requests
+      .filter((request) => request.source === source)
+      .sort((left, right) => left.startSeconds - right.startSeconds || left.endSeconds - right.endSeconds);
+    let region = null;
+    sourceRequests.forEach((request) => {
+      if (!region || request.startSeconds > region.endSeconds + 0.000000001) {
+        region = {
+          source,
+          startSeconds: request.startSeconds,
+          endSeconds: request.endSeconds,
+          requests: [],
+        };
+        regions.push(region);
+      } else {
+        region.endSeconds = Math.max(region.endSeconds, request.endSeconds);
+      }
+      region.requests.push(request);
+    });
+  });
+  regions.forEach((region, inputIndex) => {
+    arguments_.push(
+      '-threads', '1',
+      '-ss', decimal(region.startSeconds),
+      '-t', decimal(region.endSeconds - region.startSeconds),
+      '-i', region.source.path,
+    );
+    const input = {
+      audio: `${inputIndex}:a`,
+      video: `${inputIndex}:v`,
+      startSeconds: region.startSeconds,
+    };
+    region.requests.forEach((request) => { request.input = input; });
+  });
+  const inputs = requests.map((request) => request.input);
+  return { arguments: arguments_, inputs };
+}
+
+function allocateInputConsumers(inputs, stream, prefix, lines) {
+  const outputLabels = inputs.map((_, index) => `${prefix}${index}`);
+  const consumerIndexesByInput = new Map();
+  inputs.forEach((input, consumerIndex) => {
+    if (!input) throw new Error('Could not resolve a bounded filter input.');
+    const consumerIndexes = consumerIndexesByInput.get(input) ?? [];
+    consumerIndexes.push(consumerIndex);
+    consumerIndexesByInput.set(input, consumerIndexes);
+  });
+  consumerIndexesByInput.forEach((consumerIndexes, input) => {
     const filter = stream === 'v' ? 'split' : 'asplit';
+    const resetTimestamps = stream === 'v' ? 'setpts=PTS-STARTPTS' : 'asetpts=PTS-STARTPTS';
     lines.push(
-      `[${source.index}:${stream}]${filter}=${itemIndexes.length}`
-      + itemIndexes.map((index) => bracket(outputLabels[index])).join(''),
+      `${bracket(input[stream === 'v' ? 'video' : 'audio'])}`
+      + `${resetTimestamps},${filter}=${consumerIndexes.length}`
+      + consumerIndexes.map((index) => bracket(outputLabels[index])).join(''),
     );
   });
   return outputLabels;

@@ -17,6 +17,7 @@
     "build": "npm --workspace web run build",
     "typecheck": "npm --workspace web run typecheck",
     "remix:video": "node scripts/remix-video-from-csv.mjs",
+    "smoke:video-remix": "node scripts/smoke-video-remix.mjs",
     "smoke:dsp-ports": "node scripts/smoke-dsp-port-links.mjs",
     "smoke:wasm-memory": "node scripts/smoke-wasm-memory.mjs"
   }

@@ -40,6 +40,9 @@ rust/visual-fm-kernel/target/debug
 .env.local
 .env.*.local
 
+# Locally generated HTTPS certificate and private key
+.cert/
+
 # OS / editor noise
 .DS_Store
 Thumbs.db
