@@ -203,6 +203,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     type: 'Slider',
     inputs: [
       { name: 'signal', valueEditor: false },
+      { name: 'inverse signal', valueEditor: false },
       { name: 'value', defaultValue: 0.5, min: 0, max: 1 },
       { name: 'min', defaultValue: 0 },
       { name: 'max', defaultValue: 1 },
@@ -210,7 +211,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
       { name: 'midiChannel', defaultValue: 0, min: 0, max: 16, integer: true, connectable: false },
       { name: 'midiCc', defaultValue: 1, min: 0, max: 127, integer: true, connectable: false },
     ],
-    outputs: [{ name: 'signal' }],
+    outputs: [{ name: 'signal' }, { name: 'inverse' }],
   },
   Joystick: {
     type: 'Joystick',
@@ -227,18 +228,21 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     ],
     outputs: [
       { name: 'x' },
+      { name: 'x inverse' },
       { name: 'y' },
+      { name: 'y inverse' },
     ],
   },
   Button: {
     type: 'Button',
     inputs: [
       { name: 'signal', valueEditor: false },
+      { name: 'inverse signal', valueEditor: false },
       { name: 'mode', defaultValue: 0, min: 0, max: 2, integer: true, connectable: false, valueEditor: false },
       { name: 'midiChannel', defaultValue: 0, min: 0, max: 16, integer: true, connectable: false },
       { name: 'midiCc', defaultValue: 1, min: 0, max: 127, integer: true, connectable: false },
     ],
-    outputs: [{ name: 'signal' }],
+    outputs: [{ name: 'signal' }, { name: 'inverse' }],
   },
   Keys: {
     type: 'Keys',
@@ -448,6 +452,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     { name: 'attack', defaultValue: 0.01, min: 0 },
     { name: 'release', defaultValue: 0.12, min: 0 },
   ]),
+  RemoveDc: processor('RemoveDc', []),
   RingMod: processor('RingMod', [
     { name: 'amount', defaultValue: 1 },
   ]),
@@ -462,6 +467,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     { name: 'range', defaultValue: 1, min: 0.001 },
     { name: 'mode', defaultValue: 1, min: 0, max: 1, integer: true, connectable: false, valueEditor: false },
     { name: 'length', defaultValue: 0.08, min: 0.01, max: 30, step: 0.01, connectable: false },
+    { name: 'reset', defaultValue: 1, min: 0, max: 1, integer: true, connectable: false, valueEditor: false },
   ]),
   FFT: {
     type: 'FFT',
@@ -558,6 +564,7 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   Limiter: 'Limiter',
   Envelope: 'Envelope',
   Follower: 'Follower',
+  RemoveDc: 'Remove DC',
   RingMod: 'Ring Mod',
   Fold: 'Fold',
   Meter: 'Meter',

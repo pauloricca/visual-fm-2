@@ -35,7 +35,7 @@ function normalizeCompatibleNode(node: PatchNode, isLegacySelector: boolean): Pa
     ...node,
     params,
     ...(inputs ? { inputs } : {}),
-    ...(node.outputs ? { outputs } : {}),
+    ...(outputs ? { outputs } : {}),
     ...(node.subpatch ? { subpatch: normalizePatchCompatibility(node.subpatch) } : {}),
   };
 }
@@ -232,6 +232,14 @@ function normalizeLegacyNodeParams(type: NodeType, params: Record<string, number
 }
 
 function normalizeLegacyInputDefinitions(type: NodeType, inputs: PortDefinition[] | undefined): PortDefinition[] | undefined {
+  if (type === 'Slider' || type === 'Button') {
+    if (!inputs || inputs.some((input) => input.name === 'inverse signal')) return inputs;
+    const normalized = [...inputs];
+    const signalIndex = normalized.findIndex((input) => input.name === 'signal');
+    normalized.splice(signalIndex >= 0 ? signalIndex + 1 : 0, 0, { name: 'inverse signal', valueEditor: false });
+    return normalized;
+  }
+
   if (type === 'Playhead') {
     if (!inputs) return inputs;
     const normalized = [...inputs];
@@ -275,6 +283,20 @@ function normalizeLegacyOutputDefinitions(type: NodeType, outputs: PortDefinitio
     return outputs.some((output) => output.name === 'record head out')
       ? outputs
       : [...outputs, { name: 'record head out' }];
+  }
+  if (type === 'Slider' || type === 'Button') {
+    if (!outputs) return outputs;
+    return outputs.some((output) => output.name === 'inverse')
+      ? outputs
+      : [...outputs, { name: 'inverse' }];
+  }
+  if (type === 'Joystick') {
+    if (!outputs) return outputs;
+    const nextOutputs = [...outputs];
+    for (const name of ['x inverse', 'y inverse']) {
+      if (!nextOutputs.some((output) => output.name === name)) nextOutputs.push({ name });
+    }
+    return nextOutputs;
   }
   if (type !== 'Reverb') return outputs;
   const nextOutputs = outputs?.filter((output) => output.name !== 'signal');

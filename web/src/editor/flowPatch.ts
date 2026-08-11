@@ -79,6 +79,7 @@ export interface ShaderNodeData extends Record<string, unknown> {
   onTypeChange: (nodeId: string, type: NodeType) => void;
   onConvertToArea: (nodeId: string) => void;
   onCustomLabelChange?: (nodeId: string, label: string) => void;
+  onTitleSelect?: (nodeId: string, additive: boolean) => void;
   onHeaderDoubleClick?: (nodeId: string) => void;
   onSubpatchNameChange?: (nodeId: string, nextName: string) => void;
   onSampleSelect?: (nodeId: string) => void;

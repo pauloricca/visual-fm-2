@@ -52,6 +52,7 @@ export type NodeType =
   | 'Limiter'
   | 'Envelope'
   | 'Follower'
+  | 'RemoveDc'
   | 'RingMod'
   | 'Fold'
   | 'Meter'

@@ -2391,7 +2391,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       const requestPoints = this.clamp(Math.round(Number(settings?.points) || points), 32, 512);
       return {
         linkId,
-        mode,
+        mode: settings?.mode === "zero-crossing" ? "zero-crossing" : settings?.mode === "envelope" ? "envelope" : mode,
         points: requestPoints,
         displayPoints: this.clamp(Math.round(Number(settings?.displayPoints) || displayPoints), 32, requestPoints),
         seconds: this.clamp(Number(settings?.seconds) || defaultSeconds, 0.01, LINK_SCOPE_SECONDS_MAX),

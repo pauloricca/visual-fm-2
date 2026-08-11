@@ -15,6 +15,7 @@ const program = ts.createProgram({
   rootNames: [
     path.join(sourceRoot, 'audio/dspProgram.ts'),
     path.join(sourceRoot, 'editor/dspNodeScope.ts'),
+    path.join(sourceRoot, 'graph/patchCompatibility.ts'),
   ],
   options: {
     target: ts.ScriptTarget.ES2022,
@@ -43,6 +44,7 @@ const require = createRequire(import.meta.url);
 const { compilePatchToDspProgram } = require(path.join(outputRoot, 'audio/dspProgram.js'));
 const { getDefinition, getNodeDefinition } = require(path.join(outputRoot, 'graph/nodeTypes.js'));
 const { expandGroups } = require(path.join(outputRoot, 'graph/subpatch.js'));
+const { normalizePatchCompatibility } = require(path.join(outputRoot, 'graph/patchCompatibility.js'));
 const { scopedDspNodeId } = require(path.join(outputRoot, 'editor/dspNodeScope.js'));
 
 assert(scopedDspNodeId('accumulator', []) === 'accumulator', 'Root DSP node IDs should remain local.');
@@ -60,8 +62,8 @@ const auditedPorts = {
   Buffer: ['signal', 'playhead', 'playhead speed', 'record head', 'record head speed', 'length'],
   Playhead: ['start', 'speed', 'length', 'reset trigger'],
   Time: [],
-  Slider: ['signal'],
-  Button: ['signal'],
+  Slider: ['signal', 'inverse signal'],
+  Button: ['signal', 'inverse signal'],
   Accumulator: ['increment'],
   Clamp: ['min', 'max'],
   Pan: ['pan'],
@@ -143,6 +145,19 @@ assert(
     }).inputs[0]?.name === 'mode',
   'Accumulator.increment and mode should be normalized in saved custom input layouts.',
 );
+for (const type of ['Slider', 'Button']) {
+  const normalized = normalizePatchCompatibility({
+    nodes: [{
+      ...node(`legacy_${type}`, type),
+      inputs: getDefinition(type).inputs.filter((input) => input.name !== 'inverse signal'),
+    }],
+    links: [],
+  });
+  assert(
+    normalized.nodes[0].inputs?.some((input) => input.name === 'inverse signal'),
+    `${type} should add the inverse signal input to saved patches.`,
+  );
+}
 
 const patch = {
   nodes: [
@@ -220,7 +235,6 @@ assert(
 
 const idleEnvelopeProgram = compilePatchToDspProgram({
   nodes: [
-    node('source', 'Constant', { value: 1 }),
     node('envelope', 'Envelope', {
       trigger: 1,
       gate: 1,
@@ -234,7 +248,6 @@ const idleEnvelopeProgram = compilePatchToDspProgram({
     node('out', 'AudioOut', { level: 1 }),
   ],
   links: [
-    link('source', 'signal', 'envelope', 'signal'),
     link('envelope', 'signal', 'out', 'both'),
   ],
 });
@@ -251,6 +264,20 @@ for (const register of [idleEnvelopeOp.a, idleEnvelopeOp.b]) {
     'Unconnected Envelope trigger and gate ports should compile as zero even when stale saved values are present.',
   );
 }
+const idleEnvelopeSignalOp = idleEnvelopeProgram.ops.find(
+  (op) => op.opcode === 2 && (op.a === idleEnvelopeOp.out || op.b === idleEnvelopeOp.out),
+);
+assert(idleEnvelopeSignalOp, 'Envelope signal output should multiply its source by the envelope.');
+const idleEnvelopeSignalRegister = idleEnvelopeSignalOp.a === idleEnvelopeOp.out
+  ? idleEnvelopeSignalOp.b
+  : idleEnvelopeSignalOp.a;
+const idleEnvelopeSignalValueOp = idleEnvelopeProgram.ops.find(
+  (op) => op.opcode === 0 && op.out === idleEnvelopeSignalRegister,
+);
+assert(
+  idleEnvelopeSignalValueOp && idleEnvelopeProgram.values[idleEnvelopeSignalValueOp.a] === 1,
+  'An unconnected Envelope signal input should compile as a constant unit signal.',
+);
 
 const spawnProgram = compilePatchToDspProgram({
   nodes: [

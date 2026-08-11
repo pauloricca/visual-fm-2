@@ -1087,7 +1087,7 @@ button:hover {
   appearance: none;
   width: fit-content;
   overflow: hidden;
-  cursor: text;
+  cursor: pointer;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1123,13 +1123,25 @@ button:hover {
   outline-offset: 2px;
 }
 
-.shader-node-group .shader-node-title {
+.shader-node-group > .shader-node-title {
   background: var(--color-accent);
   color: var(--color-background);
 }
 
 .shader-node-group:has(.group-ui-preview) {
   width: max(var(--group-ui-width, 0px), 160px);
+}
+
+.shader-node-group:has(.group-ui-preview)::after {
+  position: absolute;
+  z-index: 1;
+  top: 31px;
+  right: -1px;
+  bottom: -1px;
+  width: 1px;
+  background: var(--color-foreground);
+  content: '';
+  pointer-events: none;
 }
 
 .group-ui-preview {
@@ -1196,7 +1208,7 @@ button:hover {
   border: 0;
   background: transparent;
   color: var(--color-background);
-  cursor: text;
+  cursor: pointer;
   font-weight: 700;
   line-height: 22px;
   text-align: left;
@@ -1242,8 +1254,7 @@ button:hover {
   height: 5px;
 }
 
-.node-type-picker-button:hover,
-.node-type-picker-button:focus {
+.node-type-picker-button:focus-visible {
   background: var(--color-surface);
   color: var(--color-foreground);
   outline: 0;

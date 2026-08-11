@@ -149,6 +149,7 @@ const DSP_OP_SPAWN_END: i32 = 47;
 const DSP_OP_END_TRIGGER: i32 = 48;
 const DSP_OP_RANDOM: i32 = 49;
 const DSP_OP_SPAWN_INSTANCE_GATE: i32 = 50;
+const DSP_OP_DC_BLOCK: i32 = 51;
 const MIN_ENVELOPE_ATTACK_SECONDS: f64 = 0.001;
 const MAX_DSP_TEMPO_SOURCES: usize = 129;
 const TEMPO_OUTPUT_COUNT: i32 = 10;
@@ -7094,6 +7095,26 @@ fn render_dsp_follower(op: DspOp, sample_rate: f64) -> f64 {
     }
 }
 
+fn render_dsp_dc_block(op: DspOp, sample_rate: f64) -> f64 {
+    let input = sanitize_sample(dsp_reg(op.a), 4.0);
+    if op.state < 0 || (op.state as usize + 1) >= MAX_DSP_STATE {
+        return input;
+    }
+
+    unsafe {
+        let state_index = op.state as usize;
+        let previous_input = *dsp_state_ptr(state_index);
+        let previous_output = *dsp_state_ptr(state_index + 1);
+        // A one-pole DC blocker with a 10 Hz corner frequency. It removes
+        // steady offsets while leaving the audible spectrum essentially intact.
+        let coefficient = (-TWO_PI * 10.0 / sample_rate.max(1.0)).exp();
+        let output = sanitize_sample(input - previous_input + coefficient * previous_output, 4.0);
+        *dsp_state_ptr(state_index) = input;
+        *dsp_state_ptr(state_index + 1) = output;
+        output
+    }
+}
+
 fn render_dsp_compressor(op: DspOp, sample_rate: f64) -> f64 {
     let sample = sanitize_sample(dsp_reg(op.a), 32.0);
     if op.state < 0 || op.state as usize >= MAX_DSP_STATE {
@@ -9296,6 +9317,7 @@ fn render_dsp_op(
             set_dsp_reg(op.out, input * dsp_reg(op.a));
         },
         DSP_OP_FILTER => set_dsp_reg(op.out, render_dsp_filter(op, sample_rate)),
+        DSP_OP_DC_BLOCK => set_dsp_reg(op.out, render_dsp_dc_block(op, sample_rate)),
         DSP_OP_OUTPUT => {
             let sample = sanitize_sample(dsp_reg(op.a), 8.0);
             if op.b == 0 {

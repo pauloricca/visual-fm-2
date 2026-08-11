@@ -66,6 +66,7 @@ export const DSP_OP = {
   EndTrigger: 48,
   Random: 49,
   SpawnInstanceGate: 50,
+  DcBlock: 51,
 } as const;
 
 export interface DspProgram {
@@ -204,6 +205,8 @@ interface CompileContext {
   incomingByInput: Map<string, PatchLink[]>;
   outputCache: Map<string, number>;
   bufferRecordHeadOutputByNodeId: Map<string, number>;
+  buttonGateOutputByNodeId: Map<string, number>;
+  joystickUnitValueByAxis: Map<string, number>;
   sliderUnitValueByNodeId: Map<string, number>;
   visitingOutputs: Set<string>;
   feedbackByOutput: Map<string, FeedbackBinding>;
@@ -459,6 +462,8 @@ function createContext(patch: Patch): CompileContext {
     incomingByInput,
     outputCache: new Map(),
     bufferRecordHeadOutputByNodeId: new Map(),
+    buttonGateOutputByNodeId: new Map(),
+    joystickUnitValueByAxis: new Map(),
     sliderUnitValueByNodeId: new Map(),
     visitingOutputs: new Set(),
     feedbackByOutput: new Map(),
@@ -914,76 +919,45 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
   if (node.type === 'Slider') {
     const unitValue = resolveSliderUnitValue(node, context);
     context.monitorIds[node.id] = unitValue;
-    if (hasInput(node, 'signal', context)) {
-      return emitBinary(DSP_OP.Mul, resolveInput(node, 'signal', 0, context), unitValue, context);
+    const hasSignal = hasInput(node, 'signal', context);
+    const hasInverseSignal = hasInput(node, 'inverse signal', context);
+    if (hasSignal || hasInverseSignal) {
+      return compileControlSignalOutput(node, port, unitValue, hasSignal, hasInverseSignal, context);
     }
+    const outputUnitValue = port === 'inverse'
+      ? emitBinary(DSP_OP.Sub, constantRegister(1, context), unitValue, context)
+      : unitValue;
     const min = resolveInput(node, 'min', 0, context);
     const max = resolveInput(node, 'max', 1, context);
-    return emitBinary(DSP_OP.Add, min, emitBinary(DSP_OP.Mul, unitValue, emitBinary(DSP_OP.Sub, max, min, context), context), context);
+    return emitBinary(DSP_OP.Add, min, emitBinary(DSP_OP.Mul, outputUnitValue, emitBinary(DSP_OP.Sub, max, min, context), context), context);
   }
 
   if (node.type === 'Joystick') {
-    const unitValueIndex = valueIndexForNodeParam(node, port, 0.5, context);
-    addMidiControlBinding(node, 'slider', unitValueIndex, context, {}, {
-      channel: `${port}MidiChannel`,
-      cc: `${port}MidiCc`,
-    });
-    const unitValue = emitValue(unitValueIndex, context);
-    const min = resolveInput(node, `${port}Min`, 0, context);
-    const max = resolveInput(node, `${port}Max`, 1, context);
+    const axis = port.startsWith('x') ? 'x' : 'y';
+    const unitValue = resolveJoystickUnitValue(node, axis, context);
+    const outputUnitValue = port.endsWith(' inverse')
+      ? emitBinary(DSP_OP.Sub, constantRegister(1, context), unitValue, context)
+      : unitValue;
+    const min = resolveInput(node, `${axis}Min`, 0, context);
+    const max = resolveInput(node, `${axis}Max`, 1, context);
     return emitBinary(
       DSP_OP.Add,
       min,
-      emitBinary(DSP_OP.Mul, unitValue, emitBinary(DSP_OP.Sub, max, min, context), context),
+      emitBinary(DSP_OP.Mul, outputUnitValue, emitBinary(DSP_OP.Sub, max, min, context), context),
       context,
     );
   }
 
   if (node.type === 'Button') {
-    const output = nextRegister(context);
-    const state = nextState(context, 3);
-    const pressedValueIndex = valueIndexForNodeParam(node, 'pressed', 0, context);
-    const modeValueIndex = valueIndexForNodeParam(node, 'mode', 0, context);
-    const clicksValueIndex = valueIndexForNodeParam(node, 'clicks', 0, context);
-    addMidiControlBinding(node, 'button', pressedValueIndex, context, {
-      modeValueIndex,
-      clicksValueIndex,
-    });
-    context.stateBindings.push({
-      id: `${node.id}:button`,
-      state,
-      count: 3,
-      kind: 'effect',
-      nodeId: node.id,
-    });
-    context.ops.push({
-      opcode: DSP_OP.Button,
-      out: output,
-      a: pressedValueIndex,
-      b: modeValueIndex,
-      c: clicksValueIndex,
-      state,
-    });
-    if (hasInput(node, 'signal', context)) {
-      const smoothedOutput = nextRegister(context);
-      const smoothingState = nextState(context, 1);
-      context.stateBindings.push({
-        id: `${node.id}:button-gate-slew`,
-        state: smoothingState,
-        count: 1,
-        kind: 'effect',
-        nodeId: node.id,
-      });
-      context.ops.push({
-        opcode: DSP_OP.Slew,
-        out: smoothedOutput,
-        a: output,
-        state: smoothingState,
-        value: BUTTON_GATE_FADE_SECONDS,
-      });
-      return emitBinary(DSP_OP.Mul, resolveInput(node, 'signal', 0, context), smoothedOutput, context);
+    const gateOutput = resolveButtonGateOutput(node, context);
+    const hasSignal = hasInput(node, 'signal', context);
+    const hasInverseSignal = hasInput(node, 'inverse signal', context);
+    if (hasSignal || hasInverseSignal) {
+      return compileControlSignalOutput(node, port, gateOutput, hasSignal, hasInverseSignal, context);
     }
-    return output;
+    return port === 'inverse'
+      ? emitBinary(DSP_OP.Sub, constantRegister(1, context), gateOutput, context)
+      : gateOutput;
   }
 
   if (node.type === 'Keys') {
@@ -1400,7 +1374,12 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       value: packRegisterPair(sustain, release),
       value2: gateLength + 1,
     });
-    return emitBinary(DSP_OP.Mul, resolveInput(node, 'signal', 0, context), envelope, context);
+    // An Envelope also serves as a standalone modulation source. With no
+    // signal connected, use a unit signal so its output is the envelope itself.
+    const signal = hasInput(node, 'signal', context)
+      ? resolveInput(node, 'signal', 0, context)
+      : constantRegister(1, context);
+    return emitBinary(DSP_OP.Mul, signal, envelope, context);
   }
 
   if (node.type === 'Follower') {
@@ -1419,6 +1398,25 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       a: resolveInput(node, 'signal', 0, context),
       b: resolveInput(node, 'attack', 0.01, context),
       c: resolveInput(node, 'release', 0.12, context),
+      state,
+    });
+    return output;
+  }
+
+  if (node.type === 'RemoveDc') {
+    const output = nextRegister(context);
+    const state = nextState(context, 2);
+    context.stateBindings.push({
+      id: `${node.id}:dc-block`,
+      state,
+      count: 2,
+      kind: 'effect',
+      nodeId: node.id,
+    });
+    context.ops.push({
+      opcode: DSP_OP.DcBlock,
+      out: output,
+      a: resolveInput(node, 'signal', 0, context),
       state,
     });
     return output;
@@ -1744,6 +1742,96 @@ function resolveSliderUnitValue(node: PatchNode, context: CompileContext): numbe
 
 function registerSliderMonitor(node: PatchNode, context: CompileContext): void {
   context.monitorIds[node.id] = resolveSliderUnitValue(node, context);
+}
+
+function compileControlSignalOutput(
+  node: PatchNode,
+  port: string,
+  value: number,
+  hasSignal: boolean,
+  hasInverseSignal: boolean,
+  context: CompileContext,
+): number {
+  const inverseValue = emitBinary(DSP_OP.Sub, constantRegister(1, context), value, context);
+  const mainWeight = port === 'inverse' ? inverseValue : value;
+  const inverseWeight = port === 'inverse' ? value : inverseValue;
+  const outputs: number[] = [];
+  if (hasSignal) {
+    outputs.push(emitBinary(DSP_OP.Mul, resolveInput(node, 'signal', 0, context), mainWeight, context));
+  }
+  if (hasInverseSignal) {
+    outputs.push(emitBinary(DSP_OP.Mul, resolveInput(node, 'inverse signal', 0, context), inverseWeight, context));
+  }
+  return sumRegisters(outputs, context);
+}
+
+function resolveJoystickUnitValue(node: PatchNode, axis: 'x' | 'y', context: CompileContext): number {
+  const key = `${node.id}:${axis}`;
+  const cached = context.joystickUnitValueByAxis.get(key);
+  if (cached !== undefined) return cached;
+
+  const unitValueIndex = valueIndexForNodeParam(node, axis, 0.5, context);
+  addMidiControlBinding(node, 'slider', unitValueIndex, context, {}, {
+    channel: `${axis}MidiChannel`,
+    cc: `${axis}MidiCc`,
+  });
+  const register = emitValue(unitValueIndex, context);
+  context.joystickUnitValueByAxis.set(key, register);
+  return register;
+}
+
+function resolveButtonGateOutput(node: PatchNode, context: CompileContext): number {
+  const cached = context.buttonGateOutputByNodeId.get(node.id);
+  if (cached !== undefined) return cached;
+
+  const output = nextRegister(context);
+  const state = nextState(context, 3);
+  const pressedValueIndex = valueIndexForNodeParam(node, 'pressed', 0, context);
+  const modeValueIndex = valueIndexForNodeParam(node, 'mode', 0, context);
+  const clicksValueIndex = valueIndexForNodeParam(node, 'clicks', 0, context);
+  addMidiControlBinding(node, 'button', pressedValueIndex, context, {
+    modeValueIndex,
+    clicksValueIndex,
+  });
+  context.stateBindings.push({
+    id: `${node.id}:button`,
+    state,
+    count: 3,
+    kind: 'effect',
+    nodeId: node.id,
+  });
+  context.ops.push({
+    opcode: DSP_OP.Button,
+    out: output,
+    a: pressedValueIndex,
+    b: modeValueIndex,
+    c: clicksValueIndex,
+    state,
+  });
+
+  if (!hasInput(node, 'signal', context) && !hasInput(node, 'inverse signal', context)) {
+    context.buttonGateOutputByNodeId.set(node.id, output);
+    return output;
+  }
+
+  const smoothedOutput = nextRegister(context);
+  const smoothingState = nextState(context, 1);
+  context.stateBindings.push({
+    id: `${node.id}:button-gate-slew`,
+    state: smoothingState,
+    count: 1,
+    kind: 'effect',
+    nodeId: node.id,
+  });
+  context.ops.push({
+    opcode: DSP_OP.Slew,
+    out: smoothedOutput,
+    a: output,
+    state: smoothingState,
+    value: BUTTON_GATE_FADE_SECONDS,
+  });
+  context.buttonGateOutputByNodeId.set(node.id, smoothedOutput);
+  return smoothedOutput;
 }
 
 function addMidiControlBinding(

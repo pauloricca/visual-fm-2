@@ -27,7 +27,7 @@ import {
   storeBufferAssetData,
   storeBufferSnapshot,
 } from '../audio/bufferStorage';
-import { useAudioEngine, type BufferCopy, type BufferSnapshot, type LinkMeterReading, type MidiControlChange, type MidiInputState } from '../audio/useAudioEngine';
+import { useAudioEngine, type BufferCopy, type BufferSnapshot, type LinkMeterReading, type MidiControlChange, type MidiInputState, type ScopeCaptureRequest } from '../audio/useAudioEngine';
 import { normalizeCustomWave } from '../graph/customWave';
 import { demoPatch } from '../graph/demoPatch';
 import { extractExpressionInputs } from '../graph/expression';
@@ -2359,6 +2359,13 @@ function NodeEditorInner() {
   }, [edges]);
 
   const selectedNodeCount = nodes.filter((node) => node.selected).length;
+  const selectNodeFromTitle = useCallback((nodeId: string, additive: boolean) => {
+    setSelectedAreaId(null);
+    setNodes((current) => current.map((node) => {
+      if (node.id === nodeId) return { ...node, selected: additive ? !node.selected : true };
+      return additive || !node.selected ? node : { ...node, selected: false };
+    }));
+  }, []);
   const selectedAreaNodeIds = useMemo(() => (
     selectedAreaId
       ? nodeIdsContainedByAreaHierarchy(areas, nodes, selectedAreaId)
@@ -2422,6 +2429,7 @@ function NodeEditorInner() {
         onTypeChange: updateNodeType,
         onConvertToArea: convertNodeToArea,
         onCustomLabelChange: updateNodeCustomLabel,
+        onTitleSelect: selectNodeFromTitle,
         onExpressionCommit: updateExpression,
         onTypeEditStart: setEditingTypeNodeId,
         onTypeEditEnd: () => setEditingTypeNodeId(null),
@@ -2484,6 +2492,7 @@ function NodeEditorInner() {
     surfacedNodeLayerBase,
     selectedBoundaryPort,
     selectedLinkPortsByNode,
+    selectNodeFromTitle,
     settledGraphZoom,
     updateBoundaryPortName,
     updateBoundaryPortOrder,
@@ -2603,6 +2612,19 @@ function NodeEditorInner() {
         canvasZoom: settledGraphZoom,
         isAreaUiCollapsedPresentation: true,
         isTypePickerOpen: false,
+        ...(innerNode.type === 'MidiNote'
+          || innerNode.type === 'MidiNoteOn'
+          || innerNode.type === 'MidiNoteOff'
+          || innerNode.type === 'MidiCc'
+          || innerNode.type === 'Slider'
+          || innerNode.type === 'Joystick'
+          || innerNode.type === 'Button'
+          || innerNode.type === 'Tempo'
+          ? {
+              midiInput: audio.midiInput,
+              onMidiInputRefresh: audio.refreshMidiInputDevices,
+            }
+          : {}),
         onParamChange: (_previewNodeId: string, port: string, value: number) => updateGroupUiNodeOverride(
           node.id, innerNode.id, `param:${innerNode.id}:${port}`,
           (current) => ({ ...current, params: { ...current.params, [port]: value } }),
@@ -2642,6 +2664,8 @@ function NodeEditorInner() {
   }), [
     activeDspGroupIds,
     audio.buffers,
+    audio.midiInput,
+    audio.refreshMidiInputDevices,
     clearBufferRecording,
     audio.linkMeters,
     audio.linkScopes,
@@ -3059,7 +3083,7 @@ function NodeEditorInner() {
   }, [editorSize, panTranslateExtent, reactFlow, viewport]);
 
   useEffect(() => {
-    const scopeRequests = nodesWithCallbacks.flatMap((node) => {
+    const scopeRequests: ScopeCaptureRequest[] = nodesWithCallbacks.flatMap((node): ScopeCaptureRequest[] => {
       const type = node.data.patchNode.type;
       if (type !== 'Scope' && type !== 'FFT') return [];
       const dspNodeId = runtimeDspNodeIdForFlowNode(node, nodesWithCallbacks, activeDspGroupIds);
@@ -3067,7 +3091,11 @@ function NodeEditorInner() {
       if (!linkId) return [];
       return type === 'FFT'
         ? [{ id: dspNodeId, length: 0.012, points: 512 }]
-        : [{ id: dspNodeId, length: node.data.patchNode.params.length ?? 0.08 }];
+        : [{
+          id: dspNodeId,
+          length: node.data.patchNode.params.length ?? 0.08,
+          reset: Math.round(node.data.patchNode.params.reset ?? 1) === 1 ? 'zero-crossing' : 'none',
+        }];
     });
     audio.setLinkScopes(scopeRequests);
   }, [activeDspGroupIds, audio.setLinkScopes, monitorLinkIdByNode, nodesWithCallbacks]);
@@ -7852,7 +7880,7 @@ function groupUiPreviewLayout(patch: Patch): {
   if (controlAreas.length === 0) return null;
 
   const left = Math.min(...controlAreas.map((area) => area.position.x));
-  const top = Math.min(...controlAreas.map((area) => area.position.y + NODE_HEADER_HEIGHT));
+  const contentTop = Math.min(...controlAreas.map((area) => area.position.y + NODE_HEADER_HEIGHT));
   const right = Math.max(...controlAreas.map((area) => area.position.x + area.size.width));
   const bottom = Math.max(...controlAreas.map((area) => area.position.y + area.size.height));
   const nodeIds = new Set<string>();
@@ -7871,10 +7899,18 @@ function groupUiPreviewLayout(patch: Patch): {
       ) nodeIds.add(node.id);
     }
   }
+  const nodes = patch.nodes.filter((node) => nodeIds.has(node.id));
+  // A UI-area member can overlap its source area's header. The projected panel
+  // normally begins below that header, so account for that overlap instead of
+  // clipping the projected node's own header with the panel's overflow.
+  const top = Math.min(
+    contentTop,
+    ...nodes.map((node) => node.position?.y ?? contentTop),
+  );
   return {
     position: { x: left, y: top },
     size: { width: right - left, height: bottom - top },
-    nodes: patch.nodes.filter((node) => nodeIds.has(node.id)),
+    nodes,
   };
 }
 

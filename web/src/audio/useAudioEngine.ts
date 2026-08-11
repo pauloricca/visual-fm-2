@@ -80,6 +80,7 @@ export interface ScopeCaptureRequest {
   id: string;
   length: number;
   points?: number;
+  reset?: 'none' | 'zero-crossing';
 }
 
 export interface RecordingState {
@@ -195,17 +196,16 @@ interface ImageDataRequest {
 // Keep this in step with public/audio/visual-fm-kernel.wasm. AudioWorklet
 // modules and WASM are aggressively cached, so an older kernel can silently
 // omit newer DSP behavior or exports while the current UI is running.
-const AUDIO_ENGINE_ASSET_VERSION = '2026-08-03-buffer-clear-1';
+const AUDIO_ENGINE_ASSET_VERSION = '2026-08-09-scope-reset-2';
 const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_ENGINE_ASSET_VERSION}`;
 const METER_UPDATE_INTERVAL_MS = 80;
 const RECORDING_CHUNK_FRAMES = 16384;
 const RECORDING_CHANNEL_COUNT = 2;
 const SCOPE_DISPLAY_POINTS = 160;
-// Keep the capture grid identical to the display grid. Capturing more points and
-// resampling the rolling window made every displayed point choose a different
-// pair of source samples on each update, which caused the waveform to shimmer.
-// With a single grid, old points simply move left as new points enter the ring.
+// Continuous scopes capture on the display grid so old points simply move left
+// as new points enter the ring. Zero-crossing scopes use twice this count: the
+// first window provides a stable crossing search and the second is displayed.
 const SCOPE_CAPTURE_POINTS = SCOPE_DISPLAY_POINTS;
 const SCOPE_MODE = 'continuous';
 const AUDIO_OUTPUT_FADE_SECONDS = 0.02;
@@ -1998,12 +1998,20 @@ function samplePlaybackEventsCsv(events: SamplePlaybackEvent[]): string {
 function scopePayload(requests: ScopeCaptureRequest[]) {
   return {
     linkIds: requests.map((request) => request.id),
-    scopes: requests.map((request) => ({
-      id: request.id,
-      seconds: request.length,
-      points: request.points ?? SCOPE_CAPTURE_POINTS,
-      displayPoints: request.points ?? SCOPE_DISPLAY_POINTS,
-    })),
+    scopes: requests.map((request) => {
+      const displayPoints = request.points ?? SCOPE_DISPLAY_POINTS;
+      const mode = request.reset ?? SCOPE_MODE;
+      return {
+        id: request.id,
+        // Preserve the selected `length`: doubling both the capture duration
+        // and count keeps sample spacing unchanged, leaving a full display
+        // window after any eligible zero crossing.
+        seconds: mode === 'zero-crossing' ? request.length * 2 : request.length,
+        points: mode === 'zero-crossing' ? Math.min(512, displayPoints * 2) : request.points ?? SCOPE_CAPTURE_POINTS,
+        displayPoints,
+        mode,
+      };
+    }),
     points: SCOPE_CAPTURE_POINTS,
     displayPoints: SCOPE_DISPLAY_POINTS,
     mode: SCOPE_MODE,
@@ -2073,6 +2081,7 @@ function normalizeScopeCaptureRequests(requests: ScopeCaptureRequest[]): ScopeCa
       id: request.id,
       length: clampNumber(request.length, 0.01, 30),
       ...(points === undefined ? {} : { points }),
+      ...(request.reset === 'zero-crossing' ? { reset: 'zero-crossing' as const } : { reset: 'none' as const }),
     }];
   });
 }
@@ -2084,6 +2093,7 @@ function scopeCaptureRequestsEqual(left: ScopeCaptureRequest[], right: ScopeCapt
       left[index].id !== right[index].id
       || left[index].length !== right[index].length
       || left[index].points !== right[index].points
+      || left[index].reset !== right[index].reset
     ) return false;
   }
   return true;

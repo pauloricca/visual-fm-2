@@ -997,6 +997,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             customLabel={node.customLabel}
             displaySuffix={sliderTitleSuffix}
             onChange={(label) => data.onCustomLabelChange?.(node.id, label)}
+            onSelect={(additive) => data.onTitleSelect?.(node.id, additive)}
           />
         ) : (
           <NodeTypePicker
@@ -1011,7 +1012,6 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             onChange={(type) => data.onTypeChange(node.id, type)}
             onConvertToArea={() => data.onConvertToArea(node.id)}
             onCustomLabelCommit={isGroup ? (label) => data.onSubpatchNameChange?.(node.id, label) : undefined}
-            allowNodeDoubleClick={isGroup}
           />
         )}
         {!forceCompactPorts && !isAreaUiCollapsedPresentation ? (
@@ -1590,6 +1590,34 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   >
                     <option value="0">unipolar</option>
                     <option value="1">bipolar</option>
+                  </select>
+                </>
+              ) : showScopeDisplay && input.name === 'reset' && !input.preview ? (
+                <>
+                  <PortNameLabel
+                    name={input.name}
+                    editable={false}
+                    draggable={false}
+                    preview={false}
+                    selected={data.selectedPort?.side === 'input' && data.selectedPort.name === input.name}
+                    activeDragTarget={false}
+                    activeDragSource={false}
+                    onChange={() => undefined}
+                  />
+                  <select
+                    className="display-mode-select nodrag nopan"
+                    aria-label="Scope reset"
+                    value={String(Math.round(node.params.reset ?? input.defaultValue ?? 1))}
+                    onChange={(event) => {
+                      data.onParamChange(node.id, input.name, Number(event.currentTarget.value));
+                      event.currentTarget.blur();
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    <option value="0">none</option>
+                    <option value="1">zero-crossing</option>
                   </select>
                 </>
               ) : showSampleUpload && input.name === 'mode' && !input.preview ? (
@@ -2672,18 +2700,48 @@ interface SliderDisplayProps {
 }
 
 function SliderDisplay({ value, displayValue, direction, onChange }: SliderDisplayProps) {
-  const dragPointerRef = useRef<number | null>(null);
+  const dragRef = useRef<{
+    pointerId: number;
+    lastPointerValue: number;
+    value: number;
+    cursorBias: number;
+    fineControl: boolean;
+  } | null>(null);
   const normalized = clamp(displayValue ?? value, 0, 1);
   const fillStyle = direction === 'vertical'
     ? { height: `${normalized * 100}%` }
     : { width: `${normalized * 100}%` };
 
-  function updateFromPointer(event: PointerEvent<HTMLInputElement>) {
+  function pointerValue(event: PointerEvent<HTMLInputElement>) {
     const bounds = event.currentTarget.getBoundingClientRect();
-    const nextValue = direction === 'vertical'
+    // Keep this unbounded while dragging. Fine control uses relative travel,
+    // so clamping here would lose movement once the pointer passed an edge.
+    return direction === 'vertical'
       ? 1 - ((event.clientY - bounds.top) / Math.max(1, bounds.height))
       : (event.clientX - bounds.left) / Math.max(1, bounds.width);
-    onChange(clamp(nextValue, 0, 1));
+  }
+
+  function updateFromPointer(event: PointerEvent<HTMLInputElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+
+    const cursorValue = pointerValue(event);
+    const fineControl = event.metaKey || event.ctrlKey;
+    if (fineControl !== drag.fineControl) {
+      // Re-anchor when the modifier changes so switching speeds never snaps to
+      // the cursor. Without fine control, the bias preserves this position.
+      drag.lastPointerValue = cursorValue;
+      drag.cursorBias = drag.value - cursorValue;
+      drag.fineControl = fineControl;
+      return;
+    }
+
+    const nextValue = fineControl
+      ? drag.value + (cursorValue - drag.lastPointerValue) / 5
+      : cursorValue + drag.cursorBias;
+    drag.lastPointerValue = cursorValue;
+    drag.value = clamp(nextValue, 0, 1);
+    onChange(drag.value);
   }
 
   return (
@@ -2703,6 +2761,7 @@ function SliderDisplay({ value, displayValue, direction, onChange }: SliderDispl
         step={0.001}
         value={normalized}
         onChange={(event) => {
+          if (dragRef.current) return;
           onChange(Number(event.currentTarget.value));
           event.currentTarget.blur();
         }}
@@ -2711,20 +2770,29 @@ function SliderDisplay({ value, displayValue, direction, onChange }: SliderDispl
           event.preventDefault();
           event.stopPropagation();
           if (!event.isPrimary || event.button !== 0) return;
-          dragPointerRef.current = event.pointerId;
+          const cursorValue = pointerValue(event);
+          const fineControl = event.metaKey || event.ctrlKey;
+          const initialValue = fineControl ? normalized : clamp(cursorValue, 0, 1);
+          dragRef.current = {
+            pointerId: event.pointerId,
+            lastPointerValue: cursorValue,
+            value: initialValue,
+            cursorBias: initialValue - cursorValue,
+            fineControl,
+          };
           event.currentTarget.setPointerCapture(event.pointerId);
-          updateFromPointer(event);
+          if (!fineControl) onChange(initialValue);
         }}
         onPointerMove={(event) => {
-          if (dragPointerRef.current !== event.pointerId) return;
+          if (dragRef.current?.pointerId !== event.pointerId) return;
           event.preventDefault();
           event.stopPropagation();
           updateFromPointer(event);
         }}
         onPointerUp={(event) => {
           event.stopPropagation();
-          if (dragPointerRef.current === event.pointerId) {
-            dragPointerRef.current = null;
+          if (dragRef.current?.pointerId === event.pointerId) {
+            dragRef.current = null;
             if (event.currentTarget.hasPointerCapture(event.pointerId)) {
               event.currentTarget.releasePointerCapture(event.pointerId);
             }
@@ -2733,11 +2801,11 @@ function SliderDisplay({ value, displayValue, direction, onChange }: SliderDispl
         }}
         onPointerCancel={(event) => {
           event.stopPropagation();
-          if (dragPointerRef.current === event.pointerId) dragPointerRef.current = null;
+          if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null;
           event.currentTarget.blur();
         }}
         onLostPointerCapture={(event) => {
-          if (dragPointerRef.current === event.pointerId) dragPointerRef.current = null;
+          if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null;
         }}
         onClick={(event) => {
           event.preventDefault();
@@ -4139,7 +4207,6 @@ interface NodeTypePickerProps {
   onChange: (type: NodeType) => void;
   onConvertToArea: () => void;
   onCustomLabelCommit?: (label: string) => void;
-  allowNodeDoubleClick?: boolean;
 }
 
 interface CollapsedNodeLabelProps {
@@ -4147,14 +4214,20 @@ interface CollapsedNodeLabelProps {
   customLabel?: string;
   displaySuffix?: string;
   onChange: (label: string) => void;
+  onSelect: (additive: boolean) => void;
 }
 
-function CollapsedNodeLabel({ nodeType, customLabel, displaySuffix, onChange }: CollapsedNodeLabelProps) {
+function CollapsedNodeLabel({ nodeType, customLabel, displaySuffix, onChange, onSelect }: CollapsedNodeLabelProps) {
   const defaultLabel = nodeType ? getNodeTypeLabel(nodeType) : 'type';
   const displayLabel = customLabel || defaultLabel;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(displayLabel);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const selectTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (selectTimeoutRef.current !== null) window.clearTimeout(selectTimeoutRef.current);
+  }, []);
 
   useEffect(() => {
     if (!editing) setDraft(displayLabel);
@@ -4206,17 +4279,26 @@ function CollapsedNodeLabel({ nodeType, customLabel, displaySuffix, onChange }: 
   return (
     <button
       className={[
-        'collapsed-node-label nodrag nopan',
+        'collapsed-node-label',
         displaySuffix ? 'node-title-with-live-readout' : '',
       ].filter(Boolean).join(' ')}
       type="button"
-      title={displaySuffix ? undefined : 'Click to name this collapsed node'}
-      onMouseDown={(event) => event.stopPropagation()}
-      onPointerDown={(event) => event.stopPropagation()}
-      onDoubleClick={(event) => event.stopPropagation()}
       onClick={(event) => {
+        event.stopPropagation();
+        if (selectTimeoutRef.current !== null) window.clearTimeout(selectTimeoutRef.current);
+        const additive = event.metaKey || event.ctrlKey || event.shiftKey;
+        selectTimeoutRef.current = window.setTimeout(() => {
+          selectTimeoutRef.current = null;
+          onSelect(additive);
+        }, 600);
+      }}
+      onDoubleClick={(event) => {
         event.preventDefault();
         event.stopPropagation();
+        if (selectTimeoutRef.current !== null) {
+          window.clearTimeout(selectTimeoutRef.current);
+          selectTimeoutRef.current = null;
+        }
         setEditing(true);
       }}
     >
@@ -4379,7 +4461,6 @@ function NodeTypePicker({
   onChange,
   onConvertToArea,
   onCustomLabelCommit,
-  allowNodeDoubleClick = false,
 }: NodeTypePickerProps) {
   const nodeTypeLabel = nodeType ? getNodeTypeLabel(nodeType) : 'type';
   const pickerLabel = displayLabel ?? nodeTypeLabel;
@@ -4540,7 +4621,9 @@ function NodeTypePicker({
             event.currentTarget.blur();
             return;
           }
-
+        }}
+        onDoubleClick={(event) => {
+          event.preventDefault();
           event.stopPropagation();
           onOpen();
         }}
@@ -4571,9 +4654,7 @@ function NodeTypePicker({
           onFocus={(event) => event.currentTarget.select()}
           onKeyDown={handleKeyDown}
           onPointerDown={(event) => event.stopPropagation()}
-          onDoubleClick={(event) => {
-            if (!allowNodeDoubleClick) event.stopPropagation();
-          }}
+          onDoubleClick={(event) => event.stopPropagation()}
           spellCheck={false}
         />
         <div
