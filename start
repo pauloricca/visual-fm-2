@@ -11,9 +11,10 @@ CERT_HOSTS_FILE="$CERT_DIR/visual-visual.hosts"
 HTTPS_ENABLED=0
 PATCH_STORAGE="${VITE_VISUAL_VISUAL_PATCH_STORAGE:-local}"
 THEME="${VITE_VISUAL_FM_THEME:-}"
+REBUILD_IMAGE=0
 
 usage() {
-  printf 'Usage: ./start [--port=PORT] [--patch-storage=local|browser] [--theme=THEME]\n'
+  printf 'Usage: ./start [--port=PORT] [--patch-storage=local|browser] [--theme=THEME] [--rebuild]\n'
   printf '       ./start [--local-storage|--browser-storage]\n'
 }
 
@@ -45,6 +46,9 @@ while [ "$#" -gt 0 ]; do
       fi
       shift
       THEME="$1"
+      ;;
+    --rebuild)
+      REBUILD_IMAGE=1
       ;;
     -h|--help)
       usage
@@ -132,7 +136,11 @@ cleanup() {
 npm run ensure:wasm
 trap cleanup INT TERM EXIT
 
-docker compose up --build &
+if [ "$REBUILD_IMAGE" -eq 1 ]; then
+  docker compose up --build &
+else
+  docker compose up &
+fi
 COMPOSE_PID="$!"
 
 READY=0

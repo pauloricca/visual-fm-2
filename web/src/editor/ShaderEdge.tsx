@@ -47,6 +47,11 @@ export function ShaderEdge(props: EdgeProps<ShaderFlowEdge>) {
   const dspErrors = props.data?.dspErrors ?? [];
   const hasDspErrors = dspErrors.length > 0;
   const selected = props.selected ?? false;
+  const isConnectedToSelectedNode = props.data?.isConnectedToSelectedNode === true;
+  const isDimmedBySelection = props.data?.isDimmedBySelection === true;
+  // Node selection is deliberately visual-only for its incident links: it must
+  // not expose link controls, enable reconnection, or tint the endpoint pins.
+  const emphasized = selected || isConnectedToSelectedNode;
   const showLinkControls = selected && props.data?.showLinkControls === true;
   const controlsLabelY = shouldRaiseLinkControls(visualProps, isFeedback)
     ? labelY - SHORT_LINK_CONTROLS_OFFSET
@@ -59,6 +64,7 @@ export function ShaderEdge(props: EdgeProps<ShaderFlowEdge>) {
     isControl ? 'shader-edge-path-control' : '',
     enabled ? '' : 'shader-edge-path-disabled',
     hasDspErrors ? 'shader-edge-path-dsp-error' : '',
+    isDimmedBySelection ? 'shader-edge-path-dimmed' : '',
   ].join(' ');
   const edgeClassName = [
     'shader-edge-path',
@@ -68,12 +74,13 @@ export function ShaderEdge(props: EdgeProps<ShaderFlowEdge>) {
     isControl ? 'shader-edge-path-control' : '',
     enabled ? '' : 'shader-edge-path-disabled',
     hasDspErrors ? 'shader-edge-path-dsp-error' : '',
-    selected ? 'shader-edge-path-selected' : '',
+    emphasized ? 'shader-edge-path-selected' : '',
+    isDimmedBySelection ? 'shader-edge-path-dimmed' : '',
   ].filter(Boolean).join(' ');
-  const selectedUnderlayStyle = selected
+  const selectedUnderlayStyle = emphasized
     ? { stroke: 'var(--color-edge-underlay)', strokeWidth: 8 }
     : undefined;
-  const selectedForegroundStyle = selected
+  const selectedForegroundStyle = emphasized
     ? { strokeWidth: 4 }
     : undefined;
 

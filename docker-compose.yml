@@ -14,7 +14,9 @@ services:
     volumes:
       - .:/app
       - node_modules:/app/node_modules
-    command: npm start
+    # Serve source files with Vite HMR; the bind mount and polling settings above
+    # make React and CSS edits appear without rebuilding the Docker image.
+    command: npm run dev
 
 volumes:
   node_modules:

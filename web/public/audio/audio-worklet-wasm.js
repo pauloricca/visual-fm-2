@@ -657,8 +657,10 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
   setDspProgram(program = {}) {
     const previousProgram = this.dspProgram;
     const preservedState = this.captureDspState(previousProgram);
+    const preservedMidiControls = this.captureMidiControlValues(previousProgram);
     const hasTransition = this.prepareGraphUpdateCrossfade();
     const nextProgram = this.normalizeDspProgram(program);
+    this.restoreMidiControlValues(nextProgram, preservedMidiControls);
     const repeatMigration = this.captureDspRepeatMigration(previousProgram, nextProgram);
     const sampleMigration = this.captureDspSampleMigration(previousProgram, nextProgram);
     this.dspProgram = nextProgram;
@@ -676,6 +678,40 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.refreshWasmViews(true);
     this.configureDspScopes();
     this.configureDspMeters();
+  }
+
+  captureMidiControlValues(program) {
+    const values = new Map();
+    if (!program) return values;
+
+    for (const binding of program.midiControlBindings || []) {
+      const key = this.midiControlBindingKey(binding);
+      const previous = values.get(key) || {};
+      previous.value = Number(program.values[binding.valueIndex] ?? 0);
+      if (binding.kind === "button" && binding.clicksValueIndex >= 0) {
+        previous.clicks = Number(program.values[binding.clicksValueIndex] ?? 0);
+      }
+      values.set(key, previous);
+    }
+
+    return values;
+  }
+
+  restoreMidiControlValues(program, preservedValues) {
+    if (!program || !preservedValues?.size) return;
+
+    for (const binding of program.midiControlBindings || []) {
+      const preserved = preservedValues.get(this.midiControlBindingKey(binding));
+      if (!preserved) continue;
+      if (Number.isFinite(preserved.value)) program.values[binding.valueIndex] = preserved.value;
+      if (binding.kind === "button" && binding.clicksValueIndex >= 0 && Number.isFinite(preserved.clicks)) {
+        program.values[binding.clicksValueIndex] = preserved.clicks;
+      }
+    }
+  }
+
+  midiControlBindingKey(binding) {
+    return `${binding.nodeId}:${binding.kind}:${binding.channel}:${binding.cc}`;
   }
 
   prepareGraphUpdateCrossfade() {

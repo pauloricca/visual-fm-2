@@ -3189,6 +3189,10 @@ button:hover {
   opacity: 0.42;
 }
 
+.shader-edge-path-dimmed {
+  opacity: 0.52;
+}
+
 .react-flow__edge.updating .react-flow__edge-path.shader-edge-path-mode-set.shader-edge-path-foreground,
 .react-flow__edge.selectable:focus .react-flow__edge-path.shader-edge-path-mode-set.shader-edge-path-foreground,
 .react-flow__edge.selectable:focus-visible .react-flow__edge-path.shader-edge-path-mode-set.shader-edge-path-foreground,

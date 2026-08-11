@@ -7,9 +7,17 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig, type Connect, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 
+const AUDIO_ENGINE_ASSET_MODULE_ID = 'virtual:audio-engine-assets';
+const RESOLVED_AUDIO_ENGINE_ASSET_MODULE_ID = `\0${AUDIO_ENGINE_ASSET_MODULE_ID}`;
+const AUDIO_ENGINE_ASSET_FILES = new Set([
+  resolve(dirname(fileURLToPath(import.meta.url)), 'public/audio/audio-worklet-wasm.js'),
+  resolve(dirname(fileURLToPath(import.meta.url)), 'public/audio/visual-fm-kernel.wasm'),
+]);
+
 export default defineConfig({
   plugins: [
     react(),
+    audioEngineAssetVersionPlugin(),
     localDiagnosticsPlugin(),
     renderSyncPlugin(),
     localSampleStoragePlugin(),
@@ -26,6 +34,44 @@ export default defineConfig({
     headers: crossOriginIsolationHeaders(),
   },
 });
+
+/**
+ * Public audio assets keep stable filenames, so give each URL a version derived
+ * from its contents rather than relying on browser-cache behaviour. The virtual
+ * module also changes on dev-server file updates and reloads the page, because
+ * AudioWorklet modules cannot be replaced safely in an active AudioContext.
+ */
+function audioEngineAssetVersionPlugin(): Plugin {
+  return {
+    name: 'audio-engine-asset-version',
+    resolveId(id) {
+      return id === AUDIO_ENGINE_ASSET_MODULE_ID ? RESOLVED_AUDIO_ENGINE_ASSET_MODULE_ID : null;
+    },
+    load(id) {
+      if (id !== RESOLVED_AUDIO_ENGINE_ASSET_MODULE_ID) return null;
+      return [
+        `export const AUDIO_WORKLET_ASSET_VERSION = ${JSON.stringify(audioAssetVersion('audio-worklet-wasm.js'))};`,
+        `export const AUDIO_WASM_ASSET_VERSION = ${JSON.stringify(audioAssetVersion('visual-fm-kernel.wasm'))};`,
+      ].join('\n');
+    },
+    configureServer(server) {
+      const reloadForAudioAsset = (file: string) => {
+        if (!AUDIO_ENGINE_ASSET_FILES.has(resolve(file))) return;
+        const module = server.moduleGraph.getModuleById(RESOLVED_AUDIO_ENGINE_ASSET_MODULE_ID);
+        if (module) server.moduleGraph.invalidateModule(module);
+        server.ws.send({ type: 'full-reload' });
+      };
+      server.watcher.on('add', reloadForAudioAsset);
+      server.watcher.on('change', reloadForAudioAsset);
+      server.watcher.on('unlink', reloadForAudioAsset);
+    },
+  };
+}
+
+function audioAssetVersion(fileName: string): string {
+  const filePath = resolve(dirname(fileURLToPath(import.meta.url)), 'public/audio', fileName);
+  return createHash('sha256').update(readFileSync(filePath)).digest('hex').slice(0, 16);
+}
 
 function patchStorageMode() {
   return process.env.VITE_VISUAL_VISUAL_PATCH_STORAGE

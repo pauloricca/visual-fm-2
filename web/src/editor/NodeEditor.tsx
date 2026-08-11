@@ -397,6 +397,7 @@ function NodeEditorInner() {
     normalizeSelectedMidiDeviceIds(initialState?.ui?.midiInput?.selectedDeviceIds)
   ));
   const [midiControlVisuals, setMidiControlVisuals] = useState<Record<string, MidiControlVisualState>>({});
+  const midiControlVisualsRef = useRef<Record<string, MidiControlVisualState>>({});
   const [bufferAssets, setBufferAssets] = useState<Record<string, BufferAsset>>(() => initialState?.buffers ?? {});
   const copiedGraphRef = useRef<CopiedGraph | null>(null);
   const pasteCountRef = useRef(0);
@@ -556,7 +557,11 @@ function NodeEditorInner() {
   useEffect(() => {
     const controlChange = audio.midiInput.lastControlChange;
     if (!controlChange) return;
-    setMidiControlVisuals((current) => midiControlVisualsForChange(current, nodesRef.current, edgesRef.current, controlChange));
+    const previousVisuals = midiControlVisualsRef.current;
+    const nextVisuals = midiControlVisualsForChange(previousVisuals, nodesRef.current, edgesRef.current, controlChange);
+    midiControlVisualsRef.current = nextVisuals;
+    setMidiControlVisuals(nextVisuals);
+    setNodes((current) => applyMidiControlChangeToNodes(current, edgesRef.current, controlChange, previousVisuals, nextVisuals));
   }, [audio.midiInput.lastControlChange]);
 
   useEffect(() => {
@@ -576,6 +581,10 @@ function NodeEditorInner() {
   useEffect(() => {
     nodesRef.current = nodes;
   }, [nodes]);
+
+  useEffect(() => {
+    midiControlVisualsRef.current = midiControlVisuals;
+  }, [midiControlVisuals]);
 
   useEffect(() => {
     areasRef.current = areas;
@@ -675,8 +684,23 @@ function NodeEditorInner() {
       const clearX = port === 'xMidiChannel' || port === 'xMidiCc';
       const clearY = port === 'yMidiChannel' || port === 'yMidiCc';
       if (clearX || clearY) {
-        setMidiControlVisuals((current) => clearJoystickMidiVisual(current, nodeId, clearX, clearY));
+        setMidiControlVisuals((current) => {
+          const next = clearJoystickMidiVisual(current, nodeId, clearX, clearY);
+          midiControlVisualsRef.current = next;
+          return next;
+        });
       }
+    }
+    if (
+      (relatedNode?.data.patchNode.type === 'Slider' && port === 'value')
+      || (relatedNode?.data.patchNode.type === 'Button' && (port === 'pressed' || port === 'clicks'))
+    ) {
+      const controlType = relatedNode?.data.patchNode.type === 'Slider' ? 'Slider' : 'Button';
+      setMidiControlVisuals((current) => {
+        const next = clearMidiControlVisual(current, nodeId, controlType);
+        midiControlVisualsRef.current = next;
+        return next;
+      });
     }
     const nextPatchNode = relatedNode?.data.patchNode.type === 'Sequencer'
       ? {
@@ -718,7 +742,11 @@ function NodeEditorInner() {
       const clearX = Object.hasOwn(values, 'x');
       const clearY = Object.hasOwn(values, 'y');
       if (clearX || clearY) {
-        setMidiControlVisuals((current) => clearJoystickMidiVisual(current, nodeId, clearX, clearY));
+        setMidiControlVisuals((current) => {
+          const next = clearJoystickMidiVisual(current, nodeId, clearX, clearY);
+          midiControlVisualsRef.current = next;
+          return next;
+        });
       }
     }
     setNodes((current) => current.map((node) => node.id === nodeId
@@ -2365,6 +2393,7 @@ function NodeEditorInner() {
       if (node.id === nodeId) return { ...node, selected: additive ? !node.selected : true };
       return additive || !node.selected ? node : { ...node, selected: false };
     }));
+    setEdges((current) => updateSelection(current, new Set()));
   }, []);
   const selectedAreaNodeIds = useMemo(() => (
     selectedAreaId
@@ -2520,23 +2549,36 @@ function NodeEditorInner() {
 
   const edgesWithCallbacks = useMemo(() => {
     const selectedEdgeCount = edges.filter((edge) => edge.selected).length;
-    return edges.map((edge) => ({
-      ...edge,
-      reconnectable: edge.selected === true,
-      zIndex: edge.selected ? SELECTED_EDGE_Z_INDEX : undefined,
-      data: {
-        ...edge.data,
-        weight: edge.data?.weight ?? 1,
-        mode: edge.data?.mode ?? 'set',
-        enabled: edge.data?.enabled !== false,
-        onWeightChange: updateEdgeWeight,
-        onModeChange: updateEdgeMode,
-        onEnabledChange: updateEdgeEnabled,
-        onInsertNode: insertNodeOnEdge,
-        showLinkControls: edge.selected === true && selectedEdgeCount === 1,
-      },
-    }));
-  }, [edges, insertNodeOnEdge, updateEdgeEnabled, updateEdgeMode, updateEdgeWeight]);
+    const selectedNodeIds = new Set(
+      nodes.filter((node) => node.selected).map((node) => node.id),
+    );
+    const hasHighlightedLinks = selectedEdgeCount > 0 || selectedNodeIds.size > 0;
+    return edges.map((edge) => {
+      const isConnectedToSelectedNode = isEdgeConnectedToSelectedNode(edge, selectedNodeIds);
+      const isHighlighted = edge.selected === true || isConnectedToSelectedNode;
+      return {
+        ...edge,
+        reconnectable: edge.selected === true,
+        // Incident-node emphasis stays in the normal edge layer so the selected
+        // node and its controls remain unobscured. Explicit edge selection
+        // retains its elevated layer for endpoint reconnection.
+        zIndex: edge.selected ? SELECTED_EDGE_Z_INDEX : undefined,
+        data: {
+          ...edge.data,
+          weight: edge.data?.weight ?? 1,
+          mode: edge.data?.mode ?? 'set',
+          enabled: edge.data?.enabled !== false,
+          onWeightChange: updateEdgeWeight,
+          onModeChange: updateEdgeMode,
+          onEnabledChange: updateEdgeEnabled,
+          onInsertNode: insertNodeOnEdge,
+          showLinkControls: edge.selected === true && selectedEdgeCount === 1,
+          isConnectedToSelectedNode,
+          isDimmedBySelection: hasHighlightedLinks && !isHighlighted,
+        },
+      };
+    });
+  }, [edges, insertNodeOnEdge, nodes, updateEdgeEnabled, updateEdgeMode, updateEdgeWeight]);
 
   const materializedGraph = useMemo(
     () => materializeRootGraph(nodesWithCallbacks, edgesWithCallbacks, areas, editingStack, patchName),
@@ -2606,6 +2648,7 @@ function NodeEditorInner() {
       };
       const dspNodeId = scopedDspNodeId(innerNode.id, [...activeDspGroupIds, node.id]);
       const monitorLinkId = monitorLinkIdByNode.get(dspNodeId);
+      const midiControlVisual = midiControlVisuals[previewId];
       const data = {
         ...nodeCallbacksPlaceholder(),
         patchNode: { ...effectiveInnerNode, id: previewId, position: undefined },
@@ -2642,6 +2685,16 @@ function NodeEditorInner() {
         ...(monitorLinkId && innerNode.type === 'Scope' ? { audioScope: audio.linkScopes[dspNodeId] } : {}),
         ...(monitorLinkId && innerNode.type === 'FFT' ? { audioSpectrum: audio.linkScopes[dspNodeId] } : {}),
         ...(monitorLinkId && innerNode.type === 'Slider' ? { audioSliderValue: audio.linkMeters[monitorLinkId]?.output } : {}),
+        ...(midiControlVisual?.sliderValue !== undefined ? { midiSliderValue: midiControlVisual.sliderValue } : {}),
+        ...(midiControlVisual?.joystickX !== undefined || midiControlVisual?.joystickY !== undefined
+          ? {
+              midiJoystickPosition: {
+                ...(midiControlVisual.joystickX !== undefined ? { x: midiControlVisual.joystickX } : {}),
+                ...(midiControlVisual.joystickY !== undefined ? { y: midiControlVisual.joystickY } : {}),
+              },
+            }
+          : {}),
+        ...(midiControlVisual?.buttonPressed !== undefined ? { midiButtonPressed: midiControlVisual.buttonPressed } : {}),
         ...(monitorLinkId && innerNode.type === 'Sequencer' ? { audioSequencerStep: audio.linkMeters[monitorLinkId]?.output } : {}),
         ...((innerNode.type === 'CustomWave' || innerNode.type === 'SamplePlayer') ? { audioPlayheads: audio.playheads[dspNodeId] } : {}),
         ...(innerNode.type === 'Buffer' ? { audioBuffer: audio.buffers[dspNodeId] } : {}),
@@ -2670,6 +2723,7 @@ function NodeEditorInner() {
     audio.linkMeters,
     audio.linkScopes,
     audio.playheads,
+    midiControlVisuals,
     monitorLinkIdByNode,
     nodesWithCallbacks,
     settledGraphZoom,
@@ -4765,13 +4819,8 @@ function NodeEditorInner() {
       end,
       new Set(nodesRef.current.map((node) => node.id)),
     );
-    const selectedEdgeIds = new Set(edgesRef.current.flatMap((edge) => {
-      const link = linkFromEdge(edge);
-      return link && (selectedNodeIds.has(link.from.node) || selectedNodeIds.has(link.to.node)) ? [edge.id] : [];
-    }));
-
     setNodes((current) => updateSelection(current, selectedNodeIds));
-    setEdges((current) => updateSelection(current, selectedEdgeIds));
+    setEdges((current) => updateSelection(current, new Set()));
   }, []);
 
   const handleRectangleSelectionMove = useCallback((event: ReactPointerEvent<HTMLElement>) => {
@@ -6873,7 +6922,127 @@ function midiControlVisualsForChange(
     });
   }
 
+  for (const node of nodes) {
+    const group = node.data.patchNode;
+    if (group.type !== 'Group' || !group.subpatch) continue;
+    const layout = groupUiPreviewLayout(group.subpatch);
+    if (!layout) continue;
+
+    for (const innerNode of layout.nodes) {
+      if (innerNode.type !== 'Slider' && innerNode.type !== 'Joystick' && innerNode.type !== 'Button') continue;
+      const previewId = `__group_ui__${node.id}__${innerNode.id}`;
+      const params = { ...innerNode.params, ...group.subpatchUiOverrides?.[innerNode.id]?.params };
+      const previous = next[previewId] ?? {};
+
+      if (innerNode.type === 'Joystick') {
+        const xMatches = clampInteger(params.xMidiChannel ?? 0, 0, 16) === controlChange.channel
+          && clampInteger(params.xMidiCc ?? 1, 0, 127) === controlChange.cc;
+        const yMatches = clampInteger(params.yMidiChannel ?? 0, 0, 16) === controlChange.channel
+          && clampInteger(params.yMidiCc ?? 2, 0, 127) === controlChange.cc;
+        if (!xMatches && !yMatches) continue;
+        next = setMidiControlVisual(next, previewId, {
+          ...previous,
+          ...(xMatches ? { joystickX: clampNumber(controlChange.value, 0, 1) } : {}),
+          ...(yMatches ? { joystickY: clampNumber(controlChange.value, 0, 1) } : {}),
+        });
+        continue;
+      }
+
+      const channel = clampInteger(params.midiChannel ?? 0, 0, 16);
+      const cc = clampInteger(params.midiCc ?? 1, 0, 127);
+      if (channel === 0 || channel !== controlChange.channel || cc !== controlChange.cc) continue;
+
+      if (innerNode.type === 'Slider') {
+        if (patchInputIsConnected(group.subpatch.links, innerNode.id, 'value')) continue;
+        next = setMidiControlVisual(next, previewId, {
+          ...previous,
+          sliderValue: clampNumber(controlChange.value, 0, 1),
+          lastRawValue: controlChange.value,
+        });
+        continue;
+      }
+
+      const rawPressed = controlChange.value >= 0.5;
+      const rawWasPressed = (previous.lastRawValue ?? 0) >= 0.5;
+      const mode = clampInteger(params.mode ?? 0, 0, 2);
+      const currentPressed = previous.buttonPressed ?? params.pressed ?? 0;
+      const buttonPressed = mode === 0
+        ? (rawPressed && !rawWasPressed ? (currentPressed >= 0.5 ? 0 : 1) : currentPressed)
+        : (rawPressed ? 1 : 0);
+      next = setMidiControlVisual(next, previewId, {
+        ...previous,
+        buttonPressed,
+        lastRawValue: controlChange.value,
+      });
+    }
+  }
+
   return next;
+}
+
+function applyMidiControlChangeToNodes(
+  nodes: ShaderFlowNode[],
+  edges: ShaderFlowEdge[],
+  controlChange: MidiControlChange,
+  previousVisuals: Record<string, MidiControlVisualState>,
+  nextVisuals: Record<string, MidiControlVisualState>,
+): ShaderFlowNode[] {
+  let changed = false;
+
+  const nextNodes = nodes.map((node) => {
+    const patchNode = node.data.patchNode;
+    if (patchNode.type !== 'Slider' && patchNode.type !== 'Joystick' && patchNode.type !== 'Button') return node;
+
+    const visual = nextVisuals[patchNode.id];
+    if (!visual) return node;
+    let params: Record<string, number> | null = null;
+
+    if (patchNode.type === 'Slider') {
+      const matches = clampInteger(patchNode.params.midiChannel ?? 0, 0, 16) === controlChange.channel
+        && clampInteger(patchNode.params.midiCc ?? 1, 0, 127) === controlChange.cc;
+      if (matches && !nodeInputIsConnected(edges, patchNode.id, 'value') && visual.sliderValue !== undefined) {
+        params = { ...patchNode.params, value: clampNumber(visual.sliderValue, 0, 1) };
+      }
+    } else if (patchNode.type === 'Joystick') {
+      const xMatches = clampInteger(patchNode.params.xMidiChannel ?? 0, 0, 16) === controlChange.channel
+        && clampInteger(patchNode.params.xMidiCc ?? 1, 0, 127) === controlChange.cc;
+      const yMatches = clampInteger(patchNode.params.yMidiChannel ?? 0, 0, 16) === controlChange.channel
+        && clampInteger(patchNode.params.yMidiCc ?? 2, 0, 127) === controlChange.cc;
+      if (xMatches || yMatches) {
+        params = {
+          ...patchNode.params,
+          ...(xMatches && visual.joystickX !== undefined ? { x: clampNumber(visual.joystickX, 0, 1) } : {}),
+          ...(yMatches && visual.joystickY !== undefined ? { y: clampNumber(visual.joystickY, 0, 1) } : {}),
+        };
+      }
+    } else {
+      const matches = clampInteger(patchNode.params.midiChannel ?? 0, 0, 16) === controlChange.channel
+        && clampInteger(patchNode.params.midiCc ?? 1, 0, 127) === controlChange.cc;
+      if (matches) {
+        const mode = clampInteger(patchNode.params.mode ?? 0, 0, 2);
+        if (mode === 1) {
+          const previousRaw = previousVisuals[patchNode.id]?.lastRawValue ?? 0;
+          if (controlChange.value >= 0.5 && previousRaw < 0.5) {
+            params = { ...patchNode.params, clicks: (patchNode.params.clicks ?? 0) + 1 };
+          }
+        } else if (visual.buttonPressed !== undefined) {
+          params = { ...patchNode.params, pressed: visual.buttonPressed >= 0.5 ? 1 : 0 };
+        }
+      }
+    }
+
+    if (!params) return node;
+    changed = true;
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        patchNode: { ...patchNode, params },
+      },
+    };
+  });
+
+  return changed ? nextNodes : nodes;
 }
 
 function setMidiControlVisual(
@@ -6908,11 +7077,33 @@ function clearJoystickMidiVisual(
   return { ...current, [nodeId]: nextVisual };
 }
 
+function clearMidiControlVisual(
+  current: Record<string, MidiControlVisualState>,
+  nodeId: string,
+  type: 'Slider' | 'Button',
+): Record<string, MidiControlVisualState> {
+  const visual = current[nodeId];
+  if (!visual) return current;
+  const nextVisual = { ...visual };
+  if (type === 'Slider') delete nextVisual.sliderValue;
+  else delete nextVisual.buttonPressed;
+  return { ...current, [nodeId]: nextVisual };
+}
+
+function isEdgeConnectedToSelectedNode(edge: ShaderFlowEdge, selectedNodeIds: Set<string>): boolean {
+  const link = linkFromEdge(edge);
+  return Boolean(link && (selectedNodeIds.has(link.from.node) || selectedNodeIds.has(link.to.node)));
+}
+
 function nodeInputIsConnected(edges: ShaderFlowEdge[], nodeId: string, port: string): boolean {
   return edges.some((edge) => {
     const link = linkFromEdge(edge);
     return link?.to.node === nodeId && link.to.port === port;
   });
+}
+
+function patchInputIsConnected(links: Patch['links'], nodeId: string, port: string): boolean {
+  return links.some((link) => link.to.node === nodeId && link.to.port === port);
 }
 
 function clampInteger(value: number, min: number, max: number): number {

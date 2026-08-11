@@ -132,6 +132,10 @@ export interface ShaderEdgeData extends Record<string, unknown> {
   onEnabledChange?: (edgeId: string, enabled: boolean) => void;
   onInsertNode: (edgeId: string) => void;
   showLinkControls?: boolean;
+  /** Draw this link with the selected-link treatment because one of its nodes is selected. */
+  isConnectedToSelectedNode?: boolean;
+  /** De-emphasize this link while another selected node or link is highlighted. */
+  isDimmedBySelection?: boolean;
   isFeedback?: boolean;
   isControl?: boolean;
   dspErrors?: string[];

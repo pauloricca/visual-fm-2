@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AUDIO_ENGINE_CONFIG } from './config';
 import { DSP_OP, type DspProgram } from './dspProgram';
 import { logDiagnosticEvent, serializeError } from '../diagnostics';
+import { AUDIO_WASM_ASSET_VERSION, AUDIO_WORKLET_ASSET_VERSION } from 'virtual:audio-engine-assets';
 
 type AudioStatus = 'idle' | 'starting' | 'running' | 'error';
 type RecordingStatus = 'idle' | 'waiting' | 'recording' | 'saving' | 'saved' | 'error';
@@ -193,12 +194,8 @@ interface ImageDataRequest {
   promise: Promise<ImageDataCacheEntry | null>;
 }
 
-// Keep this in step with public/audio/visual-fm-kernel.wasm. AudioWorklet
-// modules and WASM are aggressively cached, so an older kernel can silently
-// omit newer DSP behavior or exports while the current UI is running.
-const AUDIO_ENGINE_ASSET_VERSION = '2026-08-09-scope-reset-2';
-const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_ENGINE_ASSET_VERSION}`;
-const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_ENGINE_ASSET_VERSION}`;
+const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_WORKLET_ASSET_VERSION}`;
+const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_WASM_ASSET_VERSION}`;
 const METER_UPDATE_INTERVAL_MS = 80;
 const RECORDING_CHUNK_FRAMES = 16384;
 const RECORDING_CHANNEL_COUNT = 2;
@@ -914,7 +911,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
       setAudioInputStatus('connected');
       setAudioInputMessage(`${track?.label || audioInputDeviceLabel(audioInputDevices, connectedDeviceId) || 'Audio input'} connected.`);
       void refreshAudioInputDevices();
-      setMessage(`WASM audio ${context.state} (${AUDIO_ENGINE_ASSET_VERSION})`);
+      setMessage(`WASM audio ${context.state} (${AUDIO_WASM_ASSET_VERSION})`);
     }).catch((error) => {
       logDiagnosticEvent('audio-input-error', {
         level: 'warn',
@@ -1263,7 +1260,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
                 if (audioActivationRequestedRef.current && context.state === 'running') {
                   fadeAudioOutputIn(context, outputGain);
                   setStatus('running');
-                  setMessage(`WASM audio ${context.state} (${AUDIO_ENGINE_ASSET_VERSION})`);
+                  setMessage(`WASM audio ${context.state} (${AUDIO_WASM_ASSET_VERSION})`);
                 } else {
                   setStatus((current) => current === 'starting' ? current : 'idle');
                   setMessage('audio ready');

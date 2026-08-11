@@ -7,3 +7,8 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+declare module 'virtual:audio-engine-assets' {
+  export const AUDIO_WORKLET_ASSET_VERSION: string;
+  export const AUDIO_WASM_ASSET_VERSION: string;
+}
