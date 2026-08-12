@@ -701,9 +701,13 @@ async function saveUploadedRecording(recordingsDir: string, request: Connect.Inc
   }
 
   await mkdir(recordingsDir, { recursive: true });
-  const patchName = Array.isArray(request.headers['x-visual-fm-patch-name'])
-    ? request.headers['x-visual-fm-patch-name'][0]
-    : request.headers['x-visual-fm-patch-name'];
+  const encodedPatchNameHeader = request.headers['x-visual-fm-patch-name-encoded'];
+  const encodedPatchName = Array.isArray(encodedPatchNameHeader) ? encodedPatchNameHeader[0] : encodedPatchNameHeader;
+  const legacyPatchNameHeader = request.headers['x-visual-fm-patch-name'];
+  const legacyPatchName = Array.isArray(legacyPatchNameHeader) ? legacyPatchNameHeader[0] : legacyPatchNameHeader;
+  const patchName = encodedPatchName === undefined
+    ? legacyPatchName
+    : decodeRecordingPatchName(encodedPatchName);
   const name = await uniqueSampleFilename(recordingsDir, recordingFilename(patchName));
   await writeFile(join(recordingsDir, name), data);
 
@@ -956,6 +960,14 @@ function recordingFilename(patchName: string | undefined): string {
     .replace(/\.\d{3}Z$/, 'Z')
     .replace(/:/g, '-');
   return `${patchStem}-recording-${timestamp}.wav`;
+}
+
+function decodeRecordingPatchName(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new Error('Invalid encoded recording patch name.');
+  }
 }
 
 function sanitizeRecordingPatchName(name: string | undefined): string {

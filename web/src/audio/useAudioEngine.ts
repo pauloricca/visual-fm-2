@@ -1928,7 +1928,9 @@ async function uploadRecording(blob: Blob, patchName: string, sampleEvents: Samp
     method: 'POST',
     headers: {
       'Content-Type': 'audio/wav',
-      'X-Visual-Fm-Patch-Name': patchName,
+      // HTTP header values are limited to Latin-1. Patch names are user text,
+      // so encode them before placing them in a header (for example, "été").
+      'X-Visual-Fm-Patch-Name-Encoded': encodeURIComponent(patchName),
     },
     body: blob,
   });
