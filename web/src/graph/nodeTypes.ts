@@ -105,6 +105,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   CustomWave: {
     type: 'CustomWave',
     inputs: [
+      { name: 'mode', defaultValue: 0, min: 0, max: 5, integer: true, connectable: false, valueEditor: false },
       { name: 'frequency', defaultValue: 220 },
       { name: 'phase', defaultValue: 0 },
       { name: 'trigger', defaultValue: 0 },
@@ -646,6 +647,10 @@ export function getNodeDefinition(node: PatchNode): NodeDefinition {
   if (node.type === 'CustomWave') {
     const definition = getDefinition(node.type);
     const inputs = [...(node.inputs ?? definition.inputs)];
+    if (!inputs.some((input) => input.name === 'mode')) {
+      const mode = definition.inputs.find((input) => input.name === 'mode');
+      if (mode) inputs.unshift(mode);
+    }
     if (!inputs.some((input) => input.name === 'baseLevel')) {
       const baseLevel = definition.inputs.find((input) => input.name === 'baseLevel');
       const rangeMinIndex = inputs.findIndex((input) => input.name === 'rangeMin');

@@ -1473,11 +1473,7 @@ button:hover {
 }
 
 .shader-node-content-ports .shader-port-input {
-  grid-template-columns: minmax(0, var(--input-label-width, max-content)) minmax(0, 68px);
-}
-
-.shader-node-content-ports .shader-port-input:has(.display-mode-select) {
-  grid-template-columns: minmax(0, var(--input-label-width, max-content)) minmax(0, 84px);
+  grid-template-columns: minmax(max-content, var(--input-label-width, max-content)) 68px;
 }
 
 .shader-node-content-ports .shader-port-input span {
@@ -1825,8 +1821,7 @@ button:hover {
 .audio-input-node-refresh-button,
 .audio-input-node-device-select,
 .midi-input-node-device-count,
-.midi-input-node-refresh-button,
-.tempo-source-select {
+.midi-input-node-refresh-button {
   height: 22px;
   min-width: 0;
   border: 1px solid var(--color-foreground);
@@ -1900,11 +1895,6 @@ button:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.tempo-source-select {
-  width: 68px;
-  padding: 0 4px;
 }
 
 .audio-input-node-device-select:disabled {
@@ -2096,15 +2086,6 @@ button:hover {
   white-space: nowrap;
 }
 
-.custom-wave-mode-select {
-  width: 100%;
-  min-width: 0;
-  height: 22px;
-  padding: 0 4px;
-  font-size: inherit;
-  line-height: 20px;
-}
-
 .custom-wave-node-range {
   grid-template-columns: var(--input-label-width, auto) minmax(72px, 1fr) minmax(68px, 96px);
 }
@@ -2120,29 +2101,6 @@ button:hover {
   padding: 0 4px;
   font-size: inherit;
   line-height: 20px;
-}
-
-.shader-node-custom-wave .shader-inputs {
-  width: 100%;
-  min-width: 0;
-  padding: var(--node-content-padding);
-}
-
-.shader-node-custom-wave .shader-port-input {
-  display: grid;
-  grid-template-columns: var(--input-label-width, auto) minmax(0, 1fr);
-  gap: 6px;
-  width: 100%;
-  min-width: 0;
-}
-
-.shader-node-custom-wave .shader-port-input span {
-  width: var(--input-label-width, auto);
-}
-
-.shader-node-custom-wave .numeric-scrubber {
-  width: 100%;
-  min-width: 0;
 }
 
 .shader-node-body-draft {
@@ -2903,23 +2861,6 @@ button:hover {
   padding: var(--node-content-padding);
 }
 
-.shader-node-body-accumulator .shader-port {
-  width: 100%;
-  min-width: 0;
-}
-
-.shader-node-body-accumulator .shader-port-input {
-  grid-template-columns: minmax(0, var(--input-label-width, max-content)) var(--accumulator-control-width);
-  width: 100%;
-  min-width: 0;
-}
-
-.shader-node-body-accumulator .shader-port-input span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .accumulator-value-label {
   grid-column: 1 / -1;
   min-width: 0;
@@ -2937,42 +2878,6 @@ button:hover {
 .shader-node-compact .shader-node-content-ports .shader-inputs:empty {
   display: none;
   padding: 0;
-}
-
-.shader-node-body-no-outputs .numeric-scrubber,
-.shader-node-body-no-outputs .slider-direction-select,
-.shader-node-body-no-outputs .button-mode-select,
-.shader-node-body-no-outputs .sample-mode-select,
-.shader-node-body-no-outputs .tempo-source-select {
-  width: 68px;
-  min-width: 0;
-  max-width: 68px;
-}
-
-.shader-node-body-accumulator .numeric-scrubber {
-  width: var(--accumulator-control-width);
-  max-width: var(--accumulator-control-width);
-}
-
-.shader-node-scope .numeric-scrubber {
-  width: 100%;
-  min-width: 68px;
-  max-width: none;
-}
-
-.shader-node-custom-wave .numeric-scrubber {
-  width: 100%;
-  max-width: none;
-}
-
-.shader-node-sampleplayer .numeric-scrubber {
-  width: 100%;
-  max-width: none;
-}
-
-.shader-node-buffer .numeric-scrubber {
-  width: 100%;
-  max-width: none;
 }
 
 .audio-node-slider-fill {
@@ -3004,13 +2909,7 @@ button:hover {
   direction: rtl;
 }
 
-.slider-direction-select,
-.sequencer-mode-select,
-.button-mode-select,
-.accumulator-mode-select,
-.sample-mode-select,
-.buffer-reset-select,
-.display-mode-select {
+.shader-port-select {
   width: 68px;
   min-width: 0;
   height: 22px;
@@ -3020,14 +2919,6 @@ button:hover {
   color: var(--color-foreground);
   font: inherit;
   line-height: 20px;
-}
-
-.display-mode-select {
-  width: 84px;
-}
-
-.accumulator-mode-select {
-  width: var(--accumulator-control-width);
 }
 
 .audio-node-scope-resize-handle {

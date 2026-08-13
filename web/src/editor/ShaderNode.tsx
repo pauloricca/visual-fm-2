@@ -43,7 +43,7 @@ import {
   trimOverlappingSequencerGates,
   SEQUENCER_MIN_VELOCITY,
 } from '../graph/nodeTypes';
-import type { CustomWaveMode, CustomWavePoint, CustomWaveSettings, NodeDefinition, NodeType, PatchNode } from '../graph/types';
+import type { CustomWavePoint, CustomWaveSettings, NodeDefinition, NodeType, PatchNode } from '../graph/types';
 import { midiNoteLabel, QUANTISE_SCALES } from '../graph/musicScales';
 import {
   MIN_RUNTIME_CONTAINER_WIDTH,
@@ -1292,7 +1292,6 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
               editorRef={customWaveEditorRef}
               onPointerDown={handleCustomWavePointerDown}
               onDoubleClick={handleCustomWaveDoubleClick}
-              onModeChange={(mode) => commitCustomWave({ ...customWave, mode }, `custom-wave-mode:${node.id}`)}
               onSustainStartChange={(sustainStart) => {
                 commitCustomWave({
                   ...customWave,
@@ -1516,6 +1515,35 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
                 >
                   {input.name}
                 </button>
+              ) : showCustomWaveEditor && input.name === 'mode' && !input.preview ? (
+                <>
+                  <PortNameLabel
+                    name={input.name}
+                    editable={false}
+                    draggable={false}
+                    preview={false}
+                    selected={data.selectedPort?.side === 'input' && data.selectedPort.name === input.name}
+                    activeDragTarget={false}
+                    activeDragSource={false}
+                    onChange={() => undefined}
+                  />
+                  <select
+                    className="shader-port-select nodrag nopan"
+                    aria-label="Custom Wave mode"
+                    value={customWave?.mode ?? CUSTOM_WAVE_MODES[0].value}
+                    onChange={(event) => {
+                      if (customWave) commitCustomWave({ ...customWave, mode: event.currentTarget.value as CustomWaveSettings['mode'] }, `custom-wave-mode:${node.id}`);
+                      event.currentTarget.blur();
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    {CUSTOM_WAVE_MODES.map((mode) => (
+                      <option key={mode.value} value={mode.value}>{mode.label}</option>
+                    ))}
+                  </select>
+                </>
               ) : showSliderDisplay && input.name === 'direction' && !input.preview ? (
                 <>
                   <PortNameLabel
@@ -1529,7 +1557,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
                     onChange={() => undefined}
                   />
                   <select
-                    className="slider-direction-select nodrag nopan"
+                    className="shader-port-select nodrag nopan"
                     value={String(Math.round(node.params.direction ?? input.defaultValue ?? 0))}
                     onChange={(event) => {
                       data.onParamChange(node.id, input.name, Number(event.currentTarget.value));
@@ -1556,7 +1584,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
                     onChange={() => undefined}
                   />
                   <select
-                    className="sequencer-mode-select nodrag nopan"
+                    className="shader-port-select nodrag nopan"
                     aria-label="Sequencer mode"
                     value={sequencerUsesGateMode(node.params) ? '1' : '0'}
                     onChange={(event) => {
@@ -1621,7 +1649,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
                     onChange={() => undefined}
                   />
                   <select
-                    className="display-mode-select nodrag nopan"
+                    className="shader-port-select nodrag nopan"
                     aria-label={`${showMeterDisplay ? 'Meter' : 'Scope'} mode`}
                     value={String(Math.round(node.params.mode ?? input.defaultValue ?? 0))}
                     onChange={(event) => {
@@ -1649,7 +1677,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
                     onChange={() => undefined}
                   />
                   <select
-                    className="display-mode-select nodrag nopan"
+                    className="shader-port-select nodrag nopan"
                     aria-label="Scope reset"
                     value={String(Math.round(node.params.reset ?? input.defaultValue ?? 1))}
                     onChange={(event) => {
@@ -1677,7 +1705,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
                     onChange={() => undefined}
                   />
                   <select
-                    className="sample-mode-select nodrag nopan"
+                    className="shader-port-select nodrag nopan"
                     value={String(Math.round(node.params.mode ?? input.defaultValue ?? 0))}
                     onChange={(event) => {
                       data.onParamChange(node.id, input.name, Number(event.currentTarget.value));
@@ -1705,7 +1733,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
                     onChange={() => undefined}
                   />
                   <select
-                    className="buffer-reset-select nodrag nopan"
+                    className="shader-port-select nodrag nopan"
                     aria-label="Buffer on reset"
                     value={String(clamp(Math.round(node.params['on reset'] ?? input.defaultValue ?? 0), 0, 1))}
                     onChange={(event) => {
@@ -1733,7 +1761,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
                     onChange={() => undefined}
                   />
                   <select
-                    className="tempo-source-select nodrag nopan"
+                    className="shader-port-select nodrag nopan"
                     aria-label="Tempo source"
                     value={String(clamp(Math.round(node.params.source ?? input.defaultValue ?? 0), 0, 1))}
                     onChange={(event) => {
@@ -1761,7 +1789,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
                     onChange={() => undefined}
                   />
                   <select
-                    className="tempo-source-select nodrag nopan"
+                    className="shader-port-select nodrag nopan"
                     aria-label="MIDI clock source"
                     value={String(clamp(Math.round(node.params.midiSource ?? input.defaultValue ?? 0), 0, Math.max(0, data.midiInput?.devices.length ?? 0)))}
                     onChange={(event) => {
@@ -1793,7 +1821,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
                     onChange={() => undefined}
                   />
                   <select
-                    className="button-mode-select nodrag nopan"
+                    className="shader-port-select nodrag nopan"
                     value={String(Math.round(node.params.mode ?? input.defaultValue ?? 0))}
                     onChange={(event) => {
                       data.onParamChange(node.id, input.name, Number(event.currentTarget.value));
@@ -1821,7 +1849,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
                     onChange={() => undefined}
                   />
                   <select
-                    className="accumulator-mode-select nodrag nopan"
+                    className="shader-port-select nodrag nopan"
                     aria-label="Accumulator mode"
                     value={String(Math.round(node.params.mode ?? input.defaultValue ?? 0))}
                     onChange={(event) => {
@@ -1849,7 +1877,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
                     onChange={() => undefined}
                   />
                   <select
-                    className="display-mode-select nodrag nopan"
+                    className="shader-port-select nodrag nopan"
                     aria-label="Quantise scale"
                     value={String(clamp(Math.round(node.params.scale ?? input.defaultValue ?? 0), 0, QUANTISE_SCALES.length - 1))}
                     onChange={(event) => {
@@ -1878,7 +1906,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
                     onChange={() => undefined}
                   />
                   <select
-                    className="display-mode-select nodrag nopan"
+                    className="shader-port-select nodrag nopan"
                     aria-label="Quantise root note"
                     value={String(clamp(Math.round(node.params.root ?? input.defaultValue ?? 60), 0, 127))}
                     onChange={(event) => {
@@ -1911,7 +1939,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
                   onChange={(nextName) => data.onPortNameChange(node.id, 'input', input.name, nextName)}
                 />
               )}
-              {!input.preview && node.type !== 'Outs' && input.valueEditor !== false && input.defaultValue !== undefined && !(showSliderDisplay && input.name === 'direction') && !(showSequencerDisplay && input.name === 'mode') && !(showButtonDisplay && input.name === 'mode') && !(showAccumulatorDisplay && input.name === 'mode') && !(showQuantiseDisplay && (input.name === 'scale' || input.name === 'root')) && !(showSampleUpload && input.name === 'mode') && !(showTempoDisplay && (input.name === 'source' || input.name === 'midiSource')) ? (
+              {!input.preview && node.type !== 'Outs' && input.valueEditor !== false && input.defaultValue !== undefined && !(showCustomWaveEditor && input.name === 'mode') && !(showSliderDisplay && input.name === 'direction') && !(showSequencerDisplay && input.name === 'mode') && !(showButtonDisplay && input.name === 'mode') && !(showAccumulatorDisplay && input.name === 'mode') && !(showQuantiseDisplay && (input.name === 'scale' || input.name === 'root')) && !(showSampleUpload && input.name === 'mode') && !(showTempoDisplay && (input.name === 'source' || input.name === 'midiSource')) ? (
                 <NumericScrubber
                   value={node.params[input.name] ?? input.defaultValue ?? 0}
                   min={input.min}
@@ -2511,7 +2539,6 @@ interface CustomWaveEditorProps {
   editorRef: RefObject<SVGSVGElement | null>;
   onPointerDown: (event: PointerEvent<SVGSVGElement>) => void;
   onDoubleClick: (event: MouseEvent<SVGSVGElement>) => void;
-  onModeChange: (mode: CustomWaveMode) => void;
   onSustainStartChange: (value: number) => void;
   onSustainEndChange: (value: number) => void;
 }
@@ -3763,7 +3790,6 @@ function CustomWaveEditor({
   editorRef,
   onPointerDown,
   onDoubleClick,
-  onModeChange,
   onSustainStartChange,
   onSustainEndChange,
 }: CustomWaveEditorProps) {
@@ -3894,25 +3920,8 @@ function CustomWaveEditor({
           </span>
         ) : null}
       </div>
-      {!compact ? (
+      {!compact && (showSustainStart || showSustainEnd) ? (
       <div className="custom-wave-node-controls">
-        <label className="custom-wave-node-field">
-          <span>mode</span>
-          <select
-            className="custom-wave-mode-select"
-            value={customWave.mode}
-            onChange={(event) => {
-              onModeChange(event.currentTarget.value as CustomWaveMode);
-              event.currentTarget.blur();
-            }}
-            onPointerDown={(event) => event.stopPropagation()}
-            onDoubleClick={(event) => event.stopPropagation()}
-          >
-            {CUSTOM_WAVE_MODES.map((mode) => (
-              <option key={mode.value} value={mode.value}>{mode.label}</option>
-            ))}
-          </select>
-        </label>
         {showSustainStart ? (
           <CustomWaveRange
             label="start"
