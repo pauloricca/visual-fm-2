@@ -19,6 +19,7 @@ import {
   customWaveUsesSustainEnd,
   customWaveUsesSustainStart,
   customWaveWithBaseLevel,
+  customWaveBank,
   normalizedCustomWaveValue,
   normalizeCustomWave,
 } from '../graph/customWave';
@@ -85,6 +86,7 @@ const FFT_ANALYSIS_MAX_FREQUENCY = 20000;
 
 export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNode>) {
   const node = data.patchNode;
+  const isCanvasLocked = data.isCanvasLocked === true;
   const scopeGradientId = `scope-gradient-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const reactFlow = useReactFlow<ShaderFlowNode, ShaderFlowEdge>();
   const graphZoomScale = graphDetailZoomScale(data.canvasZoom ?? Number.NaN);
@@ -186,10 +188,37 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     || showSampleUpload
     || showBufferDisplay
   );
-  const customWave = showCustomWaveEditor ? normalizeCustomWave(node.customWave, node.params) : null;
+  const customWaveCount = Math.max(1, Math.min(8, Math.round(node.params.count ?? 1)));
+  const customWaveBankValues = showCustomWaveEditor
+    ? Array.from({ length: customWaveCount }, (_, index) => customWaveBank(node.customWave, node.params)[index] ?? normalizeCustomWave(undefined))
+    : [];
+  const [selectedCustomWaveIndex, setSelectedCustomWaveIndex] = useState(0);
+  const selectedWaveIndex = Math.min(selectedCustomWaveIndex, customWaveCount - 1);
+  const customWave = showCustomWaveEditor ? customWaveBankValues[selectedWaveIndex] ?? customWaveBankValues[0] : null;
   const customWavePlayheads = data.audioPlayheads?.length
     ? data.audioPlayheads.map((playhead) => clamp(playhead, 0, 1))
     : [normalizeUnitInterval(node.params.phase ?? 0)];
+  useEffect(() => {
+    setSelectedCustomWaveIndex((current) => Math.min(current, customWaveCount - 1));
+  }, [customWaveCount]);
+  useEffect(() => {
+    if (!showCustomWaveEditor || !selected || customWaveCount < 2) return;
+
+    const handleCustomWaveSelectKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+      if (isEditableElement(event.target) || isEditableElement(document.activeElement)) return;
+
+      const waveIndex = Number(event.key) - 1;
+      if (!Number.isInteger(waveIndex) || waveIndex < 0 || waveIndex >= customWaveCount) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      setSelectedCustomWaveIndex(waveIndex);
+    };
+
+    window.addEventListener('keydown', handleCustomWaveSelectKeyDown, { capture: true });
+    return () => window.removeEventListener('keydown', handleCustomWaveSelectKeyDown, { capture: true });
+  }, [customWaveCount, selected, showCustomWaveEditor]);
   const sequencer = showSequencerDisplay ? sequencerShape(node.params) : null;
   const amplitudeRange = displayAmplitudeRange(node.params.range);
   const meterMode = monitorDisplayMode(node.params.mode, 'unipolar');
@@ -276,6 +305,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   );
   const connectedInputPorts = useMemo(() => new Set(data.connectedPorts?.inputs ?? []), [data.connectedPorts?.inputs]);
   const connectedOutputPorts = useMemo(() => new Set(data.connectedPorts?.outputs ?? []), [data.connectedPorts?.outputs]);
+  const setLinkInputPorts = useMemo(() => new Set(data.setLinkInputPorts ?? []), [data.setLinkInputPorts]);
   const forceCompactPorts = definition ? shouldForceCompactPorts(definition) : false;
   const compactPorts = forceCompactPorts || node.compactPorts === true;
   const revealCompactPorts = data.isOnlySelected === true || (data.isConnecting === true && pointerOver);
@@ -286,7 +316,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     && previewInputPort !== 'signal',
   );
   const headerInputPort = showHeaderInput ? 'signal' : null;
-  const canShowHeaderOutput = node.type !== 'Ins' && node.type !== 'Sequencer';
+  const canShowHeaderOutput = node.type !== 'Ins' && node.type !== 'Sequencer' && !(node.type === 'CustomWave' && customWaveCount > 1);
   const signalOutputPort = definition?.outputs.find((output) => output.name === 'signal')?.name ?? null;
   const headerOutputPort = canShowHeaderOutput
     ? signalOutputPort ?? (outputCount === 1 && !previewAddsOutput ? definition?.outputs[0]?.name ?? null : null)
@@ -343,6 +373,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
     compactPorts ? 'shader-node-compact' : '',
     isAreaCollapsedPresentation ? 'shader-node-area-hidden' : '',
     isAreaUiCollapsedPresentation ? 'shader-node-area-ui-collapsed' : '',
+    isCanvasLocked ? 'shader-node-canvas-locked' : '',
     data.onHeaderDoubleClick ? 'shader-node-resettable-header' : '',
     usesAutoInitialWidth ? 'shader-node-auto-width' : '',
   ].filter(Boolean).join(' ');
@@ -734,7 +765,11 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
   }
 
   function commitCustomWave(nextCustomWave: CustomWaveSettings, historyKey?: string) {
-    data.onCustomWaveChange?.(node.id, normalizeCustomWave(nextCustomWave), historyKey);
+    const waves = Array.from({ length: customWaveCount }, (_, index) => (
+      index === selectedWaveIndex ? normalizeCustomWave(nextCustomWave) : customWaveBankValues[index] ?? normalizeCustomWave(undefined)
+    ));
+    const [firstWave, ...additionalWaves] = waves;
+    data.onCustomWaveChange?.(node.id, { ...firstWave, ...(additionalWaves.length ? { waves: additionalWaves } : {}) }, historyKey);
   }
 
   function scheduleCustomWaveDragCommit(nextCustomWave: CustomWaveSettings, historyKey: string) {
@@ -914,6 +949,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               value={node.params.count ?? 1}
               min={0}
               integer
+              replacedBySetLink={setLinkInputPorts.has('count')}
               onChange={(value) => data.onParamChange(node.id, 'count', value)}
             />
           </div>
@@ -926,7 +962,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                 <Handle
                   id="out:instance gate"
                   type="source"
-                  position={Position.Right}
+                  position={Position.Bottom}
                   className={[
                     'shader-handle shader-handle-output spread-item-index-handle',
                     selectedLinkOutputs.includes('instance gate') ? 'shader-handle-selected-link' : '',
@@ -938,7 +974,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
               <Handle
                 id={isSpawn ? 'in:kill trigger' : 'out:item index'}
                 type={isSpawn ? 'target' : 'source'}
-                position={isSpawn ? Position.Left : Position.Right}
+                position={Position.Bottom}
                 className={[
                   `shader-handle ${isSpawn ? 'shader-handle-input' : 'shader-handle-output'} spread-item-index-handle`,
                   (isSpawn
@@ -1236,9 +1272,16 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
           {showCustomWaveEditor && customWave ? (
             <CustomWaveEditor
               customWave={customWave}
+              waves={customWaveBankValues.slice(0, customWaveCount)}
+              selectedWaveIndex={selectedWaveIndex}
+              onWaveSelect={setSelectedCustomWaveIndex}
+              subdivisions={node.params.subdivisions ?? 8}
+              subgroups={node.params.subgroups ?? 4}
               baseLevel={node.params.baseLevel ?? 0}
               rangeMin={node.params.rangeMin ?? -1}
               rangeMax={node.params.rangeMax ?? 1}
+              frequency={data.audioCustomWaveFrequency ?? node.params.frequency ?? 220}
+              hasLivePlayheads={Boolean(data.audioPlayheads?.length)}
               playheads={customWavePlayheads}
               compact={!showAllPorts}
               displaySize={displaySize}
@@ -1874,6 +1917,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
                   max={input.max}
                   integer={input.integer}
                   step={input.step}
+                  replacedBySetLink={setLinkInputPorts.has(input.name)}
                   onChange={(value) => data.onParamChange(node.id, input.name, value)}
                   onClear={isSelector && isSelectorValuePort(input.name) ? () => data.onSelectorInputClear?.(node.id, input.name) : undefined}
                   midiLearnEvent={canLearnMidiCc(node.type, input.name) ? data.midiInput?.lastControlChange : undefined}
@@ -1973,7 +2017,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
             </div>
           ) : null}
           </div>
-          {showResizableDisplay && !isAreaUiCollapsedPresentation ? (
+          {showResizableDisplay && !isCanvasLocked && !isAreaUiCollapsedPresentation ? (
             <>
               <span
                 className={[
@@ -2435,6 +2479,11 @@ function normalizeUnitInterval(value: number): number {
   return ((value % 1) + 1) % 1;
 }
 
+function isEditableElement(element: EventTarget | null): boolean {
+  if (!(element instanceof HTMLElement)) return false;
+  return element.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName);
+}
+
 function centeredCoordinateToUnit(value: number): number {
   if (!Number.isFinite(value)) return 0.5;
   return (Math.max(-1, Math.min(1, value)) + 1) * 0.5;
@@ -2442,9 +2491,16 @@ function centeredCoordinateToUnit(value: number): number {
 
 interface CustomWaveEditorProps {
   customWave: CustomWaveSettings;
+  waves: CustomWaveSettings[];
+  selectedWaveIndex: number;
+  onWaveSelect: (index: number) => void;
+  subdivisions: number;
+  subgroups: number;
   baseLevel: number;
   rangeMin: number;
   rangeMax: number;
+  frequency: number;
+  hasLivePlayheads: boolean;
   playheads: number[];
   compact: boolean;
   displaySize: ScopeNodeSize;
@@ -3687,9 +3743,16 @@ function SequencerGrid({
 
 function CustomWaveEditor({
   customWave,
+  waves,
+  selectedWaveIndex,
+  onWaveSelect,
+  subdivisions,
+  subgroups,
   baseLevel,
   rangeMin,
   rangeMax,
+  frequency,
+  hasLivePlayheads,
   playheads,
   compact,
   displaySize,
@@ -3715,12 +3778,14 @@ function CustomWaveEditor({
     width: displaySize.width * graphZoomScale,
     height: displaySize.height * graphZoomScale,
   };
-  const gridColumns = chartGridColumns(graphDetailSize.width);
+  const gridColumns = customWaveGridColumns(subdivisions);
+  const subgroupBands = customWaveSubgroupBands(subdivisions, subgroups, width, padding);
   const gridRows = customWaveGridRows(rangeMin, rangeMax, graphDetailSize.height);
   const sustainStartX = padding + customWave.sustainStart * innerWidth;
   const sustainEndX = padding + customWave.sustainEnd * innerWidth;
   const showSustainStart = customWaveUsesSustainStart(customWave.mode);
   const showSustainEnd = customWaveUsesSustainEnd(customWave.mode);
+  const showLowFrequencyScan = hasLivePlayheads && Number.isFinite(frequency) && Math.abs(frequency) < 20;
   const hitRadius = screenCircleRadius(15 * graphScreenEmphasis, width, height, graphDetailSize);
   const editPointScreenScale = customWaveEditPointScreenScale(graphZoomScale);
   const endpointRadius = screenCircleRadius(5 * graphScreenEmphasis * editPointScreenScale, width, height, graphDetailSize);
@@ -3734,6 +3799,16 @@ function CustomWaveEditor({
   return (
     <div className="custom-wave-node-editor nodrag nopan">
       <div className="custom-wave-node-chart">
+        {waves.length > 1 ? (
+          <div className="custom-wave-tabs" aria-label="Select wave">
+            {waves.map((_, index) => <button key={index} type="button" className={`custom-wave-tab wave-color-${index % 4} ${index === selectedWaveIndex ? 'is-selected' : ''} nodrag nopan`} title={`Edit wave ${index + 1} (${index + 1})`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onWaveSelect(index); }}>{index + 1}</button>)}
+          </div>
+        ) : null}
+        {subgroupBands.length > 0 ? (
+          <svg className="custom-wave-subgroup-bands" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-hidden="true">
+            {subgroupBands.map((band) => <rect key={band.x} x={band.x} y={padding} width={band.width} height={innerHeight} />)}
+          </svg>
+        ) : null}
         <ChartGrid
           width={innerWidth}
           height={innerHeight}
@@ -3759,11 +3834,12 @@ function CustomWaveEditor({
           {showSustainEnd ? (
             <line className="custom-wave-sustain-line is-end" x1={sustainEndX} y1={padding} x2={sustainEndX} y2={height - padding} />
           ) : null}
-          <path className="custom-wave-path" d={path} />
-          {playheads.map((playhead, index) => {
+          {waves.map((wave, index) => index !== selectedWaveIndex ? <path key={index} className={`custom-wave-path is-background wave-color-${index % 4}`} d={customWavePath(customWaveWithBaseLevel(wave, baseLevel, rangeMin, rangeMax).points, width, height, padding)} /> : null)}
+          <path className={`custom-wave-path wave-color-${selectedWaveIndex % 4}`} d={path} />
+          {showLowFrequencyScan ? playheads.map((playhead, index) => {
             const playheadX = padding + clamp(playhead, 0, 1) * innerWidth;
-            return <line className={`wave-playhead-line wave-playhead-${index % 4}`} key={`${index}:${playhead}`} x1={playheadX} y1={padding} x2={playheadX} y2={height - padding}><title>Playback {index + 1}</title></line>;
-          })}
+            return <line className={`wave-playhead-line wave-playhead-${index % 4} is-low-frequency`} key={`${index}:${playhead}`} x1={playheadX} y1={padding} x2={playheadX} y2={height - padding}><title>Playback {index + 1}</title></line>;
+          }) : null}
         </g>
         {points.map((point, index) => {
           const screen = customWavePointToScreen(point, width, height, padding);
@@ -3858,6 +3934,26 @@ function CustomWaveEditor({
       ) : null}
     </div>
   );
+}
+
+function customWaveGridColumns(subdivisions: number): ChartGridTick[] {
+  const count = Math.max(1, Math.min(64, Math.round(Number.isFinite(subdivisions) ? subdivisions : 8)));
+  return Array.from({ length: count + 1 }, (_, index) => ({
+    fraction: index / count,
+    major: index === 0 || index === count,
+  }));
+}
+
+function customWaveSubgroupBands(subdivisions: number, subgroups: number, width: number, padding: number): Array<{ x: number; width: number }> {
+  const columnCount = Math.max(1, Math.min(64, Math.round(Number.isFinite(subdivisions) ? subdivisions : 8)));
+  const groupSize = Math.max(1, Math.min(64, Math.round(Number.isFinite(subgroups) ? subgroups : 4)));
+  const innerWidth = width - padding * 2;
+  const bands: Array<{ x: number; width: number }> = [];
+  for (let column = groupSize; column < columnCount; column += groupSize * 2) {
+    const end = Math.min(column + groupSize, columnCount);
+    bands.push({ x: padding + (column / columnCount) * innerWidth, width: ((end - column) / columnCount) * innerWidth });
+  }
+  return bands;
 }
 
 function customWaveGridRows(rangeMin: number, rangeMax: number, height: number) {
@@ -4698,6 +4794,7 @@ interface NumericScrubberProps {
   max?: number;
   step?: number;
   integer?: boolean;
+  replacedBySetLink?: boolean;
   onChange: (value: number) => void;
   onClear?: () => void;
   midiLearnEvent?: MidiCcLearnEvent;
@@ -4711,6 +4808,7 @@ function NumericScrubber({
   max,
   step: baseStep,
   integer = false,
+  replacedBySetLink = false,
   onChange,
   onClear,
   midiLearnEvent,
@@ -4855,7 +4953,7 @@ function NumericScrubber({
     return (
       <input
         ref={inputRef}
-        className="numeric-scrubber numeric-scrubber-editing nodrag nopan"
+        className={`numeric-scrubber numeric-scrubber-editing${replacedBySetLink ? ' numeric-scrubber-replaced' : ''} nodrag nopan`}
         type="text"
         inputMode={integer ? 'numeric' : 'decimal'}
         value={draft}
@@ -4873,7 +4971,7 @@ function NumericScrubber({
 
   return (
     <div
-      className="numeric-scrubber nodrag nopan"
+      className={`numeric-scrubber${replacedBySetLink ? ' numeric-scrubber-replaced' : ''} nodrag nopan`}
       role="spinbutton"
       tabIndex={-1}
       aria-valuenow={value}

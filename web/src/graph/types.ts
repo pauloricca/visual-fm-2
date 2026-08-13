@@ -142,6 +142,8 @@ export interface CustomWaveSettings {
   sustainStart: number;
   sustainEnd: number;
   points: CustomWavePoint[];
+  /** Additional independently editable waves on a multi-output Custom Wave node. */
+  waves?: CustomWaveSettings[];
 }
 
 export interface Endpoint {

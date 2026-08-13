@@ -55,7 +55,7 @@ export function normalizeCustomWave(
   pointsByX.set(0, 0);
   pointsByX.set(1, 0);
 
-  return {
+  const normalized = {
     mode,
     sustainStart,
     sustainEnd,
@@ -63,6 +63,17 @@ export function normalizeCustomWave(
       .map(([x, y]): CustomWavePoint => ({ x, y }))
       .sort((a, b) => a.x - b.x),
   };
+  // Keep the first curve at the top level for older patches and add any
+  // extra curves as a bank. This makes single-wave patches fully compatible.
+  const waves = Array.isArray(customWave?.waves)
+    ? customWave.waves.map((wave) => normalizeCustomWave({ ...wave, waves: undefined }, legacyParams))
+    : [];
+  return waves.length > 0 ? { ...normalized, waves } : normalized;
+}
+
+export function customWaveBank(customWave: Partial<CustomWaveSettings> | undefined, params?: PatchNode['params']): CustomWaveSettings[] {
+  const normalized = normalizeCustomWave(customWave, params);
+  return [normalizeCustomWave({ ...normalized, waves: undefined }, params), ...(normalized.waves ?? [])];
 }
 
 export function customWaveUsesSustainStart(mode: CustomWaveMode): boolean {

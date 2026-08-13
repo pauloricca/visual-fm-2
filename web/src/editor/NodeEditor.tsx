@@ -329,6 +329,7 @@ function NodeEditorInner() {
   const initialState = useMemo(() => loadInitialEditorState(), []);
   const [patchName, setPatchName] = useState(initialState?.ui?.patchName ?? 'single-patch');
   const [viewport, setViewport] = useState<Viewport>(initialState?.ui?.viewport ?? { x: 0, y: 0, zoom: USER_ZOOM_BASELINE });
+  const [canvasLocked, setCanvasLocked] = useState(false);
   const [settledGraphZoom, setSettledGraphZoom] = useState(viewport.zoom);
   const [editorSize, setEditorSize] = useState({ width: 0, height: 0 });
   const [editingTypeNodeId, setEditingTypeNodeId] = useState<string | null>(null);
@@ -2386,6 +2387,21 @@ function NodeEditorInner() {
     ]));
   }, [edges]);
 
+  const setLinkInputPortsByNode = useMemo(() => {
+    const portsByNode = new Map<string, Set<string>>();
+
+    for (const edge of edges) {
+      if (edge.data?.enabled === false || (edge.data?.mode ?? 'set') !== 'set') continue;
+      const link = linkFromEdge(edge);
+      if (!link) continue;
+      const ports = portsByNode.get(link.to.node) ?? new Set<string>();
+      ports.add(link.to.port);
+      portsByNode.set(link.to.node, ports);
+    }
+
+    return new Map([...portsByNode].map(([nodeId, ports]) => [nodeId, [...ports]]));
+  }, [edges]);
+
   const selectedNodeCount = nodes.filter((node) => node.selected).length;
   const selectNodeFromTitle = useCallback((nodeId: string, additive: boolean) => {
     setSelectedAreaId(null);
@@ -2458,7 +2474,7 @@ function NodeEditorInner() {
         onTypeChange: updateNodeType,
         onConvertToArea: convertNodeToArea,
         onCustomLabelChange: updateNodeCustomLabel,
-        onTitleSelect: selectNodeFromTitle,
+        onTitleSelect: canvasLocked ? undefined : selectNodeFromTitle,
         onExpressionCommit: updateExpression,
         onTypeEditStart: setEditingTypeNodeId,
         onTypeEditEnd: () => setEditingTypeNodeId(null),
@@ -2491,6 +2507,8 @@ function NodeEditorInner() {
           ? { midiInput: audio.midiInput }
           : {}),
         connectedPorts: connectedPortsByNode.get(node.id),
+        setLinkInputPorts: setLinkInputPortsByNode.get(node.id),
+        isCanvasLocked: canvasLocked,
         canvasZoom: settledGraphZoom,
         previewPort: pendingBoundaryPort && pendingBoundaryPort.nodeId === node.id
           ? { side: pendingBoundaryPort.side, name: pendingBoundaryPort.port }
@@ -2505,7 +2523,9 @@ function NodeEditorInner() {
       },
     };
   }), [
+    canvasLocked,
     connectedPortsByNode,
+    setLinkInputPortsByNode,
     draftNodeConnection,
     editingStack.length,
     editingTypeNodeId,
@@ -2652,6 +2672,7 @@ function NodeEditorInner() {
       const data = {
         ...nodeCallbacksPlaceholder(),
         patchNode: { ...effectiveInnerNode, id: previewId, position: undefined },
+        isCanvasLocked: canvasLocked,
         canvasZoom: settledGraphZoom,
         isAreaUiCollapsedPresentation: true,
         isTypePickerOpen: false,
@@ -2697,6 +2718,7 @@ function NodeEditorInner() {
         ...(midiControlVisual?.buttonPressed !== undefined ? { midiButtonPressed: midiControlVisual.buttonPressed } : {}),
         ...(monitorLinkId && innerNode.type === 'Sequencer' ? { audioSequencerStep: audio.linkMeters[monitorLinkId]?.output } : {}),
         ...((innerNode.type === 'CustomWave' || innerNode.type === 'SamplePlayer') ? { audioPlayheads: audio.playheads[dspNodeId] } : {}),
+        ...(innerNode.type === 'CustomWave' ? { audioCustomWaveFrequency: audio.linkMeters[`${dspNodeId}:frequency`]?.input } : {}),
         ...(innerNode.type === 'Buffer' ? { audioBuffer: audio.buffers[dspNodeId] } : {}),
         ...(innerNode.type === 'Buffer' ? { onBufferClear: () => clearBufferRecording(dspNodeId) } : {}),
         ...(innerNode.type === 'SamplePlayer' ? { audioSampleParams: samplePlayerVisualizationParams(dspNodeId, audio.linkMeters) } : {}),
@@ -2723,6 +2745,7 @@ function NodeEditorInner() {
     audio.linkMeters,
     audio.linkScopes,
     audio.playheads,
+    canvasLocked,
     midiControlVisuals,
     monitorLinkIdByNode,
     nodesWithCallbacks,
@@ -2779,6 +2802,7 @@ function NodeEditorInner() {
         ...(audioImagePosition ? { audioImagePosition } : {}),
         ...(monitorLinkId && node.data.patchNode.type === 'Sequencer' ? { audioSequencerStep: audio.linkMeters[monitorLinkId]?.output } : {}),
         ...(audioPlayheads !== undefined ? { audioPlayheads } : {}),
+        ...(node.data.patchNode.type === 'CustomWave' ? { audioCustomWaveFrequency: audio.linkMeters[`${dspNodeId}:frequency`]?.input } : {}),
         ...(audioBuffer !== undefined ? { audioBuffer } : {}),
         ...(showsBufferVisual ? { onBufferClear: () => clearBufferRecording(dspNodeId) } : {}),
         ...(audioSampleParams ? { audioSampleParams } : {}),
@@ -3060,13 +3084,13 @@ function NodeEditorInner() {
     ...(draftNodePreview ? [draftNodePreview.node] : []),
   ], [areaDuplicatePreview, collapsedRenderedNodes, draftNodePreview, duplicateDragPreview]);
 
-  const displayEdges = useMemo(() => [
+  const displayEdges = useMemo(() => canvasLocked ? [] : [
     ...collapsedRenderedEdges,
     ...(duplicateDragPreview?.edges ?? []),
     ...(areaDuplicatePreview?.edges ?? []),
     ...(reconnectPreviewEdge ? [reconnectPreviewEdge] : []),
     ...(draftNodePreview ? [draftNodePreview.edge] : []),
-  ], [areaDuplicatePreview, collapsedRenderedEdges, draftNodePreview, duplicateDragPreview, reconnectPreviewEdge]);
+  ], [areaDuplicatePreview, canvasLocked, collapsedRenderedEdges, draftNodePreview, duplicateDragPreview, reconnectPreviewEdge]);
 
   const panTranslateExtent = useMemo(
     () => translateExtentForVisibleContent(renderedNodes, viewport, editorSize),
@@ -3168,6 +3192,7 @@ function NodeEditorInner() {
   }, []);
 
   const onNodesChange = useCallback((changes: NodeChange<ShaderFlowNode>[]) => {
+    if (canvasLocked) return;
     const duplicateState = duplicateDragRef.current;
     if (duplicateState?.duplicating) {
       updateDuplicateDrag(syncDuplicateDragPositionsFromChanges(duplicateState, changes));
@@ -3188,14 +3213,15 @@ function NodeEditorInner() {
       applyNodeChanges(changes, current),
       activeNodeDragSelectionRef.current,
     ));
-  }, [commitHistory, updateDuplicateDrag]);
+  }, [canvasLocked, commitHistory, updateDuplicateDrag]);
 
   const onEdgesChange = useCallback((changes: EdgeChange<ShaderFlowEdge>[]) => {
+    if (canvasLocked) return;
     if (changes.some((change) => change.type === 'remove')) {
       commitHistory();
     }
     setEdges((current) => applyEdgeChanges(changes, current));
-  }, [commitHistory]);
+  }, [canvasLocked, commitHistory]);
 
   const onNodeDragStart = useCallback((
     event: globalThis.MouseEvent | TouchEvent,
@@ -3346,6 +3372,7 @@ function NodeEditorInner() {
   }, [commitHistory, updateDuplicateDrag]);
 
   const onConnect = useCallback((connection: Connection) => {
+    if (canvasLocked) return;
     if (connection.source === DRAFT_NODE_PREVIEW_ID || connection.target === DRAFT_NODE_PREVIEW_ID) {
       setPendingBoundaryPort(null);
       return;
@@ -3414,9 +3441,10 @@ function NodeEditorInner() {
       { ...edge, selected: true },
     ]));
     setPendingBoundaryPort(null);
-  }, [commitHistory, insertNodeOnEdge, materializePendingBoundaryPort, updateEdgeMode, updateEdgeWeight]);
+  }, [canvasLocked, commitHistory, insertNodeOnEdge, materializePendingBoundaryPort, updateEdgeMode, updateEdgeWeight]);
 
   const onConnectStart = useCallback((event: globalThis.MouseEvent | TouchEvent, params: OnConnectStartParams) => {
+    if (canvasLocked) return;
     if (reconnectingEdgeRef.current) {
       updateDraftNodeConnection(null);
       return;
@@ -3465,7 +3493,7 @@ function NodeEditorInner() {
       modifierActive: isCommandModifierPressed(event),
       mode: 'set',
     });
-  }, [editingStack.length, updateDraftNodeConnection]);
+  }, [canvasLocked, editingStack.length, updateDraftNodeConnection]);
 
   const onConnectEnd = useCallback<OnConnectEnd>((event, connectionState) => {
     if (reconnectingEdgeRef.current) {
@@ -3521,6 +3549,7 @@ function NodeEditorInner() {
   }, [updateDraftNodeConnection]);
 
   const onReconnectStart = useCallback((event: ReactMouseEvent, edge: ShaderFlowEdge, handleType: HandleType) => {
+    if (canvasLocked) return;
     const duplicateActive = isReconnectDuplicateModifierPressed(event);
     reconnectingEdgeRef.current = true;
     reconnectDuplicateRef.current = duplicateActive;
@@ -3556,7 +3585,7 @@ function NodeEditorInner() {
     pendingBoundaryPortRef.current = nextPending;
     setPendingBoundaryPort(nextPending);
     updateDraftNodeConnection(null);
-  }, [editingStack.length, updateDraftNodeConnection]);
+  }, [canvasLocked, editingStack.length, updateDraftNodeConnection]);
 
   const onReconnectEnd = useCallback(() => {
     reconnectingEdgeRef.current = false;
@@ -3589,6 +3618,7 @@ function NodeEditorInner() {
   }, []);
 
   const onReconnect = useCallback((oldEdge: ShaderFlowEdge, connection: Connection) => {
+    if (canvasLocked) return;
     const candidate: ShaderFlowEdge = {
       ...oldEdge,
       source: connection.source ?? '',
@@ -3653,12 +3683,24 @@ function NodeEditorInner() {
         edge.id === oldEdge.id ? nextEdge : { ...edge, selected: false }
       )));
     });
-  }, [commitHistory, insertNodeOnEdge, materializePendingBoundaryPort, updateEdgeMode, updateEdgeWeight]);
+  }, [canvasLocked, commitHistory, insertNodeOnEdge, materializePendingBoundaryPort, updateEdgeMode, updateEdgeWeight]);
 
   const addNodeAt = useCallback((event: ReactMouseEvent) => {
+    if (canvasLocked) return;
     if (!reactFlow) return;
     addDraftNode(reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY }));
-  }, [addDraftNode, reactFlow]);
+  }, [addDraftNode, canvasLocked, reactFlow]);
+
+  const toggleCanvasLock = useCallback(() => {
+    setCanvasLocked((locked) => !locked);
+    setNodes((current) => current.map((node) => ({ ...node, selected: false })));
+    setEdges((current) => current.map((edge) => ({ ...edge, selected: false })));
+    setSelectedAreaId(null);
+    setEditingAreaId(null);
+    setEditingTypeNodeId(null);
+    setPendingBoundaryPort(null);
+    updateDraftNodeConnection(null);
+  }, [updateDraftNodeConnection]);
 
   const showSaveFeedback = useCallback(() => {
     setSaveFeedbackActive(true);
@@ -4264,12 +4306,14 @@ function NodeEditorInner() {
   }, []);
 
   const handleEditorFocusCapture = useCallback((event: ReactFocusEvent<HTMLElement>) => {
+    if (canvasLocked) return;
     if (isSurfacedControlTarget(event.target)) return;
     promoteNodeFromTarget(event.target);
     promoteAreaFromTarget(event.target);
-  }, [promoteAreaFromTarget, promoteNodeFromTarget]);
+  }, [canvasLocked, promoteAreaFromTarget, promoteNodeFromTarget]);
 
   const handleEditorPointerDownCapture = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    if (canvasLocked) return;
     if (!event.nativeEvent.isTrusted && ignoreSyntheticSelectionPointerDownRef.current) {
       ignoreSyntheticSelectionPointerDownRef.current = false;
       return;
@@ -4364,7 +4408,7 @@ function NodeEditorInner() {
       pointerId,
       isPrimary: true,
     }));
-  }, []);
+  }, [canvasLocked, promoteAreaFromTarget, promoteNodeFromTarget]);
 
   const startNativeSelection = useCallback((start: ScreenPoint) => {
     const pane = editorShellRef.current?.querySelector<HTMLElement>('.react-flow__pane');
@@ -4384,6 +4428,7 @@ function NodeEditorInner() {
   }, []);
 
   const updateAreaDraw = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    if (canvasLocked) return false;
     const current = areaDrawRef.current;
     if (!current) return false;
     // Releasing Cmd/Ctrl during the gesture returns to the ordinary selection
@@ -4405,9 +4450,10 @@ function NodeEditorInner() {
     areaDrawRef.current = next;
     setAreaDraw(next);
     return true;
-  }, [startNativeSelection]);
+  }, [canvasLocked, startNativeSelection]);
 
   const finishAreaDraw = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    if (canvasLocked) return false;
     const draw = areaDrawRef.current;
     if (!draw) return false;
     event.preventDefault();
@@ -4440,7 +4486,7 @@ function NodeEditorInner() {
     areaDrawRef.current = null;
     setAreaDraw(null);
     return true;
-  }, [commitHistory, screenToFlow]);
+  }, [canvasLocked, commitHistory, screenToFlow]);
 
   const startAreaDrag = useCallback((
     event: ReactPointerEvent<HTMLElement>,
@@ -4947,6 +4993,7 @@ function NodeEditorInner() {
 
   useEffect(() => {
     const deleteSelectedArea = (event: KeyboardEvent) => {
+      if (canvasLocked) return;
       if ((event.key !== 'Backspace' && event.key !== 'Delete') || isEditableEventTarget(event.target)) return;
       if (!selectedAreaId) return;
       event.preventDefault();
@@ -4966,7 +5013,7 @@ function NodeEditorInner() {
 
     window.addEventListener('keydown', deleteSelectedArea, { capture: true });
     return () => window.removeEventListener('keydown', deleteSelectedArea, { capture: true });
-  }, [commitHistory, selectedAreaId]);
+  }, [canvasLocked, commitHistory, selectedAreaId]);
 
   return (
     <div className="app-shell app-shell-panel-closed">
@@ -4977,12 +5024,14 @@ function NodeEditorInner() {
           onFocusCapture={handleEditorFocusCapture}
           onPointerDownCapture={handleEditorPointerDownCapture}
           onPointerMove={(event) => {
+            if (canvasLocked) return;
             if (canvasDragActiveRef.current && event.buttons === 1) {
               canvasDragPointerRef.current = { x: event.clientX, y: event.clientY };
             }
             if (!updateAreaDraw(event)) handleRectangleSelectionMove(event);
           }}
           onPointerUpCapture={(event) => {
+            if (canvasLocked) return;
             if (!event.nativeEvent.isTrusted && ignoreSyntheticSelectionPointerUpRef.current) {
               ignoreSyntheticSelectionPointerUpRef.current = false;
               return;
@@ -5033,6 +5082,11 @@ function NodeEditorInner() {
             onReconnectStart={onReconnectStart}
             onReconnectEnd={onReconnectEnd}
             reconnectRadius={12}
+            nodesDraggable={!canvasLocked}
+            nodesConnectable={!canvasLocked}
+            // Keep node pointer events available for playable controls while LK
+            // rejects selection changes in onNodesChange/onEdgesChange.
+            elementsSelectable
             connectionLineStyle={{
               '--connection-line-color': draftNodePreview
                 ? 'transparent'
@@ -5052,7 +5106,7 @@ function NodeEditorInner() {
             zoomOnScroll={false}
             zoomOnPinch
             zoomOnDoubleClick={false}
-            selectionOnDrag={!areaDraw}
+            selectionOnDrag={!canvasLocked && !areaDraw}
             selectionMode={SelectionMode.Partial}
             selectionKeyCode={null}
             panActivationKeyCode={null}
@@ -5062,7 +5116,7 @@ function NodeEditorInner() {
             fitViewOptions={FIT_VIEW_OPTIONS}
             translateExtent={panTranslateExtent}
             nodeExtent={FLOW_INFINITE_EXTENT}
-            deleteKeyCode={DELETE_KEY_CODES}
+            deleteKeyCode={canvasLocked ? null : DELETE_KEY_CODES}
             multiSelectionKeyCode={MULTI_SELECTION_KEY_CODES}
             snapToGrid={false}
             proOptions={REACT_FLOW_PRO_OPTIONS}
@@ -5109,11 +5163,12 @@ function NodeEditorInner() {
                   >
                     <div
                       className="canvas-area-header nodrag nopan"
-                      onPointerDown={(event) => startAreaDrag(event, area)}
-                      onPointerMove={dragArea}
-                      onPointerUp={stopAreaDrag}
-                      onPointerCancel={stopAreaDrag}
+                      onPointerDown={(event) => { if (!canvasLocked) startAreaDrag(event, area); }}
+                      onPointerMove={canvasLocked ? undefined : dragArea}
+                      onPointerUp={canvasLocked ? undefined : stopAreaDrag}
+                      onPointerCancel={canvasLocked ? undefined : stopAreaDrag}
                       onDoubleClick={(event) => {
+                        if (canvasLocked) return;
                         event.preventDefault();
                         event.stopPropagation();
                         toggleAreaCollapsed(area.id);
@@ -5148,6 +5203,7 @@ function NodeEditorInner() {
                           className="canvas-area-title nodrag nopan"
                           type="button"
                           onPointerDown={(event) => {
+                            if (canvasLocked) return;
                             areaTitlePointerStartRef.current = { x: event.clientX, y: event.clientY };
                             startAreaDrag(event, area, true);
                           }}
@@ -5156,6 +5212,7 @@ function NodeEditorInner() {
                           }}
                           onDoubleClick={(event) => event.stopPropagation()}
                           onClick={(event) => {
+                            if (canvasLocked) return;
                             const pointerStart = areaTitlePointerStartRef.current;
                             areaTitlePointerStartRef.current = null;
                             const moved = pointerStart
@@ -5182,7 +5239,7 @@ function NodeEditorInner() {
                             : ''}
                         </button>
                       )}
-                      {!area.collapsed ? (
+                      {!canvasLocked && !area.collapsed ? (
                         <button
                           className={`area-lock-toggle nodrag nopan${area.locked ? ' area-lock-toggle-locked' : ''}`}
                           type="button"
@@ -5200,7 +5257,7 @@ function NodeEditorInner() {
                           <span className="area-lock-icon" aria-hidden="true" />
                         </button>
                       ) : null}
-                      <button
+                      {!canvasLocked ? <button
                         className="area-compact-toggle nodrag nopan"
                         type="button"
                         aria-label={area.collapsed ? 'Expand area' : 'Collapse area'}
@@ -5218,9 +5275,9 @@ function NodeEditorInner() {
                           className={`node-compact-icon ${area.collapsed ? 'node-compact-icon-compact' : 'node-compact-icon-expanded'}`}
                           aria-hidden="true"
                         />
-                      </button>
+                      </button> : null}
                     </div>
-                    {!area.collapsed && area.kind !== 'spread' && (
+                    {!canvasLocked && !area.collapsed && area.kind !== 'spread' && (
                       <div
                         className="canvas-area-ui-resize-handle nodrag nopan"
                         aria-label="Resize area UI section"
@@ -5235,7 +5292,7 @@ function NodeEditorInner() {
                     {area.uiHeight !== undefined && area.uiHeight > 0 && (
                       <div className="canvas-area-ui-divider" style={{ top: NODE_HEADER_HEIGHT + area.uiHeight }} />
                     )}
-                    {!area.collapsed && (['top-left', 'top-right', 'bottom-left', 'bottom-right'] as const).map((corner) => (
+                    {!canvasLocked && !area.collapsed && (['top-left', 'top-right', 'bottom-left', 'bottom-right'] as const).map((corner) => (
                       <div
                         key={corner}
                         className={`canvas-area-resize-handle canvas-area-resize-${corner} nodrag nopan`}
@@ -5347,6 +5404,15 @@ function NodeEditorInner() {
             ) : null}
             <button className="viewport-button" type="button" onClick={newPatch} aria-label="New patch" title="New patch">NW</button>
             <button className="viewport-button" type="button" onClick={() => void requestSubpatchImport()} aria-label="Import subpatch" title="Import subpatch">IM</button>
+            <button
+              className={`viewport-button${canvasLocked ? ' viewport-button-active' : ''}`}
+              type="button"
+              role="switch"
+              aria-checked={canvasLocked}
+              aria-label={canvasLocked ? 'Unlock canvas' : 'Lock canvas'}
+              title={canvasLocked ? 'Unlock canvas' : 'Lock canvas'}
+              onClick={toggleCanvasLock}
+            >LK</button>
             <button className="viewport-button" type="button" onClick={() => scaleSelectedNodes(2)} disabled={!canScaleSelection} aria-label="Increase selected node scale" title="Increase selected node scale">S+</button>
             <button className="viewport-button" type="button" onClick={() => scaleSelectedNodes(0.5)} disabled={!canScaleSelection} aria-label="Decrease selected node scale" title="Decrease selected node scale">S-</button>
           </div>

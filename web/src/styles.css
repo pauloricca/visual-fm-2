@@ -686,6 +686,18 @@ button:hover {
   pointer-events: none;
 }
 
+/* LK hides handles without changing their measured positions or node geometry. */
+.shader-node-canvas-locked .react-flow__handle,
+.shader-node-canvas-locked .shader-handle {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.shader-node-canvas-locked .node-compact-toggle {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .shader-node-area-ui-collapsed .audio-node-scope-resize-handle,
 .shader-node-area-ui-collapsed .node-compact-toggle {
   display: none;
@@ -1004,11 +1016,18 @@ button:hover {
 
 .spread-item-index-handle {
   position: relative !important;
+  left: auto !important;
   top: auto !important;
   right: auto !important;
+  bottom: auto !important;
   flex: 0 0 auto;
   background: transparent;
   transform: none !important;
+}
+
+/* Internal outputs sit after their labels, like Spawn's instance gate. */
+.spread-port-output:not(.spawn-kill-trigger-port) .spread-item-index-handle {
+  order: 1;
 }
 
 .shader-node-area-ui-collapsed .spread-port-panel .react-flow__handle,
@@ -1913,6 +1932,17 @@ button:hover {
   overflow: hidden;
 }
 
+.custom-wave-subgroup-bands { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; pointer-events: none; }
+.custom-wave-subgroup-bands rect { fill: var(--color-foreground-15); }
+
+.custom-wave-tabs { position: absolute; z-index: 4; top: 10px; left: 10px; display: flex; gap: 6px; padding: 3px; }
+.custom-wave-tab { width: 22px; height: 22px; padding: 0; border: 1px solid var(--wave-color); border-radius: 3px; background: color-mix(in srgb, var(--wave-color) 12%, var(--color-background)); color: var(--wave-color); font: inherit; font-size: 11px; font-weight: 700; line-height: 1; cursor: pointer; }
+.custom-wave-tab.is-selected { background: var(--wave-color); color: var(--color-background); box-shadow: 0 0 0 1px var(--color-background), 0 0 0 2px var(--wave-color); }
+.wave-color-0 { --wave-color: var(--color-accent); color: var(--color-accent); stroke: var(--color-accent); }
+.wave-color-1 { --wave-color: #42b883; color: #42b883; stroke: #42b883; }
+.wave-color-2 { --wave-color: #5b8cff; color: #5b8cff; stroke: #5b8cff; }
+.wave-color-3 { --wave-color: #b06cff; color: #b06cff; stroke: #b06cff; }
+
 .custom-wave-node-canvas {
   position: relative;
   z-index: 1;
@@ -1981,12 +2011,19 @@ button:hover {
   stroke-linejoin: round;
   stroke-width: 2;
 }
+.custom-wave-path.is-background { opacity: .38; }
+.custom-wave-path.wave-color-0 { stroke: var(--color-accent); }
+.custom-wave-path.wave-color-1 { stroke: #42b883; }
+.custom-wave-path.wave-color-2 { stroke: #5b8cff; }
+.custom-wave-path.wave-color-3 { stroke: #b06cff; }
 
 .wave-playhead-line {
   stroke: var(--color-foreground);
   stroke-width: calc(1px * var(--graph-stroke-scale, 1));
   vector-effect: non-scaling-stroke;
 }
+
+.wave-playhead-line.is-low-frequency { opacity: .7; }
 
 .buffer-record-head-line {
   stroke: var(--color-error);
@@ -2419,6 +2456,11 @@ button:hover {
   user-select: text;
   -webkit-appearance: none;
   -moz-appearance: textfield;
+}
+
+.numeric-scrubber-replaced {
+  border-color: color-mix(in srgb, var(--color-foreground) 42%, transparent);
+  color: color-mix(in srgb, var(--color-foreground) 48%, var(--color-background));
 }
 
 .numeric-scrubber-editing::selection {

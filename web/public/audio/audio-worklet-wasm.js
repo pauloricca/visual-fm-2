@@ -2838,7 +2838,12 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       levels.push([binding.id, currentValue, currentValue, currentValue]);
     }
     const playheads = [];
-    const customWaveNodeIds = new Set((this.dspProgram?.customWaveBindings || []).map((binding) => binding.nodeId));
+    // Custom-wave bindings identify an individual curve (`node:wave:N`), while
+    // oscillator state bindings belong to their parent node. Normalize to the
+    // parent ID so the editor receives the live playback position.
+    const customWaveNodeIds = new Set((this.dspProgram?.customWaveBindings || []).map((binding) => (
+      String(binding.nodeId || "").replace(/:wave:\d+$/, "")
+    )));
     const repeatedOps = (this.dspProgram?.ops || []).filter((op) => op.opcode === 42 || op.opcode === 46);
     for (const binding of this.dspProgram?.stateBindings || []) {
       if (binding.kind !== "oscillator" || !customWaveNodeIds.has(binding.nodeId)) continue;

@@ -27,6 +27,8 @@ export type EditorPatchNode = Omit<PatchNode, 'type'> & {
 
 export interface ShaderNodeData extends Record<string, unknown> {
   patchNode: EditorPatchNode;
+  /** Canvas-wide view lock: preserves layout while hiding connection affordances. */
+  isCanvasLocked?: boolean;
   canvasZoom?: number;
   audioMeter?: {
     input: number;
@@ -52,6 +54,7 @@ export interface ShaderNodeData extends Record<string, unknown> {
   audioSelectorIndex?: number;
   audioSequencerStep?: number;
   audioPlayheads?: number[];
+  audioCustomWaveFrequency?: number;
   audioBuffer?: BufferVisualization;
   audioSampleParams?: Partial<{
     start: number;
@@ -101,6 +104,8 @@ export interface ShaderNodeData extends Record<string, unknown> {
   selectedPort?: { side: 'input' | 'output'; name: string } | null;
   selectedLinkPorts?: { inputs: string[]; outputs: string[] };
   connectedPorts?: { inputs: string[]; outputs: string[] };
+  /** Input ports with an enabled incoming link in set mode, which replaces the local value. */
+  setLinkInputPorts?: string[];
   previewPort?: { side: 'input' | 'output'; name: string } | null;
   isOnlySelected?: boolean;
   isConnecting?: boolean;
@@ -721,6 +726,11 @@ function normalizePersistedInputDefinitions(
 function normalizePersistedOutputDefinitions(
   node: PersistedEditorState['nodes'][number],
 ): PortDefinition[] | undefined {
+  if (node.type === 'CustomWave') {
+    // Custom Wave outputs are derived from its count parameter. Old saved
+    // explicit `signal` ports must not prevent a multi-wave node from growing.
+    return undefined;
+  }
   if (node.type !== 'Reverb') return node.outputs;
   const outputs = node.outputs?.filter((output) => output.name !== 'signal');
   return outputs && outputs.length > 0 ? outputs : undefined;

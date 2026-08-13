@@ -1,6 +1,6 @@
 import { expandGroups } from '../graph/subpatch';
 import { expandSpreads } from '../graph/spread';
-import { customWaveWithBaseLevel, normalizeCustomWave } from '../graph/customWave';
+import { customWaveBank, customWaveWithBaseLevel } from '../graph/customWave';
 import {
   SEQUENCER_DEFAULT_ROWS,
   SEQUENCER_DEFAULT_STEPS,
@@ -877,10 +877,10 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     // Compile the primary output first so the end trigger can observe the
     // exact engine state used to render this node, even when only the trigger
     // output is connected.
-    resolveOutput(node, 'signal', context);
+    resolveOutput(node, node.type === 'CustomWave' && Math.round(node.params.count ?? 1) > 1 ? 'signal 1' : 'signal', context);
     const bindingId = node.type === 'Envelope'
       ? `${node.id}:envelope`
-      : `${node.id}:oscillator`;
+      : `${node.id}:oscillator:0`;
     const sourceState = context.stateBindings.find((binding) => binding.id === bindingId)?.state;
     if (sourceState === undefined) {
       context.errors.push(`Could not compile end trigger for node "${node.id}".`);
@@ -900,7 +900,7 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       out: output,
       a: sourceState,
       b: node.type === 'CustomWave'
-        ? context.customWaveBindings.findIndex((binding) => binding.nodeId === node.id)
+        ? context.customWaveBindings.findIndex((binding) => binding.nodeId === `${node.id}:wave:0`)
         : -1,
       state,
       value: node.type === 'CustomWave' ? 1 : 0,
@@ -1071,20 +1071,27 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
   }
 
   if (node.type === 'CustomWave') {
+    const waveNumber = port === 'signal' ? 0 : /^signal (\d+)$/.exec(port)?.[1];
+    const waveIndex = waveNumber === undefined ? 0 : Math.max(0, Number(waveNumber) - 1);
+    const waves = customWaveBank(node.customWave, node.params);
+    const customWave = waves[waveIndex] ?? waves[0];
     const staticBaseLevel = node.params.baseLevel ?? 0;
     const staticRangeMin = node.params.rangeMin ?? -1;
     const staticRangeMax = node.params.rangeMax ?? 1;
     const customWaveIndex = context.customWaveBindings.length;
     context.customWaveBindings.push({
-      nodeId: node.id,
+      nodeId: `${node.id}:wave:${waveIndex}`,
       customWave: customWaveWithBaseLevel(
-        normalizeCustomWave(node.customWave, node.params),
+        customWave,
         staticBaseLevel,
         staticRangeMin,
         staticRangeMax,
       ),
     });
     const frequency = resolveInput(node, 'frequency', 220, context);
+    const frequencyMonitorId = `${node.id}:frequency`;
+    context.monitorIds[frequencyMonitorId] = frequency;
+    context.signedMeterIds.push(frequencyMonitorId);
     const baseLevel = resolveInput(node, 'baseLevel', 0, context);
     const rangeMin = resolveInput(node, 'rangeMin', -1, context);
     const rangeMax = resolveInput(node, 'rangeMax', 1, context);
@@ -1108,7 +1115,7 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     const output = nextRegister(context);
     const state = nextState(context, 6);
     context.stateBindings.push({
-      id: `${node.id}:oscillator`,
+      id: `${node.id}:oscillator:${waveIndex}`,
       state,
       count: 6,
       kind: 'oscillator',

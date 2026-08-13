@@ -1,4 +1,4 @@
-import type { NodeDefinition, NodeType, PatchNode } from './types';
+import type { NodeDefinition, NodeType, PatchNode, PortDefinition } from './types';
 
 export const SEQUENCER_MIN_STEPS = 1;
 export const SEQUENCER_MAX_STEPS = 128;
@@ -108,6 +108,9 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
       { name: 'frequency', defaultValue: 220 },
       { name: 'phase', defaultValue: 0 },
       { name: 'trigger', defaultValue: 0 },
+      { name: 'count', defaultValue: 1, min: 1, max: 8, integer: true, connectable: false },
+      { name: 'subdivisions', defaultValue: 8, min: 1, max: 64, integer: true, connectable: false },
+      { name: 'subgroups', defaultValue: 4, min: 1, max: 64, integer: true, connectable: false },
       { name: 'baseLevel', defaultValue: 0 },
       { name: 'rangeMin', defaultValue: -1 },
       { name: 'rangeMax', defaultValue: 1 },
@@ -651,7 +654,7 @@ export function getNodeDefinition(node: PatchNode): NodeDefinition {
     return {
       ...definition,
       inputs,
-      outputs: node.outputs ?? definition.outputs,
+      outputs: node.outputs ?? customWaveOutputDefinitions(node.params.count),
     };
   }
 
@@ -668,6 +671,13 @@ export function getNodeDefinition(node: PatchNode): NodeDefinition {
     inputs: node.inputs ?? getDefinition(node.type).inputs,
     outputs: node.outputs ?? getDefinition(node.type).outputs,
   };
+}
+
+function customWaveOutputDefinitions(count: number | undefined): PortDefinition[] {
+  const waveCount = Math.max(1, Math.min(8, Math.round(Number.isFinite(count) ? count! : 1)));
+  return waveCount === 1
+    ? getDefinition('CustomWave').outputs
+    : [...Array.from({ length: waveCount }, (_, index) => ({ name: `signal ${index + 1}` })), { name: 'end trigger' }];
 }
 
 export function sequencerShape(params: Record<string, number>): { steps: number; rows: number; beatLength: number } {
