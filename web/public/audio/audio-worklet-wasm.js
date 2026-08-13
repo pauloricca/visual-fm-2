@@ -1551,15 +1551,6 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     if (!this.dspProgram || !this.wasm?.setDspScope || !this.wasm?.dspScopePtr) return;
 
     const requestsById = new Map(this.linkScopeRequests.map((request) => [request.linkId, request]));
-    for (const binding of this.dspProgram.fftBindings || []) {
-      requestsById.set(binding.nodeId, {
-        linkId: binding.nodeId,
-        mode: "continuous",
-        points: 512,
-        displayPoints: 512,
-        seconds: 0.012,
-      });
-    }
     const nextScopes = [];
     let slot = 0;
     for (const request of requestsById.values()) {

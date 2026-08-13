@@ -365,6 +365,8 @@ function NodeEditorInner() {
   const draftNodeConnectionRef = useRef<DraftNodeConnection | null>(null);
   const provisionalNodeIdsRef = useRef(new Set<string>());
   const duplicateDragRef = useRef<DuplicateDragState | null>(null);
+  const pendingNodeDragChangesRef = useRef<Map<string, NodeChange<ShaderFlowNode>>>(new Map());
+  const nodeDragAnimationFrameRef = useRef<number | null>(null);
   const pendingNodeDragSelectionRef = useRef<NodeDragSelectionSnapshot | null>(null);
   const activeNodeDragSelectionRef = useRef<NodeDragSelectionSnapshot | null>(null);
   const selectionDragStartRef = useRef<ScreenPoint | null>(null);
@@ -3164,6 +3166,8 @@ function NodeEditorInner() {
     const scopeRequests: ScopeCaptureRequest[] = nodesWithCallbacks.flatMap((node): ScopeCaptureRequest[] => {
       const type = node.data.patchNode.type;
       if (type !== 'Scope' && type !== 'FFT') return [];
+      const hasConnectedOutput = edges.some((edge) => edge.source === node.id && edge.data?.enabled !== false);
+      if (!isNodeVisibleInViewport(node, viewport, editorSize) && (type === 'Scope' || !hasConnectedOutput)) return [];
       const dspNodeId = runtimeDspNodeIdForFlowNode(node, nodesWithCallbacks, activeDspGroupIds);
       const linkId = monitorLinkIdByNode.get(dspNodeId);
       if (!linkId) return [];
@@ -3176,7 +3180,7 @@ function NodeEditorInner() {
         }];
     });
     audio.setLinkScopes(scopeRequests);
-  }, [activeDspGroupIds, audio.setLinkScopes, monitorLinkIdByNode, nodesWithCallbacks]);
+  }, [activeDspGroupIds, audio.setLinkScopes, editorSize, edges, monitorLinkIdByNode, nodesWithCallbacks, viewport]);
 
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, persistedEditorStateJson);
@@ -3191,7 +3195,8 @@ function NodeEditorInner() {
     return () => window.removeEventListener('pagehide', persistLatestEditorState);
   }, []);
 
-  const onNodesChange = useCallback((changes: NodeChange<ShaderFlowNode>[]) => {
+  const applyNodeChangesNow = useCallback((changes: NodeChange<ShaderFlowNode>[]) => {
+    if (changes.length === 0) return;
     if (canvasLocked) return;
     const duplicateState = duplicateDragRef.current;
     if (duplicateState?.duplicating) {
@@ -3214,6 +3219,43 @@ function NodeEditorInner() {
       activeNodeDragSelectionRef.current,
     ));
   }, [canvasLocked, commitHistory, updateDuplicateDrag]);
+
+  const flushQueuedNodeDragChanges = useCallback(() => {
+    if (nodeDragAnimationFrameRef.current !== null) {
+      cancelAnimationFrame(nodeDragAnimationFrameRef.current);
+      nodeDragAnimationFrameRef.current = null;
+    }
+    const changes = [...pendingNodeDragChangesRef.current.values()];
+    pendingNodeDragChangesRef.current.clear();
+    applyNodeChangesNow(changes);
+  }, [applyNodeChangesNow]);
+
+  useEffect(() => () => {
+    if (nodeDragAnimationFrameRef.current !== null) {
+      cancelAnimationFrame(nodeDragAnimationFrameRef.current);
+    }
+  }, []);
+
+  const onNodesChange = useCallback((changes: NodeChange<ShaderFlowNode>[]) => {
+    const dragPositionChanges = changes.filter((change) => change.type === 'position' && change.dragging === true);
+    const immediateChanges = changes.filter((change) => change.type !== 'position' || change.dragging !== true);
+
+    if (dragPositionChanges.length > 0) {
+      for (const change of dragPositionChanges) {
+        if (change.type === 'position') pendingNodeDragChangesRef.current.set(change.id, change);
+      }
+      if (nodeDragAnimationFrameRef.current === null) {
+        nodeDragAnimationFrameRef.current = requestAnimationFrame(() => {
+          nodeDragAnimationFrameRef.current = null;
+          flushQueuedNodeDragChanges();
+        });
+      }
+    }
+    if (immediateChanges.length > 0) {
+      flushQueuedNodeDragChanges();
+      applyNodeChangesNow(immediateChanges);
+    }
+  }, [applyNodeChangesNow, flushQueuedNodeDragChanges]);
 
   const onEdgesChange = useCallback((changes: EdgeChange<ShaderFlowEdge>[]) => {
     if (canvasLocked) return;
@@ -3264,6 +3306,7 @@ function NodeEditorInner() {
     _node: ShaderFlowNode,
     dragNodes: ShaderFlowNode[],
   ) => {
+    flushQueuedNodeDragChanges();
     const dragState = duplicateDragRef.current;
     activeNodeDragSelectionRef.current = null;
     pendingNodeDragSelectionRef.current = null;
@@ -3306,7 +3349,7 @@ function NodeEditorInner() {
     copyBufferAssets(bufferCopies, bufferAssetsRef.current, replaceBufferAssets);
     audio.copyBuffers(bufferCopies);
     setEditingTypeNodeId(null);
-  }, [activeDspGroupIds, audio.copyBuffers, commitHistory, replaceBufferAssets, updateDuplicateDrag, updateEdgeMode, updateEdgeWeight]);
+  }, [activeDspGroupIds, audio.copyBuffers, commitHistory, flushQueuedNodeDragChanges, replaceBufferAssets, updateDuplicateDrag, updateEdgeMode, updateEdgeWeight]);
 
   useEffect(() => {
     const updateModifier = (event: KeyboardEvent) => {
@@ -5116,6 +5159,7 @@ function NodeEditorInner() {
             fitViewOptions={FIT_VIEW_OPTIONS}
             translateExtent={panTranslateExtent}
             nodeExtent={FLOW_INFINITE_EXTENT}
+            onlyRenderVisibleElements
             deleteKeyCode={canvasLocked ? null : DELETE_KEY_CODES}
             multiSelectionKeyCode={MULTI_SELECTION_KEY_CODES}
             snapToGrid={false}
@@ -7816,6 +7860,32 @@ function viewportNodeSize(node: ShaderFlowNode): { width: number; height: number
   }
 
   return DEFAULT_NODE_BOUNDS_SIZE;
+}
+
+/**
+ * Scope rendering is purely visual, so keep its capture work proportional to
+ * the part of the graph the user can actually see. A small graph-space margin
+ * prevents traces from stopping while a node sits just outside the viewport.
+ */
+function isNodeVisibleInViewport(
+  node: ShaderFlowNode,
+  viewport: Viewport,
+  editorSize: { width: number; height: number },
+): boolean {
+  if (editorSize.width <= 0 || editorSize.height <= 0) return true;
+
+  const zoom = normalizedViewportZoom(viewport.zoom);
+  const margin = 120 / zoom;
+  const left = -viewport.x / zoom - margin;
+  const top = -viewport.y / zoom - margin;
+  const right = left + editorSize.width / zoom + margin * 2;
+  const bottom = top + editorSize.height / zoom + margin * 2;
+  const size = viewportNodeSize(node);
+
+  return node.position.x + size.width >= left
+    && node.position.x <= right
+    && node.position.y + size.height >= top
+    && node.position.y <= bottom;
 }
 
 function lockedAreaNodeBounds(

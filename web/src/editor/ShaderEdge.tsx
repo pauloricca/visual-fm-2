@@ -6,7 +6,7 @@ import {
   useReactFlow,
   useViewport,
 } from '@xyflow/react';
-import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
+import { memo, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type { LinkMode } from '../graph/types';
 import { useEdgeOverlayTarget } from './EdgeOverlayContext';
@@ -19,7 +19,7 @@ const SAME_NODE_FEEDBACK_CURVE_OFFSET = 220;
 const SHORT_LINK_CONTROLS_DISTANCE = 144;
 const SHORT_LINK_CONTROLS_OFFSET = 52;
 
-export function ShaderEdge(props: EdgeProps<ShaderFlowEdge>) {
+export const ShaderEdge = memo(function ShaderEdge(props: EdgeProps<ShaderFlowEdge>) {
   const [linkControlsVisible, setLinkControlsVisible] = useState(false);
   const isSameNodeFeedback = props.source === props.target;
   const isFeedback = props.data?.isFeedback === true || isSameNodeFeedback;
@@ -152,7 +152,7 @@ export function ShaderEdge(props: EdgeProps<ShaderFlowEdge>) {
       ) : null}
     </>
   );
-}
+});
 
 function shouldRaiseLinkControls(props: EdgeProps<ShaderFlowEdge>, isFeedback: boolean): boolean {
   if (isFeedback) return false;

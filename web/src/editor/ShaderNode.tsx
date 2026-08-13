@@ -1,5 +1,6 @@
 import { Handle, Position, useReactFlow, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import {
+  memo,
   useEffect,
   useId,
   useLayoutEffect,
@@ -84,7 +85,7 @@ const FFT_CAPTURE_SECONDS = 0.012;
 const FFT_ANALYSIS_MIN_FREQUENCY = 20;
 const FFT_ANALYSIS_MAX_FREQUENCY = 20000;
 
-export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNode>) {
+export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNode>) {
   const node = data.patchNode;
   const isCanvasLocked = data.isCanvasLocked === true;
   const scopeGradientId = `scope-gradient-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
@@ -2072,7 +2073,7 @@ export function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNod
       )}
     </div>
   );
-}
+});
 
 interface BufferWaveformDisplayProps {
   bins: SampleWaveformBin[];
