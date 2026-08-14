@@ -221,6 +221,8 @@ function cloneNode(node: PatchNode): PatchNode {
     id: node.id,
     type: node.type,
     ...(node.customLabel ? { customLabel: node.customLabel } : {}),
+    ...(node.sequencerRowLabels ? { sequencerRowLabels: [...node.sequencerRowLabels] } : {}),
+    ...(node.sequencerRowLabelColumnWidth !== undefined ? { sequencerRowLabelColumnWidth: node.sequencerRowLabelColumnWidth } : {}),
     ...(node.subpatchName ? { subpatchName: node.subpatchName } : {}),
     ...(node.subpatchCloneId ? { subpatchCloneId: node.subpatchCloneId } : {}),
     ...(node.subpatchUiOverrides ? { subpatchUiOverrides: structuredClone(node.subpatchUiOverrides) } : {}),

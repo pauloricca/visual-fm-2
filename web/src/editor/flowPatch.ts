@@ -16,6 +16,7 @@ export const DEFAULT_FFT_NODE_SIZE: ScopeNodeSize = { width: 420, height: 96 };
 export const DEFAULT_KEYS_NODE_SIZE: ScopeNodeSize = { width: 372, height: 120 };
 export const DEFAULT_CUSTOM_WAVE_NODE_SIZE: ScopeNodeSize = { width: 372, height: 128 };
 export const DEFAULT_SEQUENCER_NODE_SIZE: ScopeNodeSize = { width: 416, height: 104 };
+export const SEQUENCER_MIN_CELL_SIZE = 22;
 export const DEFAULT_IMAGE_ASPECT_RATIO = 16 / 9;
 
 export type EditorPatchNode = Omit<PatchNode, 'type'> & {
@@ -77,6 +78,7 @@ export interface ShaderNodeData extends Record<string, unknown> {
   onAudioInputRefresh?: () => void;
   onMidiInputRefresh?: () => void;
   onCustomWaveChange?: (nodeId: string, customWave: NonNullable<PatchNode['customWave']>, historyKey?: string) => void;
+  onSequencerRowLabelsChange?: (nodeId: string, labels: string[]) => void;
   onExpressionChange?: (nodeId: string, expression: string) => void;
   onExpressionCommit?: (nodeId: string, expression: string) => void;
   onTypeChange: (nodeId: string, type: NodeType) => void;
@@ -174,6 +176,8 @@ export interface PersistedEditorState {
     id: string;
     type: NodeType | null;
     customLabel?: string;
+    sequencerRowLabels?: string[];
+    sequencerRowLabelColumnWidth?: number;
     subpatchName?: string;
     subpatchCloneId?: string;
     subpatchUiOverrides?: PatchNode['subpatchUiOverrides'];
@@ -211,6 +215,7 @@ type NodeCallbacks = Pick<
   | 'onParamChange'
   | 'onParamsChange'
   | 'onCustomWaveChange'
+  | 'onSequencerRowLabelsChange'
   | 'onTypeChange'
   | 'onConvertToArea'
   | 'onTypeEditStart'
@@ -268,6 +273,8 @@ export function editorStateToFlowNodes(
         id: node.id,
         type: node.type,
         customLabel: node.customLabel,
+        sequencerRowLabels: node.sequencerRowLabels,
+        sequencerRowLabelColumnWidth: node.sequencerRowLabelColumnWidth,
         subpatchName: node.subpatchName,
         subpatchCloneId: node.subpatchCloneId,
         subpatchUiOverrides: node.subpatchUiOverrides,
@@ -327,6 +334,8 @@ export function flowToEditorState(
       id: node.id,
       type: node.data.patchNode.type,
       customLabel: node.data.patchNode.customLabel,
+      sequencerRowLabels: node.data.patchNode.sequencerRowLabels,
+      sequencerRowLabelColumnWidth: node.data.patchNode.sequencerRowLabelColumnWidth,
       subpatchName: node.data.patchNode.subpatchName,
       subpatchCloneId: node.data.patchNode.subpatchCloneId,
       subpatchUiOverrides: node.data.patchNode.subpatchUiOverrides,
@@ -382,11 +391,13 @@ export function clampImageNodeSize(size: ScopeNodeSize, aspectRatio: number): Sc
   return { width, height: normalizeNodeDimension(width / aspect) };
 }
 
-export function clampSequencerNodeSize(size: ScopeNodeSize, steps: number, rows: number): ScopeNodeSize {
+export function clampSequencerNodeSize(size: ScopeNodeSize, steps: number, rows: number, labelColumnWidth = 0): ScopeNodeSize {
   const safeSteps = Number.isFinite(steps) && steps > 0 ? steps : 1;
   const safeRows = Number.isFinite(rows) && rows > 0 ? rows : 1;
-  const width = normalizeNodeDimension(size.width);
-  return { width, height: normalizeNodeDimension(width * safeRows / safeSteps) };
+  const minimumWidth = Math.max(0, labelColumnWidth) + safeSteps * SEQUENCER_MIN_CELL_SIZE;
+  const width = Math.max(minimumWidth, normalizeNodeDimension(size.width));
+  const gridWidth = Math.max(1, width - Math.max(0, labelColumnWidth));
+  return { width, height: normalizeNodeDimension(gridWidth * safeRows / safeSteps) };
 }
 
 function normalizeNodeSize(size: ScopeNodeSize): ScopeNodeSize {
@@ -417,6 +428,8 @@ export function patchFromFlow(nodes: ShaderFlowNode[], edges: ShaderFlowEdge[], 
       id: patchNode.id,
       type: patchNode.type,
       ...(patchNode.customLabel ? { customLabel: patchNode.customLabel } : {}),
+      ...(patchNode.sequencerRowLabels ? { sequencerRowLabels: [...patchNode.sequencerRowLabels] } : {}),
+      ...(patchNode.sequencerRowLabelColumnWidth !== undefined ? { sequencerRowLabelColumnWidth: patchNode.sequencerRowLabelColumnWidth } : {}),
       ...(patchNode.subpatchName ? { subpatchName: patchNode.subpatchName } : {}),
       ...(patchNode.subpatchCloneId ? { subpatchCloneId: patchNode.subpatchCloneId } : {}),
       ...(patchNode.subpatchUiOverrides ? { subpatchUiOverrides: structuredClone(patchNode.subpatchUiOverrides) } : {}),
@@ -603,6 +616,8 @@ function normalizePersistedState(state: PersistedEditorState): PersistedEditorSt
       id: node.id,
       type: node.type,
       ...(node.customLabel ? { customLabel: node.customLabel } : {}),
+      ...(node.sequencerRowLabels ? { sequencerRowLabels: [...node.sequencerRowLabels] } : {}),
+      ...(node.sequencerRowLabelColumnWidth !== undefined ? { sequencerRowLabelColumnWidth: node.sequencerRowLabelColumnWidth } : {}),
       ...(node.subpatchName ? { subpatchName: node.subpatchName } : {}),
       ...(node.subpatchCloneId ? { subpatchCloneId: node.subpatchCloneId } : {}),
       ...(node.subpatchUiOverrides ? { subpatchUiOverrides: structuredClone(node.subpatchUiOverrides) } : {}),
@@ -817,6 +832,8 @@ function persistedNodeFromPatchNode(
     id: node.id,
     type: node.type,
     customLabel: node.customLabel,
+    sequencerRowLabels: node.sequencerRowLabels,
+    sequencerRowLabelColumnWidth: node.sequencerRowLabelColumnWidth,
     subpatchName: node.subpatchName,
     subpatchCloneId: node.subpatchCloneId,
     subpatchUiOverrides: node.subpatchUiOverrides,

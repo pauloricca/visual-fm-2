@@ -887,7 +887,7 @@ button:hover {
 
 .shader-node-sequencer {
   width: var(--node-display-width, 416px);
-  min-width: max-content;
+  min-width: 0;
   background: var(--color-surface);
 }
 
@@ -2291,7 +2291,7 @@ button:hover {
   grid-auto-rows: minmax(0, 1fr);
   gap: 0;
   width: 100%;
-  aspect-ratio: var(--sequencer-steps) / var(--sequencer-rows);
+  height: var(--sequencer-grid-height);
   min-width: 0;
   padding: 0;
   background: transparent;
@@ -2300,7 +2300,7 @@ button:hover {
 .sequencer-row {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 0;
+  grid-template-columns: minmax(0, 1fr) var(--sequencer-label-column-width, 44px);
   height: auto;
   min-width: 0;
 }
@@ -2418,9 +2418,31 @@ button:hover {
 
 .sequencer-output-port {
   position: relative;
-  width: 0;
+  display: flex;
+  align-items: center;
+  width: auto;
   height: 100%;
   min-width: 0;
+}
+
+.sequencer-row-label {
+  box-sizing: border-box;
+  min-width: 3ch;
+  height: 22px;
+  margin-left: 8px;
+  padding: 0 5px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--color-foreground);
+  font: inherit;
+  font-size: 12px;
+  line-height: 20px;
+  outline: 0;
+}
+
+.sequencer-row-label:focus {
+  border-color: var(--color-foreground);
+  background: var(--color-background);
 }
 
 .numeric-scrubber {

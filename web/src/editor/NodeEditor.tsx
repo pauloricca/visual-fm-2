@@ -1532,6 +1532,46 @@ function NodeEditorInner() {
     ));
   }, [commitHistory]);
 
+  const updateSequencerRowLabels = useCallback((nodeId: string, labels: string[]) => {
+    const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
+    if (!relatedNode || relatedNode.data.patchNode.type !== 'Sequencer') return;
+    const sequencerRowLabels = [...labels];
+    const sequencerRowLabelColumnWidth = rowLabelColumnWidth(sequencerRowLabels);
+    if (
+      JSON.stringify(relatedNode.data.patchNode.sequencerRowLabels ?? []) === JSON.stringify(sequencerRowLabels)
+      && relatedNode.data.patchNode.sequencerRowLabelColumnWidth === sequencerRowLabelColumnWidth
+    ) return;
+
+    const shape = sequencerShape(relatedNode.data.patchNode.params);
+    const currentSize = clampSequencerNodeSize(
+      relatedNode.data.patchNode.scopeSize ?? DEFAULT_SEQUENCER_NODE_SIZE,
+      shape.steps,
+      shape.rows,
+      relatedNode.data.patchNode.sequencerRowLabelColumnWidth ?? 0,
+    );
+    const nextSize = clampSequencerNodeSize({
+      width: currentSize.width + sequencerRowLabelColumnWidth - (relatedNode.data.patchNode.sequencerRowLabelColumnWidth ?? 0),
+      height: currentSize.height,
+    }, shape.steps, shape.rows, sequencerRowLabelColumnWidth);
+
+    commitHistory(`sequencer-row-labels:${nodeId}`);
+    setNodes((current) => current.map((node) => node.id === nodeId
+      ? {
+          ...node,
+          data: {
+            ...node.data,
+            patchNode: {
+              ...node.data.patchNode,
+              sequencerRowLabels,
+              sequencerRowLabelColumnWidth,
+              scopeSize: nextSize,
+            },
+          },
+        }
+      : node,
+    ));
+  }, [commitHistory]);
+
   const updateBoundaryPortName = useCallback((nodeId: string, side: 'input' | 'output', port: string, requestedPort: string) => {
     const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
     if (!relatedNode || !canRenameBoundaryPort(relatedNode.data.patchNode as PatchNode, side)) return;
@@ -1692,7 +1732,7 @@ function NodeEditorInner() {
       : relatedNode.data.patchNode.type === 'Sequencer'
       ? (() => {
           const shape = sequencerShape(relatedNode.data.patchNode.params);
-          return clampSequencerNodeSize(size, shape.steps, shape.rows);
+          return clampSequencerNodeSize(size, shape.steps, shape.rows, relatedNode.data.patchNode.sequencerRowLabelColumnWidth ?? 0);
         })()
       : relatedNode.data.patchNode.type === 'Image'
       ? clampImageNodeSize(size, size.width / Math.max(1, size.height))
@@ -1723,6 +1763,7 @@ function NodeEditorInner() {
               DEFAULT_SEQUENCER_NODE_SIZE,
               sequencerShape(node.data.patchNode.params).steps,
               sequencerShape(node.data.patchNode.params).rows,
+              node.data.patchNode.sequencerRowLabelColumnWidth ?? 0,
             )
         : node.data.patchNode.type === 'Keys'
           ? DEFAULT_KEYS_NODE_SIZE
@@ -2520,6 +2561,7 @@ function NodeEditorInner() {
         onTypeChange: updateNodeType,
         onConvertToArea: convertNodeToArea,
         onCustomLabelChange: updateNodeCustomLabel,
+        onSequencerRowLabelsChange: updateSequencerRowLabels,
         onTitleSelect: canvasLocked ? undefined : selectNodeFromTitle,
         onExpressionCommit: updateExpression,
         onTypeEditStart: setEditingTypeNodeId,
@@ -2611,6 +2653,7 @@ function NodeEditorInner() {
     updateNodeParam,
     updateNodeParams,
     updateNodeCustomLabel,
+    updateSequencerRowLabels,
     updateNodeType,
     selectedNodeCount,
   ]);
@@ -7901,6 +7944,7 @@ function viewportNodeSize(node: ShaderFlowNode): { width: number; height: number
       patchNode.scopeSize ?? DEFAULT_SEQUENCER_NODE_SIZE,
       shape.steps,
       shape.rows,
+      patchNode.sequencerRowLabelColumnWidth ?? 0,
     );
     return {
       width: size.width,
@@ -9269,6 +9313,11 @@ function uniqueNodeId(requestedId: string, currentId: string, nodes: ShaderFlowN
     candidate = `${base}_${index}`;
   }
   return candidate;
+}
+
+function rowLabelColumnWidth(labels: string[]): number {
+  const longestLabel = Math.max(3, ...labels.map((label) => label.length));
+  return 20 + longestLabel * 8;
 }
 
 function shouldAutoRenameForTypeChange(nodeId: string, previousType: NodeType | null): boolean {

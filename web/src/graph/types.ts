@@ -86,6 +86,10 @@ export interface PatchNode {
   type: NodeType;
   /** Optional editor label displayed instead of the type while the node is collapsed. */
   customLabel?: string;
+  /** Optional editable labels displayed beside Sequencer rows. */
+  sequencerRowLabels?: string[];
+  /** Saved width reserved for the Sequencer row-label column. */
+  sequencerRowLabelColumnWidth?: number;
   subpatchName?: string;
   subpatchCloneId?: string;
   /** Per-Group-instance values for controls projected from the shared subpatch UI. */

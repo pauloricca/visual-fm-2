@@ -66,6 +66,7 @@ import {
   DEFAULT_JOYSTICK_NODE_SIZE,
   DEFAULT_KEYS_NODE_SIZE,
   DEFAULT_SCOPE_NODE_SIZE,
+  SEQUENCER_MIN_CELL_SIZE,
   type ScopeNodeSize,
   type ShaderFlowEdge,
   type ShaderFlowNode,
@@ -246,11 +247,13 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
     : showCustomWaveEditor || showSampleUpload || showBufferDisplay
       ? clampCustomWaveNodeSize(node.scopeSize ?? DEFAULT_CUSTOM_WAVE_NODE_SIZE)
       : DEFAULT_CUSTOM_WAVE_NODE_SIZE;
+  const sequencerLabelColumnWidth = node.sequencerRowLabelColumnWidth ?? sequencerRowLabelColumnWidth(node.sequencerRowLabels);
   const sequencerDisplaySize = sequencer
     ? clampSequencerNodeSize(
         node.scopeSize ?? { width: sequencer.steps * 26, height: sequencer.rows * 26 },
         sequencer.steps,
         sequencer.rows,
+        sequencerLabelColumnWidth,
       )
     : DEFAULT_SCOPE_NODE_SIZE;
   const defaultDisplaySize = isRuntimeContainer
@@ -261,6 +264,9 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
   const displaySize = usesAutoInitialWidth && autoDisplayWidth !== null
     ? { ...defaultDisplaySize, width: autoDisplayWidth }
     : defaultDisplaySize;
+  const sequencerGridHeight = sequencer
+    ? Math.max(1, (displaySize.width - sequencerLabelColumnWidth) * sequencer.rows / sequencer.steps)
+    : 0;
   const graphDetailSize = {
     width: displaySize.width * graphZoomScale,
     height: displaySize.height * graphZoomScale,
@@ -295,7 +301,12 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
         ...(!usesAutoInitialWidth ? { '--node-display-width': `${displaySize.width}px` } : {}),
         '--node-display-height': `${displaySize.height}px`,
         ...(showImageDisplay ? { '--image-aspect-ratio': String(imageAspectRatio) } : {}),
-        ...(sequencer ? { '--sequencer-steps': String(sequencer.steps), '--sequencer-rows': String(sequencer.rows) } : {}),
+        ...(sequencer ? {
+          '--sequencer-steps': String(sequencer.steps),
+          '--sequencer-rows': String(sequencer.rows),
+          '--sequencer-label-column-width': `${sequencerLabelColumnWidth}px`,
+          '--sequencer-grid-height': `${sequencerGridHeight}px`,
+        } : {}),
       } as CSSProperties)
     : undefined;
   const dspErrors = data.dspErrors ?? [];
@@ -548,7 +559,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
       const constrainedWidth = resize.minWidth === undefined ? rawWidth : Math.max(resize.minWidth, rawWidth);
       const rawNextSize = { width: constrainedWidth, height: resize.startSize.height + deltaY };
       const nextSize = showSequencerDisplay && sequencer
-        ? clampSequencerNodeSize({ width: constrainedWidth, height: constrainedWidth * sequencer.rows / sequencer.steps }, sequencer.steps, sequencer.rows)
+        ? clampSequencerNodeSize({ width: constrainedWidth, height: constrainedWidth * sequencer.rows / sequencer.steps }, sequencer.steps, sequencer.rows, sequencerLabelColumnWidth)
         : showImageDisplay
         ? clampImageNodeSize({ width: rawWidth, height: rawWidth / imageAspectRatio }, imageAspectRatio)
         : showCustomWaveEditor || showSampleUpload || showBufferDisplay
@@ -587,7 +598,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('pointercancel', handlePointerCancel);
     };
-  }, [data, imageAspectRatio, node.id, reactFlow, sequencer, showBufferDisplay, showCustomWaveEditor, showSampleUpload, showImageDisplay, showSequencerDisplay, showSliderDisplay, showJoystickDisplay, showButtonDisplay, showKeysDisplay]);
+  }, [data, imageAspectRatio, node.id, reactFlow, sequencer, sequencerLabelColumnWidth, showBufferDisplay, showCustomWaveEditor, showSampleUpload, showImageDisplay, showSequencerDisplay, showSliderDisplay, showJoystickDisplay, showButtonDisplay, showKeysDisplay]);
 
   useEffect(() => {
     setImageAspectRatio(DEFAULT_IMAGE_ASPECT_RATIO);
@@ -683,11 +694,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
     const hasVisibleSequencerOutputs = sequencerOutputs?.querySelector('.shader-port') !== null;
     const coordinateScale = Math.max(0.0001, (reactFlow.getZoom() || 1) * (node.scale ?? 1));
     const sequencerMinWidth = hasVisibleSequencerInputs && hasVisibleSequencerOutputs
-      ? Math.ceil(
-          ((sequencerInputs?.getBoundingClientRect().width ?? 0) + (sequencerOutputs?.getBoundingClientRect().width ?? 0))
-          / coordinateScale
-          + 10,
-        )
+      ? Math.max(240, sequencerLabelColumnWidth + (sequencer?.steps ?? 1) * SEQUENCER_MIN_CELL_SIZE)
       : undefined;
     const renderedWidth = usesAutoInitialWidth ? nodeElementRef.current?.clientWidth : undefined;
     const startSize = renderedWidth && renderedWidth > 0
@@ -1463,6 +1470,8 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
             <SequencerGrid
               params={node.params}
               rows={sequencer.rows}
+              rowLabels={node.sequencerRowLabels}
+              hasSavedLabelColumnWidth={node.sequencerRowLabelColumnWidth !== undefined}
               steps={sequencer.steps}
               beatLength={sequencer.beatLength}
               currentStep={data.audioSequencerStep}
@@ -1471,6 +1480,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
                 outputPortRowsRef.current[port] = element;
               }}
               onParamsChange={(values) => data.onParamsChange(node.id, values)}
+              onRowLabelsChange={(labels) => data.onSequencerRowLabelsChange?.(node.id, labels)}
             />
           ) : null}
           {showAudioOutputDisplay ? (
@@ -3274,15 +3284,23 @@ function midiNoteToFrequency(note: number): number {
   return 440 * (2 ** ((note - 69) / 12));
 }
 
+function sequencerRowLabelColumnWidth(labels?: string[]): number {
+  const longestLabel = Math.max(3, ...(labels?.map((label) => label.length) ?? [0]));
+  return 20 + longestLabel * 8;
+}
+
 interface SequencerGridProps {
   params: Record<string, number>;
   rows: number;
+  rowLabels?: string[];
+  hasSavedLabelColumnWidth: boolean;
   steps: number;
   beatLength: number;
   currentStep?: number;
   selectedLinkOutputs: string[];
   setOutputRowRef: (port: string, element: HTMLDivElement | null) => void;
   onParamsChange: (values: Record<string, number>) => void;
+  onRowLabelsChange: (labels: string[]) => void;
 }
 
 const SEQUENCER_TRIGGER_GRAB_FRACTION = 0.35;
@@ -3290,12 +3308,15 @@ const SEQUENCER_TRIGGER_GRAB_FRACTION = 0.35;
 function SequencerGrid({
   params,
   rows,
+  rowLabels,
+  hasSavedLabelColumnWidth,
   steps,
   beatLength,
   currentStep,
   selectedLinkOutputs,
   setOutputRowRef,
   onParamsChange,
+  onRowLabelsChange,
 }: SequencerGridProps) {
   const gateMode = sequencerUsesGateMode(params);
   const activeStep = Number.isFinite(currentStep) ? Math.floor(currentStep ?? -1) : -1;
@@ -3359,6 +3380,31 @@ function SequencerGrid({
     start: number;
     end: number;
   } | null>(null);
+  const [draftRowLabels, setDraftRowLabels] = useState<string[]>([]);
+
+  useEffect(() => {
+    setDraftRowLabels(Array.from({ length: rows }, (_, rowIndex) => rowLabels?.[rowIndex] ?? String(rowIndex + 1)));
+  }, [rowLabels, rows]);
+
+  useEffect(() => {
+    if (hasSavedLabelColumnWidth) return;
+    onRowLabelsChange(Array.from({ length: rows }, (_, rowIndex) => rowLabels?.[rowIndex] ?? String(rowIndex + 1)));
+  }, [hasSavedLabelColumnWidth, onRowLabelsChange, rowLabels, rows]);
+
+  function commitRowLabel(rowIndex: number) {
+    const label = draftRowLabels[rowIndex]?.trim() || String(rowIndex + 1);
+    const labels = Array.from({ length: rows }, (_, index) => (
+      index === rowIndex ? label : rowLabels?.[index] ?? String(index + 1)
+    ));
+    onRowLabelsChange(labels);
+  }
+
+  function updateRowLabel(rowIndex: number, value: string) {
+    const next = [...draftRowLabels];
+    next[rowIndex] = value;
+    setDraftRowLabels(next);
+    onRowLabelsChange(next);
+  }
 
   useEffect(() => {
     if (!triggerPaintPreview && !gateCreatePreview) return;
@@ -3772,6 +3818,19 @@ function SequencerGrid({
               ))}
             </div>
             <div className="sequencer-output-port">
+              <input
+                className="sequencer-row-label"
+                aria-label={`Label for row ${rowIndex + 1}`}
+                value={draftRowLabels[rowIndex] ?? String(rowIndex + 1)}
+                size={Math.max(3, (draftRowLabels[rowIndex] ?? String(rowIndex + 1)).length)}
+                onChange={(event) => updateRowLabel(rowIndex, event.target.value)}
+                onBlur={() => commitRowLabel(rowIndex)}
+                onPointerDown={(event) => event.stopPropagation()}
+                onKeyDown={(event) => {
+                  event.stopPropagation();
+                  if (event.key === 'Enter') event.currentTarget.blur();
+                }}
+              />
               <Handle
                 id={`out:${outputName}`}
                 type="source"
