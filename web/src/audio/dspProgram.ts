@@ -448,6 +448,7 @@ function createContext(patch: Patch): CompileContext {
   const incomingByInput = new Map<string, PatchLink[]>();
   for (const link of patch.links) {
     if (link.enabled === false) continue;
+    if (nodeById.get(link.from.node)?.enabled === false || nodeById.get(link.to.node)?.enabled === false) continue;
     const target = nodeById.get(link.to.node);
     const targetPort = target?.type === 'Sequencer' && link.to.port === 'tick'
       ? 'signal'
@@ -511,7 +512,7 @@ function compileSpreadTemplates(context: CompileContext): void {
     // Compile every signal entering the template before its repeat bracket so
     // external stateful nodes run once per sample, not once per Spread item.
     for (const link of context.patch.links) {
-      if (link.enabled === false || !templateIds.has(link.to.node) || templateIds.has(link.from.node)) continue;
+      if (link.enabled === false || context.nodeById.get(link.from.node)?.enabled === false || context.nodeById.get(link.to.node)?.enabled === false || !templateIds.has(link.to.node) || templateIds.has(link.from.node)) continue;
       const source = context.nodeById.get(link.from.node);
       if (source) resolveOutput(source, link.from.port, context);
     }
@@ -553,7 +554,7 @@ function compileSpreadTemplates(context: CompileContext): void {
     }
 
     for (const link of context.patch.links) {
-      if (link.enabled === false || !templateIds.has(link.from.node) || templateIds.has(link.to.node)) continue;
+      if (link.enabled === false || context.nodeById.get(link.from.node)?.enabled === false || context.nodeById.get(link.to.node)?.enabled === false || !templateIds.has(link.from.node) || templateIds.has(link.to.node)) continue;
       if (spread.type === 'Spawn' && link.to.node === spread.id && link.to.port === 'kill trigger') continue;
       const source = context.nodeById.get(link.from.node);
       if (!source) continue;
@@ -648,7 +649,7 @@ function compileAudioOut(node: PatchNode, context: CompileContext): void {
 
 function validatePatchLinks(context: CompileContext): void {
   for (const link of context.patch.links) {
-    if (link.enabled === false) continue;
+    if (link.enabled === false || context.nodeById.get(link.from.node)?.enabled === false || context.nodeById.get(link.to.node)?.enabled === false) continue;
     const source = context.nodeById.get(link.from.node);
     const target = context.nodeById.get(link.to.node);
 
@@ -919,14 +920,15 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
   if (node.type === 'Slider') {
     const unitValue = resolveSliderUnitValue(node, context);
     context.monitorIds[node.id] = unitValue;
+    const mappedUnitValue = applySliderCurve(node, unitValue, context);
     const hasSignal = hasInput(node, 'signal', context);
     const hasInverseSignal = hasInput(node, 'inverse signal', context);
     if (hasSignal || hasInverseSignal) {
-      return compileControlSignalOutput(node, port, unitValue, hasSignal, hasInverseSignal, context);
+      return compileControlSignalOutput(node, port, mappedUnitValue, hasSignal, hasInverseSignal, context);
     }
     const outputUnitValue = port === 'inverse'
-      ? emitBinary(DSP_OP.Sub, constantRegister(1, context), unitValue, context)
-      : unitValue;
+      ? emitBinary(DSP_OP.Sub, constantRegister(1, context), mappedUnitValue, context)
+      : mappedUnitValue;
     const min = resolveInput(node, 'min', 0, context);
     const max = resolveInput(node, 'max', 1, context);
     return emitBinary(DSP_OP.Add, min, emitBinary(DSP_OP.Mul, outputUnitValue, emitBinary(DSP_OP.Sub, max, min, context), context), context);
@@ -1749,6 +1751,25 @@ function resolveSliderUnitValue(node: PatchNode, context: CompileContext): numbe
 
 function registerSliderMonitor(node: PatchNode, context: CompileContext): void {
   context.monitorIds[node.id] = resolveSliderUnitValue(node, context);
+}
+
+function applySliderCurve(node: PatchNode, unitValue: number, context: CompileContext): number {
+  const clampedUnitValue = emitFunction(
+    EXPRESSION_FUNCTIONS.clamp.id,
+    [unitValue, constantRegister(0, context), constantRegister(1, context)],
+    context,
+  );
+  const curve = emitFunction(
+    EXPRESSION_FUNCTIONS.clamp.id,
+    [resolveInput(node, 'curve', 0, context), constantRegister(-8, context), constantRegister(8, context)],
+    context,
+  );
+  const exponent = emitFunction(
+    EXPRESSION_FUNCTIONS.pow.id,
+    [constantRegister(2, context), emitBinary(DSP_OP.Neg, curve, constantRegister(0, context), context)],
+    context,
+  );
+  return emitFunction(EXPRESSION_FUNCTIONS.pow.id, [clampedUnitValue, exponent], context);
 }
 
 function compileControlSignalOutput(

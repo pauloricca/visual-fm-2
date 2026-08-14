@@ -232,7 +232,21 @@ function normalizeLegacyNodeParams(type: NodeType, params: Record<string, number
 }
 
 function normalizeLegacyInputDefinitions(type: NodeType, inputs: PortDefinition[] | undefined): PortDefinition[] | undefined {
-  if (type === 'Slider' || type === 'Button') {
+  if (type === 'Slider') {
+    if (!inputs) return inputs;
+    const normalized = [...inputs];
+    if (!normalized.some((input) => input.name === 'inverse signal')) {
+      const signalIndex = normalized.findIndex((input) => input.name === 'signal');
+      normalized.splice(signalIndex >= 0 ? signalIndex + 1 : 0, 0, { name: 'inverse signal', valueEditor: false });
+    }
+    if (!normalized.some((input) => input.name === 'curve')) {
+      const valueIndex = normalized.findIndex((input) => input.name === 'value');
+      normalized.splice(valueIndex >= 0 ? valueIndex + 1 : normalized.length, 0, { name: 'curve', defaultValue: 0, min: -8, max: 8 });
+    }
+    return normalized;
+  }
+
+  if (type === 'Button') {
     if (!inputs || inputs.some((input) => input.name === 'inverse signal')) return inputs;
     const normalized = [...inputs];
     const signalIndex = normalized.findIndex((input) => input.name === 'signal');

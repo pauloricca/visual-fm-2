@@ -103,6 +103,8 @@ export interface PatchNode {
   outputs?: PortDefinition[];
   subpatch?: Patch;
   compactPorts?: boolean;
+  /** Nodes are enabled unless explicitly disabled. Disabled nodes mute their incident links. */
+  enabled?: boolean;
   /** Locked Spread/Spawn membership, mirroring an area's node snapshot. */
   spreadNodeIds?: string[];
   /** Compiler-only metadata attached to nodes cloned from a Spread or Spawn. */

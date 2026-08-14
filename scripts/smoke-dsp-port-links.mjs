@@ -87,6 +87,9 @@ assert(accumulatorIncrement.integer !== true, 'Accumulator.increment should acce
 const accumulatorMode = getDefinition('Accumulator').inputs.find((entry) => entry.name === 'mode');
 assert(accumulatorMode?.defaultValue === 0, 'Accumulator.mode should default to trigger mode.');
 assert(accumulatorMode.connectable === false, 'Accumulator.mode should be selected locally.');
+const sliderCurve = getDefinition('Slider').inputs.find((entry) => entry.name === 'curve');
+assert(sliderCurve?.defaultValue === 0, 'Slider.curve should default to a linear mapping.');
+assert(sliderCurve?.min === -8 && sliderCurve?.max === 8, 'Slider.curve should provide a bounded bipolar curve range.');
 const bufferResetMode = getDefinition('Buffer').inputs.find((entry) => entry.name === 'on reset');
 assert(bufferResetMode?.defaultValue === 0, 'Buffer.on reset should default to clear.');
 assert(bufferResetMode.connectable === false, 'Buffer.on reset should be selected locally.');
@@ -158,6 +161,17 @@ for (const type of ['Slider', 'Button']) {
     `${type} should add the inverse signal input to saved patches.`,
   );
 }
+const normalizedSlider = normalizePatchCompatibility({
+  nodes: [{
+    ...node('legacy_slider', 'Slider'),
+    inputs: getDefinition('Slider').inputs.filter((input) => input.name !== 'curve'),
+  }],
+  links: [],
+});
+assert(
+  normalizedSlider.nodes[0].inputs?.map((input) => input.name).join(',') === 'signal,inverse signal,value,curve,min,max,direction,midiChannel,midiCc',
+  'Slider.curve should be added after value in saved custom input layouts.',
+);
 
 const patch = {
   nodes: [
@@ -231,6 +245,23 @@ assert(dspProgram.errors.length === 0, `DSP compile failed: ${dspProgram.errors.
 assert(
   dspProgram.ops.some((op) => op.opcode === 29 && op.value === 1),
   'Accumulator continuous mode should be encoded in the DSP operation.',
+);
+
+const sliderCurveProgram = compilePatchToDspProgram({
+  nodes: [
+    node('curve', 'Constant', { value: 2 }),
+    node('slider_curve', 'Slider', { value: 0.5, curve: 0, min: 0, max: 1 }),
+    node('out', 'AudioOut', { level: 1 }),
+  ],
+  links: [
+    link('curve', 'signal', 'slider_curve', 'curve'),
+    link('slider_curve', 'signal', 'out', 'both'),
+  ],
+});
+assert(sliderCurveProgram.errors.length === 0, `Slider curve compile failed: ${sliderCurveProgram.errors.join('; ')}`);
+assert(
+  sliderCurveProgram.ops.filter((op) => op.opcode === 26 && op.a === 9).length >= 2,
+  'Slider curve should compile the dynamic exponent and its power mapping.',
 );
 
 const idleEnvelopeProgram = compilePatchToDspProgram({

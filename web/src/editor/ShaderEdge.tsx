@@ -43,7 +43,7 @@ export const ShaderEdge = memo(function ShaderEdge(props: EdgeProps<ShaderFlowEd
   const screenPosition = reactFlow.flowToScreenPosition({ x: labelX, y: labelY });
   const weight = props.data?.weight ?? 1;
   const mode = props.data?.mode ?? 'set';
-  const enabled = props.data?.enabled !== false;
+  const enabled = props.data?.enabled !== false && props.data?.isIncidentToDisabledNode !== true;
   const dspErrors = props.data?.dspErrors ?? [];
   const hasDspErrors = dspErrors.length > 0;
   const selected = props.selected ?? false;

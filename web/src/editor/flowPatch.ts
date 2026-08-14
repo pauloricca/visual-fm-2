@@ -97,6 +97,7 @@ export interface ShaderNodeData extends Record<string, unknown> {
   onPortNameChange: (nodeId: string, side: 'input' | 'output', port: string, nextPort: string) => void;
   onPortMove: (nodeId: string, side: 'input' | 'output', port: string, direction: -1 | 1) => void;
   onCompactToggle: (nodeId: string, compact: boolean) => void;
+  onEnabledChange?: (nodeId: string, enabled: boolean) => void;
   onScopeResize: (nodeId: string, size: ScopeNodeSize, anchor: 'left' | 'right', previousSize?: ScopeNodeSize) => void;
   onSelectorInputAdd?: (nodeId: string) => void;
   onSelectorInputClear?: (nodeId: string, port: string) => void;
@@ -132,6 +133,8 @@ export interface ShaderEdgeData extends Record<string, unknown> {
   weight: number;
   mode: LinkMode;
   enabled: boolean;
+  /** Derived editor-only state: either endpoint node is disabled. */
+  isIncidentToDisabledNode?: boolean;
   onWeightChange: (edgeId: string, weight: number) => void;
   onModeChange: (edgeId: string, mode: LinkMode) => void;
   onEnabledChange?: (edgeId: string, enabled: boolean) => void;
@@ -184,6 +187,7 @@ export interface PersistedEditorState {
     outputs?: PortDefinition[];
     subpatch?: Patch;
     compactPorts?: boolean;
+    enabled?: boolean;
     spreadNodeIds?: string[];
     scale?: number;
     scopeSize?: ScopeNodeSize;
@@ -217,6 +221,7 @@ type NodeCallbacks = Pick<
   | 'onPortNameChange'
   | 'onPortMove'
   | 'onCompactToggle'
+  | 'onEnabledChange'
   | 'onScopeResize'
   | 'onSelectorInputAdd'
   | 'onSelectorInputClear'
@@ -277,6 +282,7 @@ export function editorStateToFlowNodes(
         outputs: node.outputs,
         subpatch: node.subpatch,
         compactPorts: node.compactPorts,
+        enabled: node.enabled,
         spreadNodeIds: node.spreadNodeIds,
         scopeSize: node.scopeSize,
       },
@@ -337,6 +343,7 @@ export function flowToEditorState(
       outputs: node.data.patchNode.outputs,
       subpatch: node.data.patchNode.subpatch,
       compactPorts: node.data.patchNode.compactPorts,
+      enabled: node.data.patchNode.enabled,
       spreadNodeIds: node.data.patchNode.spreadNodeIds,
       scopeSize: node.data.patchNode.scopeSize,
     })),
@@ -425,6 +432,7 @@ export function patchFromFlow(nodes: ShaderFlowNode[], edges: ShaderFlowEdge[], 
       ...(patchNode.outputs ? { outputs: patchNode.outputs } : {}),
       ...(patchNode.subpatch ? { subpatch: patchNode.subpatch } : {}),
       ...(patchNode.compactPorts !== undefined ? { compactPorts: patchNode.compactPorts } : {}),
+      ...(patchNode.enabled === false ? { enabled: false } : {}),
       ...(patchNode.spreadNodeIds ? { spreadNodeIds: [...patchNode.spreadNodeIds] } : {}),
     });
   }
@@ -609,6 +617,7 @@ function normalizePersistedState(state: PersistedEditorState): PersistedEditorSt
       ...(node.outputs ? { outputs: normalizePersistedOutputDefinitions(node) } : {}),
       ...(node.subpatch ? { subpatch: normalizePatchCompatibility(node.subpatch) } : {}),
       ...(node.compactPorts !== undefined ? { compactPorts: node.compactPorts } : {}),
+      ...(node.enabled === false ? { enabled: false } : {}),
       ...(node.spreadNodeIds ? { spreadNodeIds: [...node.spreadNodeIds] } : {}),
       ...(node.scopeSize ? { scopeSize: node.scopeSize } : {}),
     }));

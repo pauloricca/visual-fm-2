@@ -693,12 +693,14 @@ button:hover {
   pointer-events: none;
 }
 
+.shader-node-canvas-locked .node-enabled-toggle,
 .shader-node-canvas-locked .node-compact-toggle {
   visibility: hidden;
   pointer-events: none;
 }
 
 .shader-node-area-ui-collapsed .audio-node-scope-resize-handle,
+.shader-node-area-ui-collapsed .node-enabled-toggle,
 .shader-node-area-ui-collapsed .node-compact-toggle {
   display: none;
 }
@@ -820,6 +822,11 @@ button:hover {
   color: var(--color-foreground);
   box-shadow: none;
   overflow: visible;
+}
+
+.shader-node-disabled {
+  border-style: dashed;
+  opacity: 0.48;
 }
 
 .shader-node-scope {
@@ -1236,6 +1243,7 @@ button:hover {
   user-select: none;
 }
 
+.node-enabled-toggle,
 .node-compact-toggle {
   display: inline-flex;
   width: 20px;
@@ -1251,6 +1259,29 @@ button:hover {
   cursor: pointer;
 }
 
+.node-enabled-toggle {
+  margin-left: auto;
+}
+
+.node-enabled-toggle + .node-compact-toggle {
+  margin-left: 0;
+}
+
+.node-enabled-icon {
+  display: block;
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+}
+
+.shader-node-disabled .node-enabled-icon {
+  background: currentColor;
+}
+
+.node-enabled-toggle:hover,
+.node-enabled-toggle:focus-visible,
 .node-compact-toggle:hover,
 .node-compact-toggle:focus-visible {
   background: var(--color-background);
@@ -1932,6 +1963,10 @@ button:hover {
 .wave-color-1 { --wave-color: #42b883; color: #42b883; stroke: #42b883; }
 .wave-color-2 { --wave-color: #5b8cff; color: #5b8cff; stroke: #5b8cff; }
 .wave-color-3 { --wave-color: #b06cff; color: #b06cff; stroke: #b06cff; }
+.wave-color-4 { --wave-color: #f59e0b; color: #f59e0b; stroke: #f59e0b; }
+.wave-color-5 { --wave-color: #f0529c; color: #f0529c; stroke: #f0529c; }
+.wave-color-6 { --wave-color: #14b8a6; color: #14b8a6; stroke: #14b8a6; }
+.wave-color-7 { --wave-color: #ef4444; color: #ef4444; stroke: #ef4444; }
 
 .custom-wave-node-canvas {
   position: relative;
@@ -1986,7 +2021,7 @@ button:hover {
 .custom-wave-sustain-line {
   stroke: var(--color-add-link);
   stroke-dasharray: 7 6;
-  stroke-width: calc(2px * var(--graph-stroke-scale, 1));
+  stroke-width: calc(4px * var(--graph-stroke-scale, 1));
   vector-effect: non-scaling-stroke;
 }
 
@@ -1999,13 +2034,18 @@ button:hover {
   stroke: var(--color-accent);
   stroke-linecap: square;
   stroke-linejoin: round;
-  stroke-width: 2;
+  stroke-width: calc(2px * var(--graph-stroke-scale, 1));
+  vector-effect: non-scaling-stroke;
 }
 .custom-wave-path.is-background { opacity: .38; }
 .custom-wave-path.wave-color-0 { stroke: var(--color-accent); }
 .custom-wave-path.wave-color-1 { stroke: #42b883; }
 .custom-wave-path.wave-color-2 { stroke: #5b8cff; }
 .custom-wave-path.wave-color-3 { stroke: #b06cff; }
+.custom-wave-path.wave-color-4 { stroke: #f59e0b; }
+.custom-wave-path.wave-color-5 { stroke: #f0529c; }
+.custom-wave-path.wave-color-6 { stroke: #14b8a6; }
+.custom-wave-path.wave-color-7 { stroke: #ef4444; }
 
 .wave-playhead-line {
   stroke: var(--color-foreground);

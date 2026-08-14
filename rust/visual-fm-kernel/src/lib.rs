@@ -2594,11 +2594,7 @@ pub extern "C" fn setDspState(index: u32, value: f64) {
     unsafe {
         let index = index as usize;
         if index < MAX_DSP_STATE {
-            *dsp_state_ptr(index) = if value.is_finite() {
-                value.clamp(-12_000.0, 12_000.0)
-            } else {
-                0.0
-            };
+            *dsp_state_ptr(index) = sanitize_control_value(value);
         }
     }
 }
@@ -4563,7 +4559,7 @@ fn sanitize_sample(value: f64, limit: f64) -> f64 {
 
 fn sanitize_control_value(value: f64) -> f64 {
     if value.is_finite() {
-        value.clamp(-12_000.0, 12_000.0)
+        value
     } else {
         0.0
     }
@@ -8720,7 +8716,7 @@ fn render_dsp_random(op: DspOp) -> f64 {
 
 #[cfg(test)]
 mod accumulator_tests {
-    use super::{accumulator_should_advance, advance_accumulator};
+    use super::{accumulator_should_advance, advance_accumulator, sanitize_control_value};
 
     #[test]
     fn trigger_mode_advances_only_on_a_rising_edge() {
@@ -8741,6 +8737,13 @@ mod accumulator_tests {
         assert_eq!(advance_accumulator(0.9, 0.2, 0.0, 1.0), 0.0);
         assert_eq!(advance_accumulator(0.1, -0.2, 0.0, 1.0), 1.0);
         assert_eq!(advance_accumulator(0.5, 1.0, 0.5, 0.5), 0.5);
+    }
+
+    #[test]
+    fn dsp_values_are_not_amplitude_clamped() {
+        assert_eq!(sanitize_control_value(440.0), 440.0);
+        assert_eq!(sanitize_control_value(-24_000.0), -24_000.0);
+        assert_eq!(sanitize_control_value(f64::INFINITY), 0.0);
     }
 }
 
@@ -9353,7 +9356,7 @@ fn render_dsp_op(
         },
         DSP_OP_FEEDBACK_WRITE => unsafe {
             if op.state >= 0 && (op.state as usize) < MAX_DSP_STATE {
-                *dsp_state_ptr(op.state as usize) = sanitize_sample(dsp_reg(op.a), 8.0);
+                *dsp_state_ptr(op.state as usize) = sanitize_control_value(dsp_reg(op.a));
             }
         },
         DSP_OP_SELECT => set_dsp_reg(op.out, render_dsp_selector(op, sample_rate)),

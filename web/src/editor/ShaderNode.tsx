@@ -168,10 +168,11 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
   const sliderUnitValue = showSliderDisplay
     ? clamp(data.midiSliderValue ?? data.audioSliderValue ?? node.params.value ?? 0.5, 0, 1)
     : 0;
+  const sliderMappedUnitValue = sliderUnitValue ** (2 ** -clamp(node.params.curve ?? 0, -8, 8));
   const sliderAbsoluteValue = (node.params.min ?? 0)
-    + sliderUnitValue * ((node.params.max ?? 1) - (node.params.min ?? 0));
+    + sliderMappedUnitValue * ((node.params.max ?? 1) - (node.params.min ?? 0));
   const sliderTitleSuffix = showSliderDisplay && pointerOver
-    ? `: ${formatSliderReadoutValue(sliderAbsoluteValue)} (${formatUnitValue(sliderUnitValue)})`
+    ? `: ${formatSliderReadoutValue(sliderAbsoluteValue)} (${formatUnitValue(sliderMappedUnitValue)})`
     : undefined;
   const showTopGraphic = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showJoystickDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showBufferDisplay || showImageDisplay || Boolean(groupUiPreview);
   const imageX = centeredCoordinateToUnit(data.audioImagePosition?.x ?? node.params.x ?? 0);
@@ -375,6 +376,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
     isAreaCollapsedPresentation ? 'shader-node-area-hidden' : '',
     isAreaUiCollapsedPresentation ? 'shader-node-area-ui-collapsed' : '',
     isCanvasLocked ? 'shader-node-canvas-locked' : '',
+    node.enabled === false ? 'shader-node-disabled' : '',
     data.onHeaderDoubleClick ? 'shader-node-resettable-header' : '',
     usesAutoInitialWidth ? 'shader-node-auto-width' : '',
   ].filter(Boolean).join(' ');
@@ -1051,6 +1053,24 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
             onCustomLabelCommit={isGroup ? (label) => data.onSubpatchNameChange?.(node.id, label) : undefined}
           />
         )}
+        {!forceCompactPorts && !isAreaUiCollapsedPresentation ? (
+          <button
+            className="node-enabled-toggle nodrag nopan"
+            type="button"
+            aria-label={node.enabled === false ? 'Enable node' : 'Disable node'}
+            title={node.enabled === false ? 'Enable node' : 'Disable node'}
+            aria-pressed={node.enabled !== false}
+            onPointerDown={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              data.onEnabledChange?.(node.id, node.enabled === false);
+            }}
+          >
+            <span className="node-enabled-icon" aria-hidden="true" />
+          </button>
+        ) : null}
         {!forceCompactPorts && !isAreaUiCollapsedPresentation ? (
           <button
             className="node-compact-toggle nodrag nopan"
@@ -3828,7 +3848,7 @@ function CustomWaveEditor({
       <div className="custom-wave-node-chart">
         {waves.length > 1 ? (
           <div className="custom-wave-tabs" aria-label="Select wave">
-            {waves.map((_, index) => <button key={index} type="button" className={`custom-wave-tab wave-color-${index % 4} ${index === selectedWaveIndex ? 'is-selected' : ''} nodrag nopan`} title={`Edit wave ${index + 1} (${index + 1})`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onWaveSelect(index); }}>{index + 1}</button>)}
+            {waves.map((_, index) => <button key={index} type="button" className={`custom-wave-tab wave-color-${index % 8} ${index === selectedWaveIndex ? 'is-selected' : ''} nodrag nopan`} title={`Edit wave ${index + 1} (${index + 1})`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onWaveSelect(index); }}>{index + 1}</button>)}
           </div>
         ) : null}
         {subgroupBands.length > 0 ? (
@@ -3861,8 +3881,8 @@ function CustomWaveEditor({
           {showSustainEnd ? (
             <line className="custom-wave-sustain-line is-end" x1={sustainEndX} y1={padding} x2={sustainEndX} y2={height - padding} />
           ) : null}
-          {waves.map((wave, index) => index !== selectedWaveIndex ? <path key={index} className={`custom-wave-path is-background wave-color-${index % 4}`} d={customWavePath(customWaveWithBaseLevel(wave, baseLevel, rangeMin, rangeMax).points, width, height, padding)} /> : null)}
-          <path className={`custom-wave-path wave-color-${selectedWaveIndex % 4}`} d={path} />
+          {waves.map((wave, index) => index !== selectedWaveIndex ? <path key={index} className={`custom-wave-path is-background wave-color-${index % 8}`} d={customWavePath(customWaveWithBaseLevel(wave, baseLevel, rangeMin, rangeMax).points, width, height, padding)} /> : null)}
+          <path className={`custom-wave-path wave-color-${selectedWaveIndex % 8}`} d={path} />
           {showLowFrequencyScan ? playheads.map((playhead, index) => {
             const playheadX = padding + clamp(playhead, 0, 1) * innerWidth;
             return <line className={`wave-playhead-line wave-playhead-${index % 4} is-low-frequency`} key={`${index}:${playhead}`} x1={playheadX} y1={padding} x2={playheadX} y2={height - padding}><title>Playback {index + 1}</title></line>;

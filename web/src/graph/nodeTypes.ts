@@ -209,6 +209,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
       { name: 'signal', valueEditor: false },
       { name: 'inverse signal', valueEditor: false },
       { name: 'value', defaultValue: 0.5, min: 0, max: 1 },
+      { name: 'curve', defaultValue: 0, min: -8, max: 8 },
       { name: 'min', defaultValue: 0 },
       { name: 'max', defaultValue: 1 },
       { name: 'direction', defaultValue: 0, min: 0, max: 1, integer: true },
@@ -637,6 +638,21 @@ export function getNodeDefinition(node: PatchNode): NodeDefinition {
     }
     const modeIndex = inputs.findIndex((input) => input.name === 'mode');
     if (modeIndex > 0) inputs.unshift(...inputs.splice(modeIndex, 1));
+    return {
+      ...definition,
+      inputs,
+      outputs: node.outputs ?? definition.outputs,
+    };
+  }
+
+  if (node.type === 'Slider') {
+    const definition = getDefinition(node.type);
+    const inputs = [...(node.inputs ?? definition.inputs)];
+    if (!inputs.some((input) => input.name === 'curve')) {
+      const curve = definition.inputs.find((input) => input.name === 'curve');
+      const valueIndex = inputs.findIndex((input) => input.name === 'value');
+      if (curve) inputs.splice(valueIndex >= 0 ? valueIndex + 1 : inputs.length, 0, curve);
+    }
     return {
       ...definition,
       inputs,

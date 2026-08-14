@@ -1613,6 +1613,50 @@ function NodeEditorInner() {
     ));
   }, [commitHistory]);
 
+  const updateNodeEnabled = useCallback((nodeId: string, enabled: boolean) => {
+    const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
+    if (!relatedNode || (relatedNode.data.patchNode.enabled !== false) === enabled) return;
+
+    commitHistory(`node-enabled:${nodeId}`);
+    setNodes((current) => current.map((node) => node.id === nodeId
+      ? {
+          ...node,
+          data: {
+            ...node.data,
+            patchNode: {
+              ...node.data.patchNode,
+              ...(enabled ? { enabled: undefined } : { enabled: false }),
+            },
+          },
+        }
+      : node,
+    ));
+  }, [commitHistory]);
+
+  const toggleSelectedNodes = useCallback(() => {
+    const selectedNodeIds = new Set(nodesRef.current.filter((node) => node.selected === true).map((node) => node.id));
+    if (selectedNodeIds.size === 0) return false;
+
+    const shouldEnable = [...selectedNodeIds].some((nodeId) => (
+      nodesRef.current.find((node) => node.id === nodeId)?.data.patchNode.enabled === false
+    ));
+    commitHistory('node-enabled');
+    setNodes((current) => current.map((node) => selectedNodeIds.has(node.id)
+      ? {
+          ...node,
+          data: {
+            ...node.data,
+            patchNode: {
+              ...node.data.patchNode,
+              ...(shouldEnable ? { enabled: undefined } : { enabled: false }),
+            },
+          },
+        }
+      : node,
+    ));
+    return true;
+  }, [commitHistory]);
+
   const updateNodeScopeSize = useCallback((nodeId: string, size: ScopeNodeSize, anchor: 'left' | 'right', renderedPreviousSize?: ScopeNodeSize) => {
     const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
     if (
@@ -2493,6 +2537,7 @@ function NodeEditorInner() {
         onPortNameChange: updateBoundaryPortName,
         onPortMove: updateBoundaryPortOrder,
         onCompactToggle: updateNodeCompactPorts,
+        onEnabledChange: updateNodeEnabled,
         onScopeResize: updateNodeScopeSize,
         onSelectorInputAdd: addSelectorInput,
         onSelectorInputClear: clearSelectorInput,
@@ -2559,6 +2604,7 @@ function NodeEditorInner() {
     audio.refreshMidiInputDevices,
     audio.setAudioInputDeviceId,
     updateNodeCompactPorts,
+    updateNodeEnabled,
     updateNodeCustomWave,
     updateNodeScopeSize,
     updateNodeId,
@@ -2573,6 +2619,9 @@ function NodeEditorInner() {
     const selectedEdgeCount = edges.filter((edge) => edge.selected).length;
     const selectedNodeIds = new Set(
       nodes.filter((node) => node.selected).map((node) => node.id),
+    );
+    const disabledNodeIds = new Set(
+      nodes.filter((node) => node.data.patchNode.enabled === false).map((node) => node.id),
     );
     const hasHighlightedLinks = selectedEdgeCount > 0 || selectedNodeIds.size > 0;
     return edges.map((edge) => {
@@ -2590,6 +2639,7 @@ function NodeEditorInner() {
           weight: edge.data?.weight ?? 1,
           mode: edge.data?.mode ?? 'set',
           enabled: edge.data?.enabled !== false,
+          isIncidentToDisabledNode: disabledNodeIds.has(edge.source) || disabledNodeIds.has(edge.target),
           onWeightChange: updateEdgeWeight,
           onModeChange: updateEdgeMode,
           onEnabledChange: updateEdgeEnabled,
@@ -4194,7 +4244,7 @@ function NodeEditorInner() {
     const handleToggleSelectedEdgesKeyDown = (event: KeyboardEvent) => {
       if (event.repeat || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
       if (isEditableEventTarget(event.target) || event.key.toLowerCase() !== 'x') return;
-      if (!toggleSelectedEdges()) return;
+      if (!toggleSelectedNodes() && !toggleSelectedEdges()) return;
 
       event.preventDefault();
       event.stopPropagation();
@@ -4202,7 +4252,7 @@ function NodeEditorInner() {
 
     window.addEventListener('keydown', handleToggleSelectedEdgesKeyDown, { capture: true });
     return () => window.removeEventListener('keydown', handleToggleSelectedEdgesKeyDown, { capture: true });
-  }, [toggleSelectedEdges]);
+  }, [toggleSelectedEdges, toggleSelectedNodes]);
 
   useEffect(() => {
     const handleBoundaryPortDeleteKeyDown = (event: KeyboardEvent) => {
@@ -6573,6 +6623,7 @@ function stripPatchNodeForDsp(node: PatchNode): PatchNode {
     ...(node.inputs ? { inputs: node.inputs.map((port) => ({ ...port })) } : {}),
     ...(node.outputs ? { outputs: node.outputs.map((port) => ({ ...port })) } : {}),
     ...(node.subpatch ? { subpatch: stripPatchForDsp(node.subpatch) } : {}),
+    ...(node.enabled === false ? { enabled: false } : {}),
   };
 }
 
@@ -6610,6 +6661,9 @@ function parsePatchNode(value: unknown, index: number): PatchNode | null {
   }
   if (value.compactPorts !== undefined && typeof value.compactPorts !== 'boolean') {
     throw new Error(`Node "${value.id}" compactPorts must be a boolean.`);
+  }
+  if (value.enabled !== undefined && typeof value.enabled !== 'boolean') {
+    throw new Error(`Node "${value.id}" enabled must be a boolean.`);
   }
   if (value.spreadNodeIds !== undefined && (
     !Array.isArray(value.spreadNodeIds)
@@ -6658,6 +6712,7 @@ function parsePatchNode(value: unknown, index: number): PatchNode | null {
     ...(outputs ? { outputs } : {}),
     ...(subpatch ? { subpatch } : {}),
     ...(typeof value.compactPorts === 'boolean' ? { compactPorts: value.compactPorts } : {}),
+    ...(value.enabled === false ? { enabled: false } : {}),
     ...(Array.isArray(value.spreadNodeIds) ? { spreadNodeIds: value.spreadNodeIds as string[] } : {}),
   };
 }
@@ -7662,6 +7717,7 @@ function patchNodeFromFlowNode(node: ShaderFlowNode): PatchNode {
     ...(patchNode.outputs ? { outputs: patchNode.outputs.map((port) => ({ ...port })) } : {}),
     ...(patchNode.subpatch ? { subpatch: clonePatch(patchNode.subpatch) } : {}),
     ...(patchNode.compactPorts !== undefined ? { compactPorts: patchNode.compactPorts } : {}),
+    ...(patchNode.enabled === false ? { enabled: false } : {}),
   };
 }
 
@@ -7687,6 +7743,7 @@ function clonePatch(patch: ReturnType<typeof patchFromFlow>): ReturnType<typeof 
       ...(node.outputs ? { outputs: node.outputs.map((port) => ({ ...port })) } : {}),
       ...(node.subpatch ? { subpatch: clonePatch(node.subpatch) } : {}),
       ...(node.compactPorts !== undefined ? { compactPorts: node.compactPorts } : {}),
+      ...(node.enabled === false ? { enabled: false } : {}),
     })),
     links: patch.links.map((link) => ({
       from: { ...link.from },
