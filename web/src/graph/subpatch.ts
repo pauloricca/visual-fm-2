@@ -36,7 +36,12 @@ function expandGroupNodes(patch: Patch, prefix: string): Patch {
     const innerLinksByOutput = groupBy(groupPatch.links, (link) => link.to.node, boundaryNodeIds, outsNodes);
     const prefixedGroupId = `${prefix}${node.id}`;
 
-    nodes.push(...groupPatch.nodes.filter((candidate) => !boundaryNodeIds.has(candidate.id)));
+    // Group nodes are expanded away before DSP compilation. Carry the Group's
+    // disabled state onto every generated inner node so it remains a true
+    // mute boundary rather than just disabling the now-removed wrapper.
+    nodes.push(...groupPatch.nodes
+      .filter((candidate) => !boundaryNodeIds.has(candidate.id))
+      .map((candidate) => node.enabled === false ? { ...candidate, enabled: false } : candidate));
     nodes.push(...defaultNodesForUnconnectedGroupInputs(node, prefixedGroupId, inputLinks, innerLinksByInput, insNodes));
     nodes.push(...passNodesForGroupBoundary(node, prefixedGroupId, innerLinksByInput, insNodes, 'input'));
     nodes.push(...passNodesForGroupBoundary(node, prefixedGroupId, innerLinksByOutput, outsNodes, 'output'));
@@ -139,6 +144,7 @@ function passNodesForGroupBoundary(
         : boundaryPortDefaultValue(boundaryNodes, port),
     },
     position: groupNode.position,
+    ...(groupNode.enabled === false ? { enabled: false } : {}),
   }));
 }
 
@@ -171,6 +177,7 @@ function defaultNodesForUnconnectedGroupInputs(
       type: 'Constant',
       params: { value: groupNode.params[port] ?? defaultValueByPort.get(port) ?? 0 },
       position: groupNode.position,
+      ...(groupNode.enabled === false ? { enabled: false } : {}),
     }));
 }
 

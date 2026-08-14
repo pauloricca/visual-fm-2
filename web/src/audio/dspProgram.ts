@@ -244,7 +244,7 @@ interface CompileContext {
 
 const BUTTON_GATE_FADE_SECONDS = 0.008;
 const MAX_DSP_OPS = 4096;
-const MAX_DSP_REGISTERS = 2048;
+const MAX_DSP_REGISTERS = 4096;
 const MAX_DSP_VALUES = 2048;
 const MAX_DSP_STATE = 4096;
 const MAX_DSP_EFFECT_BUFFERS = 64;
@@ -1754,6 +1754,13 @@ function registerSliderMonitor(node: PatchNode, context: CompileContext): void {
 }
 
 function applySliderCurve(node: PatchNode, unitValue: number, context: CompileContext): number {
+  // Preserve the linear slider path used by patches created before curves were
+  // added. Besides avoiding needless per-sample work, this keeps a zero,
+  // unlinked curve from consuming intermediate DSP registers.
+  if (!hasInput(node, 'curve', context) && finiteNumber(node.params.curve, 0) === 0) {
+    return unitValue;
+  }
+
   const clampedUnitValue = emitFunction(
     EXPRESSION_FUNCTIONS.clamp.id,
     [unitValue, constantRegister(0, context), constantRegister(1, context)],
@@ -2707,7 +2714,7 @@ function emitValue(
 }
 
 function packRegisterPair(left: number, right: number): number {
-  return left + right * 2048;
+  return left + right * MAX_DSP_REGISTERS;
 }
 
 function nextRegister(context: CompileContext): number {

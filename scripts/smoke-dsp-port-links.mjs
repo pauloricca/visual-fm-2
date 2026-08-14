@@ -264,6 +264,19 @@ assert(
   'Slider curve should compile the dynamic exponent and its power mapping.',
 );
 
+const linearSliderProgram = compilePatchToDspProgram({
+  nodes: [
+    node('slider_linear', 'Slider', { value: 0.5, curve: 0, min: 0, max: 1 }),
+    node('out', 'AudioOut', { level: 1 }),
+  ],
+  links: [link('slider_linear', 'signal', 'out', 'both')],
+});
+assert(linearSliderProgram.errors.length === 0, `Linear slider compile failed: ${linearSliderProgram.errors.join('; ')}`);
+assert(
+  !linearSliderProgram.ops.some((op) => op.opcode === 26),
+  'An unlinked zero Slider.curve should retain the register-free linear mapping path.',
+);
+
 const idleEnvelopeProgram = compilePatchToDspProgram({
   nodes: [
     node('envelope', 'Envelope', {
