@@ -61,6 +61,7 @@ Dragging a new link or reconnecting an existing link endpoint onto the temporary
 - `Button`: provides a playable UI button, optionally driven by MIDI CC, for gate/toggle/trigger-style control. MIDI changes update its saved gate, toggle, or trigger count, so they survive unrelated graph edits and recompilation. Its optional `signal` and `inverse signal` inputs crossfade in opposite directions: with only `signal` connected, the main output is that signal while on and `inverse` is that signal while off; `inverse signal` instead feeds the main output while off and `inverse` while on. With neither input connected, `signal` and `inverse` are complementary `0`/`1` gates.
 - `Keys`: provides an on-canvas keyboard with configurable size and starting MIDI note, outputting MIDI note and frequency.
 - `Sequencer`: offers Trigger mode for the original clickable pulse grid and Gate mode for freely positioned, edge-resizable intervals. Each row has a compact editable label beside its output pin, initially numbered `1`, `2`, `3`…; click a label to rename it. The shared label column and the node expand only as far as the widest label requires, leaving the square pattern cells unchanged. Clicking to create a gate snaps its start to the leading edge of the selected grid square. Gates in a row never overlap: creating, moving, and resizing stops at neighboring gates, creation uses the available gap when it is shorter than a full step, and mode conversion resolves overlaps by shortening the earlier gate's end. Drag a step's top edge down to lower its velocity from `1` to a minimum of `0.1`, so the row output emits that smaller value when the step triggers or gates; `signal` advances the sequence, `reset` restarts it, each row has its own output, and `trigger index` emits the 1-based index of the first active row. Pattern, timing, velocity, length, and Trigger/Gate mode edits update the running sequencer in place without resetting its playhead or recompiling the DSP graph; changing the row count still recompiles because it changes the node's output ports.
+- `Roll`: is a scale-aware piano roll centred on a selectable `middle note` (full octave notation). `range down` and `range up` choose the number of scale rows below and above it. Gates are saved by signed row index relative to that middle row, so changing the middle note transposes the complete pattern and changing the scale remaps it without deleting or shifting steps. Click a grid cell to add a gate-length note; drag its body sideways to move it, or drag either edge to resize it. `steps` sets the grid width, `beat length` controls alternating beat subdivisions, and `step length` is the initial length of newly created notes. It is advanced by `signal`, restarted by `reset`, and exposes live `note` and `gate` outputs plus an event bundle: `note on` (identical to `trigger`), `frequency`, and `velocity` are queued, sample-aligned note-on values; `note off` is a queued matching-note event. Every event is followed by a zero frame, so chords can create separate Spawn instances. Connect `note on` to a Spawn `trigger`, `note off` to `release trigger`, and use `note on`/`trigger` to sample-and-hold the aligned frequency and velocity within the Spawn.
 - `Tempo`: outputs clock triggers and matching frequency values from 4-bar divisions down to thirty-seconds, with BPM, swing, internal/MIDI source, and MIDI-source selection.
 - `MIDI Note`: tracks the most recently pressed held note as a monophonic note, frequency, velocity, gate, and note-on trigger source.
 - `MIDI Note On`: emits queued one-sample note, frequency, and velocity values for MIDI note-on events, with zero-valued separator samples between events.
@@ -138,7 +139,8 @@ The signature notation below is `inputs -> outputs`. Port names are the names us
 | Joystick | `xMin`, `xMax`, `xMidiChannel`, `xMidiCc`, `yMin`, `yMax`, `yMidiChannel`, `yMidiCc`, `elasticity` | `x`, `x inverse`, `y`, `y inverse` |
 | Button | `signal`, `inverse signal`, `mode`, `midiChannel`, `midiCc` | `signal`, `inverse` |
 | Keys | `size`, `startNote` | `midi note`, `frequency` |
-| Sequencer | `steps`, `rows`, `beatLength`, `mode`, `signal`, `reset` | row outputs `1`…`16` (according to `rows`), `trigger index` |
+| Sequencer | `steps`, `rows`, `beat length`, `mode`, `signal`, `reset` | row outputs `1`…`16` (according to `rows`), `trigger index` |
+| Roll | `steps`, `beat length`, `step length`, `scale`, `middle note`, `range down`, `range up`, `signal`, `reset` | `note`, `frequency`, `velocity`, `gate`, `trigger`, `note on`, `note off` |
 | Tempo | `bpm`, `swing`, `source`, `midiSource` | `4 bar`, `2 bar`, `bar`, `whole`, `half`, `quarter / beat`, `upbeat`, `eighth`, `sixteenth`, `thirty-second`, plus a matching `… freq` output for each |
 | MIDI Note | `channel` | `note`, `frequency`, `velocity`, `gate`, `trigger` |
 | MIDI Note On | `channel` | `note`, `frequency`, `velocity` |
@@ -146,7 +148,7 @@ The signature notation below is `inputs -> outputs`. Port names are the names us
 | MIDI CC | `channel`, `cc` | `signal` |
 | Selector | `select`, `slide`, dynamic value inputs `1`… | `signal` |
 | Accumulator | `mode`, `trigger`, `reset`, `increment`, `min`, `max` | `signal` |
-| Quantise | `signal`, `scale`, `root` | `signal` |
+| Quantise | `signal`, `scale`, `root` (pitch class) | `signal` |
 | Abs | `signal` | `signal` |
 | Map | `signal`, `srcMin`, `srcMax`, `trgtMin`, `trgtMax` | `signal` |
 | Clamp | `signal`, `min`, `max` | `signal` |
@@ -212,6 +214,8 @@ So:
 When an input has an enabled `set` link, its numeric field is greyed out to show that its local value is currently replaced. The field remains editable, so its value is ready if the set link is removed or changed to another mode.
 
 While dragging a new link, press `a` to create it in `add` mode, `m` for `multiply` mode, or `s` for `set` mode (the default). The live link changes colour to preview the selected mode.
+
+Drag either endpoint of an existing link to reconnect that endpoint. This works directly on all pins, including the internal `instance gate` and `kill trigger` pins in an expanded Spawn; holding Cmd, Ctrl, or Alt retains the original link and creates the reconnected link as a duplicate.
 
 This order matters. A frequency input with a local value of `80`, an `add` link carrying `1`, and no other links resolves to roughly `81`. A `set` link carrying a slow oscillator around `-1..1` sets the input near those values, rather than multiplying the local `80`.
 

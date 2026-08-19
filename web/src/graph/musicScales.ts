@@ -22,9 +22,18 @@ export const QUANTISE_SCALES: readonly QuantiseScale[] = [
   { label: 'diminished (half-whole)', semitones: [0, 1, 3, 4, 6, 7, 9, 10] },
 ];
 
-const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'] as const;
+export const PITCH_CLASSES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'] as const;
+
+export function normalisePitchClass(note: number): number {
+  const value = Number.isFinite(note) ? Math.round(note) : 0;
+  return ((value % 12) + 12) % 12;
+}
+
+export function pitchClassLabel(note: number): string {
+  return PITCH_CLASSES[normalisePitchClass(note)];
+}
 
 export function midiNoteLabel(note: number): string {
   const midiNote = Math.max(0, Math.min(127, Math.round(note)));
-  return `${NOTE_NAMES[midiNote % 12]}${Math.floor(midiNote / 12) - 1}`;
+  return `${pitchClassLabel(midiNote)}${Math.floor(midiNote / 12) - 1}`;
 }

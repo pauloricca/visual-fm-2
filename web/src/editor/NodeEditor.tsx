@@ -31,7 +31,7 @@ import { useAudioEngine, type BufferCopy, type BufferSnapshot, type LinkMeterRea
 import { normalizeCustomWave } from '../graph/customWave';
 import { demoPatch } from '../graph/demoPatch';
 import { extractExpressionInputs } from '../graph/expression';
-import { defaultParamsFor, getDefinition, getNodeDefinition, sequencerShape } from '../graph/nodeTypes';
+import { defaultParamsFor, getDefinition, getNodeDefinition, rollShape, sequencerShape } from '../graph/nodeTypes';
 import { normalizePatchCompatibility } from '../graph/patchCompatibility';
 import { patchToJson } from '../graph/serialize';
 import {
@@ -64,6 +64,7 @@ import {
   DEFAULT_KEYS_NODE_SIZE,
   DEFAULT_SEQUENCER_NODE_SIZE,
   DEFAULT_SCOPE_NODE_SIZE,
+  SEQUENCER_MIN_CELL_SIZE,
   editorStateToFlowEdges,
   editorStateToFlowNodes,
   flowToEditorState,
@@ -725,6 +726,13 @@ function NodeEditorInner() {
           params: { ...relatedNode.data.patchNode.params, [port]: value },
         }
       : null;
+    const nextPatternScopeSize = relatedNode && (
+      port === 'steps'
+      || (relatedNode.data.patchNode.type === 'Sequencer' && port === 'rows')
+      || (relatedNode.data.patchNode.type === 'Roll' && ['scale', 'middle note', 'range down', 'range up'].includes(port))
+    )
+      ? resizedPatternScopeSize(relatedNode.data.patchNode as PatchNode, { ...relatedNode.data.patchNode.params, [port]: value })
+      : undefined;
     setNodes((current) => current.map((node) => node.id === nodeId
       ? {
           ...node,
@@ -733,6 +741,7 @@ function NodeEditorInner() {
             patchNode: {
               ...node.data.patchNode,
               params: { ...node.data.patchNode.params, [port]: value },
+              ...(nextPatternScopeSize ? { scopeSize: nextPatternScopeSize } : {}),
               outputs: node.data.patchNode.type === 'Ins'
                 ? setPortDefaultValue(node.data.patchNode.outputs, port, value)
                 : node.data.patchNode.outputs,
@@ -1728,6 +1737,7 @@ function NodeEditorInner() {
         relatedNode.data.patchNode.type !== 'Button' &&
         relatedNode.data.patchNode.type !== 'Keys' &&
         relatedNode.data.patchNode.type !== 'Sequencer' &&
+        relatedNode.data.patchNode.type !== 'Roll' &&
         relatedNode.data.patchNode.type !== 'Spread' &&
         relatedNode.data.patchNode.type !== 'Spawn'
       )
@@ -1747,6 +1757,11 @@ function NodeEditorInner() {
       ? (() => {
           const shape = sequencerShape(relatedNode.data.patchNode.params);
           return clampSequencerNodeSize(size, shape.steps, shape.rows, relatedNode.data.patchNode.sequencerRowLabelColumnWidth ?? 0);
+        })()
+      : relatedNode.data.patchNode.type === 'Roll'
+      ? (() => {
+          const shape = rollShape(relatedNode.data.patchNode.params);
+          return clampSequencerNodeSize(size, shape.steps, shape.rows.length, 32);
         })()
       : relatedNode.data.patchNode.type === 'Image'
       ? clampImageNodeSize(size, size.width / Math.max(1, size.height))
@@ -1778,7 +1793,12 @@ function NodeEditorInner() {
               sequencerShape(node.data.patchNode.params).steps,
               sequencerShape(node.data.patchNode.params).rows,
               node.data.patchNode.sequencerRowLabelColumnWidth ?? 0,
-            )
+          )
+        : node.data.patchNode.type === 'Roll'
+          ? (() => {
+              const shape = rollShape(node.data.patchNode.params);
+              return clampSequencerNodeSize({ width: shape.steps * 26 + 32, height: shape.rows.length * 22 }, shape.steps, shape.rows.length, 32);
+            })()
         : node.data.patchNode.type === 'Keys'
           ? DEFAULT_KEYS_NODE_SIZE
         : node.data.patchNode.type === 'FFT'
@@ -2693,15 +2713,35 @@ function NodeEditorInner() {
     );
     const hasHighlightedLinks = selectedEdgeCount > 0 || selectedNodeIds.size > 0;
     return edges.map((edge) => {
+      const link = linkFromEdge(edge);
+      const sourceNode = link ? nodes.find((node) => node.id === link.from.node) : undefined;
+      const targetNode = link ? nodes.find((node) => node.id === link.to.node) : undefined;
+      // Runtime-container lifecycle pins live inside the container's body.
+      // Unlike ordinary boundary pins, their endpoint drag target would
+      // otherwise be painted behind the node and the Handle would always begin
+      // a new connection. Elevate just these endpoint targets above the
+      // container so an attached cable can be grabbed at its visible pin.
+      const hasInternalRuntimeEndpoint = Boolean(link && (
+        ((sourceNode?.data.patchNode.type === 'Spread' && link.from.port === 'item index')
+          || (sourceNode?.data.patchNode.type === 'Spawn' && link.from.port === 'instance gate'))
+        || (targetNode?.data.patchNode.type === 'Spawn' && link.to.port === 'kill trigger')
+      ));
       const isConnectedToSelectedNode = isEdgeConnectedToSelectedNode(edge, selectedNodeIds);
       const isHighlighted = edge.selected === true || isConnectedToSelectedNode;
       return {
         ...edge,
-        reconnectable: edge.selected === true,
+        // Keep endpoint reconnection available even before an edge is selected.
+        // Otherwise a pointer down where an edge meets a Spawn/Spread's internal
+        // handle is captured by that handle and begins a second link instead of
+        // moving the endpoint the user grabbed.
+        reconnectable: true,
         // Incident-node emphasis stays in the normal edge layer so the selected
-        // node and its controls remain unobscured. Explicit edge selection
-        // retains its elevated layer for endpoint reconnection.
-        zIndex: edge.selected ? SELECTED_EDGE_Z_INDEX : undefined,
+        // node and its controls remain unobscured. Internal runtime endpoints
+        // are the sole exception because their visible pins are inside a node.
+        zIndex: edge.selected || hasInternalRuntimeEndpoint ? SELECTED_EDGE_Z_INDEX : undefined,
+        className: [edge.className, hasInternalRuntimeEndpoint ? 'shader-edge-internal-runtime-endpoint' : '']
+          .filter(Boolean)
+          .join(' '),
         data: {
           ...edge.data,
           weight: edge.data?.weight ?? 1,
@@ -2848,7 +2888,7 @@ function NodeEditorInner() {
             }
           : {}),
         ...(midiControlVisual?.buttonPressed !== undefined ? { midiButtonPressed: midiControlVisual.buttonPressed } : {}),
-        ...(monitorLinkId && innerNode.type === 'Sequencer' ? { audioSequencerStep: audio.linkMeters[monitorLinkId]?.output } : {}),
+        ...(monitorLinkId && (innerNode.type === 'Sequencer' || innerNode.type === 'Roll') ? { audioSequencerStep: audio.linkMeters[monitorLinkId]?.output } : {}),
         ...((innerNode.type === 'CustomWave' || innerNode.type === 'SamplePlayer') ? { audioPlayheads: audio.playheads[dspNodeId] } : {}),
         ...(innerNode.type === 'CustomWave' ? { audioCustomWaveFrequency: audio.linkMeters[`${dspNodeId}:frequency`]?.input } : {}),
         ...(innerNode.type === 'Buffer' ? { audioBuffer: audio.buffers[dspNodeId] } : {}),
@@ -2933,7 +2973,7 @@ function NodeEditorInner() {
         ...(audioSelectorIndex !== undefined ? { audioSelectorIndex } : {}),
         ...(audioAccumulatorValue !== undefined ? { audioAccumulatorValue } : {}),
         ...(audioImagePosition ? { audioImagePosition } : {}),
-        ...(monitorLinkId && node.data.patchNode.type === 'Sequencer' ? { audioSequencerStep: audio.linkMeters[monitorLinkId]?.output } : {}),
+        ...(monitorLinkId && (node.data.patchNode.type === 'Sequencer' || node.data.patchNode.type === 'Roll') ? { audioSequencerStep: audio.linkMeters[monitorLinkId]?.output } : {}),
         ...(audioPlayheads !== undefined ? { audioPlayheads } : {}),
         ...(node.data.patchNode.type === 'CustomWave' ? { audioCustomWaveFrequency: audio.linkMeters[`${dspNodeId}:frequency`]?.input } : {}),
         ...(audioBuffer !== undefined ? { audioBuffer } : {}),
@@ -8043,6 +8083,30 @@ function viewportContentBounds(nodes: ShaderFlowNode[]): { x: number; y: number;
   };
 }
 
+function resizedPatternScopeSize(patchNode: PatchNode, nextParams: Record<string, number>): ScopeNodeSize | undefined {
+  if (patchNode.type === 'Sequencer') {
+    const previous = sequencerShape(patchNode.params);
+    const next = sequencerShape(nextParams);
+    const labelWidth = patchNode.sequencerRowLabelColumnWidth ?? 0;
+    const current = clampSequencerNodeSize(patchNode.scopeSize ?? DEFAULT_SEQUENCER_NODE_SIZE, previous.steps, previous.rows, labelWidth);
+    const cellWidth = Math.max(SEQUENCER_MIN_CELL_SIZE, (current.width - labelWidth) / previous.steps);
+    return clampSequencerNodeSize({ width: labelWidth + next.steps * cellWidth, height: 0 }, next.steps, next.rows, labelWidth);
+  }
+  if (patchNode.type === 'Roll') {
+    const previous = rollShape(patchNode.params);
+    const next = rollShape(nextParams);
+    const current = clampSequencerNodeSize(
+      patchNode.scopeSize ?? { width: previous.steps * 26 + 32, height: previous.rows.length * 22 },
+      previous.steps,
+      previous.rows.length,
+      32,
+    );
+    const cellWidth = Math.max(SEQUENCER_MIN_CELL_SIZE, (current.width - 32) / previous.steps);
+    return clampSequencerNodeSize({ width: 32 + next.steps * cellWidth, height: 0 }, next.steps, next.rows.length, 32);
+  }
+  return undefined;
+}
+
 function viewportNodeSize(node: ShaderFlowNode): { width: number; height: number } {
   const measuredWidth = finitePositiveNumber(node.measured?.width ?? node.width ?? node.initialWidth);
   const measuredHeight = finitePositiveNumber(node.measured?.height ?? node.height ?? node.initialHeight);
@@ -8092,6 +8156,12 @@ function viewportNodeSize(node: ShaderFlowNode): { width: number; height: number
       width: size.width,
       height: NODE_HEADER_HEIGHT + size.height + 92,
     };
+  }
+
+  if (patchNode.type === 'Roll') {
+    const shape = rollShape(patchNode.params);
+    const size = clampSequencerNodeSize(patchNode.scopeSize ?? { width: shape.steps * 26 + 32, height: shape.rows.length * 22 }, shape.steps, shape.rows.length, 32);
+    return { width: size.width, height: NODE_HEADER_HEIGHT + size.height + 92 };
   }
 
   if (patchNode.type === 'Expression') {

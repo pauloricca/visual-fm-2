@@ -806,7 +806,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     if (!Array.isArray(bindings)) return [];
     return bindings.map((binding) => {
       const steps = this.clamp(Math.round(Number(binding?.steps) || 1), 1, 128);
-      const rows = this.clamp(Math.round(Number(binding?.rows) || 1), 1, 16);
+      const rows = this.clamp(Math.round(Number(binding?.rows) || 1), 1, 128);
       return {
         nodeId: String(binding?.nodeId || ""),
         mode: binding?.mode === "gate" ? "gate" : "trigger",
@@ -820,6 +820,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
               start: Number.isFinite(Number(event?.start)) ? Number(event.start) : slot,
               end: Number.isFinite(Number(event?.end)) ? Number(event.end) : slot,
               velocity: this.clamp(Number(event?.velocity) || 1, 0, 1),
+              note: Number.isFinite(Number(event?.note)) ? Number(event.note) : row,
             };
           })
         )),
@@ -848,6 +849,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
             event.start,
             event.end,
             event.velocity,
+            event.note,
           );
         }
       }

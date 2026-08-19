@@ -1,5 +1,9 @@
 # Agent Instructions
 
+## Node Port Naming
+
+- Use lowercase, human-readable English names for all node input and output labels. Separate words with spaces; do not use camelCase, PascalCase, snake_case, kebab-case, abbreviations, or programming-oriented naming conventions.
+
 ## Do Not Start or Functionally Test the App Without Permission
 
 - Never start, serve, preview, or otherwise run the application unless the user explicitly asks in the current conversation to run it or to test its functionality.

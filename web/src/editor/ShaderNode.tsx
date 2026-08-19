@@ -37,6 +37,12 @@ import {
   SEQUENCER_GATE_INITIALIZED_PARAM,
   SEQUENCER_GATE_MODE_PARAM,
   SEQUENCER_INDEX_OUTPUT,
+  ROLL_ROWS,
+  rollCellParamName,
+  rollGateParamName,
+  rollGateVelocityParamName,
+  rollGatesForRow,
+  rollShape,
   sequencerOutputName,
   sequencerShape,
   sequencerStepVelocityParamName,
@@ -44,7 +50,7 @@ import {
   SEQUENCER_MIN_VELOCITY,
 } from '../graph/nodeTypes';
 import type { CustomWavePoint, CustomWaveSettings, NodeDefinition, NodeType, PatchNode } from '../graph/types';
-import { midiNoteLabel, QUANTISE_SCALES } from '../graph/musicScales';
+import { midiNoteLabel, normalisePitchClass, PITCH_CLASSES, QUANTISE_SCALES } from '../graph/musicScales';
 import {
   MIN_RUNTIME_CONTAINER_WIDTH,
   MIN_SPAWN_WIDTH,
@@ -155,6 +161,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
   const showAccumulatorDisplay = node.type === 'Accumulator';
   const showQuantiseDisplay = node.type === 'Quantise';
   const showSequencerDisplay = node.type === 'Sequencer';
+  const showRollDisplay = node.type === 'Roll';
   const showTempoDisplay = node.type === 'Tempo';
   const showAudioOutputDisplay = node.type === 'AudioOut';
   const showAudioInputDisplay = node.type === 'AudioInput';
@@ -175,10 +182,10 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
   const sliderTitleSuffix = showSliderDisplay && pointerOver
     ? `: ${formatSliderReadoutValue(sliderAbsoluteValue)} (${formatUnitValue(sliderMappedUnitValue)})`
     : undefined;
-  const showTopGraphic = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showJoystickDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showBufferDisplay || showImageDisplay || Boolean(groupUiPreview);
+  const showTopGraphic = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showJoystickDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showBufferDisplay || showImageDisplay || showRollDisplay || Boolean(groupUiPreview);
   const imageX = centeredCoordinateToUnit(data.audioImagePosition?.x ?? node.params.x ?? 0);
   const imageY = centeredCoordinateToUnit(data.audioImagePosition?.y ?? node.params.y ?? 0);
-  const showResizableDisplay = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showJoystickDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showBufferDisplay || showImageDisplay || showSequencerDisplay || isRuntimeContainer;
+  const showResizableDisplay = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showJoystickDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showBufferDisplay || showImageDisplay || showSequencerDisplay || showRollDisplay || isRuntimeContainer;
   const usesAutoInitialWidth = node.scopeSize === undefined && (
     showMeterDisplay
     || showScopeDisplay
@@ -223,6 +230,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
     return () => window.removeEventListener('keydown', handleCustomWaveSelectKeyDown, { capture: true });
   }, [customWaveCount, selected, showCustomWaveEditor]);
   const sequencer = showSequencerDisplay ? sequencerShape(node.params) : null;
+  const roll = showRollDisplay ? rollShape(node.params) : null;
   const amplitudeRange = displayAmplitudeRange(node.params.range);
   const meterMode = monitorDisplayMode(node.params.mode, 'unipolar');
   const scopeMode = monitorDisplayMode(node.params.mode, 'bipolar');
@@ -256,10 +264,15 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
         sequencerLabelColumnWidth,
       )
     : DEFAULT_SCOPE_NODE_SIZE;
+  const rollDisplaySize = roll
+    ? clampSequencerNodeSize(node.scopeSize ?? { width: roll.steps * 26 + 32, height: roll.rows.length * 22 }, roll.steps, roll.rows.length, 32)
+    : DEFAULT_SCOPE_NODE_SIZE;
   const defaultDisplaySize = isRuntimeContainer
     ? runtimeContainerSize(node)
     : showSequencerDisplay
     ? sequencerDisplaySize
+    : showRollDisplay
+    ? rollDisplaySize
     : showCustomWaveEditor || showSampleUpload || showBufferDisplay || showImageDisplay ? waveformDisplaySize : scopeSize;
   const displaySize = usesAutoInitialWidth && autoDisplayWidth !== null
     ? { ...defaultDisplaySize, width: autoDisplayWidth }
@@ -267,6 +280,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
   const sequencerGridHeight = sequencer
     ? Math.max(1, (displaySize.width - sequencerLabelColumnWidth) * sequencer.rows / sequencer.steps)
     : 0;
+  const rollGridHeight = roll ? Math.max(1, (displaySize.width - 32) * roll.rows.length / roll.steps) : 0;
   const graphDetailSize = {
     width: displaySize.width * graphZoomScale,
     height: displaySize.height * graphZoomScale,
@@ -306,6 +320,10 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
           '--sequencer-rows': String(sequencer.rows),
           '--sequencer-label-column-width': `${sequencerLabelColumnWidth}px`,
           '--sequencer-grid-height': `${sequencerGridHeight}px`,
+        } : {}),
+        ...(roll ? {
+          '--roll-steps': String(roll.steps),
+          '--roll-grid-height': `${rollGridHeight}px`,
         } : {}),
       } as CSSProperties)
     : undefined;
@@ -370,6 +388,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
     showAccumulatorDisplay ? 'shader-node-accumulator' : '',
     showQuantiseDisplay ? 'shader-node-quantise' : '',
     showSequencerDisplay ? 'shader-node-sequencer' : '',
+    showRollDisplay ? 'shader-node-roll' : '',
     showAudioOutputDisplay ? 'shader-node-audio-out' : '',
     showSampleUpload ? 'shader-node-sampleplayer' : '',
     showBufferDisplay ? 'shader-node-buffer' : '',
@@ -560,6 +579,8 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
       const rawNextSize = { width: constrainedWidth, height: resize.startSize.height + deltaY };
       const nextSize = showSequencerDisplay && sequencer
         ? clampSequencerNodeSize({ width: constrainedWidth, height: constrainedWidth * sequencer.rows / sequencer.steps }, sequencer.steps, sequencer.rows, sequencerLabelColumnWidth)
+        : showRollDisplay && roll
+        ? clampSequencerNodeSize({ width: constrainedWidth, height: constrainedWidth * roll.rows.length / roll.steps }, roll.steps, roll.rows.length, 32)
         : showImageDisplay
         ? clampImageNodeSize({ width: rawWidth, height: rawWidth / imageAspectRatio }, imageAspectRatio)
         : showCustomWaveEditor || showSampleUpload || showBufferDisplay
@@ -598,7 +619,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('pointercancel', handlePointerCancel);
     };
-  }, [data, imageAspectRatio, node.id, reactFlow, sequencer, sequencerLabelColumnWidth, showBufferDisplay, showCustomWaveEditor, showSampleUpload, showImageDisplay, showSequencerDisplay, showSliderDisplay, showJoystickDisplay, showButtonDisplay, showKeysDisplay]);
+  }, [data, imageAspectRatio, node.id, reactFlow, roll, sequencer, sequencerLabelColumnWidth, showBufferDisplay, showCustomWaveEditor, showSampleUpload, showImageDisplay, showRollDisplay, showSequencerDisplay, showSliderDisplay, showJoystickDisplay, showButtonDisplay, showKeysDisplay]);
 
   useEffect(() => {
     setImageAspectRatio(DEFAULT_IMAGE_ASPECT_RATIO);
@@ -1161,6 +1182,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
             || showMidiNoteDisplay
             || showTempoDisplay
             || showSequencerDisplay
+            || showRollDisplay
             || showCustomWaveEditor
             || showSliderDisplay
             || showJoystickDisplay
@@ -1183,6 +1205,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
           isExpression ? 'shader-node-body-expression' : '',
           showAccumulatorDisplay ? 'shader-node-body-accumulator' : '',
           showSequencerDisplay ? 'shader-node-body-sequencer' : '',
+          showRollDisplay ? 'shader-node-body-roll' : '',
           showAudioOutputDisplay ? 'shader-node-body-audio-out' : '',
           showAudioInputDisplay ? 'shader-node-body-audio-input' : '',
           showMidiNoteDisplay ? 'shader-node-body-midi-note' : '',
@@ -1481,6 +1504,18 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
               }}
               onParamsChange={(values) => data.onParamsChange(node.id, values)}
               onRowLabelsChange={(labels) => data.onSequencerRowLabelsChange?.(node.id, labels)}
+            />
+          ) : null}
+          {showRollDisplay && roll ? (
+            <RollGrid
+              params={node.params}
+              steps={roll.steps}
+              beatLength={roll.beatLength}
+              stepLength={roll.stepLength}
+              rows={roll.rows}
+              startNote={roll.middleNote}
+              currentStep={data.audioSequencerStep}
+              onParamsChange={(values) => data.onParamsChange(node.id, values)}
             />
           ) : null}
           {showAudioOutputDisplay ? (
@@ -1894,7 +1929,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
                     <option value="1">continuous</option>
                   </select>
                 </>
-              ) : showQuantiseDisplay && input.name === 'scale' && !input.preview ? (
+              ) : (showQuantiseDisplay || showRollDisplay) && input.name === 'scale' && !input.preview ? (
                 <>
                   <PortNameLabel
                     name={input.name}
@@ -1908,7 +1943,7 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
                   />
                   <select
                     className="shader-port-select nodrag nopan"
-                    aria-label="Quantise scale"
+                    aria-label={`${node.type} scale`}
                     value={String(clamp(Math.round(node.params.scale ?? input.defaultValue ?? 0), 0, QUANTISE_SCALES.length - 1))}
                     onChange={(event) => {
                       data.onParamChange(node.id, input.name, Number(event.currentTarget.value));
@@ -1937,8 +1972,8 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
                   />
                   <select
                     className="shader-port-select nodrag nopan"
-                    aria-label="Quantise root note"
-                    value={String(clamp(Math.round(node.params.root ?? input.defaultValue ?? 60), 0, 127))}
+                    aria-label={`${node.type} root`}
+                    value={String(normalisePitchClass(node.params.root ?? input.defaultValue ?? 0))}
                     onChange={(event) => {
                       data.onParamChange(node.id, input.name, Number(event.currentTarget.value));
                       event.currentTarget.blur();
@@ -1947,11 +1982,19 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
                     onClick={(event) => event.stopPropagation()}
                     onDoubleClick={(event) => event.stopPropagation()}
                   >
-                    {Array.from({ length: 128 }, (_, note) => (
-                      <option key={note} value={note}>{midiNoteLabel(note)}</option>
+                    {PITCH_CLASSES.map((pitchClass, note) => (
+                      <option key={pitchClass} value={note}>{pitchClass}</option>
                     ))}
                   </select>
                 </>
+              ) : showRollDisplay && input.name === 'middle note' && !input.preview ? (
+                <NoteRangeSelect
+                  label={input.name}
+                  value={node.params[input.name] ?? input.defaultValue ?? 60}
+                  min={0}
+                  max={127}
+                  onChange={(value) => data.onParamChange(node.id, input.name, value)}
+                />
               ) : (
                 <PortNameLabel
                   name={input.name}
@@ -3287,6 +3330,260 @@ function midiNoteToFrequency(note: number): number {
 function sequencerRowLabelColumnWidth(labels?: string[]): number {
   const longestLabel = Math.max(3, ...(labels?.map((label) => label.length) ?? [0]));
   return 20 + longestLabel * 8;
+}
+
+/**
+ * The piano-roll adapter for the shared gate-pattern interaction. Keeping this
+ * input shape aligned with SequencerGrid makes the remaining visual adapter
+ * (pitch labels and MIDI outputs) explicit rather than duplicating pattern
+ * state in a second node implementation.
+ */
+interface RollGridProps {
+  params: Record<string, number>;
+  steps: number;
+  beatLength: number;
+  stepLength: number;
+  rows: Array<{ index: number; note: number }>;
+  /** Retained for the unused legacy renderer while Roll migrates to PatternGrid. */
+  startNote: number;
+  currentStep?: number;
+  onParamsChange: (values: Record<string, number>) => void;
+}
+
+function RollGrid({ params, steps, beatLength, stepLength, rows, currentStep, onParamsChange }: RollGridProps) {
+  const storageRow = (displayRow: number) => rows.length - displayRow - 1;
+  return (
+    <PatternGrid
+      ariaLabel="Piano roll"
+      className="roll-node-panel pattern-grid-roll"
+      rows={rows.length}
+      steps={steps}
+      beatLength={beatLength}
+      currentStep={currentStep}
+      defaultGateLength={stepLength}
+      rowLabel={(displayRow) => midiNoteLabel(rows[storageRow(displayRow)].note)}
+      gatesForRow={(displayRow) => rollGatesForRow(params, rows[storageRow(displayRow)].index, steps)}
+      onCreateGate={(displayRow, start, end) => {
+        const row = rows[storageRow(displayRow)].index;
+        const gates = rollGatesForRow(params, row, steps);
+        const slot = Array.from({ length: steps }, (_, index) => index).find((index) => !gates.some((gate) => gate.slot === index));
+        if (slot === undefined) return;
+        const values: Record<string, number> = {
+          [rollGateParamName(row, slot, 'active')]: 1,
+          [rollGateParamName(row, slot, 'start')]: start,
+          [rollGateParamName(row, slot, 'end')]: end,
+          [rollGateVelocityParamName(row, slot)]: 1,
+          [rollCellParamName(row, slot)]: 0,
+        };
+        // Editing a row never clears notes in the other rows.
+        onParamsChange(values);
+      }}
+      onUpdateGate={(displayRow, slot, update) => {
+        const row = rows[storageRow(displayRow)].index;
+        const values: Record<string, number> = {};
+        if (update.start !== undefined) values[rollGateParamName(row, slot, 'start')] = update.start;
+        if (update.end !== undefined) values[rollGateParamName(row, slot, 'end')] = update.end;
+        if (update.velocity !== undefined) values[rollGateVelocityParamName(row, slot)] = update.velocity;
+        onParamsChange(values);
+      }}
+      onDeleteGate={(displayRow, slot) => onParamsChange({ [rollGateParamName(rows[storageRow(displayRow)].index, slot, 'active')]: 0 })}
+    />
+  );
+}
+
+function LegacyRollGrid({ params, steps, beatLength, stepLength, startNote, currentStep, onParamsChange }: RollGridProps) {
+  const polyphonic = true;
+  const activeStep = Number.isFinite(currentStep) ? Math.floor(currentStep ?? -1) : -1;
+  const dragRef = useRef<{ pointerId: number; row: number; slot: number; start: number; end: number; x: number; y: number; velocity: number; action: 'move' | 'left' | 'right' | 'velocity' } | null>(null);
+  const beginDrag = (event: PointerEvent<HTMLElement>, row: number, slot: number, start: number, end: number, velocity: number, action: 'move' | 'left' | 'right' | 'velocity') => {
+    event.preventDefault(); event.stopPropagation();
+    dragRef.current = { pointerId: event.pointerId, row, slot, start, end, x: event.clientX, y: event.clientY, velocity, action };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const moveDrag = (event: PointerEvent<HTMLElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const width = event.currentTarget.closest('.roll-cells')?.getBoundingClientRect().width ?? steps * 26;
+    const delta = ((event.clientX - drag.x) / Math.max(1, width)) * steps;
+    const height = event.currentTarget.closest('.roll-cells')?.getBoundingClientRect().height ?? 26;
+    if (drag.action === 'velocity') {
+      onParamsChange({ [rollGateVelocityParamName(drag.row, drag.slot)]: Math.max(SEQUENCER_MIN_VELOCITY, Math.min(1, drag.velocity - (event.clientY - drag.y) / Math.max(1, height))) });
+      return;
+    }
+    const length = drag.end - drag.start;
+    let start = drag.start;
+    let end = drag.end;
+    if (drag.action === 'move') { start = Math.max(0, Math.min(steps - length, start + delta)); end = start + length; }
+    else if (drag.action === 'left') start = Math.max(0, Math.min(end - 0.05, start + delta));
+    else end = Math.max(start + 0.05, Math.min(steps, end + delta));
+    onParamsChange({ [rollGateParamName(drag.row, drag.slot, 'start')]: start, [rollGateParamName(drag.row, drag.slot, 'end')]: end });
+  };
+  const endDrag = (event: PointerEvent<HTMLElement>) => {
+    if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null;
+  };
+  return (
+    <div className="roll-node-panel nodrag nopan" style={{ '--roll-steps': steps } as CSSProperties} aria-label="Piano roll">
+      {Array.from({ length: ROLL_ROWS }, (_, displayRow) => {
+        const row = ROLL_ROWS - displayRow - 1;
+        const note = startNote + row;
+        const gates = rollGatesForRow(params, row, steps);
+        return (
+          <div className="roll-row" key={note}>
+            <div className={['roll-note-label', isBlackKey(note) ? 'roll-note-label-black' : ''].filter(Boolean).join(' ')}>{midiNoteLabel(note)}</div>
+            <div className="roll-cells" role="row">
+              {Array.from({ length: steps }, (_, step) => {
+                const highlightedBeat = Math.floor(step / beatLength) % 2 === 1;
+                return (
+                  <button
+                    type="button"
+                    key={step}
+                    className={['roll-cell', highlightedBeat ? 'roll-cell-beat-highlight' : '', activeStep === step ? 'roll-cell-current' : '', isBlackKey(note) ? 'roll-cell-black-key' : ''].filter(Boolean).join(' ')}
+                    aria-label={`${midiNoteLabel(note)}, step ${step + 1}`}
+                    aria-pressed={false}
+                    onPointerDown={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      const slot = Array.from({ length: steps }, (_, index) => index).find((index) => !gates.some((gate) => gate.slot === index));
+                      if (slot === undefined) return;
+                      const values: Record<string, number> = {
+                        [rollGateParamName(row, slot, 'active')]: 1,
+                        [rollGateParamName(row, slot, 'start')]: step,
+                        [rollGateParamName(row, slot, 'end')]: Math.min(steps, step + stepLength),
+                        [rollGateVelocityParamName(row, slot)]: 1,
+                        [rollCellParamName(row, slot)]: 0,
+                      };
+                      if (!polyphonic) for (let otherRow = 0; otherRow < ROLL_ROWS; otherRow += 1) for (const otherGate of rollGatesForRow(params, otherRow, steps)) values[rollGateParamName(otherRow, otherGate.slot, 'active')] = 0;
+                      onParamsChange(values);
+                    }}
+                  />
+                );
+              })}
+              {gates.map((gate) => (
+                <div key={gate.slot} className="roll-gate" style={{ top: `${(1 - gate.velocity) * 100}%`, left: `${gate.start / steps * 100}%`, width: `${(gate.end - gate.start) / steps * 100}%` }} onPointerDown={(event) => beginDrag(event, row, gate.slot, gate.start, gate.end, gate.velocity, 'move')} onPointerMove={moveDrag} onPointerUp={endDrag}>
+                  <span className="roll-velocity-handle" onPointerDown={(event) => beginDrag(event, row, gate.slot, gate.start, gate.end, gate.velocity, 'velocity')} />
+                  <span className="roll-gate-handle roll-gate-handle-left" onPointerDown={(event) => beginDrag(event, row, gate.slot, gate.start, gate.end, gate.velocity, 'left')} />
+                  <span className="roll-gate-handle roll-gate-handle-right" onPointerDown={(event) => beginDrag(event, row, gate.slot, gate.start, gate.end, gate.velocity, 'right')} />
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function isBlackKey(note: number): boolean {
+  return [1, 3, 6, 8, 10].includes(((note % 12) + 12) % 12);
+}
+
+/**
+ * Shared visual shell for any step-based gate editor. It deliberately owns no
+ * node storage: callers provide rows, labels, gates, and pointer actions.
+ * Sequencer Gate mode and Roll will migrate here in the following steps.
+ */
+interface PatternGridGate {
+  slot: number;
+  start: number;
+  end: number;
+  velocity: number;
+}
+
+interface PatternGridProps {
+  ariaLabel: string;
+  className: string;
+  rows: number;
+  steps: number;
+  beatLength: number;
+  currentStep?: number;
+  rowLabel: (row: number) => string;
+  gatesForRow: (row: number) => PatternGridGate[];
+  defaultGateLength?: number;
+  allowMove?: boolean;
+  allowResize?: boolean;
+  allowVelocity?: boolean;
+  onCreateGate: (row: number, start: number, end: number) => void;
+  onUpdateGate: (row: number, slot: number, update: Partial<Pick<PatternGridGate, 'start' | 'end' | 'velocity'>>) => void;
+  onDeleteGate: (row: number, slot: number) => void;
+}
+
+function PatternGrid({
+  ariaLabel,
+  className,
+  rows,
+  steps,
+  beatLength,
+  currentStep,
+  rowLabel,
+  gatesForRow,
+  defaultGateLength = 1,
+  allowMove = true,
+  allowResize = true,
+  allowVelocity = true,
+  onCreateGate,
+  onUpdateGate,
+  onDeleteGate,
+}: PatternGridProps) {
+  const activeStep = Number.isFinite(currentStep) ? Math.floor(currentStep ?? -1) : -1;
+  const dragRef = useRef<{ pointerId: number; row: number; gate: PatternGridGate; x: number; y: number; action: 'move' | 'left' | 'right' | 'velocity'; moved: boolean } | null>(null);
+  const beginDrag = (event: PointerEvent<HTMLElement>, row: number, gate: PatternGridGate, action: 'move' | 'left' | 'right' | 'velocity') => {
+    event.preventDefault(); event.stopPropagation();
+    dragRef.current = { pointerId: event.pointerId, row, gate, x: event.clientX, y: event.clientY, action, moved: false };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const moveDrag = (event: PointerEvent<HTMLElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const bounds = event.currentTarget.closest('.pattern-grid-cells')?.getBoundingClientRect();
+    const delta = ((event.clientX - drag.x) / Math.max(1, bounds?.width ?? steps * 26)) * steps;
+    const velocityDelta = (event.clientY - drag.y) / Math.max(1, bounds?.height ?? 26);
+    drag.moved ||= Math.hypot(event.clientX - drag.x, event.clientY - drag.y) >= 3;
+    if (!drag.moved) return;
+    if (drag.action === 'velocity') return onUpdateGate(drag.row, drag.gate.slot, { velocity: Math.max(SEQUENCER_MIN_VELOCITY, Math.min(1, drag.gate.velocity - velocityDelta)) });
+    const length = drag.gate.end - drag.gate.start;
+    if (drag.action === 'move') return onUpdateGate(drag.row, drag.gate.slot, { start: Math.max(0, Math.min(steps - length, drag.gate.start + delta)), end: Math.max(0, Math.min(steps - length, drag.gate.start + delta)) + length });
+    if (drag.action === 'left') return onUpdateGate(drag.row, drag.gate.slot, { start: Math.max(0, Math.min(drag.gate.end - 0.05, drag.gate.start + delta)) });
+    onUpdateGate(drag.row, drag.gate.slot, { end: Math.max(drag.gate.start + 0.05, Math.min(steps, drag.gate.end + delta)) });
+  };
+  const endDrag = (event: PointerEvent<HTMLElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag.moved && drag.action === 'move') onDeleteGate(drag.row, drag.gate.slot);
+    dragRef.current = null;
+  };
+  return (
+    <div className={`pattern-grid ${className} nodrag nopan`} style={{ '--pattern-grid-steps': steps } as CSSProperties} aria-label={ariaLabel}>
+      {Array.from({ length: rows }, (_, row) => (
+        <div className="pattern-grid-row" key={row}>
+          <div className="pattern-grid-label">{rowLabel(row)}</div>
+          <div className="pattern-grid-cells" role="row">
+            {Array.from({ length: steps }, (_, step) => (
+              <button
+                className={['pattern-grid-cell', Math.floor(step / beatLength) % 2 === 1 ? 'pattern-grid-cell-beat-highlight' : '', activeStep === step ? 'pattern-grid-cell-current' : ''].filter(Boolean).join(' ')}
+                key={step}
+                type="button"
+                aria-label={`${rowLabel(row)}, step ${step + 1}`}
+                onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); onCreateGate(row, step, Math.min(steps, step + defaultGateLength)); }}
+              />
+            ))}
+            {gatesForRow(row).map((gate) => (
+              <div
+                className="pattern-grid-gate"
+                key={gate.slot}
+                style={{ top: `${(1 - gate.velocity) * 100}%`, left: `${gate.start / steps * 100}%`, width: `${(gate.end - gate.start) / steps * 100}%` }}
+                onPointerDown={(event) => allowMove && beginDrag(event, row, gate, 'move')}
+                onPointerMove={moveDrag}
+                onPointerUp={endDrag}
+              >
+                {allowVelocity ? <span className="pattern-grid-velocity-handle" onPointerDown={(event) => beginDrag(event, row, gate, 'velocity')} /> : null}
+                {allowResize ? <><span className="pattern-grid-gate-handle pattern-grid-gate-handle-left" onPointerDown={(event) => beginDrag(event, row, gate, 'left')} /><span className="pattern-grid-gate-handle pattern-grid-gate-handle-right" onPointerDown={(event) => beginDrag(event, row, gate, 'right')} /></> : null}
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 interface SequencerGridProps {
@@ -4889,6 +5186,45 @@ interface NumericScrubberProps {
   midiLearnEvent?: MidiCcLearnEvent;
   onEditStart?: () => void;
   onMidiLearn?: (event: MidiCcLearnEvent) => void;
+}
+
+function NoteRangeSelect({
+  label,
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (value: number) => void;
+}) {
+  const lower = clamp(Math.round(min), 0, 127);
+  const upper = clamp(Math.round(max), lower, 127);
+  const selected = clamp(Math.round(value), lower, upper);
+  return (
+    <>
+      <PortNameLabel name={label} editable={false} draggable={false} preview={false} selected={false} activeDragTarget={false} activeDragSource={false} onChange={() => undefined} />
+      <select
+        className="shader-port-select nodrag nopan"
+        aria-label={`Roll ${label}`}
+        value={String(selected)}
+        onChange={(event) => {
+          onChange(Number(event.currentTarget.value));
+          event.currentTarget.blur();
+        }}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+        onDoubleClick={(event) => event.stopPropagation()}
+      >
+        {Array.from({ length: upper - lower + 1 }, (_, offset) => lower + offset).map((note) => (
+          <option key={note} value={note}>{midiNoteLabel(note)}</option>
+        ))}
+      </select>
+    </>
+  );
 }
 
 function NumericScrubber({

@@ -150,6 +150,7 @@ const DSP_OP_END_TRIGGER: i32 = 48;
 const DSP_OP_RANDOM: i32 = 49;
 const DSP_OP_SPAWN_INSTANCE_GATE: i32 = 50;
 const DSP_OP_DC_BLOCK: i32 = 51;
+const DSP_OP_ROLL_NOTE_EVENT: i32 = 52;
 const MIN_ENVELOPE_ATTACK_SECONDS: f64 = 0.001;
 const MAX_DSP_TEMPO_SOURCES: usize = 129;
 const TEMPO_OUTPUT_COUNT: i32 = 10;
@@ -158,7 +159,7 @@ const DSP_RENDER_FRAME_UNSET: u32 = u32::MAX;
 const SEQUENCER_MIN_STEPS: i32 = 1;
 const SEQUENCER_MAX_STEPS: i32 = 128;
 const SEQUENCER_MIN_ROWS: i32 = 1;
-const SEQUENCER_MAX_ROWS: i32 = 16;
+const SEQUENCER_MAX_ROWS: i32 = 128;
 const MAX_SAMPLE_TRIGGER_EVENTS: usize = 512;
 const SAMPLE_TRIGGER_EVENT_FIELDS: usize = 8;
 
@@ -312,17 +313,19 @@ const EMPTY_DSP_MIDI_NOTE_EVENT: DspMidiNoteEvent = DspMidiNoteEvent {
 
 #[derive(Copy, Clone)]
 struct DspSequencerEvent {
-    active: bool,
-    start: f64,
-    end: f64,
-    velocity: f64,
+  active: bool,
+  start: f64,
+  end: f64,
+  velocity: f64,
+  note: f64,
 }
 
 const EMPTY_DSP_SEQUENCER_EVENT: DspSequencerEvent = DspSequencerEvent {
     active: false,
     start: 0.0,
-    end: 0.0,
-    velocity: 1.0,
+  end: 0.0,
+  velocity: 1.0,
+  note: 0.0,
 };
 
 struct DspSequencerConfig {
@@ -1658,6 +1661,7 @@ pub extern "C" fn setDspSequencerEvent(
     start: f64,
     end: f64,
     velocity: f64,
+    note: f64,
 ) {
     let binding = binding as usize;
     if binding >= MAX_DSP_SPREADS {
@@ -1685,6 +1689,7 @@ pub extern "C" fn setDspSequencerEvent(
             } else {
                 1.0
             },
+            note: if note.is_finite() { note.round() } else { row as f64 },
         };
     }
 }
@@ -8861,6 +8866,130 @@ fn render_dsp_sequencer(op: DspOp, frame: usize) -> f64 {
     }
 }
 
+// State layout: previous position, previous pulse count, initialized flag,
+// zero-separator flag, queue length, then one queued note and velocity per
+// Roll row. Note-off streams additionally store the originally triggered note
+// for every relative row, preserving Spawn release tags through retuning edits.
+// The zero separator makes every queued note a fresh Spawn trigger, even when
+// several notes begin or end at precisely the same roll position.
+fn render_dsp_roll_note_event(op: DspOp) -> f64 {
+    unsafe {
+        const NOTE_QUEUE_START: usize = 5;
+        const VELOCITY_QUEUE_START: usize = NOTE_QUEUE_START + SEQUENCER_MAX_ROWS as usize;
+        const ACTIVE_NOTE_START: usize = VELOCITY_QUEUE_START + SEQUENCER_MAX_ROWS as usize;
+        let is_note_off = op.value2 >= 0.5;
+        let state_count = if is_note_off {
+            ACTIVE_NOTE_START + SEQUENCER_MAX_ROWS as usize
+        } else {
+            VELOCITY_QUEUE_START + SEQUENCER_MAX_ROWS as usize
+        };
+        if op.state < 0 || (op.state as usize + state_count) > MAX_DSP_STATE {
+            return 0.0;
+        }
+        if op.a < 0 || (op.a as usize + 7) >= MAX_DSP_STATE {
+            return 0.0;
+        }
+
+        let source_state = op.a as usize;
+        if *dsp_state_ptr(source_state + 4) < 1.0 {
+            return 0.0;
+        }
+        let binding_index = op.value.round().max(0.0) as usize;
+        let Some(config) = (*core::ptr::addr_of!(DSP_SEQUENCER_CONFIGS))
+            .get(binding_index)
+            .and_then(|config| config.as_ref())
+        else {
+            return 0.0;
+        };
+
+        let interval_frames = *dsp_state_ptr(source_state + 7);
+        let fractional_step = if interval_frames >= 1.0 {
+            (*dsp_state_ptr(source_state + 6) / interval_frames).clamp(0.0, 0.999_999)
+        } else {
+            0.0
+        };
+        let position = (*dsp_state_ptr(source_state)).round().max(0.0) + fractional_step;
+        let pulse_count = (*dsp_state_ptr(source_state + 4)).round().max(0.0);
+        let state = op.state as usize;
+        let initialized = *dsp_state_ptr(state + 2) >= 0.5;
+        let previous_position = if initialized {
+            *dsp_state_ptr(state)
+        } else {
+            -0.000_001
+        };
+        let previous_pulse_count = *dsp_state_ptr(state + 1);
+        let wrapped = initialized
+            && pulse_count > previous_pulse_count
+            && position < previous_position;
+        let crossed = |boundary: f64| {
+            if wrapped {
+                (boundary > previous_position && boundary <= config.steps as f64)
+                    || boundary <= position
+            } else {
+                previous_position < boundary && boundary <= position
+            }
+        };
+        let queue_event = |note: f64, velocity: f64| {
+            let count = (*dsp_state_ptr(state + 4)).round().clamp(0.0, SEQUENCER_MAX_ROWS as f64) as usize;
+            if count < SEQUENCER_MAX_ROWS as usize {
+                *dsp_state_ptr(state + NOTE_QUEUE_START + count) = note;
+                *dsp_state_ptr(state + VELOCITY_QUEUE_START + count) = velocity;
+                *dsp_state_ptr(state + 4) = (count + 1) as f64;
+            }
+        };
+
+        for row in 0..config.rows.min(SEQUENCER_MAX_ROWS as usize) {
+            let row_start = row * config.steps;
+            let row_events = &config.events[row_start..row_start + config.steps];
+            if is_note_off {
+                // Release before replacing the retained row note: an old gate
+                // ending as a new one begins must release the old Spawn voice.
+                for event in row_events.iter().filter(|event| event.active && crossed(event.end)) {
+                    let captured_note = *dsp_state_ptr(state + ACTIVE_NOTE_START + row);
+                    // MIDI note 0 cannot tag a Spawn instance (zero is the
+                    // event separator), so zero safely denotes an uncaptured
+                    // row after a fresh compile.
+                    queue_event(if captured_note > 0.0 { captured_note } else { event.note }, event.velocity);
+                    *dsp_state_ptr(state + ACTIVE_NOTE_START + row) = f64::NAN;
+                }
+                for event in row_events.iter().filter(|event| event.active && crossed(event.start)) {
+                    *dsp_state_ptr(state + ACTIVE_NOTE_START + row) = event.note;
+                }
+            } else {
+                for event in row_events.iter().filter(|event| event.active && crossed(event.start)) {
+                    queue_event(event.note, event.velocity);
+                }
+            }
+        }
+
+        *dsp_state_ptr(state) = position;
+        *dsp_state_ptr(state + 1) = pulse_count;
+        *dsp_state_ptr(state + 2) = 1.0;
+
+        if *dsp_state_ptr(state + 3) >= 0.5 {
+            *dsp_state_ptr(state + 3) = 0.0;
+            return 0.0;
+        }
+        let count = (*dsp_state_ptr(state + 4)).round().clamp(0.0, SEQUENCER_MAX_ROWS as f64) as usize;
+        if count == 0 {
+            return 0.0;
+        }
+        let note = *dsp_state_ptr(state + NOTE_QUEUE_START);
+        let velocity = *dsp_state_ptr(state + VELOCITY_QUEUE_START);
+        for index in 1..count {
+            *dsp_state_ptr(state + NOTE_QUEUE_START + index - 1) = *dsp_state_ptr(state + NOTE_QUEUE_START + index);
+            *dsp_state_ptr(state + VELOCITY_QUEUE_START + index - 1) = *dsp_state_ptr(state + VELOCITY_QUEUE_START + index);
+        }
+        *dsp_state_ptr(state + 4) = (count - 1) as f64;
+        *dsp_state_ptr(state + 3) = 1.0;
+        match op.value3.round() as i32 {
+            1 => 440.0 * 2.0_f64.powf((note - 69.0) / 12.0),
+            2 => velocity,
+            _ => note,
+        }
+    }
+}
+
 fn render_dsp_button(op: DspOp) -> f64 {
     unsafe {
         if op.state < 0 || (op.state as usize + 2) >= MAX_DSP_STATE {
@@ -9396,6 +9525,7 @@ fn render_dsp_op(
         DSP_OP_ACCUMULATOR => set_dsp_reg(op.out, render_dsp_accumulator(op)),
         DSP_OP_RANDOM => set_dsp_reg(op.out, render_dsp_random(op)),
         DSP_OP_SEQUENCER => set_dsp_reg(op.out, render_dsp_sequencer(op, frame)),
+        DSP_OP_ROLL_NOTE_EVENT => set_dsp_reg(op.out, render_dsp_roll_note_event(op)),
         DSP_OP_BUTTON => set_dsp_reg(op.out, render_dsp_button(op)),
         DSP_OP_END_TRIGGER => set_dsp_reg(op.out, render_dsp_end_trigger(op)),
         DSP_OP_SLEW => set_dsp_reg(op.out, render_dsp_slew(op, sample_rate)),
@@ -9483,10 +9613,12 @@ fn quantise_midi_note(note: f64, scale_value: f64, root_value: f64) -> f64 {
         15 => DIMINISHED_HALF_WHOLE,
         _ => CHROMATIC,
     };
+    // Root is a pitch class, not an octave-specific MIDI note. Remapping old
+    // saved MIDI-note roots through modulo 12 preserves their musical key.
     let root = if root_value.is_finite() {
-        root_value.round()
+        root_value.round().rem_euclid(12.0)
     } else {
-        60.0
+        0.0
     };
     let relative = note - root;
     let centre_octave = (relative / 12.0).floor() as i32;

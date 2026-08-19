@@ -1,4 +1,5 @@
 import type { NodeDefinition, NodeType, PatchNode, PortDefinition } from './types';
+import { QUANTISE_SCALES } from './musicScales';
 
 export const SEQUENCER_MIN_STEPS = 1;
 export const SEQUENCER_MAX_STEPS = 128;
@@ -9,6 +10,9 @@ export const SEQUENCER_DEFAULT_ROWS = 4;
 export const SEQUENCER_MIN_BEAT_LENGTH = 1;
 export const SEQUENCER_DEFAULT_BEAT_LENGTH = 4;
 export const SEQUENCER_INDEX_OUTPUT = 'trigger index';
+export const ROLL_ROWS = 12;
+export const ROLL_MAX_ROWS = 128;
+export const ROLL_DEFAULT_START_NOTE = 60;
 
 export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   Expression: {
@@ -263,14 +267,37 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   Sequencer: {
     type: 'Sequencer',
     inputs: [
-      { name: 'steps', defaultValue: SEQUENCER_DEFAULT_STEPS, min: SEQUENCER_MIN_STEPS, max: SEQUENCER_MAX_STEPS, integer: true },
-      { name: 'rows', defaultValue: SEQUENCER_DEFAULT_ROWS, min: SEQUENCER_MIN_ROWS, max: SEQUENCER_MAX_ROWS, integer: true },
-      { name: 'beatLength', defaultValue: SEQUENCER_DEFAULT_BEAT_LENGTH, min: SEQUENCER_MIN_BEAT_LENGTH, max: SEQUENCER_MAX_STEPS, integer: true, connectable: false },
-      { name: 'mode', defaultValue: 0, min: 0, max: 1, integer: true, connectable: false, valueEditor: false },
+      { name: 'steps', defaultValue: SEQUENCER_DEFAULT_STEPS, min: SEQUENCER_MIN_STEPS, max: SEQUENCER_MAX_STEPS, integer: true, connectable: false },
+      { name: 'rows', defaultValue: SEQUENCER_DEFAULT_ROWS, min: SEQUENCER_MIN_ROWS, max: SEQUENCER_MAX_ROWS, integer: true, connectable: false },
+      { name: 'beat length', defaultValue: SEQUENCER_DEFAULT_BEAT_LENGTH, min: SEQUENCER_MIN_BEAT_LENGTH, max: SEQUENCER_MAX_STEPS, integer: true, connectable: false },
       { name: 'signal', defaultValue: 0, valueEditor: false },
       { name: 'reset', defaultValue: 0, valueEditor: false },
     ],
     outputs: sequencerOutputDefinitions(SEQUENCER_DEFAULT_ROWS),
+  },
+  Roll: {
+    type: 'Roll',
+    inputs: [
+      { name: 'steps', defaultValue: SEQUENCER_DEFAULT_STEPS, min: SEQUENCER_MIN_STEPS, max: SEQUENCER_MAX_STEPS, integer: true, connectable: false },
+      { name: 'beat length', defaultValue: SEQUENCER_DEFAULT_BEAT_LENGTH, min: SEQUENCER_MIN_BEAT_LENGTH, max: SEQUENCER_MAX_STEPS, integer: true, connectable: false },
+      { name: 'step length', defaultValue: 1, min: 0.05, max: SEQUENCER_MAX_STEPS, step: 0.05, connectable: false },
+      { name: 'scale', defaultValue: 0, min: 0, max: QUANTISE_SCALES.length - 1, integer: true, connectable: false, valueEditor: false },
+      { name: 'middle note', defaultValue: ROLL_DEFAULT_START_NOTE, min: 0, max: 127, integer: true, connectable: false, valueEditor: false },
+      { name: 'range down', defaultValue: 5, min: 0, max: 63, integer: true, connectable: false },
+      { name: 'range up', defaultValue: 6, min: 0, max: 63, integer: true, connectable: false },
+      { name: 'mode', defaultValue: 0, min: 0, max: 1, integer: true, connectable: false, valueEditor: false },
+      { name: 'signal', defaultValue: 0, valueEditor: false },
+      { name: 'reset', defaultValue: 0, valueEditor: false },
+    ],
+    outputs: [
+      { name: 'note' },
+      { name: 'frequency' },
+      { name: 'velocity' },
+      { name: 'gate' },
+      { name: 'trigger' },
+      { name: 'note on' },
+      { name: 'note off' },
+    ],
   },
   Tempo: {
     type: 'Tempo',
@@ -365,7 +392,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     inputs: [
       { name: 'signal', valueEditor: false },
       { name: 'scale', defaultValue: 0, min: 0, max: 15, integer: true, connectable: false, valueEditor: false },
-      { name: 'root', defaultValue: 60, min: 0, max: 127, integer: true, connectable: false, valueEditor: false },
+      { name: 'root', defaultValue: 0, min: 0, max: 11, integer: true, connectable: false, valueEditor: false },
     ],
     outputs: [{ name: 'signal' }],
   },
@@ -548,6 +575,7 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   Button: 'Button',
   Keys: 'Keys',
   Sequencer: 'Sequencer',
+  Roll: 'Roll',
   Tempo: 'Tempo',
   MidiNote: 'MIDI Note',
   MidiNoteOn: 'MIDI Note On',
@@ -687,6 +715,13 @@ export function getNodeDefinition(node: PatchNode): NodeDefinition {
     };
   }
 
+  if (node.type === 'Roll') {
+    // Roll's controls are a fixed UI contract. Ignore persisted legacy input
+    // definitions so removed controls (such as the old mode selector) do not
+    // reappear when loading an existing patch.
+    return getDefinition(node.type);
+  }
+
   return {
     ...getDefinition(node.type),
     inputs: node.inputs ?? getDefinition(node.type).inputs,
@@ -705,8 +740,74 @@ export function sequencerShape(params: Record<string, number>): { steps: number;
   return {
     steps: clampInteger(params.steps, SEQUENCER_MIN_STEPS, SEQUENCER_MAX_STEPS, SEQUENCER_DEFAULT_STEPS),
     rows: clampInteger(params.rows, SEQUENCER_MIN_ROWS, SEQUENCER_MAX_ROWS, SEQUENCER_DEFAULT_ROWS),
-    beatLength: clampInteger(params.beatLength, SEQUENCER_MIN_BEAT_LENGTH, SEQUENCER_MAX_STEPS, SEQUENCER_DEFAULT_BEAT_LENGTH),
+    beatLength: clampInteger(params['beat length'] ?? params.beatLength, SEQUENCER_MIN_BEAT_LENGTH, SEQUENCER_MAX_STEPS, SEQUENCER_DEFAULT_BEAT_LENGTH),
   };
+}
+
+export function rollShape(params: Record<string, number>): {
+  steps: number;
+  beatLength: number;
+  stepLength: number;
+  scale: number;
+  middleNote: number;
+  rangeDown: number;
+  rangeUp: number;
+  rows: Array<{ index: number; note: number }>;
+} {
+  const legacyStartNote = clampInteger(params.startNote, 0, 127, ROLL_DEFAULT_START_NOTE);
+  const middleNote = clampInteger(params['middle note'] ?? legacyStartNote, 0, 127, ROLL_DEFAULT_START_NOTE);
+  const scale = clampInteger(params.scale, 0, QUANTISE_SCALES.length - 1, 0);
+  const scaleSemitones = QUANTISE_SCALES[scale].semitones;
+  const legacyRangeUp = params['highest note'] === undefined
+    ? ROLL_ROWS - 1
+    : Math.max(0, Math.round(params['highest note']) - legacyStartNote);
+  const rangeDown = clampInteger(params['range down'] ?? (params['lowest note'] === undefined ? 0 : Math.max(0, legacyStartNote - Math.round(params['lowest note']))), 0, 63, 5);
+  const rangeUp = clampInteger(params['range up'] ?? legacyRangeUp, 0, Math.min(63, ROLL_MAX_ROWS - rangeDown - 1), 6);
+  const scaleOffset = (index: number) => {
+    const octave = Math.floor(index / scaleSemitones.length);
+    const degree = ((index % scaleSemitones.length) + scaleSemitones.length) % scaleSemitones.length;
+    return octave * 12 + scaleSemitones[degree];
+  };
+  const rows = Array.from({ length: rangeDown + rangeUp + 1 }, (_, offset) => {
+    const index = offset - rangeDown;
+    return { index, note: clampInteger(middleNote + scaleOffset(index), 0, 127, middleNote) };
+  });
+  return {
+    steps: clampInteger(params.steps, SEQUENCER_MIN_STEPS, SEQUENCER_MAX_STEPS, SEQUENCER_DEFAULT_STEPS),
+    beatLength: clampInteger(params['beat length'] ?? params.beatLength, SEQUENCER_MIN_BEAT_LENGTH, SEQUENCER_MAX_STEPS, SEQUENCER_DEFAULT_BEAT_LENGTH),
+    stepLength: Math.max(0.05, Math.min(SEQUENCER_MAX_STEPS, Number.isFinite(params['step length']) ? params['step length'] : Number.isFinite(params.stepLength) ? params.stepLength : 1)),
+    scale,
+    middleNote,
+    rangeDown,
+    rangeUp,
+    rows,
+  };
+}
+
+export function rollCellParamName(rowIndex: number, stepIndex: number): string {
+  return `roll:${rowIndex}:${stepIndex}`;
+}
+
+export interface RollGate { slot: number; start: number; end: number; velocity: number; }
+
+export function rollGateParamName(rowIndex: number, slot: number, field: 'active' | 'start' | 'end'): string {
+  return `roll:gate:${field}:${rowIndex}:${slot}`;
+}
+
+export function rollGateVelocityParamName(rowIndex: number, slot: number): string {
+  return `roll:velocity:${rowIndex}:${slot}`;
+}
+
+export function rollGatesForRow(params: Record<string, number>, rowIndex: number, steps: number): RollGate[] {
+  const gates: RollGate[] = [];
+  for (let slot = 0; slot < steps; slot += 1) {
+    if ((params[rollGateParamName(rowIndex, slot, 'active')] ?? params[rollCellParamName(rowIndex, slot)] ?? 0) < 0.5) continue;
+    const start = Math.max(0, Math.min(steps, params[rollGateParamName(rowIndex, slot, 'start')] ?? slot));
+    const end = Math.max(start, Math.min(steps, params[rollGateParamName(rowIndex, slot, 'end')] ?? start + 1));
+    const velocity = Math.max(SEQUENCER_MIN_VELOCITY, Math.min(1, params[rollGateVelocityParamName(rowIndex, slot)] ?? 1));
+    if (end > start) gates.push({ slot, start, end, velocity });
+  }
+  return trimOverlappingSequencerGates(gates);
 }
 
 export function sequencerOutputName(rowIndex: number): string {

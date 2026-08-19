@@ -5,7 +5,11 @@ import {
   SEQUENCER_DEFAULT_ROWS,
   SEQUENCER_DEFAULT_STEPS,
   SEQUENCER_INDEX_OUTPUT,
+  ROLL_MAX_ROWS,
   getNodeDefinition,
+  rollCellParamName,
+  rollGatesForRow,
+  rollShape,
   sequencerGatesForRow,
   sequencerOutputIndex,
   sequencerShape,
@@ -67,6 +71,7 @@ export const DSP_OP = {
   Random: 49,
   SpawnInstanceGate: 50,
   DcBlock: 51,
+  RollNoteEvent: 52,
 } as const;
 
 export interface DspProgram {
@@ -162,6 +167,7 @@ export interface DspSequencerEventBinding {
   start: number;
   end: number;
   velocity: number;
+  note: number;
 }
 
 export interface DspSequencerBinding {
@@ -317,7 +323,7 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
   const hasRuntimeAudioOut = expandedPatch.nodes.some((node) => node.runtimeSpread && node.type === 'AudioOut');
   const monitorNodes = ordinaryNodes.filter((node) => node.type === 'Meter' || node.type === 'Scope' || node.type === 'FFT');
   const sliderMonitorNodes = ordinaryNodes.filter((node) => node.type === 'Slider');
-  const sequencerMonitorNodes = ordinaryNodes.filter((node) => node.type === 'Sequencer');
+  const sequencerMonitorNodes = ordinaryNodes.filter((node) => node.type === 'Sequencer' || node.type === 'Roll');
   const imagePreviewNodes = ordinaryNodes.filter((node) => node.type === 'Image');
   const samplePreviewNodes = ordinaryNodes.filter((node) => node.type === 'SamplePlayer');
   const bufferPreviewNodes = ordinaryNodes.filter((node) => node.type === 'Buffer');
@@ -1532,7 +1538,7 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       out: output,
       a: resolveInput(node, 'signal', 0, context),
       b: resolveInput(node, 'scale', 0, context, 'immediate'),
-      c: resolveInput(node, 'root', 60, context, 'immediate'),
+      c: resolveInput(node, 'root', 0, context, 'immediate'),
     });
     return output;
   }
@@ -1595,6 +1601,10 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
 
   if (node.type === 'Sequencer') {
     return compileSequencer(node, port, context);
+  }
+
+  if (node.type === 'Roll') {
+    return compileRoll(node, port, context);
   }
 
   if (node.type === 'FormantFilter') {
@@ -2072,6 +2082,73 @@ function compileSequencer(node: PatchNode, port: string, context: CompileContext
   return compileSequencerRow(node, rowIndex, context);
 }
 
+function compileRoll(node: PatchNode, port: string, context: CompileContext): number {
+  if (!['note', 'frequency', 'velocity', 'gate', 'trigger', 'note on', 'note off'].includes(port)) {
+    context.errors.push(`Roll node "${node.id}" does not have supported output "${port}".`);
+    return constantRegister(0, context);
+  }
+  const shape = rollShape(node.params);
+  if (port === 'note on' || port === 'note off' || port === 'frequency' || port === 'velocity' || port === 'trigger') {
+    const event = port === 'note off' ? 'off' : 'on';
+    const value = port === 'frequency' ? 'frequency' : port === 'velocity' ? 'velocity' : 'note';
+    return compileRollNoteEvent(node, event, value, context);
+  }
+  const rowGates = Array.from({ length: shape.rows.length }, (_, row) => compileSequencerRow(node, row, context));
+  const gate = emitFunction(EXPRESSION_FUNCTIONS.clamp.id, [
+    rowGates.reduce((sum, rowGate) => emitBinary(DSP_OP.Add, sum, rowGate, context), constantRegister(0, context)),
+    constantRegister(0, context),
+    constantRegister(1, context),
+  ], context);
+  if (port === 'gate') return gate;
+
+  // In mono mode, the highest active note is selected. Poly mode retains all
+  // gates/triggers, while this scalar pitch output reports the highest voice.
+  let note = constantRegister(0, context);
+  for (let row = 0; row < shape.rows.length; row += 1) {
+    const noteValue = constantRegister(shape.rows[row].note, context);
+    note = emitBinary(DSP_OP.Add, emitBinary(DSP_OP.Mul, rowGates[row], noteValue, context), emitBinary(DSP_OP.Mul, emitBinary(DSP_OP.Sub, constantRegister(1, context), rowGates[row], context), note, context), context);
+  }
+  if (port === 'note') return note;
+  const exponent = emitBinary(DSP_OP.Div, emitBinary(DSP_OP.Sub, note, constantRegister(69, context), context), constantRegister(12, context), context);
+  return emitBinary(DSP_OP.Mul, constantRegister(440, context), emitFunction(EXPRESSION_FUNCTIONS.pow.id, [constantRegister(2, context), exponent], context), context);
+}
+
+/**
+ * Emits one aligned field of Roll's queued note-event bundle. A zero frame is
+ * inserted between events so Spawn and Sample & Hold can treat every chord
+ * note as a distinct event while retaining its matching frequency/velocity.
+ */
+function compileRollNoteEvent(
+  node: PatchNode,
+  event: 'on' | 'off',
+  value: 'note' | 'frequency' | 'velocity',
+  context: CompileContext,
+): number {
+  const output = nextRegister(context);
+  // Note-off additionally remembers the note originally emitted by every
+  // relative Roll row, so a later scale/range/middle edit cannot release a
+  // different Spawn tag.
+  const stateCount = 5 + ROLL_MAX_ROWS * (event === 'off' ? 3 : 2);
+  const state = nextState(context, stateCount);
+  context.stateBindings.push({
+    id: `${node.id}:roll-note-${event}-${value}`,
+    state,
+    count: stateCount,
+    kind: 'effect',
+    nodeId: node.id,
+  });
+  context.ops.push({
+    opcode: DSP_OP.RollNoteEvent,
+    out: output,
+    a: ensureSequencerStepRegister(node, context).state,
+    state,
+    value: ensureSequencerBinding(node, context),
+    value2: event === 'on' ? 0 : 1,
+    value3: value === 'note' ? 0 : value === 'frequency' ? 1 : 2,
+  });
+  return output;
+}
+
 function compileSequencerIndex(node: PatchNode, context: CompileContext): number {
   const shape = sequencerShape(node.params);
   let index = constantRegister(0, context);
@@ -2106,7 +2183,7 @@ function compileSequencerRow(node: PatchNode, rowIndex: number, context: Compile
     a: resolveInput(node, 'signal', 0, context),
     b: resolveInput(node, 'steps', SEQUENCER_DEFAULT_STEPS, context),
     c: constantRegister(rowIndex, context),
-    d: resolveInput(node, 'rows', SEQUENCER_DEFAULT_ROWS, context),
+    d: node.type === 'Roll' ? constantRegister(rollShape(node.params).rows.length, context) : resolveInput(node, 'rows', SEQUENCER_DEFAULT_ROWS, context),
     e: resolveInput(node, 'reset', 0, context),
     state,
     value: ensureSequencerBinding(node, context),
@@ -2143,7 +2220,7 @@ function ensureSequencerStepRegister(node: PatchNode, context: CompileContext): 
       a: resolveInput(node, 'signal', 0, context),
       b: resolveInput(node, 'steps', SEQUENCER_DEFAULT_STEPS, context),
       c: constantRegister(-1, context),
-      d: resolveInput(node, 'rows', SEQUENCER_DEFAULT_ROWS, context),
+      d: node.type === 'Roll' ? constantRegister(rollShape(node.params).rows.length, context) : resolveInput(node, 'rows', SEQUENCER_DEFAULT_ROWS, context),
       e: resolveInput(node, 'reset', 0, context),
       state,
       value: ensureSequencerBinding(node, context),
@@ -2157,10 +2234,14 @@ function ensureSequencerBinding(node: PatchNode, context: CompileContext): numbe
   const existing = context.sequencerBindingIndexByNodeId.get(node.id);
   if (existing !== undefined) return existing;
 
-  const shape = sequencerShape(node.params);
-  const gateMode = sequencerUsesGateMode(node.params);
-  const events = Array.from({ length: shape.rows }, (_, rowIndex) => {
-    const activeEvents = gateMode
+  const roll = node.type === 'Roll' ? rollShape(node.params) : null;
+  const shape = roll ? { ...roll, rowCount: roll.rows.length } : { ...sequencerShape(node.params), rowCount: sequencerShape(node.params).rows };
+  const gateMode = node.type === 'Roll' || sequencerUsesGateMode(node.params);
+  const events = Array.from({ length: shape.rowCount }, (_, rowIndex) => {
+    const activeEvents = node.type === 'Roll'
+      ? rollGatesForRow(node.params, roll!.rows[rowIndex].index, shape.steps)
+        .map((gate) => ({ ...gate }))
+      : gateMode
       ? sequencerGatesForRow(node.params, rowIndex, shape.steps)
         .map((gate) => ({ slot: gate.slot, start: gate.start, end: gate.end, velocity: gate.velocity }))
       : sequencerTriggersForRow(node.params, rowIndex, shape.steps)
@@ -2178,6 +2259,7 @@ function ensureSequencerBinding(node: PatchNode, context: CompileContext): numbe
         start: event?.start ?? slot,
         end: event?.end ?? slot,
         velocity: event?.velocity ?? 1,
+        note: roll?.rows[rowIndex].note ?? rowIndex,
       };
     });
   });
@@ -2186,7 +2268,7 @@ function ensureSequencerBinding(node: PatchNode, context: CompileContext): numbe
     nodeId: node.id,
     mode: gateMode ? 'gate' : 'trigger',
     steps: shape.steps,
-    rows: shape.rows,
+    rows: shape.rowCount,
     events,
   });
   context.sequencerBindingIndexByNodeId.set(node.id, bindingIndex);

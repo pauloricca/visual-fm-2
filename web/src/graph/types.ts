@@ -31,6 +31,7 @@ export type NodeType =
   | 'Button'
   | 'Keys'
   | 'Sequencer'
+  | 'Roll'
   | 'Tempo'
   | 'MidiNote'
   | 'MidiNoteOn'
