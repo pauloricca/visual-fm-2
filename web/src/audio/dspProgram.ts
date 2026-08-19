@@ -138,6 +138,7 @@ export interface DspMidiControlBinding {
 
 export interface DspTempoBinding {
   nodeId: string;
+  bpmValueIndex: number;
   sourceValueIndex: number;
   midiSourceValueIndex: number;
 }
@@ -1908,6 +1909,7 @@ function compileTempo(node: PatchNode, port: string, context: CompileContext): n
   if (!context.tempoBindings.some((binding) => binding.nodeId === node.id)) {
     context.tempoBindings.push({
       nodeId: node.id,
+      bpmValueIndex: valueIndexForNodeParam(node, 'bpm', 120, context),
       sourceValueIndex,
       midiSourceValueIndex,
     });

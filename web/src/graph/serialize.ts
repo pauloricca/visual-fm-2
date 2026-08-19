@@ -5,7 +5,10 @@ export function normalizePatch(patch: Patch): Patch {
   return {
     ...(patch.name ? { name: patch.name } : {}),
     ...(patch.buffers ? { buffers: normalizeBufferAssets(patch.buffers) } : {}),
-    ...(patch.midiInput ? { midiInput: { selectedDeviceIds: [...patch.midiInput.selectedDeviceIds].sort() } } : {}),
+    ...(patch.midiInput ? { midiInput: {
+      selectedDeviceIds: [...patch.midiInput.selectedDeviceIds].sort(),
+      ...(patch.midiInput.sendClock ? { sendClock: true } : {}),
+    } } : {}),
     ...(patch.areas ? { areas: patch.areas.map((area) => ({
       ...area,
       position: { ...area.position },

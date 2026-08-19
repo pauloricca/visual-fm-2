@@ -358,6 +358,14 @@ function NodeEditorInner() {
     return () => window.clearTimeout(timeout);
   }, [viewport.zoom]);
   const nodesRef = useRef(nodes);
+  // React Flow gives us a new nodes array for every drag frame. Keep the
+  // presentation objects for unaffected nodes referentially stable so the
+  // memoized node components do not render just because another node moved.
+  const nodePresentationCacheRef = useRef<ShaderFlowNode[]>([]);
+  // Live visual data is attached in a later pass. It needs its own cache: the
+  // audio payload object is replaced frequently even when a particular node's
+  // displayed value did not change.
+  const renderedNodeCacheRef = useRef<ShaderFlowNode[]>([]);
   const areasRef = useRef(areas);
   const edgesRef = useRef(edges);
   const editorShellRef = useRef<HTMLElement | null>(null);
@@ -399,6 +407,7 @@ function NodeEditorInner() {
   const [selectedMidiInputDeviceIds, setSelectedMidiInputDeviceIds] = useState<string[]>(() => (
     normalizeSelectedMidiDeviceIds(initialState?.ui?.midiInput?.selectedDeviceIds)
   ));
+  const [midiClockOutputEnabled, setMidiClockOutputEnabled] = useState(() => initialState?.ui?.midiInput?.sendClock === true);
   const [midiControlVisuals, setMidiControlVisuals] = useState<Record<string, MidiControlVisualState>>({});
   const midiControlVisualsRef = useRef<Record<string, MidiControlVisualState>>({});
   const [bufferAssets, setBufferAssets] = useState<Record<string, BufferAsset>>(() => initialState?.buffers ?? {});
@@ -428,7 +437,7 @@ function NodeEditorInner() {
   const reconnectDuplicateRef = useRef(false);
   const reconnectingEdgeSnapshotRef = useRef<ShaderFlowEdge | null>(null);
   const rootPatchName = editingStack[0]?.parentPatchName ?? patchName;
-  const audio = useAudioEngine({ selectedMidiInputDeviceIds, recordingPatchName: rootPatchName });
+  const audio = useAudioEngine({ selectedMidiInputDeviceIds, midiClockOutputEnabled, recordingPatchName: rootPatchName });
 
   useEffect(() => {
     bufferAssetsRef.current = bufferAssets;
@@ -552,10 +561,15 @@ function NodeEditorInner() {
     }
   }, [audio.refreshMidiInputDevices]);
 
+  const toggleMidiClockOutput = useCallback((enabled: boolean) => {
+    setMidiClockOutputEnabled(enabled);
+    if (enabled) void audio.refreshMidiInputDevices();
+  }, [audio.refreshMidiInputDevices]);
+
   useEffect(() => {
-    if (selectedMidiInputDeviceIds.length === 0) return;
+    if (selectedMidiInputDeviceIds.length === 0 && !midiClockOutputEnabled) return;
     void audio.refreshMidiInputDevices();
-  }, [audio.refreshMidiInputDevices, selectedMidiInputDeviceIds.length, selectedMidiInputDeviceKey]);
+  }, [audio.refreshMidiInputDevices, midiClockOutputEnabled, selectedMidiInputDeviceIds.length, selectedMidiInputDeviceKey]);
 
   useEffect(() => {
     const controlChange = audio.midiInput.lastControlChange;
@@ -2498,6 +2512,12 @@ function NodeEditorInner() {
     }));
     setEdges((current) => updateSelection(current, new Set()));
   }, []);
+  const finishTypeEdit = useCallback(() => {
+    setEditingTypeNodeId(null);
+  }, []);
+  const selectBoundaryPort = useCallback((nodeId: string, side: 'input' | 'output', port: string) => {
+    setSelectedBoundaryPort({ nodeId, side, port });
+  }, []);
   const selectedAreaNodeIds = useMemo(() => (
     selectedAreaId
       ? nodeIdsContainedByAreaHierarchy(areas, nodes, selectedAreaId)
@@ -2533,7 +2553,8 @@ function NodeEditorInner() {
   const surfacedAreaLayerBase = (SELECTED_NODE_Z_INDEX + 1) * baseNodeLayerSize + 1;
   const surfacedNodeLayerBase = surfacedAreaLayerBase + surfacedAreaIds.size;
 
-  const nodesWithCallbacks = useMemo(() => nodes.map((node) => {
+  const nodesWithCallbacks = useMemo(() => {
+    const nextNodes = nodes.map((node) => {
     const compactPorts = node.data.patchNode.compactPorts === true;
     const baseZIndex = node.data.patchNode.type === 'Spread' || node.data.patchNode.type === 'Spawn'
       ? 0
@@ -2565,7 +2586,7 @@ function NodeEditorInner() {
         onTitleSelect: canvasLocked ? undefined : selectNodeFromTitle,
         onExpressionCommit: updateExpression,
         onTypeEditStart: setEditingTypeNodeId,
-        onTypeEditEnd: () => setEditingTypeNodeId(null),
+        onTypeEditEnd: finishTypeEdit,
         onTypeEditCancel: cancelProvisionalNode,
         onIdChange: updateNodeId,
         onSubpatchNameChange: updateGroupSubpatchName,
@@ -2573,9 +2594,7 @@ function NodeEditorInner() {
         onSampleDrop: uploadDroppedSampleFiles,
         onImageSelect: openImageLibrary,
         onPortDoubleClick: insertNodeOnPort,
-        onPortSelect: (nodeId: string, side: 'input' | 'output', port: string) => {
-          setSelectedBoundaryPort({ nodeId, side, port });
-        },
+        onPortSelect: selectBoundaryPort,
         onPortNameChange: updateBoundaryPortName,
         onPortMove: updateBoundaryPortOrder,
         onCompactToggle: updateNodeCompactPorts,
@@ -2611,13 +2630,18 @@ function NodeEditorInner() {
         isEditingSubpatch: editingStack.length > 0,
       },
     };
-  }), [
+    });
+    const reconciledNodes = reuseUnchangedNodePresentations(nodePresentationCacheRef.current, nextNodes);
+    nodePresentationCacheRef.current = reconciledNodes;
+    return reconciledNodes;
+  }, [
     canvasLocked,
     connectedPortsByNode,
     setLinkInputPortsByNode,
     draftNodeConnection,
     editingStack.length,
     editingTypeNodeId,
+    finishTypeEdit,
     insertNodeOnPort,
     nodes,
     pendingBoundaryPort,
@@ -2630,6 +2654,7 @@ function NodeEditorInner() {
     surfacedNodeLayerBase,
     selectedBoundaryPort,
     selectedLinkPortsByNode,
+    selectBoundaryPort,
     selectNodeFromTitle,
     settledGraphZoom,
     updateBoundaryPortName,
@@ -2708,10 +2733,13 @@ function NodeEditorInner() {
   const patch = useMemo(() => ({
     ...patchFromFlow(materializedGraph.nodes, materializedGraph.edges, editingStack.length === 0 ? areas : editingStack[0]?.parentAreas),
     name: rootPatchName,
-    ...(selectedMidiInputDeviceIds.length > 0
-      ? { midiInput: { selectedDeviceIds: selectedMidiInputDeviceIds } }
+    ...(selectedMidiInputDeviceIds.length > 0 || midiClockOutputEnabled
+      ? { midiInput: {
+        selectedDeviceIds: selectedMidiInputDeviceIds,
+        ...(midiClockOutputEnabled ? { sendClock: true } : {}),
+      } }
       : {}),
-  }), [areas, editingStack, materializedGraph, rootPatchName, selectedMidiInputDeviceIds]);
+  }), [areas, editingStack, materializedGraph, midiClockOutputEnabled, rootPatchName, selectedMidiInputDeviceIds]);
   const trimmedRootPatchName = rootPatchName.trim();
   const selectedLocalPatch = localPatchLibrary?.patches.find((entry) => entry.name === localPatchLibrary.selectedPatchName) ?? null;
   const selectedSample = sampleLibrary?.samples.find((sample) => sample.url === sampleLibrary.selectedUrl) ?? null;
@@ -2721,23 +2749,32 @@ function NodeEditorInner() {
   const dspPatch = useMemo(() => stripPatchForDsp(patch), [patch]);
   const liveDspPatch = useMemo(() => patchWithMidiControlVisuals(dspPatch, midiControlVisuals), [dspPatch, midiControlVisuals]);
   const dspPatchKey = useMemo(() => patchToDspKey(liveDspPatch), [liveDspPatch]);
-  const audioGraph = useMemo(() => compilePatchToDspProgram(liveDspPatch), [dspPatchKey, liveDspPatch]);
+  // `liveDspPatch` is rebuilt from editor state on every canvas move. Its key
+  // contains every DSP-relevant field, so using the key as the memo boundary
+  // prevents a layout-only update from recompiling the program.
+  const audioGraph = useMemo(() => compilePatchToDspProgram(liveDspPatch), [dspPatchKey]);
   const preservedBufferNodeIds = useMemo(() => preservedBufferIds(audioGraph), [audioGraph]);
   const referencedBufferAssets = useMemo(() => filterBufferAssets(bufferAssets, preservedBufferNodeIds), [bufferAssets, preservedBufferNodeIds]);
   const persistedEditorStateJson = useMemo(() => {
     const state = flowToEditorState(materializedGraph.nodes, materializedGraph.edges, {
       patchName: rootPatchName,
       viewport,
-      ...(selectedMidiInputDeviceIds.length > 0
-        ? { midiInput: { selectedDeviceIds: selectedMidiInputDeviceIds } }
+      ...(selectedMidiInputDeviceIds.length > 0 || midiClockOutputEnabled
+        ? { midiInput: {
+          selectedDeviceIds: selectedMidiInputDeviceIds,
+          ...(midiClockOutputEnabled ? { sendClock: true } : {}),
+        } }
         : {}),
     });
     state.areas = areas;
     state.buffers = referencedBufferAssets;
     return JSON.stringify(state);
-  }, [areas, materializedGraph, referencedBufferAssets, rootPatchName, selectedMidiInputDeviceIds, viewport]);
+  }, [areas, materializedGraph, midiClockOutputEnabled, referencedBufferAssets, rootPatchName, selectedMidiInputDeviceIds, viewport]);
   persistedEditorStateJsonRef.current = persistedEditorStateJson;
-  const dspDiagnostics = useMemo(() => classifyDspErrors(audioGraph.errors, dspPatch), [audioGraph.errors, dspPatch]);
+  const dspDiagnostics = useMemo(
+    () => classifyDspErrors(audioGraph.errors, dspPatch),
+    [audioGraph, dspPatchKey],
+  );
   const monitorLinkIdByNode = useMemo(() => {
     const linkIdsByNode = new Map<string, string>();
     for (const nodeId of Object.keys(audioGraph.monitorIds)) {
@@ -2849,7 +2886,8 @@ function NodeEditorInner() {
     updateGroupUiNodeOverride,
   ]);
 
-  const renderedNodes = useMemo(() => nodesWithGroupUi.map((node) => {
+  const renderedNodes = useMemo(() => {
+    const nextNodes = nodesWithGroupUi.map((node) => {
     const dspNodeId = runtimeDspNodeIdForFlowNode(node, nodesWithGroupUi, activeDspGroupIds);
     const monitorLinkId = monitorLinkIdByNode.get(dspNodeId);
     const audioOutputLeft = audio.linkMeters[`${dspNodeId}:left`]?.output ?? 0;
@@ -2913,7 +2951,11 @@ function NodeEditorInner() {
         ...(midiControlVisual?.buttonPressed !== undefined ? { midiButtonPressed: midiControlVisual.buttonPressed } : {}),
       },
     };
-  }), [activeDspGroupIds, audio.buffers, audio.linkMeters, audio.linkScopes, audio.playheads, clearBufferRecording, dspDiagnostics, midiControlVisuals, monitorLinkIdByNode, nodesWithGroupUi]);
+    });
+    const reconciledNodes = reuseUnchangedNodePresentations(renderedNodeCacheRef.current, nextNodes);
+    renderedNodeCacheRef.current = reconciledNodes;
+    return reconciledNodes;
+  }, [activeDspGroupIds, audio.buffers, audio.linkMeters, audio.linkScopes, audio.playheads, clearBufferRecording, dspDiagnostics, midiControlVisuals, monitorLinkIdByNode, nodesWithGroupUi]);
 
   const renderedEdges = useMemo(() => edgesWithCallbacks.map((edge) => {
     const dspErrors = dspDiagnostics.edgeErrors.get(edge.id) ?? [];
@@ -3870,6 +3912,7 @@ function NodeEditorInner() {
     setEditingAreaId(null);
     setPatchName(loadedPatch.name ?? 'single-patch');
     setSelectedMidiInputDeviceIds(normalizeSelectedMidiDeviceIds(loadedPatch.midiInput?.selectedDeviceIds));
+    setMidiClockOutputEnabled(loadedPatch.midiInput?.sendClock === true);
     setMidiControlVisuals({});
     setEditingTypeNodeId(null);
     setImportError(null);
@@ -4192,6 +4235,7 @@ function NodeEditorInner() {
     setSelectedBoundaryPort(null);
     setPatchName('single-patch');
     setSelectedMidiInputDeviceIds([]);
+    setMidiClockOutputEnabled(false);
     setMidiControlVisuals({});
     setNodes(toFlowNodes(demoPatch, callbacks, null));
     setEdges(toFlowEdges(demoPatch, updateEdgeWeight, updateEdgeMode, insertNodeOnEdge));
@@ -5151,6 +5195,23 @@ function NodeEditorInner() {
     return () => window.removeEventListener('keydown', deleteSelectedArea, { capture: true });
   }, [canvasLocked, commitHistory, selectedAreaId]);
 
+  const handleFlowNodeDoubleClick = useCallback((event: ReactMouseEvent, node: ShaderFlowNode) => {
+    if (!enterGroupNode(node)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, [enterGroupNode]);
+  const handleFlowEdgeDoubleClick = useCallback((event: ReactMouseEvent, edge: ShaderFlowEdge) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (edge.data?.isAreaCollapsedPresentation) return;
+    insertNodeOnEdge(edge.id);
+  }, [insertNodeOnEdge]);
+  const connectionLineStyle = useMemo(() => ({
+    '--connection-line-color': draftNodePreview
+      ? 'transparent'
+      : CONNECTION_LINE_COLORS[draftNodeConnection?.mode ?? 'set'],
+  }) as CSSProperties, [draftNodeConnection?.mode, draftNodePreview]);
+
   return (
     <div className="app-shell app-shell-panel-closed">
       <EdgeOverlayProvider target={edgeOverlayElement}>
@@ -5206,11 +5267,7 @@ function NodeEditorInner() {
             onNodeDrag={onNodeDrag}
             onNodeDragStop={onNodeDragStop}
             onSelectionEnd={validateRectangleSelection}
-            onNodeDoubleClick={(event, node) => {
-              if (!enterGroupNode(node)) return;
-              event.preventDefault();
-              event.stopPropagation();
-            }}
+            onNodeDoubleClick={handleFlowNodeDoubleClick}
             onConnect={onConnect}
             onConnectStart={onConnectStart}
             onConnectEnd={onConnectEnd}
@@ -5223,17 +5280,8 @@ function NodeEditorInner() {
             // Keep node pointer events available for playable controls while LK
             // rejects selection changes in onNodesChange/onEdgesChange.
             elementsSelectable
-            connectionLineStyle={{
-              '--connection-line-color': draftNodePreview
-                ? 'transparent'
-                : CONNECTION_LINE_COLORS[draftNodeConnection?.mode ?? 'set'],
-            } as CSSProperties}
-            onEdgeDoubleClick={(event, edge) => {
-              event.preventDefault();
-              event.stopPropagation();
-              if (edge.data?.isAreaCollapsedPresentation) return;
-              insertNodeOnEdge(edge.id);
-            }}
+            connectionLineStyle={connectionLineStyle}
+            onEdgeDoubleClick={handleFlowEdgeDoubleClick}
             onMove={handleMove}
             onMoveEnd={handleMoveEnd}
             connectionMode={ConnectionMode.Loose}
@@ -5517,7 +5565,7 @@ function NodeEditorInner() {
               className="viewport-button"
               type="button"
               role="switch"
-              aria-checked={selectedMidiInputDeviceIds.length > 0}
+              aria-checked={selectedMidiInputDeviceIds.length > 0 || midiClockOutputEnabled}
               aria-label="MIDI settings"
               title={audio.midiInput.message}
               onClick={() => setMidiSettingsOpen(true)}
@@ -5578,7 +5626,9 @@ function NodeEditorInner() {
             <MidiSettingsModal
               state={audio.midiInput}
               selectedDeviceIds={selectedMidiInputDeviceIds}
+              midiClockOutputEnabled={midiClockOutputEnabled}
               onToggleDevice={toggleMidiInputDevice}
+              onMidiClockOutputChange={toggleMidiClockOutput}
               onRefresh={() => void audio.refreshMidiInputDevices()}
               onClose={() => setMidiSettingsOpen(false)}
             />
@@ -6335,7 +6385,9 @@ function writeWavText(view: DataView, offset: number, text: string): void {
 interface MidiSettingsModalProps {
   state: MidiInputState;
   selectedDeviceIds: string[];
+  midiClockOutputEnabled: boolean;
   onToggleDevice: (deviceId: string, selected: boolean) => void;
+  onMidiClockOutputChange: (enabled: boolean) => void;
   onRefresh: () => void;
   onClose: () => void;
 }
@@ -6343,7 +6395,9 @@ interface MidiSettingsModalProps {
 function MidiSettingsModal({
   state,
   selectedDeviceIds,
+  midiClockOutputEnabled,
   onToggleDevice,
+  onMidiClockOutputChange,
   onRefresh,
   onClose,
 }: MidiSettingsModalProps) {
@@ -6405,6 +6459,17 @@ function MidiSettingsModal({
             </label>
           ))}
         </div>
+
+        <label className="midi-settings-device midi-settings-clock-output">
+          <input
+            type="checkbox"
+            checked={midiClockOutputEnabled}
+            onChange={(event) => onMidiClockOutputChange(event.currentTarget.checked)}
+            disabled={unavailable}
+          />
+          <span>Send MIDI clock and transport</span>
+          <small>all connected MIDI outputs; requires a Tempo node</small>
+        </label>
 
         <footer className="import-modal-actions">
           <button type="button" onClick={onClose}>Close</button>
@@ -6535,7 +6600,10 @@ function parsePatchAreas(value: unknown, label: string): Pick<Patch, 'areas'> {
 function parseMidiInputPreferences(value: unknown): Pick<Patch, 'midiInput'> {
   if (!isRecord(value)) return {};
   const selectedDeviceIds = normalizeSelectedMidiDeviceIds(value.selectedDeviceIds);
-  return selectedDeviceIds.length > 0 ? { midiInput: { selectedDeviceIds } } : {};
+  const sendClock = value.sendClock === true;
+  return selectedDeviceIds.length > 0 || sendClock
+    ? { midiInput: { selectedDeviceIds, ...(sendClock ? { sendClock: true } : {}) } }
+    : {};
 }
 
 function patchToDspKey(patch: Patch): string {
@@ -6543,8 +6611,14 @@ function patchToDspKey(patch: Patch): string {
 }
 
 function stripPatchForDsp(patch: Patch): Patch {
+  // Positions only affect DSP when an unlocked Spread/Spawn derives its
+  // membership from canvas containment. Ordinary layout changes must not
+  // rebuild the program.
+  const includesPositionBasedRuntimeContainer = patch.nodes.some((node) => (
+    (node.type === 'Spread' || node.type === 'Spawn') && !node.spreadNodeIds
+  ));
   return {
-    nodes: patch.nodes.map(stripPatchNodeForDsp),
+    nodes: patch.nodes.map((node) => stripPatchNodeForDsp(node, includesPositionBasedRuntimeContainer)),
     links: patch.links.map((link) => ({
       from: { ...link.from },
       to: { ...link.to },
@@ -6648,7 +6722,71 @@ function addDiagnostic(map: Map<string, string[]>, key: string, error: string): 
   map.set(key, [...(map.get(key) ?? []), error]);
 }
 
-function stripPatchNodeForDsp(node: PatchNode): PatchNode {
+/**
+ * The controlled React Flow API updates the nodes array while a node is being
+ * dragged. Decoration below adds callbacks and visual state, so rebuilding
+ * that decoration naively changes every node's `data` reference and defeats
+ * `memo(ShaderNode)`. Reuse a prior presentation whenever its shallow values
+ * are identical; the moved/resized node still receives its new object.
+ */
+function reuseUnchangedNodePresentations(
+  previousNodes: ShaderFlowNode[],
+  nextNodes: ShaderFlowNode[],
+): ShaderFlowNode[] {
+  const previousById = new Map(previousNodes.map((node) => [node.id, node]));
+  return nextNodes.map((nextNode) => {
+    const previousNode = previousById.get(nextNode.id);
+    return previousNode && shallowEqualFlowNodePresentation(previousNode, nextNode)
+      ? previousNode
+      : nextNode;
+  });
+}
+
+function shallowEqualFlowNodePresentation(left: ShaderFlowNode, right: ShaderFlowNode): boolean {
+  const leftRecord = left as unknown as Record<string, unknown>;
+  const rightRecord = right as unknown as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord);
+  const rightKeys = Object.keys(rightRecord);
+  if (leftKeys.length !== rightKeys.length) return false;
+
+  for (const key of leftKeys) {
+    if (!(key in rightRecord)) return false;
+    if (key === 'data') {
+      if (!shallowEqualRecord(
+        leftRecord.data as Record<string, unknown>,
+        rightRecord.data as Record<string, unknown>,
+      )) return false;
+    } else if (leftRecord[key] !== rightRecord[key]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function shallowEqualRecord(left: Record<string, unknown>, right: Record<string, unknown>): boolean {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) return false;
+  return leftKeys.every((key) => key in right && shallowEqualPresentationValue(left[key], right[key]));
+}
+
+function shallowEqualPresentationValue(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return left.length === right.length && left.every((value, index) => value === right[index]);
+  }
+  if (!isPlainObject(left) || !isPlainObject(right)) return false;
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key) => key in right && left[key] === right[key]);
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function stripPatchNodeForDsp(node: PatchNode, includeLayout: boolean): PatchNode {
   return {
     id: node.id,
     type: node.type,
@@ -6660,8 +6798,12 @@ function stripPatchNodeForDsp(node: PatchNode): PatchNode {
     ...(node.image ? { image: { ...node.image } } : {}),
     ...(node.customWave ? { customWave: normalizeCustomWave(node.customWave, node.params) } : {}),
     params: { ...node.params },
-    ...(node.position ? { position: { ...node.position } } : {}),
-    ...(node.scopeSize ? { scopeSize: { ...node.scopeSize } } : {}),
+    // Canvas coordinates normally are editor-only. Unlocked runtime containers
+    // are the exception: their membership is calculated from these bounds.
+    ...(includeLayout && node.position ? { position: { ...node.position } } : {}),
+    ...(includeLayout && (node.type === 'Spread' || node.type === 'Spawn') && node.scopeSize
+      ? { scopeSize: { ...node.scopeSize } }
+      : {}),
     ...(node.spreadNodeIds ? { spreadNodeIds: [...node.spreadNodeIds] } : {}),
     ...(node.inputs ? { inputs: node.inputs.map((port) => ({ ...port })) } : {}),
     ...(node.outputs ? { outputs: node.outputs.map((port) => ({ ...port })) } : {}),

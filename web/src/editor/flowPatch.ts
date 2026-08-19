@@ -658,10 +658,14 @@ function normalizePersistedState(state: PersistedEditorState): PersistedEditorSt
 function normalizePersistedUi(ui: PersistedEditorState['ui']): PersistedEditorState['ui'] {
   if (!ui) return ui;
   const selectedDeviceIds = normalizeSelectedMidiDeviceIds(ui.midiInput?.selectedDeviceIds);
+  const sendClock = ui.midiInput?.sendClock === true;
   const { midiInput: _midiInput, ...nextUi } = ui;
   return {
     ...nextUi,
-    ...(selectedDeviceIds.length > 0 ? { midiInput: { selectedDeviceIds } } : {}),
+    ...(selectedDeviceIds.length > 0 || sendClock ? { midiInput: {
+      selectedDeviceIds,
+      ...(sendClock ? { sendClock: true } : {}),
+    } } : {}),
   };
 }
 

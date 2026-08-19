@@ -202,6 +202,8 @@ export interface PatchArea {
 
 export interface MidiInputPreferences {
   selectedDeviceIds: string[];
+  /** When enabled, Tempo drives MIDI Clock and transport on connected MIDI outputs. */
+  sendClock?: boolean;
 }
 
 export interface PortDefinition {
