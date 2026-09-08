@@ -151,6 +151,7 @@ const DSP_OP_RANDOM: i32 = 49;
 const DSP_OP_SPAWN_INSTANCE_GATE: i32 = 50;
 const DSP_OP_DC_BLOCK: i32 = 51;
 const DSP_OP_ROLL_NOTE_EVENT: i32 = 52;
+const DSP_OP_MIDI_NOTE_SEND: i32 = 53;
 const MIN_ENVELOPE_ATTACK_SECONDS: f64 = 0.001;
 const MAX_DSP_TEMPO_SOURCES: usize = 129;
 const TEMPO_OUTPUT_COUNT: i32 = 10;
@@ -925,6 +926,8 @@ static mut DSP_CURRENT_GATE: f64 = 0.0;
 static mut DSP_CURRENT_TRIGGER: f64 = 0.0;
 static mut DSP_MIDI_HELD_NOTES: Option<Vec<DspMidiHeldNote>> = None;
 static mut DSP_MIDI_NOTE_EVENTS: Option<VecDeque<DspMidiNoteEvent>> = None;
+static mut DSP_MIDI_OUTPUT_EVENTS: Option<VecDeque<DspMidiNoteEvent>> = None;
+static mut DSP_MIDI_CURRENT_OUTPUT_EVENT: DspMidiNoteEvent = EMPTY_DSP_MIDI_NOTE_EVENT;
 static mut DSP_MIDI_NOTE_EVENT_BLANK_PENDING: bool = false;
 static mut DSP_MIDI_CURRENT_EVENT_ACTIVE: bool = false;
 static mut DSP_MIDI_CURRENT_EVENT: DspMidiNoteEvent = EMPTY_DSP_MIDI_NOTE_EVENT;
@@ -2086,6 +2089,8 @@ fn midi_note_frequency(note: f64) -> f64 {
 unsafe fn reset_dsp_midi_notes() {
     DSP_MIDI_HELD_NOTES = Some(Vec::new());
     DSP_MIDI_NOTE_EVENTS = Some(VecDeque::new());
+    DSP_MIDI_OUTPUT_EVENTS = Some(VecDeque::new());
+    DSP_MIDI_CURRENT_OUTPUT_EVENT = EMPTY_DSP_MIDI_NOTE_EVENT;
     DSP_MIDI_NOTE_EVENT_BLANK_PENDING = false;
     DSP_MIDI_CURRENT_EVENT_ACTIVE = false;
     DSP_MIDI_CURRENT_EVENT = EMPTY_DSP_MIDI_NOTE_EVENT;
@@ -2181,6 +2186,38 @@ pub extern "C" fn queueDspMidiNoteEvent(note_on: u32, channel: u32, note: f64, v
             },
         });
     }
+}
+
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub extern "C" fn takeDspMidiOutputEvent() -> i32 {
+    unsafe {
+        let Some(event) = DSP_MIDI_OUTPUT_EVENTS.as_mut().and_then(VecDeque::pop_front) else {
+            return 0;
+        };
+        DSP_MIDI_CURRENT_OUTPUT_EVENT = event;
+        1
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn dspMidiOutputEventNoteOn() -> i32 {
+    unsafe { i32::from(DSP_MIDI_CURRENT_OUTPUT_EVENT.note_on) }
+}
+
+#[no_mangle]
+pub extern "C" fn dspMidiOutputEventChannel() -> u32 {
+    unsafe { DSP_MIDI_CURRENT_OUTPUT_EVENT.channel as u32 }
+}
+
+#[no_mangle]
+pub extern "C" fn dspMidiOutputEventNote() -> f64 {
+    unsafe { DSP_MIDI_CURRENT_OUTPUT_EVENT.note }
+}
+
+#[no_mangle]
+pub extern "C" fn dspMidiOutputEventVelocity() -> f64 {
+    unsafe { DSP_MIDI_CURRENT_OUTPUT_EVENT.velocity }
 }
 
 #[no_mangle]
@@ -8462,6 +8499,37 @@ fn render_dsp_midi_cc(op: DspOp) -> f64 {
     unsafe { DSP_MIDI_CC_VALUES[channel][cc] }
 }
 
+#[allow(static_mut_refs)]
+fn render_dsp_midi_note_send(op: DspOp) {
+    unsafe {
+        if op.state < 0 {
+            return;
+        }
+        let state_index = op.state as usize;
+        if state_index >= MAX_DSP_STATE {
+            return;
+        }
+
+        let trigger = sanitize_control_value(dsp_reg(op.a));
+        let was_triggered = *dsp_state_ptr(state_index) >= 0.5;
+        *dsp_state_ptr(state_index) = if trigger >= 0.5 { 1.0 } else { 0.0 };
+        if trigger < 0.5 || was_triggered {
+            return;
+        }
+
+        let events = DSP_MIDI_OUTPUT_EVENTS.get_or_insert_with(VecDeque::new);
+        if events.len() >= 4096 {
+            events.pop_front();
+        }
+        events.push_back(DspMidiNoteEvent {
+            note_on: op.value >= 0.5,
+            channel: dsp_reg(op.d).round().clamp(1.0, 16.0) as usize,
+            note: dsp_reg(op.b).round().clamp(0.0, 127.0),
+            velocity: dsp_reg(op.c).clamp(0.0, 1.0),
+        });
+    }
+}
+
 fn tempo_division_beats(kind: i32) -> f64 {
     match kind.rem_euclid(TEMPO_OUTPUT_COUNT) {
         0 => 16.0,
@@ -9171,6 +9239,12 @@ fn render_dsp_slew(op: DspOp, sample_rate: f64) -> f64 {
 
         let state_index = op.state as usize;
         let seconds = op.value.max(0.0);
+        let initialize_from_target = op.value2 >= 0.5 && state_index + 1 < MAX_DSP_STATE;
+        if initialize_from_target && *dsp_state_ptr(state_index + 1) < 0.5 {
+            *dsp_state_ptr(state_index) = sanitize_control_value(target);
+            *dsp_state_ptr(state_index + 1) = 1.0;
+            return sanitize_control_value(target);
+        }
         if seconds <= 0.0 || sample_rate <= 0.0 {
             *dsp_state_ptr(state_index) = sanitize_control_value(target);
             return target;
@@ -9521,6 +9595,7 @@ fn render_dsp_op(
         DSP_OP_FUNCTION => set_dsp_reg(op.out, render_dsp_function(op)),
         DSP_OP_MIDI_NOTE => set_dsp_reg(op.out, render_dsp_midi_note(op)),
         DSP_OP_MIDI_CC => set_dsp_reg(op.out, render_dsp_midi_cc(op)),
+        DSP_OP_MIDI_NOTE_SEND => render_dsp_midi_note_send(op),
         DSP_OP_TEMPO => set_dsp_reg(op.out, render_dsp_tempo(op, frame, sample_rate)),
         DSP_OP_ACCUMULATOR => set_dsp_reg(op.out, render_dsp_accumulator(op)),
         DSP_OP_RANDOM => set_dsp_reg(op.out, render_dsp_random(op)),

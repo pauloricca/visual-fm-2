@@ -12,6 +12,7 @@ import {
   type KeyboardEvent,
   type MouseEvent,
   type PointerEvent,
+  type ReactNode,
   type RefObject,
   type SyntheticEvent,
 } from 'react';
@@ -3478,9 +3479,8 @@ function isBlackKey(note: number): boolean {
 }
 
 /**
- * Shared visual shell for any step-based gate editor. It deliberately owns no
- * node storage: callers provide rows, labels, gates, and pointer actions.
- * Sequencer Gate mode and Roll will migrate here in the following steps.
+ * Shared interaction and rendering system for step-based patterns. Callers
+ * adapt node storage to gates and choose which interactions are available.
  */
 interface PatternGridGate {
   slot: number;
@@ -3497,12 +3497,17 @@ interface PatternGridProps {
   beatLength: number;
   currentStep?: number;
   rowLabel: (row: number) => string;
+  renderRowLabel?: (row: number) => ReactNode;
+  labelPosition?: 'left' | 'right';
+  onRowRef?: (row: number, element: HTMLDivElement | null) => void;
   gatesForRow: (row: number) => PatternGridGate[];
+  mode?: 'gate' | 'trigger';
   defaultGateLength?: number;
   allowMove?: boolean;
   allowResize?: boolean;
   allowVelocity?: boolean;
   onCreateGate: (row: number, start: number, end: number) => void;
+  onCreateGates?: (row: number, gates: Array<{ start: number; end: number }>) => void;
   onUpdateGate: (row: number, slot: number, update: Partial<Pick<PatternGridGate, 'start' | 'end' | 'velocity'>>) => void;
   onDeleteGate: (row: number, slot: number) => void;
 }
@@ -3515,18 +3520,108 @@ function PatternGrid({
   beatLength,
   currentStep,
   rowLabel,
+  renderRowLabel,
+  labelPosition = 'left',
+  onRowRef,
   gatesForRow,
+  mode = 'gate',
   defaultGateLength = 1,
   allowMove = true,
   allowResize = true,
   allowVelocity = true,
   onCreateGate,
+  onCreateGates,
   onUpdateGate,
   onDeleteGate,
 }: PatternGridProps) {
   const activeStep = Number.isFinite(currentStep) ? Math.floor(currentStep ?? -1) : -1;
   const dragRef = useRef<{ pointerId: number; row: number; gate: PatternGridGate; x: number; y: number; action: 'move' | 'left' | 'right' | 'velocity'; moved: boolean } | null>(null);
+  const createRef = useRef<{
+    pointerId: number;
+    row: number;
+    anchorX: number;
+    start: number;
+    end: number;
+    lastStep: number;
+    positions: Set<number>;
+    moved: boolean;
+  } | null>(null);
+  const [createPreview, setCreatePreview] = useState<{ row: number; gates: Array<{ start: number; end: number }> } | null>(null);
+
+  const positionInRow = (event: PointerEvent<HTMLElement>) => {
+    const bounds = event.currentTarget.closest('.pattern-grid-cells')?.getBoundingClientRect();
+    if (!bounds) return 0;
+    return Math.max(0, Math.min(steps, ((event.clientX - bounds.left) / Math.max(1, bounds.width)) * steps));
+  };
+
+  const beginCreate = (event: PointerEvent<HTMLButtonElement>, row: number, step: number) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const existing = gatesForRow(row);
+    if (existing.some((gate) => step >= gate.start && step < gate.end)) return;
+    const nextStart = mode === 'gate'
+      ? existing.filter((gate) => gate.start > step).reduce((boundary, gate) => Math.min(boundary, gate.start), steps)
+      : steps;
+    const end = mode === 'trigger' ? Math.min(steps, step + 1) : Math.min(nextStart, step + defaultGateLength);
+    if (end - step < 0.05) return;
+    createRef.current = {
+      pointerId: event.pointerId,
+      row,
+      anchorX: event.clientX,
+      start: step,
+      end,
+      lastStep: step,
+      positions: new Set([step]),
+      moved: false,
+    };
+    setCreatePreview({ row, gates: [{ start: step, end }] });
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const moveCreate = (event: PointerEvent<HTMLButtonElement>) => {
+    const create = createRef.current;
+    if (!create || create.pointerId !== event.pointerId) return;
+    if (Math.abs(event.clientX - create.anchorX) >= 3) create.moved = true;
+    if (mode === 'trigger') {
+      const nextStep = Math.max(0, Math.min(steps - 1, Math.floor(positionInRow(event))));
+      const direction = nextStep >= create.lastStep ? 1 : -1;
+      for (let step = create.lastStep; step !== nextStep + direction; step += direction) create.positions.add(step);
+      create.lastStep = nextStep;
+      const occupied = gatesForRow(create.row);
+      const gates = [...create.positions]
+        .filter((step) => !occupied.some((gate) => Math.abs(gate.start - step) < 0.000001))
+        .sort((left, right) => left - right)
+        .map((step) => ({ start: step, end: Math.min(steps, step + 1) }));
+      setCreatePreview({ row: create.row, gates });
+      return;
+    }
+    if (!create.moved) return;
+    const nextStart = gatesForRow(create.row)
+      .filter((gate) => gate.start > create.start)
+      .reduce((boundary, gate) => Math.min(boundary, gate.start), steps);
+    create.end = Math.max(create.start + 0.05, Math.min(nextStart, positionInRow(event)));
+    setCreatePreview({ row: create.row, gates: [{ start: create.start, end: create.end }] });
+  };
+
+  const finishCreate = (pointerId: number) => {
+    const create = createRef.current;
+    if (!create || create.pointerId !== pointerId) return;
+    const occupied = gatesForRow(create.row);
+    const gates = mode === 'trigger'
+      ? [...create.positions]
+          .filter((step) => !occupied.some((gate) => Math.abs(gate.start - step) < 0.000001))
+          .sort((left, right) => left - right)
+          .map((step) => ({ start: step, end: Math.min(steps, step + 1) }))
+      : [{ start: create.start, end: create.end }];
+    if (onCreateGates) onCreateGates(create.row, gates);
+    else for (const gate of gates) onCreateGate(create.row, gate.start, gate.end);
+    createRef.current = null;
+    setCreatePreview(null);
+  };
+
   const beginDrag = (event: PointerEvent<HTMLElement>, row: number, gate: PatternGridGate, action: 'move' | 'left' | 'right' | 'velocity') => {
+    if (event.button !== 0) return;
     event.preventDefault(); event.stopPropagation();
     dragRef.current = { pointerId: event.pointerId, row, gate, x: event.clientX, y: event.clientY, action, moved: false };
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -3541,21 +3636,60 @@ function PatternGrid({
     if (!drag.moved) return;
     if (drag.action === 'velocity') return onUpdateGate(drag.row, drag.gate.slot, { velocity: Math.max(SEQUENCER_MIN_VELOCITY, Math.min(1, drag.gate.velocity - velocityDelta)) });
     const length = drag.gate.end - drag.gate.start;
-    if (drag.action === 'move') return onUpdateGate(drag.row, drag.gate.slot, { start: Math.max(0, Math.min(steps - length, drag.gate.start + delta)), end: Math.max(0, Math.min(steps - length, drag.gate.start + delta)) + length });
-    if (drag.action === 'left') return onUpdateGate(drag.row, drag.gate.slot, { start: Math.max(0, Math.min(drag.gate.end - 0.05, drag.gate.start + delta)) });
-    onUpdateGate(drag.row, drag.gate.slot, { end: Math.max(drag.gate.start + 0.05, Math.min(steps, drag.gate.end + delta)) });
+    if (mode === 'trigger') {
+      const start = Math.max(0, Math.min(steps - 1, drag.gate.start + delta));
+      return onUpdateGate(drag.row, drag.gate.slot, { start, end: Math.min(steps, start + 1) });
+    }
+    const otherGates = gatesForRow(drag.row).filter((gate) => gate.slot !== drag.gate.slot);
+    const previousEnd = otherGates
+      .filter((gate) => gate.start < drag.gate.start)
+      .reduce((boundary, gate) => Math.max(boundary, gate.end), 0);
+    const nextStart = otherGates
+      .filter((gate) => gate.start >= drag.gate.end)
+      .reduce((boundary, gate) => Math.min(boundary, gate.start), steps);
+    if (drag.action === 'move') {
+      const start = Math.max(previousEnd, Math.min(nextStart - length, drag.gate.start + delta));
+      return onUpdateGate(drag.row, drag.gate.slot, { start, end: start + length });
+    }
+    if (drag.action === 'left') return onUpdateGate(drag.row, drag.gate.slot, { start: Math.max(previousEnd, Math.min(drag.gate.end - 0.05, drag.gate.start + delta)) });
+    onUpdateGate(drag.row, drag.gate.slot, { end: Math.max(drag.gate.start + 0.05, Math.min(nextStart, drag.gate.end + delta)) });
   };
-  const endDrag = (event: PointerEvent<HTMLElement>) => {
+  const finishDrag = (pointerId: number) => {
     const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag || drag.pointerId !== pointerId) return;
     if (!drag.moved && drag.action === 'move') onDeleteGate(drag.row, drag.gate.slot);
     dragRef.current = null;
   };
+  const endDrag = (event: PointerEvent<HTMLElement>) => finishDrag(event.pointerId);
+  const cancelDrag = (pointerId: number) => {
+    if (dragRef.current?.pointerId === pointerId) dragRef.current = null;
+  };
+
+  useEffect(() => {
+    const finishPointer = (event: globalThis.PointerEvent) => {
+      finishCreate(event.pointerId);
+      finishDrag(event.pointerId);
+    };
+    const cancelPointer = (event: globalThis.PointerEvent) => {
+      if (createRef.current?.pointerId === event.pointerId) {
+        createRef.current = null;
+        setCreatePreview(null);
+      }
+      cancelDrag(event.pointerId);
+    };
+    window.addEventListener('pointerup', finishPointer);
+    window.addEventListener('pointercancel', cancelPointer);
+    return () => {
+      window.removeEventListener('pointerup', finishPointer);
+      window.removeEventListener('pointercancel', cancelPointer);
+    };
+  });
+
   return (
-    <div className={`pattern-grid ${className} nodrag nopan`} style={{ '--pattern-grid-steps': steps } as CSSProperties} aria-label={ariaLabel}>
+    <div className={`pattern-grid pattern-grid-label-${labelPosition} ${className} nodrag nopan`} style={{ '--pattern-grid-steps': steps } as CSSProperties} aria-label={ariaLabel}>
       {Array.from({ length: rows }, (_, row) => (
-        <div className="pattern-grid-row" key={row}>
-          <div className="pattern-grid-label">{rowLabel(row)}</div>
+        <div className="pattern-grid-row" key={row} ref={(element) => onRowRef?.(row, element)}>
+          {labelPosition === 'left' ? <div className="pattern-grid-label">{renderRowLabel?.(row) ?? rowLabel(row)}</div> : null}
           <div className="pattern-grid-cells" role="row">
             {Array.from({ length: steps }, (_, step) => (
               <button
@@ -3563,23 +3697,45 @@ function PatternGrid({
                 key={step}
                 type="button"
                 aria-label={`${rowLabel(row)}, step ${step + 1}`}
-                onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); onCreateGate(row, step, Math.min(steps, step + defaultGateLength)); }}
+                data-pattern-grid-cell="true"
+                data-row-index={row}
+                data-step-index={step}
+                onPointerDown={(event) => beginCreate(event, row, step)}
+                onPointerMove={moveCreate}
+                onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); finishCreate(event.pointerId); }}
+                onPointerCancel={(event) => { createRef.current = null; setCreatePreview(null); if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}
+                onLostPointerCapture={(event) => finishCreate(event.pointerId)}
+                onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}
               />
             ))}
+            {createPreview?.row === row ? createPreview.gates.map((gate, index) => (
+              <div
+                className="pattern-grid-gate pattern-grid-create-preview"
+                key={`${gate.start}:${index}`}
+                style={{ left: `${gate.start / steps * 100}%`, width: `${(gate.end - gate.start) / steps * 100}%` }}
+              />
+            )) : null}
             {gatesForRow(row).map((gate) => (
               <div
                 className="pattern-grid-gate"
                 key={gate.slot}
                 style={{ top: `${(1 - gate.velocity) * 100}%`, left: `${gate.start / steps * 100}%`, width: `${(gate.end - gate.start) / steps * 100}%` }}
-                onPointerDown={(event) => allowMove && beginDrag(event, row, gate, 'move')}
+                role="button"
+                tabIndex={0}
+                aria-label={`${rowLabel(row)} ${mode} from ${gate.start.toFixed(2)} to ${gate.end.toFixed(2)}, velocity ${gate.velocity.toFixed(2)}`}
+                onPointerDown={(event) => { if (allowMove && event.target === event.currentTarget) beginDrag(event, row, gate, 'move'); }}
                 onPointerMove={moveDrag}
                 onPointerUp={endDrag}
+                onPointerCancel={(event) => cancelDrag(event.pointerId)}
+                onLostPointerCapture={(event) => cancelDrag(event.pointerId)}
+                onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}
               >
-                {allowVelocity ? <span className="pattern-grid-velocity-handle" onPointerDown={(event) => beginDrag(event, row, gate, 'velocity')} /> : null}
-                {allowResize ? <><span className="pattern-grid-gate-handle pattern-grid-gate-handle-left" onPointerDown={(event) => beginDrag(event, row, gate, 'left')} /><span className="pattern-grid-gate-handle pattern-grid-gate-handle-right" onPointerDown={(event) => beginDrag(event, row, gate, 'right')} /></> : null}
+                {allowVelocity ? <span className="pattern-grid-velocity-handle" onPointerDown={(event) => beginDrag(event, row, gate, 'velocity')} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={(event) => cancelDrag(event.pointerId)} /> : null}
+                {allowResize ? <><span className="pattern-grid-gate-handle pattern-grid-gate-handle-left" onPointerDown={(event) => beginDrag(event, row, gate, 'left')} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={(event) => cancelDrag(event.pointerId)} /><span className="pattern-grid-gate-handle pattern-grid-gate-handle-right" onPointerDown={(event) => beginDrag(event, row, gate, 'right')} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={(event) => cancelDrag(event.pointerId)} /></> : null}
               </div>
             ))}
           </div>
+          {labelPosition === 'right' ? <div className="pattern-grid-label">{renderRowLabel?.(row) ?? rowLabel(row)}</div> : null}
         </div>
       ))}
     </div>
@@ -3603,6 +3759,140 @@ interface SequencerGridProps {
 const SEQUENCER_TRIGGER_GRAB_FRACTION = 0.35;
 
 function SequencerGrid({
+  params,
+  rows,
+  rowLabels,
+  hasSavedLabelColumnWidth,
+  steps,
+  beatLength,
+  currentStep,
+  selectedLinkOutputs,
+  setOutputRowRef,
+  onParamsChange,
+  onRowLabelsChange,
+}: SequencerGridProps) {
+  const gateMode = sequencerUsesGateMode(params);
+  const [draftRowLabels, setDraftRowLabels] = useState<string[]>([]);
+
+  useEffect(() => {
+    setDraftRowLabels(Array.from({ length: rows }, (_, rowIndex) => rowLabels?.[rowIndex] ?? String(rowIndex + 1)));
+  }, [rowLabels, rows]);
+
+  useEffect(() => {
+    if (hasSavedLabelColumnWidth) return;
+    onRowLabelsChange(Array.from({ length: rows }, (_, rowIndex) => rowLabels?.[rowIndex] ?? String(rowIndex + 1)));
+  }, [hasSavedLabelColumnWidth, onRowLabelsChange, rowLabels, rows]);
+
+  const updateRowLabel = (rowIndex: number, value: string) => {
+    const labels = [...draftRowLabels];
+    labels[rowIndex] = value;
+    setDraftRowLabels(labels);
+    onRowLabelsChange(labels);
+  };
+  const commitRowLabel = (rowIndex: number) => {
+    const label = draftRowLabels[rowIndex]?.trim() || String(rowIndex + 1);
+    onRowLabelsChange(Array.from({ length: rows }, (_, index) => (
+      index === rowIndex ? label : draftRowLabels[index]?.trim() || rowLabels?.[index] || String(index + 1)
+    )));
+  };
+
+  const patternGatesForRow = (rowIndex: number): PatternGridGate[] => gateMode
+    ? sequencerGatesForRow(params, rowIndex, steps)
+    : sequencerTriggersForRow(params, rowIndex, steps).map((trigger) => ({
+        slot: trigger.slot,
+        start: trigger.position,
+        end: Math.min(steps, trigger.position + 1),
+        velocity: trigger.velocity,
+      }));
+
+  const createGates = (rowIndex: number, additions: Array<{ start: number; end: number }>) => {
+    const existing = patternGatesForRow(rowIndex);
+    const usedSlots = new Set(existing.map((gate) => gate.slot));
+    const existingStarts = new Set(existing.map((gate) => Math.round(gate.start * 1000000)));
+    const values: Record<string, number> = gateMode ? { [SEQUENCER_GATE_INITIALIZED_PARAM]: 1 } : {};
+    for (const addition of additions) {
+      if (!gateMode && existingStarts.has(Math.round(addition.start * 1000000))) continue;
+      const slot = Array.from({ length: steps }, (_, index) => index).find((index) => !usedSlots.has(index));
+      if (slot === undefined) break;
+      usedSlots.add(slot);
+      if (gateMode) {
+        values[sequencerGateParamName(rowIndex, slot, 'active')] = 1;
+        values[sequencerGateParamName(rowIndex, slot, 'start')] = addition.start;
+        values[sequencerGateParamName(rowIndex, slot, 'end')] = addition.end;
+        values[sequencerStepVelocityParamName(rowIndex, slot)] = 1;
+      } else {
+        values[sequencerCellParamName(rowIndex, slot)] = 1;
+        values[sequencerTriggerPositionParamName(rowIndex, slot)] = addition.start;
+        values[sequencerStepVelocityParamName(rowIndex, slot)] = 1;
+      }
+    }
+    if (Object.keys(values).length > (gateMode ? 1 : 0)) onParamsChange(values);
+  };
+
+  return (
+    <PatternGrid
+      ariaLabel="Sequencer pattern"
+      className="pattern-grid-sequencer"
+      rows={rows}
+      steps={steps}
+      beatLength={beatLength}
+      currentStep={currentStep}
+      mode={gateMode ? 'gate' : 'trigger'}
+      labelPosition="right"
+      rowLabel={(rowIndex) => draftRowLabels[rowIndex] ?? rowLabels?.[rowIndex] ?? String(rowIndex + 1)}
+      renderRowLabel={(rowIndex) => {
+        const outputName = sequencerOutputName(rowIndex);
+        return (
+          <div className="sequencer-output-port">
+            <input
+              className="sequencer-row-label"
+              aria-label={`Label for row ${rowIndex + 1}`}
+              value={draftRowLabels[rowIndex] ?? String(rowIndex + 1)}
+              size={Math.max(3, (draftRowLabels[rowIndex] ?? String(rowIndex + 1)).length)}
+              onChange={(event) => updateRowLabel(rowIndex, event.target.value)}
+              onBlur={() => commitRowLabel(rowIndex)}
+              onPointerDown={(event) => event.stopPropagation()}
+              onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Enter') event.currentTarget.blur(); }}
+            />
+            <Handle
+              id={`out:${outputName}`}
+              type="source"
+              position={Position.Right}
+              className={[
+                'shader-handle shader-handle-output shader-handle-output-sequencer',
+                selectedLinkOutputs.includes(outputName) ? 'shader-handle-selected-link' : '',
+              ].filter(Boolean).join(' ')}
+            />
+          </div>
+        );
+      }}
+      onRowRef={(rowIndex, element) => setOutputRowRef(sequencerOutputName(rowIndex), element)}
+      gatesForRow={patternGatesForRow}
+      defaultGateLength={1}
+      allowMove
+      allowResize={gateMode}
+      allowVelocity
+      onCreateGate={(rowIndex, start, end) => createGates(rowIndex, [{ start, end }])}
+      onCreateGates={createGates}
+      onUpdateGate={(rowIndex, slot, update) => {
+        const values: Record<string, number> = {};
+        if (update.velocity !== undefined) values[sequencerStepVelocityParamName(rowIndex, slot)] = update.velocity;
+        if (gateMode) {
+          if (update.start !== undefined) values[sequencerGateParamName(rowIndex, slot, 'start')] = update.start;
+          if (update.end !== undefined) values[sequencerGateParamName(rowIndex, slot, 'end')] = update.end;
+        } else if (update.start !== undefined) {
+          values[sequencerTriggerPositionParamName(rowIndex, slot)] = update.start;
+        }
+        onParamsChange(values);
+      }}
+      onDeleteGate={(rowIndex, slot) => onParamsChange(gateMode
+        ? { [sequencerGateParamName(rowIndex, slot, 'active')]: 0 }
+        : { [sequencerCellParamName(rowIndex, slot)]: 0 })}
+    />
+  );
+}
+
+function LegacySequencerGrid({
   params,
   rows,
   rowLabels,

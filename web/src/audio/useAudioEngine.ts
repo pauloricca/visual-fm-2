@@ -424,6 +424,19 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     setCpuLoad(0);
   }, []);
 
+  const sendMidiAllNotesOff = useCallback(() => {
+    for (const output of midiAccessRef.current?.outputs.values() ?? []) {
+      if (output.state === 'disconnected') continue;
+      try {
+        for (let channel = 0; channel < 16; channel += 1) {
+          output.send([0xb0 | channel, 123, 0]);
+        }
+      } catch {
+        // A device can disappear while playback is stopping.
+      }
+    }
+  }, []);
+
   const closeAudioEngine = useCallback((reason: string): Promise<void> => {
     if (audioEngineCloseRef.current) return audioEngineCloseRef.current;
 
@@ -432,6 +445,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     lastSentValuesRef.current = null;
     lastSentCustomWavePointsRef.current = null;
     lastSentSequencerConfigRef.current = null;
+    sendMidiAllNotesOff();
     const closePromise = closeAudioContext(
       contextRef,
       nodeRef,
@@ -450,7 +464,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
       }
     });
     return closePromise;
-  }, []);
+  }, [sendMidiAllNotesOff]);
 
   const startMeter = useCallback(() => {
     stopMeter();
@@ -707,6 +721,25 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
         output.send([message]);
       } catch {
         // A device can disappear between enumeration and send; state changes refresh on the next MIDI event.
+      }
+    }
+  }, []);
+
+  const sendMidiOutputEvents = useCallback((events: unknown) => {
+    if (!Array.isArray(events)) return;
+    for (const event of events) {
+      const noteOn = event?.noteOn === true;
+      const channel = clampMidiInteger(event?.channel, 1, 16);
+      const note = clampMidiInteger(event?.note, 0, 127);
+      const velocity = clampMidiInteger(Number(event?.velocity) * 127, 0, 127);
+      const status = (noteOn ? 0x90 : 0x80) | (channel - 1);
+      for (const output of midiAccessRef.current?.outputs.values() ?? []) {
+        if (output.state === 'disconnected') continue;
+        try {
+          output.send([status, note, velocity]);
+        } catch {
+          // A device can disappear between audio rendering and MIDI dispatch.
+        }
       }
     }
   }, []);
@@ -1308,6 +1341,10 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
 
           node.port.onmessage = (event) => {
             const { type, payload } = event.data || {};
+            if (type === 'midiOutput') {
+              sendMidiOutputEvents(payload?.events);
+              return;
+            }
             if (type === 'backendStatus') {
               backendReadyRef.current = Boolean(payload?.ready);
               logDiagnosticEvent('audio-backend-status', {
@@ -1529,7 +1566,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     if (activate) {
       await activateAudioEngine();
     }
-  }, [activateAudioEngine, appendRecordingChunk, beginRecordingCapture, closeAudioEngine, completeRecordingCapture, syncGraphImages, syncGraphSamples]);
+  }, [activateAudioEngine, appendRecordingChunk, beginRecordingCapture, closeAudioEngine, completeRecordingCapture, sendMidiOutputEvents, syncGraphImages, syncGraphSamples]);
 
   const syncGraph = useCallback((graph: DspProgram) => {
     graphRef.current = graph;
@@ -1745,6 +1782,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
       },
     });
     audioActivationRequestedRef.current = false;
+    sendMidiAllNotesOff();
     stopMidiClockOutput();
     finishRecordingCapture();
     setPlayheads({});
@@ -1802,7 +1840,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     if (!midiInputEnabled && !midiClockOutputEnabled && !midiAccessRequestedRef.current) {
       setMidiInputDevices((current) => current.length === 0 ? current : []);
     }
-  }, [attachMidiInputs, disconnectMidiInput, finishRecordingCapture, midiClockOutputEnabled, midiInputEnabled, stopMeter, stopMidiClockOutput]);
+  }, [attachMidiInputs, disconnectMidiInput, finishRecordingCapture, midiClockOutputEnabled, midiInputEnabled, sendMidiAllNotesOff, stopMeter, stopMidiClockOutput]);
 
   useEffect(() => {
     if (!midiClockOutputEnabled) {
@@ -2215,7 +2253,7 @@ function midiInputStatusMessage(deviceCount: number, selectedCount: number, sele
 
 function programUsesMidi(program: DspProgram | null): boolean {
   return Boolean(
-    program?.ops.some((op) => op.opcode === DSP_OP.MidiNote || op.opcode === DSP_OP.MidiCc) ||
+    program?.ops.some((op) => op.opcode === DSP_OP.MidiNote || op.opcode === DSP_OP.MidiCc || op.opcode === DSP_OP.MidiNoteSend) ||
     (program?.midiControlBindings.length ?? 0) > 0 ||
     programUsesMidiClock(program)
   );
@@ -2256,6 +2294,11 @@ function activeMidiClockSourceIndexes(program: DspProgram | null): Set<number> {
 function clampNumber(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, value));
+}
+
+function clampMidiInteger(value: unknown, min: number, max: number): number {
+  const numeric = Number(value);
+  return Math.round(clampNumber(numeric, min, max));
 }
 
 async function resumeAudioContext(context: AudioContext): Promise<void> {

@@ -2510,18 +2510,22 @@ function NodeEditorInner() {
 
   const setLinkInputPortsByNode = useMemo(() => {
     const portsByNode = new Map<string, Set<string>>();
+    const disabledNodeIds = new Set(
+      nodes.filter((node) => node.data.patchNode.enabled === false).map((node) => node.id),
+    );
 
     for (const edge of edges) {
       if (edge.data?.enabled === false || (edge.data?.mode ?? 'set') !== 'set') continue;
       const link = linkFromEdge(edge);
       if (!link) continue;
+      if (disabledNodeIds.has(link.from.node) || disabledNodeIds.has(link.to.node)) continue;
       const ports = portsByNode.get(link.to.node) ?? new Set<string>();
       ports.add(link.to.port);
       portsByNode.set(link.to.node, ports);
     }
 
     return new Map([...portsByNode].map(([nodeId, ports]) => [nodeId, [...ports]]));
-  }, [edges]);
+  }, [edges, nodes]);
 
   const selectedNodeCount = nodes.filter((node) => node.selected).length;
   const selectNodeFromTitle = useCallback((nodeId: string, additive: boolean) => {
@@ -6508,7 +6512,6 @@ function MidiSettingsModal({
             disabled={unavailable}
           />
           <span>Send MIDI clock and transport</span>
-          <small>all connected MIDI outputs; requires a Tempo node</small>
         </label>
 
         <footer className="import-modal-actions">

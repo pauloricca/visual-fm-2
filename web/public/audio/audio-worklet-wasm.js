@@ -2984,6 +2984,21 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
   renderCurrentDspProgramToWasm(frames) {
     this.flushMidiNoteEventsToWasm();
     this.wasm.renderDspProgram?.(frames, sampleRate);
+    this.flushMidiOutputEvents();
+  }
+
+  flushMidiOutputEvents() {
+    if (!this.wasm?.takeDspMidiOutputEvent) return;
+    const events = [];
+    while (this.wasm.takeDspMidiOutputEvent()) {
+      events.push({
+        noteOn: Boolean(this.wasm.dspMidiOutputEventNoteOn?.()),
+        channel: Math.trunc(Number(this.wasm.dspMidiOutputEventChannel?.()) || 1),
+        note: Number(this.wasm.dspMidiOutputEventNote?.()) || 0,
+        velocity: Number(this.wasm.dspMidiOutputEventVelocity?.()) || 0,
+      });
+    }
+    if (events.length) this.port.postMessage({ type: "midiOutput", payload: { events } });
   }
 
   nextGraphUpdateCrossfadeSample(leftSample, rightSample) {

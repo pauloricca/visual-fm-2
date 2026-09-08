@@ -36,6 +36,8 @@ export type NodeType =
   | 'MidiNote'
   | 'MidiNoteOn'
   | 'MidiNoteOff'
+  | 'MidiNoteOnSend'
+  | 'MidiNoteOffSend'
   | 'MidiCc'
   | 'Selector'
   | 'Accumulator'

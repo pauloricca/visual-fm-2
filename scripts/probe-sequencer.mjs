@@ -433,6 +433,56 @@ for (let block = 0; block < 10 && fractionalTriggerPeak === 0; block += 1) {
 assert(fractionalTriggerPeak > 0.9, 'Moved trigger did not emit when the fractional playhead crossed its position.');
 assert(renderTriggerFrames(100) === 0, 'Moved trigger should emit a single click, not a sustained gate.');
 
+const startTriggerThroughButtonPatch = {
+  nodes: [
+    node('tempo', 'Tempo', { bpm: 120 }),
+    node('seq', 'Sequencer', { steps: 4, rows: 1, 'cell:0:0': 1 }),
+    node('button', 'Button', { pressed: 1 }),
+    node('counter', 'Accumulator', { increment: 1, min: 0, max: 8 }),
+    node('out', 'AudioOut', { level: 1 }),
+  ],
+  links: [
+    link('tempo', 'sixteenth', 'seq', 'signal'),
+    link('seq', '1', 'button', 'signal'),
+    link('button', 'signal', 'counter', 'trigger'),
+    link('counter', 'signal', 'out', 'both'),
+  ],
+};
+const startTriggerThroughButtonProgram = compilePatchToDspProgram(startTriggerThroughButtonPatch);
+assert(startTriggerThroughButtonProgram.errors.length === 0, `Button startup DSP compile failed: ${startTriggerThroughButtonProgram.errors.join('; ')}`);
+const startTriggerCounterState = startTriggerThroughButtonProgram.stateBindings.find((binding) => binding.id === 'counter:accumulator')?.state;
+assert(Number.isInteger(startTriggerCounterState), 'Button startup accumulator state was not emitted.');
+
+wasm.clearDspProgram();
+wasm.resetDspRuntimeState();
+for (let index = 0; index < startTriggerThroughButtonProgram.values.length; index += 1) {
+  wasm.setDspValue(index, startTriggerThroughButtonProgram.values[index]);
+}
+for (const op of startTriggerThroughButtonProgram.ops) {
+  wasm.addDspOp(
+    op.opcode ?? -1,
+    op.out ?? -1,
+    op.a ?? -1,
+    op.b ?? -1,
+    op.c ?? -1,
+    op.d ?? -1,
+    op.e ?? -1,
+    op.state ?? -1,
+    op.value ?? 0,
+    op.value2 ?? 0,
+    op.value3 ?? 0,
+    op.value4 ?? 0,
+  );
+}
+configureSequencers(startTriggerThroughButtonProgram);
+function renderStartTriggerFrame() {
+  wasm.clear(1);
+  wasm.beginDspRenderQuantum();
+  wasm.renderDspProgram(1, 48_000);
+}
+renderStartTriggerFrame();
+assert(wasm.getDspState(startTriggerCounterState) === 1, 'The first Sequencer trigger should pass through an already enabled Button.');
+
 console.log(`Sequencer probe passed: advance ${advanced.join(',')}; reset next step ${afterReset}; index ${indexOutputs.join(',')}`);
 
 function configureSequencers(program) {

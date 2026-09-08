@@ -72,6 +72,7 @@ export const DSP_OP = {
   SpawnInstanceGate: 50,
   DcBlock: 51,
   RollNoteEvent: 52,
+  MidiNoteSend: 53,
 } as const;
 
 export interface DspProgram {
@@ -337,6 +338,13 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
 
   for (const node of audioOutNodes) {
     compileAudioOut(node, context);
+  }
+
+  for (const node of patch.nodes.filter((candidate) => (
+    candidate.enabled !== false
+    && (candidate.type === 'MidiNoteOnSend' || candidate.type === 'MidiNoteOffSend')
+  ))) {
+    compileMidiNoteSend(node, context);
   }
 
   for (const node of monitorNodes) {
@@ -652,6 +660,26 @@ function compileAudioOut(node: PatchNode, context: CompileContext): void {
 
   context.monitorIds[`${node.id}:left`] = sumRegisters(leftRegisters, context);
   context.monitorIds[`${node.id}:right`] = sumRegisters(rightRegisters, context);
+}
+
+function compileMidiNoteSend(node: PatchNode, context: CompileContext): void {
+  const state = nextState(context, 1);
+  context.stateBindings.push({
+    id: `${node.id}:trigger`,
+    state,
+    count: 1,
+    kind: 'effect',
+    nodeId: node.id,
+  });
+  context.ops.push({
+    opcode: DSP_OP.MidiNoteSend,
+    a: resolveInput(node, 'trigger', 0, context),
+    b: resolveInput(node, 'note', 60, context),
+    c: resolveInput(node, 'velocity', node.type === 'MidiNoteOnSend' ? 1 : 0, context),
+    d: resolveInput(node, 'channel', 1, context),
+    state,
+    value: node.type === 'MidiNoteOnSend' ? 1 : 0,
+  });
 }
 
 function validatePatchLinks(context: CompileContext): void {
@@ -1861,11 +1889,11 @@ function resolveButtonGateOutput(node: PatchNode, context: CompileContext): numb
   }
 
   const smoothedOutput = nextRegister(context);
-  const smoothingState = nextState(context, 1);
+  const smoothingState = nextState(context, 2);
   context.stateBindings.push({
     id: `${node.id}:button-gate-slew`,
     state: smoothingState,
-    count: 1,
+    count: 2,
     kind: 'effect',
     nodeId: node.id,
   });
@@ -1875,6 +1903,7 @@ function resolveButtonGateOutput(node: PatchNode, context: CompileContext): numb
     a: output,
     state: smoothingState,
     value: BUTTON_GATE_FADE_SECONDS,
+    value2: 1,
   });
   context.buttonGateOutputByNodeId.set(node.id, smoothedOutput);
   return smoothedOutput;
