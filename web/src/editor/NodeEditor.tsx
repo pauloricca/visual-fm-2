@@ -2881,7 +2881,11 @@ function NodeEditorInner() {
         ...(monitorLinkId && innerNode.type === 'Meter' ? { audioMeter: audio.linkMeters[monitorLinkId] } : {}),
         ...(monitorLinkId && innerNode.type === 'Scope' ? { audioScope: audio.linkScopes[dspNodeId] } : {}),
         ...(monitorLinkId && innerNode.type === 'FFT' ? { audioSpectrum: audio.linkScopes[dspNodeId] } : {}),
-        ...(monitorLinkId && innerNode.type === 'Slider' ? { audioSliderValue: audio.linkMeters[monitorLinkId]?.output } : {}),
+        // Meter messages can arrive just after playback stops. Do not let that
+        // stale runtime reading mask the saved control value while offline.
+        ...(audio.status === 'running' && monitorLinkId && innerNode.type === 'Slider'
+          ? { audioSliderValue: audio.linkMeters[monitorLinkId]?.output }
+          : {}),
         ...(midiControlVisual?.sliderValue !== undefined ? { midiSliderValue: midiControlVisual.sliderValue } : {}),
         ...(midiControlVisual?.joystickX !== undefined || midiControlVisual?.joystickY !== undefined
           ? {
@@ -2921,6 +2925,7 @@ function NodeEditorInner() {
     audio.linkMeters,
     audio.linkScopes,
     audio.playheads,
+    audio.status,
     canvasLocked,
     midiControlVisuals,
     monitorLinkIdByNode,
@@ -2973,7 +2978,9 @@ function NodeEditorInner() {
         ...(monitorLinkId && node.data.patchNode.type === 'Meter' ? { audioMeter: audio.linkMeters[monitorLinkId] } : {}),
         ...(monitorLinkId && node.data.patchNode.type === 'Scope' ? { audioScope: audio.linkScopes[dspNodeId] } : {}),
         ...(monitorLinkId && node.data.patchNode.type === 'FFT' ? { audioSpectrum: audio.linkScopes[dspNodeId] } : {}),
-        ...(monitorLinkId && node.data.patchNode.type === 'Slider' ? { audioSliderValue: audio.linkMeters[monitorLinkId]?.output } : {}),
+        ...(audio.status === 'running' && monitorLinkId && node.data.patchNode.type === 'Slider'
+          ? { audioSliderValue: audio.linkMeters[monitorLinkId]?.output }
+          : {}),
         ...(audioSelectorIndex !== undefined ? { audioSelectorIndex } : {}),
         ...(audioAccumulatorValue !== undefined ? { audioAccumulatorValue } : {}),
         ...(audioImagePosition ? { audioImagePosition } : {}),
@@ -2999,7 +3006,7 @@ function NodeEditorInner() {
     const reconciledNodes = reuseUnchangedNodePresentations(renderedNodeCacheRef.current, nextNodes);
     renderedNodeCacheRef.current = reconciledNodes;
     return reconciledNodes;
-  }, [activeDspGroupIds, audio.buffers, audio.linkMeters, audio.linkScopes, audio.playheads, clearBufferRecording, dspDiagnostics, midiControlVisuals, monitorLinkIdByNode, nodesWithGroupUi]);
+  }, [activeDspGroupIds, audio.buffers, audio.linkMeters, audio.linkScopes, audio.playheads, audio.status, clearBufferRecording, dspDiagnostics, midiControlVisuals, monitorLinkIdByNode, nodesWithGroupUi]);
 
   const renderedEdges = useMemo(() => edgesWithCallbacks.map((edge) => {
     const dspErrors = dspDiagnostics.edgeErrors.get(edge.id) ?? [];
