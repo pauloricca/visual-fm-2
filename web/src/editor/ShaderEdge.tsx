@@ -277,6 +277,13 @@ export function EdgeWeightScrubber({ value, onChange }: EdgeWeightScrubberProps)
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(formatNumericValue(value));
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const wheelValueRef = useRef(value);
+  const lastWheelTimeRef = useRef(-Infinity);
+  const wheelTargetRef = useRef<HTMLDivElement | null>(null);
+  const latestValueRef = useRef(value);
+  const onChangeRef = useRef(onChange);
+  latestValueRef.current = value;
+  onChangeRef.current = onChange;
   const dragRef = useRef<{
     pointerId: number;
     anchorY: number;
@@ -301,6 +308,30 @@ export function EdgeWeightScrubber({ value, onChange }: EdgeWeightScrubberProps)
       inputRef.current?.select();
     });
   }, [editing, value]);
+
+  useEffect(() => {
+    const target = wheelTargetRef.current;
+    if (!target || editing) return;
+
+    const handleWheel = (event: WheelEvent) => {
+      if (!event.shiftKey && !event.altKey) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      if (event.timeStamp - lastWheelTimeRef.current > 160) {
+        wheelValueRef.current = latestValueRef.current;
+      }
+      lastWheelTimeRef.current = event.timeStamp;
+      const wheelDelta = verticalWheelDeltaPixels(event);
+      if (wheelDelta === 0) return;
+      const nextValue = roundValue(wheelValueRef.current + wheelDelta * scrubberStep(event));
+      wheelValueRef.current = nextValue;
+      onChangeRef.current(nextValue);
+    };
+
+    target.addEventListener('wheel', handleWheel, { capture: true, passive: false });
+    return () => target.removeEventListener('wheel', handleWheel, { capture: true });
+  }, [editing]);
 
   function startDrag(event: PointerEvent<HTMLDivElement>) {
     event.stopPropagation();
@@ -399,6 +430,7 @@ export function EdgeWeightScrubber({ value, onChange }: EdgeWeightScrubberProps)
 
   return (
     <div
+      ref={wheelTargetRef}
       className="edge-weight-scrubber nodrag nopan"
       role="spinbutton"
       tabIndex={-1}
@@ -430,4 +462,11 @@ function scrubberStep(event: { metaKey: boolean; shiftKey: boolean }): number {
   if (event.metaKey) return 0.2;
   if (event.shiftKey) return 0.001;
   return 0.01;
+}
+
+function verticalWheelDeltaPixels(event: Pick<WheelEvent, 'deltaY' | 'deltaMode'>): number {
+  const delta = event.deltaY;
+  if (event.deltaMode === 1) return delta * 16;
+  if (event.deltaMode === 2) return delta * window.innerHeight;
+  return delta;
 }

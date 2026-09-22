@@ -215,7 +215,7 @@ So:
 - `add` adds to the local value or to the averaged `set` value.
 - `multiply` multiplies the result after `set` and `add`.
 
-When an input has an enabled `set` link whose endpoints are both enabled, its numeric field is greyed out to show that its local value is currently replaced. The field remains editable, so its value is ready if the set link is disabled, removed, or changed to another mode.
+When an input has an enabled `set` link whose endpoints are both enabled, its numeric field is greyed out to show that its local value is currently replaced. The field remains editable, so its value is ready if the set link is disabled, removed, or changed to another mode. Hold Shift or Option/Alt while scrolling or making a two-finger trackpad gesture over a numeric field to adjust it vertically with the same sensitivity and modifier keys as vertical dragging; unmodified scrolling continues to pan the canvas. The same modified gesture over a Slider changes it relative to its current value, without jumping toward the pointer position: horizontal sliders follow horizontal movement, vertical sliders follow vertical movement, and Cmd/Ctrl retains the slider's five-times-finer movement.
 
 While dragging a new link, press `a` to create it in `add` mode, `m` for `multiply` mode, or `s` for `set` mode (the default). The live link changes colour to preview the selected mode.
 

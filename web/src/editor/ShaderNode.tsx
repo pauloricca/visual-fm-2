@@ -2857,6 +2857,8 @@ interface SliderDisplayProps {
   onChange: (value: number) => void;
 }
 
+const SLIDER_WHEEL_SPEED = 0.5;
+
 function SliderDisplay({ value, displayValue, direction, onChange }: SliderDisplayProps) {
   const dragRef = useRef<{
     pointerId: number;
@@ -2866,6 +2868,28 @@ function SliderDisplay({ value, displayValue, direction, onChange }: SliderDispl
     fineControl: boolean;
   } | null>(null);
   const normalized = clamp(displayValue ?? value, 0, 1);
+  const wheelValueRef = useRef(normalized);
+  const lastWheelTimeRef = useRef(-Infinity);
+  const wheelTargetRef = useModifiedWheel<HTMLInputElement>((event, target) => {
+    if (event.timeStamp - lastWheelTimeRef.current > 160) {
+      wheelValueRef.current = normalized;
+    }
+    lastWheelTimeRef.current = event.timeStamp;
+    const travel = direction === 'vertical' ? target.clientHeight : target.clientWidth;
+    const fineControl = event.metaKey || event.ctrlKey;
+    const wheelDelta = wheelAxisDeltaPixels(event, direction);
+    if (wheelDelta === 0) return;
+    const nextValue = clamp(
+      wheelValueRef.current
+        + wheelDelta * (direction === 'vertical' ? 1 : -1) * SLIDER_WHEEL_SPEED
+          / Math.max(1, travel)
+          / (fineControl ? 5 : 1),
+      0,
+      1,
+    );
+    wheelValueRef.current = nextValue;
+    onChange(nextValue);
+  });
   const fillStyle = direction === 'vertical'
     ? { height: `${normalized * 100}%` }
     : { width: `${normalized * 100}%` };
@@ -2911,6 +2935,7 @@ function SliderDisplay({ value, displayValue, direction, onChange }: SliderDispl
     >
       <span className="audio-node-slider-fill" style={fillStyle} aria-hidden="true" />
       <input
+        ref={wheelTargetRef}
         aria-label="Slider value"
         type="range"
         tabIndex={-1}
@@ -5535,6 +5560,24 @@ function NumericScrubber({
   const [draft, setDraft] = useState(formatNumericValue(value));
   const inputRef = useRef<HTMLInputElement | null>(null);
   const lastMidiLearnIdRef = useRef<number | null>(null);
+  const wheelValueRef = useRef(value);
+  const lastWheelTimeRef = useRef(-Infinity);
+  const wheelTargetRef = useModifiedWheel<HTMLDivElement>((event) => {
+    if (event.timeStamp - lastWheelTimeRef.current > 160) {
+      wheelValueRef.current = value;
+    }
+    lastWheelTimeRef.current = event.timeStamp;
+    const wheelDelta = wheelAxisDeltaPixels(event, 'vertical');
+    if (wheelDelta === 0) return;
+    const nextValue = constrainValue(
+      roundValue(wheelValueRef.current + wheelDelta * scrubberStep(event, dragStep)),
+      min,
+      max,
+      integer,
+    );
+    wheelValueRef.current = nextValue;
+    onChange(nextValue);
+  });
   const dragRef = useRef<{
     pointerId: number;
     anchorY: number;
@@ -5686,6 +5729,7 @@ function NumericScrubber({
 
   return (
     <div
+      ref={wheelTargetRef}
       className={`numeric-scrubber${replacedBySetLink ? ' numeric-scrubber-replaced' : ''} nodrag nopan`}
       role="spinbutton"
       tabIndex={-1}
@@ -5720,6 +5764,42 @@ function scrubberStep(event: { metaKey: boolean; shiftKey: boolean }, baseStep =
   if (event.metaKey) return baseStep * 20;
   if (event.shiftKey) return baseStep * 0.1;
   return baseStep;
+}
+
+function useModifiedWheel<T extends HTMLElement>(
+  onWheel: (event: WheelEvent, target: T) => void,
+): RefObject<T | null> {
+  const targetRef = useRef<T | null>(null);
+  const handlerRef = useRef(onWheel);
+  handlerRef.current = onWheel;
+
+  useEffect(() => {
+    const target = targetRef.current;
+    if (!target) return;
+
+    const handleWheel = (event: WheelEvent) => {
+      if (!event.shiftKey && !event.altKey) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      handlerRef.current(event, target);
+    };
+
+    target.addEventListener('wheel', handleWheel, { capture: true, passive: false });
+    return () => target.removeEventListener('wheel', handleWheel, { capture: true });
+  });
+
+  return targetRef;
+}
+
+function wheelAxisDeltaPixels(
+  event: Pick<WheelEvent, 'deltaX' | 'deltaY' | 'deltaMode'>,
+  direction: 'horizontal' | 'vertical',
+): number {
+  const delta = direction === 'vertical' ? event.deltaY : event.deltaX;
+  if (event.deltaMode === 1) return delta * 16;
+  if (event.deltaMode === 2) return delta * window.innerHeight;
+  return delta;
 }
 
 function constrainValue(value: number, min?: number, max?: number, integer = false): number {
