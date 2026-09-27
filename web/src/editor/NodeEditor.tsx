@@ -85,6 +85,7 @@ import { makeNodeId, ShaderNode } from './ShaderNode';
 const nodeTypes = { shaderNode: ShaderNode };
 const edgeTypes = { shaderEdge: ShaderEdge };
 const STORAGE_KEY = 'visual-fm-2.editor-state.v1';
+const VIEWPORT_STORAGE_KEY = 'visual-fm-2.viewport.v1';
 const HISTORY_LIMIT = 100;
 const DRAFT_NODE_PREVIEW_ID = '__draft_node_preview__';
 const DUPLICATE_NODE_PREVIEW_PREFIX = '__duplicate_node_preview__:';
@@ -328,10 +329,18 @@ export function NodeEditor() {
 
 function NodeEditorInner() {
   const initialState = useMemo(() => loadInitialEditorState(), []);
+  const storedViewport = useMemo(() => loadStoredViewport(), []);
+  const initialViewport = useMemo(
+    () => storedViewport ?? initialState?.ui?.viewport ?? { x: 0, y: 0, zoom: USER_ZOOM_BASELINE },
+    [initialState, storedViewport],
+  );
   const [patchName, setPatchName] = useState(initialState?.ui?.patchName ?? 'single-patch');
-  const [viewport, setViewport] = useState<Viewport>(initialState?.ui?.viewport ?? { x: 0, y: 0, zoom: USER_ZOOM_BASELINE });
+  // React Flow owns the live viewport transform. React state only receives a
+  // settled snapshot so pan/zoom frames do not rerender and serialize the full patch.
+  const [settledViewport, setSettledViewport] = useState<Viewport>(initialViewport);
+  const viewportRef = useRef<Viewport>(initialViewport);
   const [canvasLocked, setCanvasLocked] = useState(false);
-  const [settledGraphZoom, setSettledGraphZoom] = useState(viewport.zoom);
+  const [settledGraphZoom, setSettledGraphZoom] = useState(initialViewport.zoom);
   const [editorSize, setEditorSize] = useState({ width: 0, height: 0 });
   const [editingTypeNodeId, setEditingTypeNodeId] = useState<string | null>(null);
   const [reactFlow, setReactFlow] = useState<ReactFlowInstance<ShaderFlowNode, ShaderFlowEdge> | null>(null);
@@ -350,14 +359,14 @@ function NodeEditorInner() {
       : toFlowEdges(demoPatch, updateEdgeWeightPlaceholder, updateEdgeModePlaceholder, insertNodeOnEdgePlaceholder);
   });
   const [history, setHistory] = useState<HistoryState>({ past: [], future: [] });
-  const zoomInteractionRef = useRef({ zoomChanged: false, lastZoom: viewport.zoom });
+  const zoomInteractionRef = useRef({ zoomChanged: false, lastZoom: initialViewport.zoom });
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
-      setSettledGraphZoom(viewport.zoom);
+      setSettledGraphZoom(settledViewport.zoom);
     }, GRAPH_DETAIL_ZOOM_SETTLE_MS);
     return () => window.clearTimeout(timeout);
-  }, [viewport.zoom]);
+  }, [settledViewport.zoom]);
   const nodesRef = useRef(nodes);
   // React Flow gives us a new nodes array for every drag frame. Keep the
   // presentation objects for unaffected nodes referentially stable so the
@@ -2824,7 +2833,7 @@ function NodeEditorInner() {
   const persistedEditorStateJson = useMemo(() => {
     const state = flowToEditorState(materializedGraph.nodes, materializedGraph.edges, {
       patchName: rootPatchName,
-      viewport,
+      viewport: viewportRef.current,
       ...(selectedMidiInputDeviceIds.length > 0 || selectedMidiOutputDeviceIds.length > 0 || midiClockOutputEnabled
         ? { midiInput: {
           selectedDeviceIds: selectedMidiInputDeviceIds,
@@ -2836,7 +2845,7 @@ function NodeEditorInner() {
     state.areas = areas;
     state.buffers = referencedBufferAssets;
     return JSON.stringify(state);
-  }, [areas, materializedGraph, midiClockOutputEnabled, referencedBufferAssets, rootPatchName, selectedMidiInputDeviceIds, selectedMidiOutputDeviceIds, viewport]);
+  }, [areas, materializedGraph, midiClockOutputEnabled, referencedBufferAssets, rootPatchName, selectedMidiInputDeviceIds, selectedMidiOutputDeviceIds]);
   persistedEditorStateJsonRef.current = persistedEditorStateJson;
   const dspDiagnostics = useMemo(
     () => classifyDspErrors(audioGraph.errors, dspPatch),
@@ -3304,8 +3313,8 @@ function NodeEditorInner() {
   ], [areaDuplicatePreview, canvasLocked, collapsedRenderedEdges, draftNodePreview, duplicateDragPreview, reconnectPreviewEdge]);
 
   const panTranslateExtent = useMemo(
-    () => translateExtentForVisibleContent(renderedNodes, viewport, editorSize),
-    [editorSize, renderedNodes, viewport.zoom],
+    () => translateExtentForVisibleContent(renderedNodes, settledViewport, editorSize),
+    [editorSize, renderedNodes, settledViewport.zoom],
   );
 
   useEffect(() => {
@@ -3362,21 +3371,23 @@ function NodeEditorInner() {
   useEffect(() => {
     if (!reactFlow || !isFiniteCoordinateExtent(panTranslateExtent)) return;
 
-    const clampedViewport = clampViewportToTranslateExtent(viewport, panTranslateExtent, editorSize);
-    if (clampedViewport.x === viewport.x && clampedViewport.y === viewport.y && clampedViewport.zoom === viewport.zoom) {
+    const clampedViewport = clampViewportToTranslateExtent(settledViewport, panTranslateExtent, editorSize);
+    if (clampedViewport.x === settledViewport.x && clampedViewport.y === settledViewport.y && clampedViewport.zoom === settledViewport.zoom) {
       return;
     }
 
-    setViewport(clampedViewport);
+    viewportRef.current = clampedViewport;
+    setSettledViewport(clampedViewport);
+    storeViewport(clampedViewport);
     void reactFlow.setViewport(clampedViewport);
-  }, [editorSize, panTranslateExtent, reactFlow, viewport]);
+  }, [editorSize, panTranslateExtent, reactFlow, settledViewport]);
 
   useEffect(() => {
     const scopeRequests: ScopeCaptureRequest[] = nodesWithCallbacks.flatMap((node): ScopeCaptureRequest[] => {
       const type = node.data.patchNode.type;
       if (type !== 'Scope' && type !== 'FFT') return [];
       const hasConnectedOutput = edges.some((edge) => edge.source === node.id && edge.data?.enabled !== false);
-      if (!isNodeVisibleInViewport(node, viewport, editorSize) && (type === 'Scope' || !hasConnectedOutput)) return [];
+      if (!isNodeVisibleInViewport(node, settledViewport, editorSize) && (type === 'Scope' || !hasConnectedOutput)) return [];
       const dspNodeId = runtimeDspNodeIdForFlowNode(node, nodesWithCallbacks, activeDspGroupIds);
       const linkId = monitorLinkIdByNode.get(dspNodeId);
       if (!linkId) return [];
@@ -3389,7 +3400,7 @@ function NodeEditorInner() {
         }];
     });
     audio.setLinkScopes(scopeRequests);
-  }, [activeDspGroupIds, audio.setLinkScopes, editorSize, edges, monitorLinkIdByNode, nodesWithCallbacks, viewport]);
+  }, [activeDspGroupIds, audio.setLinkScopes, editorSize, edges, monitorLinkIdByNode, nodesWithCallbacks, settledViewport]);
 
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, persistedEditorStateJson);
@@ -3399,6 +3410,7 @@ function NodeEditorInner() {
     const persistLatestEditorState = () => {
       const json = persistedEditorStateJsonRef.current;
       if (json !== null) window.localStorage.setItem(STORAGE_KEY, json);
+      storeViewport(viewportRef.current);
     };
     window.addEventListener('pagehide', persistLatestEditorState);
     return () => window.removeEventListener('pagehide', persistLatestEditorState);
@@ -4645,8 +4657,9 @@ function NodeEditorInner() {
   const screenToFlow = useCallback((point: ScreenPoint) => {
     const rect = editorShellRef.current?.getBoundingClientRect();
     if (!rect) return { x: 0, y: 0 };
+    const viewport = viewportRef.current;
     return { x: (point.x - rect.left - viewport.x) / viewport.zoom, y: (point.y - rect.top - viewport.y) / viewport.zoom };
-  }, [viewport]);
+  }, []);
 
   const endNativeSelection = useCallback(() => {
     const pane = editorShellRef.current?.querySelector<HTMLElement>('.react-flow__pane');
@@ -4781,7 +4794,8 @@ function NodeEditorInner() {
     const drag = areaDragRef.current;
     if (!drag) return;
     event.preventDefault();
-    const delta = { x: (event.clientX - drag.start.x) / viewport.zoom, y: (event.clientY - drag.start.y) / viewport.zoom };
+    const zoom = viewportRef.current.zoom;
+    const delta = { x: (event.clientX - drag.start.x) / zoom, y: (event.clientY - drag.start.y) / zoom };
     drag.currentAreaPositions = Object.fromEntries(Object.entries(drag.areaPositions).map(([id, position]) => [id, {
       x: position.x + delta.x,
       y: position.y + delta.y,
@@ -4807,7 +4821,7 @@ function NodeEditorInner() {
       const position = drag.currentNodePositions[node.id];
       return position ? { ...node, position } : node;
     }));
-  }, [commitHistory, viewport.zoom]);
+  }, [commitHistory]);
 
   const stopAreaDrag = useCallback((event: ReactPointerEvent<HTMLElement>) => {
     const drag = areaDragRef.current;
@@ -4878,7 +4892,8 @@ function NodeEditorInner() {
     const resize = areaResizeRef.current;
     if (!resize) return;
     event.preventDefault();
-    const delta = { x: (event.clientX - resize.start.x) / viewport.zoom, y: (event.clientY - resize.start.y) / viewport.zoom };
+    const zoom = viewportRef.current.zoom;
+    const delta = { x: (event.clientX - resize.start.x) / zoom, y: (event.clientY - resize.start.y) / zoom };
     if (!resize.historyCommitted && (delta.x !== 0 || delta.y !== 0)) {
       commitHistory();
       resize.historyCommitted = true;
@@ -4966,7 +4981,7 @@ function NodeEditorInner() {
         },
       } : node));
     }
-  }, [commitHistory, viewport.zoom]);
+  }, [commitHistory]);
 
   const stopAreaResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (!areaResizeRef.current) return;
@@ -4992,7 +5007,7 @@ function NodeEditorInner() {
     const resize = areaUiResizeRef.current;
     if (!resize) return;
     event.preventDefault();
-    const delta = (event.clientY - resize.start.y) / viewport.zoom;
+    const delta = (event.clientY - resize.start.y) / viewportRef.current.zoom;
     const nextUiHeight = Math.max(0, resize.originalUiHeight + delta);
     if (!resize.historyCommitted && nextUiHeight !== resize.originalUiHeight) {
       commitHistory();
@@ -5002,7 +5017,7 @@ function NodeEditorInner() {
       ...area,
       uiHeight: Math.min(Math.max(0, area.size.height - NODE_HEADER_HEIGHT), nextUiHeight),
     } : area));
-  }, [commitHistory, viewport.zoom]);
+  }, [commitHistory]);
 
   const stopAreaUiResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (!areaUiResizeRef.current) return;
@@ -5209,14 +5224,16 @@ function NodeEditorInner() {
       zoomInteractionRef.current.zoomChanged = true;
     }
     zoomInteractionRef.current.lastZoom = nextViewport.zoom;
-    setViewport(nextViewport);
+    viewportRef.current = nextViewport;
   }, []);
 
   const handleMoveEnd = useCallback((event: globalThis.MouseEvent | TouchEvent | null, nextViewport: Viewport) => {
     const zoomChanged = zoomInteractionRef.current.zoomChanged
       || (event !== null && Math.abs(nextViewport.zoom - zoomInteractionRef.current.lastZoom) > ZOOM_CHANGE_EPSILON);
     zoomInteractionRef.current = { zoomChanged: false, lastZoom: nextViewport.zoom };
-    setViewport(nextViewport);
+    viewportRef.current = nextViewport;
+    setSettledViewport(nextViewport);
+    storeViewport(nextViewport);
 
     // React Flow reports programmatic viewport changes with a null event. Only
     // settle direct pinch/zoom gestures; otherwise a reset animation can start
@@ -5369,9 +5386,9 @@ function NodeEditorInner() {
             selectionMode={SelectionMode.Partial}
             selectionKeyCode={null}
             panActivationKeyCode={null}
-            defaultViewport={initialState?.ui?.viewport}
+            defaultViewport={initialViewport}
             minZoom={MIN_CANVAS_ZOOM}
-            fitView={!initialState?.ui?.viewport}
+            fitView={!initialState?.ui?.viewport && !storedViewport}
             fitViewOptions={FIT_VIEW_OPTIONS}
             translateExtent={panTranslateExtent}
             nodeExtent={FLOW_INFINITE_EXTENT}
@@ -5573,10 +5590,10 @@ function NodeEditorInner() {
                 className="react-flow__controls-zoom-percentage"
                 type="button"
                 onClick={resetZoom}
-                aria-label={`Reset zoom to 100% (currently ${formatZoomPercentage(viewport.zoom)})`}
-                title={`Reset zoom to 100% (currently ${formatZoomPercentage(viewport.zoom)})`}
+                aria-label={`Reset zoom to 100% (currently ${formatZoomPercentage(settledViewport.zoom)})`}
+                title={`Reset zoom to 100% (currently ${formatZoomPercentage(settledViewport.zoom)})`}
               >
-                {formatZoomPercentage(viewport.zoom)}
+                {formatZoomPercentage(settledViewport.zoom)}
               </ControlButton>
               <div
                 className={`react-flow__controls-cpu-meter${audio.status === 'running' ? ' is-running' : ''}`}
@@ -7260,6 +7277,30 @@ function loadInitialEditorState(): PersistedEditorState | null {
     return parsed;
   } catch {
     return null;
+  }
+}
+
+function loadStoredViewport(): Viewport | null {
+  try {
+    const raw = window.localStorage.getItem(VIEWPORT_STORAGE_KEY);
+    if (!raw) return null;
+    const viewport = JSON.parse(raw) as Partial<Viewport>;
+    if (!Number.isFinite(Number(viewport.x)) || !Number.isFinite(Number(viewport.y)) || !Number.isFinite(Number(viewport.zoom))) return null;
+    return {
+      x: Number(viewport.x),
+      y: Number(viewport.y),
+      zoom: Math.max(MIN_CANVAS_ZOOM, Number(viewport.zoom)),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function storeViewport(viewport: Viewport): void {
+  try {
+    window.localStorage.setItem(VIEWPORT_STORAGE_KEY, JSON.stringify(viewport));
+  } catch {
+    // Persistence is optional when storage is unavailable or full.
   }
 }
 
