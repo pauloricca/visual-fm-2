@@ -152,6 +152,7 @@ const DSP_OP_SPAWN_INSTANCE_GATE: i32 = 50;
 const DSP_OP_DC_BLOCK: i32 = 51;
 const DSP_OP_ROLL_NOTE_EVENT: i32 = 52;
 const DSP_OP_MIDI_NOTE_SEND: i32 = 53;
+const DSP_OP_MIDI_CC_SEND: i32 = 54;
 const MIN_ENVELOPE_ATTACK_SECONDS: f64 = 0.001;
 const MAX_DSP_TEMPO_SOURCES: usize = 129;
 const TEMPO_OUTPUT_COUNT: i32 = 10;
@@ -299,6 +300,7 @@ struct DspMidiHeldNote {
 
 #[derive(Copy, Clone)]
 struct DspMidiNoteEvent {
+    is_cc: bool,
     note_on: bool,
     channel: usize,
     note: f64,
@@ -306,6 +308,7 @@ struct DspMidiNoteEvent {
 }
 
 const EMPTY_DSP_MIDI_NOTE_EVENT: DspMidiNoteEvent = DspMidiNoteEvent {
+    is_cc: false,
     note_on: false,
     channel: 1,
     note: 0.0,
@@ -2172,6 +2175,7 @@ pub extern "C" fn queueDspMidiNoteEvent(note_on: u32, channel: u32, note: f64, v
             events.pop_front();
         }
         events.push_back(DspMidiNoteEvent {
+            is_cc: false,
             note_on: note_on != 0,
             channel: (channel as usize).clamp(1, 16),
             note: if note.is_finite() {
@@ -2206,6 +2210,11 @@ pub extern "C" fn dspMidiOutputEventNoteOn() -> i32 {
 }
 
 #[no_mangle]
+pub extern "C" fn dspMidiOutputEventIsCc() -> i32 {
+    unsafe { i32::from(DSP_MIDI_CURRENT_OUTPUT_EVENT.is_cc) }
+}
+
+#[no_mangle]
 pub extern "C" fn dspMidiOutputEventChannel() -> u32 {
     unsafe { DSP_MIDI_CURRENT_OUTPUT_EVENT.channel as u32 }
 }
@@ -2217,6 +2226,16 @@ pub extern "C" fn dspMidiOutputEventNote() -> f64 {
 
 #[no_mangle]
 pub extern "C" fn dspMidiOutputEventVelocity() -> f64 {
+    unsafe { DSP_MIDI_CURRENT_OUTPUT_EVENT.velocity }
+}
+
+#[no_mangle]
+pub extern "C" fn dspMidiOutputEventCc() -> f64 {
+    unsafe { DSP_MIDI_CURRENT_OUTPUT_EVENT.note }
+}
+
+#[no_mangle]
+pub extern "C" fn dspMidiOutputEventValue() -> f64 {
     unsafe { DSP_MIDI_CURRENT_OUTPUT_EVENT.velocity }
 }
 
@@ -8522,11 +8541,68 @@ fn render_dsp_midi_note_send(op: DspOp) {
             events.pop_front();
         }
         events.push_back(DspMidiNoteEvent {
+            is_cc: false,
             note_on: op.value >= 0.5,
             channel: dsp_reg(op.d).round().clamp(1.0, 16.0) as usize,
             note: dsp_reg(op.b).round().clamp(0.0, 127.0),
             velocity: dsp_reg(op.c).clamp(0.0, 1.0),
         });
+    }
+}
+
+#[allow(static_mut_refs)]
+fn render_dsp_midi_cc_send(op: DspOp, sample_rate: f64) {
+    unsafe {
+        if op.state < 0 || op.state as usize + 4 >= MAX_DSP_STATE {
+            return;
+        }
+        let state = op.state as usize;
+        let signal = dsp_reg(op.a).clamp(0.0, 1.0);
+        let value = (signal * 127.0).round() / 127.0;
+        let trigger = sanitize_control_value(dsp_reg(op.b));
+        let trigger_connected = op.value >= 0.5;
+        let throttle = dsp_reg(op.e).max(0.0);
+        let initialized = *dsp_state_ptr(state + 3) >= 0.5;
+
+        if !initialized {
+            *dsp_state_ptr(state) = 0.0;
+            *dsp_state_ptr(state + 1) = value;
+            *dsp_state_ptr(state + 2) = throttle;
+            *dsp_state_ptr(state + 3) = 1.0;
+            *dsp_state_ptr(state + 4) = 0.0;
+        } else {
+            *dsp_state_ptr(state + 2) += 1.0 / sample_rate.max(1.0);
+        }
+
+        let was_triggered = *dsp_state_ptr(state) >= 0.5;
+        *dsp_state_ptr(state) = if trigger >= 0.5 { 1.0 } else { 0.0 };
+        let changed = (value - *dsp_state_ptr(state + 1)).abs() > 0.000001;
+        if changed {
+            *dsp_state_ptr(state + 1) = value;
+            if !trigger_connected {
+                *dsp_state_ptr(state + 4) = 1.0;
+            }
+        }
+
+        let triggered = trigger_connected && trigger >= 0.5 && !was_triggered;
+        let pending_change = !trigger_connected && *dsp_state_ptr(state + 4) >= 0.5;
+        if (!triggered && !pending_change) || *dsp_state_ptr(state + 2) + f64::EPSILON < throttle {
+            return;
+        }
+
+        let events = DSP_MIDI_OUTPUT_EVENTS.get_or_insert_with(VecDeque::new);
+        if events.len() >= 4096 {
+            events.pop_front();
+        }
+        events.push_back(DspMidiNoteEvent {
+            is_cc: true,
+            note_on: false,
+            channel: dsp_reg(op.d).round().clamp(1.0, 16.0) as usize,
+            note: dsp_reg(op.c).round().clamp(0.0, 127.0),
+            velocity: value,
+        });
+        *dsp_state_ptr(state + 2) = 0.0;
+        *dsp_state_ptr(state + 4) = 0.0;
     }
 }
 
@@ -9596,6 +9672,7 @@ fn render_dsp_op(
         DSP_OP_MIDI_NOTE => set_dsp_reg(op.out, render_dsp_midi_note(op)),
         DSP_OP_MIDI_CC => set_dsp_reg(op.out, render_dsp_midi_cc(op)),
         DSP_OP_MIDI_NOTE_SEND => render_dsp_midi_note_send(op),
+        DSP_OP_MIDI_CC_SEND => render_dsp_midi_cc_send(op, sample_rate),
         DSP_OP_TEMPO => set_dsp_reg(op.out, render_dsp_tempo(op, frame, sample_rate)),
         DSP_OP_ACCUMULATOR => set_dsp_reg(op.out, render_dsp_accumulator(op)),
         DSP_OP_RANDOM => set_dsp_reg(op.out, render_dsp_random(op)),

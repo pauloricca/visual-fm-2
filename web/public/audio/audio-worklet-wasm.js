@@ -2992,10 +2992,13 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     const events = [];
     while (this.wasm.takeDspMidiOutputEvent()) {
       events.push({
+        isCc: Boolean(this.wasm.dspMidiOutputEventIsCc?.()),
         noteOn: Boolean(this.wasm.dspMidiOutputEventNoteOn?.()),
         channel: Math.trunc(Number(this.wasm.dspMidiOutputEventChannel?.()) || 1),
         note: Number(this.wasm.dspMidiOutputEventNote?.()) || 0,
         velocity: Number(this.wasm.dspMidiOutputEventVelocity?.()) || 0,
+        cc: Number(this.wasm.dspMidiOutputEventCc?.()) || 0,
+        value: Number(this.wasm.dspMidiOutputEventValue?.()) || 0,
       });
     }
     if (events.length) this.port.postMessage({ type: "midiOutput", payload: { events } });

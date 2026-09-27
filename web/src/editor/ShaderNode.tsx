@@ -341,7 +341,13 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
   const forceCompactPorts = definition ? shouldForceCompactPorts(definition) : false;
   const compactPorts = forceCompactPorts || node.compactPorts === true;
   const revealCompactPorts = data.isOnlySelected === true || (data.isConnecting === true && pointerOver);
+  const temporarilyRevealCompactPorts = compactPorts && data.isConnecting === true && pointerOver;
   const showAllPorts = !compactPorts || revealCompactPorts;
+
+  useEffect(() => {
+    data.onTemporaryPortRevealChange?.(node.id, temporarilyRevealCompactPorts);
+    return () => data.onTemporaryPortRevealChange?.(node.id, false);
+  }, [data.onTemporaryPortRevealChange, node.id, temporarilyRevealCompactPorts]);
   const showHeaderInput = Boolean(
     node.type !== 'Outs'
     && definition?.inputs.some((input) => input.name === 'signal')
@@ -2859,13 +2865,19 @@ interface SliderDisplayProps {
 
 const SLIDER_WHEEL_SPEED = 0.5;
 
+function sliderPrecisionDivisor(event: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }): number {
+  if (event.metaKey || event.ctrlKey) return 5;
+  if (event.shiftKey && event.altKey) return 3;
+  return 1;
+}
+
 function SliderDisplay({ value, displayValue, direction, onChange }: SliderDisplayProps) {
   const dragRef = useRef<{
     pointerId: number;
     lastPointerValue: number;
     value: number;
     cursorBias: number;
-    fineControl: boolean;
+    precisionDivisor: number;
   } | null>(null);
   const normalized = clamp(displayValue ?? value, 0, 1);
   const wheelValueRef = useRef(normalized);
@@ -2876,14 +2888,14 @@ function SliderDisplay({ value, displayValue, direction, onChange }: SliderDispl
     }
     lastWheelTimeRef.current = event.timeStamp;
     const travel = direction === 'vertical' ? target.clientHeight : target.clientWidth;
-    const fineControl = event.metaKey || event.ctrlKey;
+    const precisionDivisor = sliderPrecisionDivisor(event);
     const wheelDelta = wheelAxisDeltaPixels(event, direction);
     if (wheelDelta === 0) return;
     const nextValue = clamp(
       wheelValueRef.current
         + wheelDelta * (direction === 'vertical' ? 1 : -1) * SLIDER_WHEEL_SPEED
           / Math.max(1, travel)
-          / (fineControl ? 5 : 1),
+          / precisionDivisor,
       0,
       1,
     );
@@ -2908,18 +2920,18 @@ function SliderDisplay({ value, displayValue, direction, onChange }: SliderDispl
     if (!drag || drag.pointerId !== event.pointerId) return;
 
     const cursorValue = pointerValue(event);
-    const fineControl = event.metaKey || event.ctrlKey;
-    if (fineControl !== drag.fineControl) {
+    const precisionDivisor = sliderPrecisionDivisor(event);
+    if (precisionDivisor !== drag.precisionDivisor) {
       // Re-anchor when the modifier changes so switching speeds never snaps to
       // the cursor. Without fine control, the bias preserves this position.
       drag.lastPointerValue = cursorValue;
       drag.cursorBias = drag.value - cursorValue;
-      drag.fineControl = fineControl;
+      drag.precisionDivisor = precisionDivisor;
       return;
     }
 
-    const nextValue = fineControl
-      ? drag.value + (cursorValue - drag.lastPointerValue) / 5
+    const nextValue = precisionDivisor > 1
+      ? drag.value + (cursorValue - drag.lastPointerValue) / precisionDivisor
       : cursorValue + drag.cursorBias;
     drag.lastPointerValue = cursorValue;
     drag.value = clamp(nextValue, 0, 1);
@@ -2954,17 +2966,17 @@ function SliderDisplay({ value, displayValue, direction, onChange }: SliderDispl
           event.stopPropagation();
           if (!event.isPrimary || event.button !== 0) return;
           const cursorValue = pointerValue(event);
-          const fineControl = event.metaKey || event.ctrlKey;
-          const initialValue = fineControl ? normalized : clamp(cursorValue, 0, 1);
+          const precisionDivisor = sliderPrecisionDivisor(event);
+          const initialValue = precisionDivisor > 1 ? normalized : clamp(cursorValue, 0, 1);
           dragRef.current = {
             pointerId: event.pointerId,
             lastPointerValue: cursorValue,
             value: initialValue,
             cursorBias: initialValue - cursorValue,
-            fineControl,
+            precisionDivisor,
           };
           event.currentTarget.setPointerCapture(event.pointerId);
-          if (!fineControl) onChange(initialValue);
+          if (precisionDivisor === 1) onChange(initialValue);
         }}
         onPointerMove={(event) => {
           if (dragRef.current?.pointerId !== event.pointerId) return;

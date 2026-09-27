@@ -378,6 +378,17 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     ],
     outputs: [],
   },
+  MidiCcSend: {
+    type: 'MidiCcSend',
+    inputs: [
+      { name: 'signal', defaultValue: 0, min: 0, max: 1 },
+      { name: 'trigger', defaultValue: 0, min: 0, max: 1, valueEditor: false },
+      { name: 'cc', defaultValue: 1, min: 0, max: 127, integer: true },
+      { name: 'channel', defaultValue: 1, min: 1, max: 16, integer: true },
+      { name: 'throttle', defaultValue: 0.1, min: 0 },
+    ],
+    outputs: [],
+  },
   MidiCc: {
     type: 'MidiCc',
     inputs: [
@@ -602,6 +613,7 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   MidiNoteOff: 'MIDI Note Off',
   MidiNoteOnSend: 'MIDI Note On Send',
   MidiNoteOffSend: 'MIDI Note Off Send',
+  MidiCcSend: 'MIDI CC Send',
   MidiCc: 'MIDI CC',
   Selector: 'Selector',
   Accumulator: 'Accumulator',

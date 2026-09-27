@@ -112,6 +112,7 @@ export interface ShaderNodeData extends Record<string, unknown> {
   previewPort?: { side: 'input' | 'output'; name: string } | null;
   isOnlySelected?: boolean;
   isConnecting?: boolean;
+  onTemporaryPortRevealChange?: (nodeId: string, revealed: boolean) => void;
   isTypePickerOpen: boolean;
   isEditingSubpatch?: boolean;
   isAreaCollapsedPresentation?: boolean;
@@ -658,12 +659,14 @@ function normalizePersistedState(state: PersistedEditorState): PersistedEditorSt
 function normalizePersistedUi(ui: PersistedEditorState['ui']): PersistedEditorState['ui'] {
   if (!ui) return ui;
   const selectedDeviceIds = normalizeSelectedMidiDeviceIds(ui.midiInput?.selectedDeviceIds);
+  const selectedOutputDeviceIds = normalizeSelectedMidiDeviceIds(ui.midiInput?.selectedOutputDeviceIds);
   const sendClock = ui.midiInput?.sendClock === true;
   const { midiInput: _midiInput, ...nextUi } = ui;
   return {
     ...nextUi,
-    ...(selectedDeviceIds.length > 0 || sendClock ? { midiInput: {
+    ...(selectedDeviceIds.length > 0 || selectedOutputDeviceIds.length > 0 || sendClock ? { midiInput: {
       selectedDeviceIds,
+      ...(selectedOutputDeviceIds.length > 0 ? { selectedOutputDeviceIds } : {}),
       ...(sendClock ? { sendClock: true } : {}),
     } } : {}),
   };

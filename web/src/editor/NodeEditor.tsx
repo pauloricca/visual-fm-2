@@ -390,6 +390,7 @@ function NodeEditorInner() {
   const areaUiResizeRef = useRef<AreaUiResizeState | null>(null);
   const pendingBoundaryPortRef = useRef<BoundaryPortSelection | null>(null);
   const [draftNodeConnection, setDraftNodeConnection] = useState<DraftNodeConnection | null>(null);
+  const [temporarilyRevealedNodeId, setTemporarilyRevealedNodeId] = useState<string | null>(null);
   const [duplicateDrag, setDuplicateDrag] = useState<DuplicateDragState | null>(null);
   const [areaDuplicateDrag, setAreaDuplicateDrag] = useState<AreaDragState | null>(null);
   const [editingStack, setEditingStack] = useState<SubpatchEditFrame[]>([]);
@@ -407,6 +408,9 @@ function NodeEditorInner() {
   const [midiSettingsOpen, setMidiSettingsOpen] = useState(false);
   const [selectedMidiInputDeviceIds, setSelectedMidiInputDeviceIds] = useState<string[]>(() => (
     normalizeSelectedMidiDeviceIds(initialState?.ui?.midiInput?.selectedDeviceIds)
+  ));
+  const [selectedMidiOutputDeviceIds, setSelectedMidiOutputDeviceIds] = useState<string[]>(() => (
+    normalizeSelectedMidiDeviceIds(initialState?.ui?.midiInput?.selectedOutputDeviceIds)
   ));
   const [midiClockOutputEnabled, setMidiClockOutputEnabled] = useState(() => initialState?.ui?.midiInput?.sendClock === true);
   const [midiControlVisuals, setMidiControlVisuals] = useState<Record<string, MidiControlVisualState>>({});
@@ -438,7 +442,7 @@ function NodeEditorInner() {
   const reconnectDuplicateRef = useRef(false);
   const reconnectingEdgeSnapshotRef = useRef<ShaderFlowEdge | null>(null);
   const rootPatchName = editingStack[0]?.parentPatchName ?? patchName;
-  const audio = useAudioEngine({ selectedMidiInputDeviceIds, midiClockOutputEnabled, recordingPatchName: rootPatchName });
+  const audio = useAudioEngine({ selectedMidiInputDeviceIds, selectedMidiOutputDeviceIds, midiClockOutputEnabled, recordingPatchName: rootPatchName });
 
   useEffect(() => {
     bufferAssetsRef.current = bufferAssets;
@@ -562,15 +566,22 @@ function NodeEditorInner() {
     }
   }, [audio.refreshMidiInputDevices]);
 
+  const toggleMidiOutputDevice = useCallback((deviceId: string, selected: boolean) => {
+    setSelectedMidiOutputDeviceIds((current) => selected
+      ? (current.includes(deviceId) ? current : [...current, deviceId])
+      : current.filter((entry) => entry !== deviceId));
+    if (selected) void audio.refreshMidiInputDevices();
+  }, [audio.refreshMidiInputDevices]);
+
   const toggleMidiClockOutput = useCallback((enabled: boolean) => {
     setMidiClockOutputEnabled(enabled);
     if (enabled) void audio.refreshMidiInputDevices();
   }, [audio.refreshMidiInputDevices]);
 
   useEffect(() => {
-    if (selectedMidiInputDeviceIds.length === 0 && !midiClockOutputEnabled) return;
+    if (selectedMidiInputDeviceIds.length === 0 && selectedMidiOutputDeviceIds.length === 0 && !midiClockOutputEnabled) return;
     void audio.refreshMidiInputDevices();
-  }, [audio.refreshMidiInputDevices, midiClockOutputEnabled, selectedMidiInputDeviceIds.length, selectedMidiInputDeviceKey]);
+  }, [audio.refreshMidiInputDevices, midiClockOutputEnabled, selectedMidiInputDeviceIds.length, selectedMidiInputDeviceKey, selectedMidiOutputDeviceIds.length]);
 
   useEffect(() => {
     const controlChange = audio.midiInput.lastControlChange;
@@ -2576,6 +2587,10 @@ function NodeEditorInner() {
   const baseNodeLayerSize = Math.max(1, nodes.length);
   const surfacedAreaLayerBase = (SELECTED_NODE_Z_INDEX + 1) * baseNodeLayerSize + 1;
   const surfacedNodeLayerBase = surfacedAreaLayerBase + surfacedAreaIds.size;
+  const temporaryNodeLayer = surfacedNodeLayerBase + (SELECTED_NODE_Z_INDEX + 1) * baseNodeLayerSize;
+  const updateTemporaryPortReveal = useCallback((nodeId: string, revealed: boolean) => {
+    setTemporarilyRevealedNodeId((current) => revealed ? nodeId : (current === nodeId ? null : current));
+  }, []);
 
   const nodesWithCallbacks = useMemo(() => {
     const nextNodes = nodes.map((node) => {
@@ -2592,9 +2607,11 @@ function NodeEditorInner() {
     return {
       ...node,
       ...((node.data.patchNode.type === 'Spread' || node.data.patchNode.type === 'Spawn') ? { draggable: false, selectable: false } : {}),
-      zIndex: surfacedAreaNodeIds.has(node.id)
-        ? surfacedNodeLayerBase + baseZIndex
-        : baseZIndex,
+      zIndex: temporarilyRevealedNodeId === node.id
+        ? temporaryNodeLayer
+        : surfacedAreaNodeIds.has(node.id)
+          ? surfacedNodeLayerBase + baseZIndex
+          : baseZIndex,
       data: {
         ...node.data,
         onParamChange: updateNodeParam,
@@ -2650,6 +2667,7 @@ function NodeEditorInner() {
           : null,
         isOnlySelected: node.selected === true && selectedNodeCount === 1,
         isConnecting: draftNodeConnection !== null,
+        onTemporaryPortRevealChange: updateTemporaryPortReveal,
         isTypePickerOpen: editingTypeNodeId === node.id,
         isEditingSubpatch: editingStack.length > 0,
       },
@@ -2676,6 +2694,9 @@ function NodeEditorInner() {
     selectedAreaNodeIds,
     surfacedAreaNodeIds,
     surfacedNodeLayerBase,
+    temporaryNodeLayer,
+    temporarilyRevealedNodeId,
+    updateTemporaryPortReveal,
     selectedBoundaryPort,
     selectedLinkPortsByNode,
     selectBoundaryPort,
@@ -2777,13 +2798,14 @@ function NodeEditorInner() {
   const patch = useMemo(() => ({
     ...patchFromFlow(materializedGraph.nodes, materializedGraph.edges, editingStack.length === 0 ? areas : editingStack[0]?.parentAreas),
     name: rootPatchName,
-    ...(selectedMidiInputDeviceIds.length > 0 || midiClockOutputEnabled
+    ...(selectedMidiInputDeviceIds.length > 0 || selectedMidiOutputDeviceIds.length > 0 || midiClockOutputEnabled
       ? { midiInput: {
         selectedDeviceIds: selectedMidiInputDeviceIds,
+        ...(selectedMidiOutputDeviceIds.length > 0 ? { selectedOutputDeviceIds: selectedMidiOutputDeviceIds } : {}),
         ...(midiClockOutputEnabled ? { sendClock: true } : {}),
       } }
       : {}),
-  }), [areas, editingStack, materializedGraph, midiClockOutputEnabled, rootPatchName, selectedMidiInputDeviceIds]);
+  }), [areas, editingStack, materializedGraph, midiClockOutputEnabled, rootPatchName, selectedMidiInputDeviceIds, selectedMidiOutputDeviceIds]);
   const trimmedRootPatchName = rootPatchName.trim();
   const selectedLocalPatch = localPatchLibrary?.patches.find((entry) => entry.name === localPatchLibrary.selectedPatchName) ?? null;
   const selectedSample = sampleLibrary?.samples.find((sample) => sample.url === sampleLibrary.selectedUrl) ?? null;
@@ -2803,9 +2825,10 @@ function NodeEditorInner() {
     const state = flowToEditorState(materializedGraph.nodes, materializedGraph.edges, {
       patchName: rootPatchName,
       viewport,
-      ...(selectedMidiInputDeviceIds.length > 0 || midiClockOutputEnabled
+      ...(selectedMidiInputDeviceIds.length > 0 || selectedMidiOutputDeviceIds.length > 0 || midiClockOutputEnabled
         ? { midiInput: {
           selectedDeviceIds: selectedMidiInputDeviceIds,
+          ...(selectedMidiOutputDeviceIds.length > 0 ? { selectedOutputDeviceIds: selectedMidiOutputDeviceIds } : {}),
           ...(midiClockOutputEnabled ? { sendClock: true } : {}),
         } }
         : {}),
@@ -2813,7 +2836,7 @@ function NodeEditorInner() {
     state.areas = areas;
     state.buffers = referencedBufferAssets;
     return JSON.stringify(state);
-  }, [areas, materializedGraph, midiClockOutputEnabled, referencedBufferAssets, rootPatchName, selectedMidiInputDeviceIds, viewport]);
+  }, [areas, materializedGraph, midiClockOutputEnabled, referencedBufferAssets, rootPatchName, selectedMidiInputDeviceIds, selectedMidiOutputDeviceIds, viewport]);
   persistedEditorStateJsonRef.current = persistedEditorStateJson;
   const dspDiagnostics = useMemo(
     () => classifyDspErrors(audioGraph.errors, dspPatch),
@@ -3963,6 +3986,7 @@ function NodeEditorInner() {
     setEditingAreaId(null);
     setPatchName(loadedPatch.name ?? 'single-patch');
     setSelectedMidiInputDeviceIds(normalizeSelectedMidiDeviceIds(loadedPatch.midiInput?.selectedDeviceIds));
+    setSelectedMidiOutputDeviceIds(normalizeSelectedMidiDeviceIds(loadedPatch.midiInput?.selectedOutputDeviceIds));
     setMidiClockOutputEnabled(loadedPatch.midiInput?.sendClock === true);
     setMidiControlVisuals({});
     setEditingTypeNodeId(null);
@@ -5616,7 +5640,7 @@ function NodeEditorInner() {
               className="viewport-button"
               type="button"
               role="switch"
-              aria-checked={selectedMidiInputDeviceIds.length > 0 || midiClockOutputEnabled}
+              aria-checked={selectedMidiInputDeviceIds.length > 0 || selectedMidiOutputDeviceIds.length > 0 || midiClockOutputEnabled}
               aria-label="MIDI settings"
               title={audio.midiInput.message}
               onClick={() => setMidiSettingsOpen(true)}
@@ -5677,8 +5701,10 @@ function NodeEditorInner() {
             <MidiSettingsModal
               state={audio.midiInput}
               selectedDeviceIds={selectedMidiInputDeviceIds}
+              selectedOutputDeviceIds={selectedMidiOutputDeviceIds}
               midiClockOutputEnabled={midiClockOutputEnabled}
               onToggleDevice={toggleMidiInputDevice}
+              onToggleOutputDevice={toggleMidiOutputDevice}
               onMidiClockOutputChange={toggleMidiClockOutput}
               onRefresh={() => void audio.refreshMidiInputDevices()}
               onClose={() => setMidiSettingsOpen(false)}
@@ -6436,8 +6462,10 @@ function writeWavText(view: DataView, offset: number, text: string): void {
 interface MidiSettingsModalProps {
   state: MidiInputState;
   selectedDeviceIds: string[];
+  selectedOutputDeviceIds: string[];
   midiClockOutputEnabled: boolean;
   onToggleDevice: (deviceId: string, selected: boolean) => void;
+  onToggleOutputDevice: (deviceId: string, selected: boolean) => void;
   onMidiClockOutputChange: (enabled: boolean) => void;
   onRefresh: () => void;
   onClose: () => void;
@@ -6446,8 +6474,10 @@ interface MidiSettingsModalProps {
 function MidiSettingsModal({
   state,
   selectedDeviceIds,
+  selectedOutputDeviceIds,
   midiClockOutputEnabled,
   onToggleDevice,
+  onToggleOutputDevice,
   onMidiClockOutputChange,
   onRefresh,
   onClose,
@@ -6455,6 +6485,9 @@ function MidiSettingsModal({
   const selectedDeviceIdSet = new Set(selectedDeviceIds);
   const knownDeviceIds = new Set(state.devices.map((device) => device.id));
   const missingSelectedDeviceIds = selectedDeviceIds.filter((deviceId) => !knownDeviceIds.has(deviceId));
+  const selectedOutputDeviceIdSet = new Set(selectedOutputDeviceIds);
+  const knownOutputDeviceIds = new Set(state.outputDevices.map((device) => device.id));
+  const missingSelectedOutputDeviceIds = selectedOutputDeviceIds.filter((deviceId) => !knownOutputDeviceIds.has(deviceId));
   const unavailable = state.status === 'unsupported' || state.status === 'denied' || state.status === 'error';
   const refreshLabel = state.status === 'inactive' || state.status === 'needs-permission'
     ? 'Enable'
@@ -6486,6 +6519,7 @@ function MidiSettingsModal({
           {state.message}
         </p>
 
+        <h3 className="midi-settings-section-title">Inputs</h3>
         <div className="midi-settings-device-list">
           {state.devices.map((device) => (
             <label className="midi-settings-device" key={device.id}>
@@ -6505,6 +6539,28 @@ function MidiSettingsModal({
                 checked
                 onChange={(event) => onToggleDevice(deviceId, event.currentTarget.checked)}
               />
+              <span>{deviceId}</span>
+              <small>missing</small>
+            </label>
+          ))}
+        </div>
+
+        <h3 className="midi-settings-section-title">Outputs</h3>
+        <div className="midi-settings-device-list">
+          {state.outputDevices.map((device) => (
+            <label className="midi-settings-device" key={device.id}>
+              <input
+                type="checkbox"
+                checked={selectedOutputDeviceIdSet.has(device.id)}
+                onChange={(event) => onToggleOutputDevice(device.id, event.currentTarget.checked)}
+              />
+              <span>{device.label}</span>
+              <small>{device.state}</small>
+            </label>
+          ))}
+          {missingSelectedOutputDeviceIds.map((deviceId) => (
+            <label className="midi-settings-device midi-settings-device-missing" key={deviceId}>
+              <input type="checkbox" checked onChange={(event) => onToggleOutputDevice(deviceId, event.currentTarget.checked)} />
               <span>{deviceId}</span>
               <small>missing</small>
             </label>
@@ -6650,9 +6706,14 @@ function parsePatchAreas(value: unknown, label: string): Pick<Patch, 'areas'> {
 function parseMidiInputPreferences(value: unknown): Pick<Patch, 'midiInput'> {
   if (!isRecord(value)) return {};
   const selectedDeviceIds = normalizeSelectedMidiDeviceIds(value.selectedDeviceIds);
+  const selectedOutputDeviceIds = normalizeSelectedMidiDeviceIds(value.selectedOutputDeviceIds);
   const sendClock = value.sendClock === true;
-  return selectedDeviceIds.length > 0 || sendClock
-    ? { midiInput: { selectedDeviceIds, ...(sendClock ? { sendClock: true } : {}) } }
+  return selectedDeviceIds.length > 0 || selectedOutputDeviceIds.length > 0 || sendClock
+    ? { midiInput: {
+      selectedDeviceIds,
+      ...(selectedOutputDeviceIds.length > 0 ? { selectedOutputDeviceIds } : {}),
+      ...(sendClock ? { sendClock: true } : {}),
+    } }
     : {};
 }
 

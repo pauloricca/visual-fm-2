@@ -46,6 +46,7 @@ export interface MidiInputState {
   status: MidiInputStatus;
   message: string;
   devices: MidiInputDevice[];
+  outputDevices: MidiInputDevice[];
   canRequestAccess: boolean;
   lastControlChange?: MidiControlChange;
 }
@@ -120,6 +121,7 @@ interface AudioEngineState {
 
 interface UseAudioEngineOptions {
   selectedMidiInputDeviceIds?: string[];
+  selectedMidiOutputDeviceIds?: string[];
   midiClockOutputEnabled?: boolean;
   recordingPatchName?: string;
 }
@@ -133,6 +135,9 @@ interface MidiInputLike {
 }
 
 interface MidiOutputLike {
+  id?: string;
+  name?: string;
+  manufacturer?: string;
   state?: string;
   send: (data: number[] | Uint8Array, timestamp?: number) => void;
 }
@@ -329,11 +334,14 @@ function holdAudioParamAtCurrentValue(param: AudioParam, time: number): void {
 
 export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngineState {
   const selectedMidiInputDeviceIds = options.selectedMidiInputDeviceIds ?? [];
+  const selectedMidiOutputDeviceIds = options.selectedMidiOutputDeviceIds ?? [];
   const midiClockOutputEnabled = options.midiClockOutputEnabled === true;
   const recordingPatchNameRef = useRef(options.recordingPatchName ?? 'untitled-patch');
   recordingPatchNameRef.current = options.recordingPatchName ?? 'untitled-patch';
   const selectedMidiInputDeviceKey = selectedMidiInputDeviceIds.join('\n');
   const selectedMidiInputDeviceIdSet = useMemo(() => new Set(selectedMidiInputDeviceIds), [selectedMidiInputDeviceKey]);
+  const selectedMidiOutputDeviceKey = selectedMidiOutputDeviceIds.join('\n');
+  const selectedMidiOutputDeviceIdSet = useMemo(() => new Set(selectedMidiOutputDeviceIds), [selectedMidiOutputDeviceKey]);
   const midiInputEnabled = selectedMidiInputDeviceIds.length > 0;
   const [status, setStatus] = useState<AudioStatus>('idle');
   const [message, setMessage] = useState('audio stopped');
@@ -354,6 +362,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   const [midiInputStatus, setMidiInputStatus] = useState<MidiInputStatus>('inactive');
   const [midiInputMessage, setMidiInputMessage] = useState('Add a MIDI Note, MIDI CC, or MIDI Tempo source, then start audio.');
   const [midiInputDevices, setMidiInputDevices] = useState<MidiInputDevice[]>([]);
+  const [midiOutputDevices, setMidiOutputDevices] = useState<MidiInputDevice[]>([]);
   const [lastMidiControlChange, setLastMidiControlChange] = useState<MidiControlChange | undefined>(undefined);
   const contextRef = useRef<AudioContext | null>(null);
   const nodeRef = useRef<AudioWorkletNode | null>(null);
@@ -425,7 +434,8 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   }, []);
 
   const sendMidiAllNotesOff = useCallback(() => {
-    for (const output of midiAccessRef.current?.outputs.values() ?? []) {
+    for (const [index, output] of [...(midiAccessRef.current?.outputs.values() ?? [])].entries()) {
+      if (!selectedMidiOutputDeviceIdSet.has(midiDeviceFromPort(output, index, 'output').id)) continue;
       if (output.state === 'disconnected') continue;
       try {
         for (let channel = 0; channel < 16; channel += 1) {
@@ -435,7 +445,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
         // A device can disappear while playback is stopping.
       }
     }
-  }, []);
+  }, [selectedMidiOutputDeviceIdSet, selectedMidiOutputDeviceKey]);
 
   const closeAudioEngine = useCallback((reason: string): Promise<void> => {
     if (audioEngineCloseRef.current) return audioEngineCloseRef.current;
@@ -715,7 +725,8 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
 
   const sendMidiClockMessage = useCallback((message: number, force = false) => {
     if (!force && !midiClockOutputEnabledRef.current) return;
-    for (const output of midiAccessRef.current?.outputs.values() ?? []) {
+    for (const [index, output] of [...(midiAccessRef.current?.outputs.values() ?? [])].entries()) {
+      if (!selectedMidiOutputDeviceIdSet.has(midiDeviceFromPort(output, index, 'output').id)) continue;
       if (output.state === 'disconnected') continue;
       try {
         output.send([message]);
@@ -723,17 +734,33 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
         // A device can disappear between enumeration and send; state changes refresh on the next MIDI event.
       }
     }
-  }, []);
+  }, [selectedMidiOutputDeviceIdSet, selectedMidiOutputDeviceKey]);
 
   const sendMidiOutputEvents = useCallback((events: unknown) => {
     if (!Array.isArray(events)) return;
     for (const event of events) {
       const noteOn = event?.noteOn === true;
       const channel = clampMidiInteger(event?.channel, 1, 16);
+      if (event?.isCc === true) {
+        const cc = clampMidiInteger(event?.cc, 0, 127);
+        const value = clampMidiInteger(Number(event?.value) * 127, 0, 127);
+        const status = 0xb0 | (channel - 1);
+        for (const [index, output] of [...(midiAccessRef.current?.outputs.values() ?? [])].entries()) {
+          if (!selectedMidiOutputDeviceIdSet.has(midiDeviceFromPort(output, index, 'output').id)) continue;
+          if (output.state === 'disconnected') continue;
+          try {
+            output.send([status, cc, value]);
+          } catch {
+            // A device can disappear between audio rendering and MIDI dispatch.
+          }
+        }
+        continue;
+      }
       const note = clampMidiInteger(event?.note, 0, 127);
       const velocity = clampMidiInteger(Number(event?.velocity) * 127, 0, 127);
       const status = (noteOn ? 0x90 : 0x80) | (channel - 1);
-      for (const output of midiAccessRef.current?.outputs.values() ?? []) {
+      for (const [index, output] of [...(midiAccessRef.current?.outputs.values() ?? [])].entries()) {
+        if (!selectedMidiOutputDeviceIdSet.has(midiDeviceFromPort(output, index, 'output').id)) continue;
         if (output.state === 'disconnected') continue;
         try {
           output.send([status, note, velocity]);
@@ -742,7 +769,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
         }
       }
     }
-  }, []);
+  }, [selectedMidiOutputDeviceIdSet, selectedMidiOutputDeviceKey]);
 
   const stopMidiClockOutput = useCallback((sendStop = true) => {
     if (midiClockOutputTimerRef.current !== null) {
@@ -779,6 +806,8 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     const inputs = [...midiAccess.inputs.values()];
     const devices = inputs.map(midiInputDeviceFromInput);
     setMidiInputDevices((current) => midiInputDevicesEqual(current, devices) ? current : devices);
+    const outputs = [...midiAccess.outputs.values()].map((output, index) => midiDeviceFromPort(output, index, 'output'));
+    setMidiOutputDevices((current) => midiInputDevicesEqual(current, outputs) ? current : outputs);
     return devices;
   }, []);
 
@@ -794,15 +823,17 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     midiAccessRef.current = null;
     midiRequestRef.current = null;
     setMidiInputDevices((current) => current.length === 0 ? current : []);
+    setMidiOutputDevices((current) => current.length === 0 ? current : []);
     setMidiInputStatus(nextStatus);
     setMidiInputMessage(nextMessage);
   }, [stopMidiClockOutput]);
 
   const attachMidiInputs = useCallback((midiAccess: MidiAccessLike, node: AudioWorkletNode | null) => {
     const devices = updateMidiInputDevices(midiAccess);
+    const outputCount = [...midiAccess.outputs.values()].length;
     const selectedConnectedCount = devices.filter((device) => selectedMidiInputDeviceIdSet.has(device.id)).length;
-    setMidiInputStatus(devices.length > 0 ? 'connected' : 'unsupported');
-    setMidiInputMessage(midiInputStatusMessage(devices.length, selectedMidiInputDeviceIds.length, selectedConnectedCount));
+    setMidiInputStatus(devices.length + outputCount > 0 ? 'connected' : 'unsupported');
+    setMidiInputMessage(midiInputStatusMessage(devices.length, outputCount, selectedMidiInputDeviceIds.length, selectedConnectedCount));
 
     const handleMidiClock = (sourceIndex: number, event: { timeStamp?: number }) => {
       const graph = graphRef.current;
@@ -892,6 +923,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     };
     if (!navigatorWithMidi.requestMIDIAccess) {
       setMidiInputDevices((current) => current.length === 0 ? current : []);
+      setMidiOutputDevices((current) => current.length === 0 ? current : []);
       setMidiInputStatus('unsupported');
       setMidiInputMessage('MIDI input is unavailable in this browser.');
       return;
@@ -919,6 +951,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
       setMidiInputStatus(error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'SecurityError') ? 'denied' : 'error');
       setMidiInputMessage(error instanceof Error ? error.message : 'MIDI permission was denied.');
       setMidiInputDevices((current) => current.length === 0 ? current : []);
+      setMidiOutputDevices((current) => current.length === 0 ? current : []);
     }
   }, [attachMidiInputs]);
 
@@ -1184,6 +1217,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     if (!navigatorWithMidi.requestMIDIAccess) {
       setMidiInputStatus('unsupported');
       setMidiInputDevices((current) => current.length === 0 ? current : []);
+      setMidiOutputDevices((current) => current.length === 0 ? current : []);
       setMidiInputMessage('MIDI input is unavailable in this browser.');
       setMessage('MIDI input unavailable: this browser does not expose Web MIDI');
       return;
@@ -1210,6 +1244,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
       setMidiInputStatus(error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'SecurityError') ? 'denied' : 'error');
       setMidiInputMessage(error instanceof Error ? error.message : 'MIDI permission was denied.');
       setMidiInputDevices((current) => current.length === 0 ? current : []);
+      setMidiOutputDevices((current) => current.length === 0 ? current : []);
       setMessage(`MIDI input unavailable: ${error instanceof Error ? error.message : 'permission denied'}`);
       midiRequestRef.current = null;
     });
@@ -1595,12 +1630,14 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
         if (!navigatorWithMidi.requestMIDIAccess) {
           setMidiInputStatus('unsupported');
           setMidiInputDevices((current) => current.length === 0 ? current : []);
+          setMidiOutputDevices((current) => current.length === 0 ? current : []);
           setMidiInputMessage('MIDI input is unavailable in this browser.');
         } else if (midiAccessRef.current) {
           const devices = updateMidiInputDevices(midiAccessRef.current);
           const selectedConnectedCount = devices.filter((device) => selectedMidiInputDeviceIdSet.has(device.id)).length;
-          setMidiInputStatus(devices.length > 0 ? 'connected' : 'unsupported');
-          setMidiInputMessage(midiInputStatusMessage(devices.length, selectedMidiInputDeviceIds.length, selectedConnectedCount));
+          const outputCount = [...midiAccessRef.current.outputs.values()].length;
+          setMidiInputStatus(devices.length + outputCount > 0 ? 'connected' : 'unsupported');
+          setMidiInputMessage(midiInputStatusMessage(devices.length, outputCount, selectedMidiInputDeviceIds.length, selectedConnectedCount));
         } else {
           setMidiInputStatus('needs-permission');
           setMidiInputMessage(midiInputEnabled || midiClockOutputEnabled || midiAccessRequestedRef.current
@@ -1889,11 +1926,12 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     status: midiInputStatus,
     message: midiInputMessage,
     devices: midiInputDevices,
+    outputDevices: midiOutputDevices,
     canRequestAccess: Boolean((navigator as Navigator & {
       requestMIDIAccess?: (options?: { sysex?: boolean }) => Promise<unknown>;
     }).requestMIDIAccess),
     lastControlChange: lastMidiControlChange,
-  }), [lastMidiControlChange, midiInputDevices, midiInputMessage, midiInputStatus]);
+  }), [lastMidiControlChange, midiInputDevices, midiInputMessage, midiInputStatus, midiOutputDevices]);
   const recording: RecordingState = useMemo(() => ({
     status: recordingStatus,
     message: recordingMessage,
@@ -2220,12 +2258,16 @@ function audioInputDeviceLabel(devices: AudioInputDevice[], deviceId: string): s
 }
 
 function midiInputDeviceFromInput(input: MidiInputLike, index: number): MidiInputDevice {
-  const name = input.name?.trim();
-  const manufacturer = input.manufacturer?.trim();
+  return midiDeviceFromPort(input, index, 'input');
+}
+
+function midiDeviceFromPort(port: Pick<MidiInputLike, 'id' | 'name' | 'manufacturer' | 'state'>, index: number, kind: 'input' | 'output'): MidiInputDevice {
+  const name = port.name?.trim();
+  const manufacturer = port.manufacturer?.trim();
   return {
-    id: input.id || `${manufacturer || 'midi'}-${name || index}`,
-    label: [manufacturer, name].filter(Boolean).join(' ') || `MIDI input ${index + 1}`,
-    state: input.state || 'connected',
+    id: port.id || `${manufacturer || 'midi'}-${name || index}`,
+    label: [manufacturer, name].filter(Boolean).join(' ') || `MIDI ${kind} ${index + 1}`,
+    state: port.state || 'connected',
   };
 }
 
@@ -2238,22 +2280,22 @@ function midiInputDevicesEqual(left: MidiInputDevice[], right: MidiInputDevice[]
   ));
 }
 
-function midiInputStatusMessage(deviceCount: number, selectedCount: number, selectedConnectedCount: number): string {
-  if (deviceCount === 0) {
-    return 'MIDI permission is granted, but no input devices were found.';
+function midiInputStatusMessage(inputCount: number, outputCount: number, selectedCount: number, selectedConnectedCount: number): string {
+  if (inputCount + outputCount === 0) {
+    return 'MIDI permission is granted, but no devices were found.';
   }
   if (selectedCount === 0) {
-    return `${deviceCount} MIDI input${deviceCount === 1 ? '' : 's'} available. Select inputs in MIDI settings.`;
+    return `${inputCount} input${inputCount === 1 ? '' : 's'} and ${outputCount} output${outputCount === 1 ? '' : 's'} available.`;
   }
   if (selectedConnectedCount === 0) {
     return 'Selected MIDI input is not currently available.';
   }
-  return `${selectedConnectedCount} of ${deviceCount} MIDI input${deviceCount === 1 ? '' : 's'} selected.`;
+  return `${selectedConnectedCount} of ${inputCount} MIDI input${inputCount === 1 ? '' : 's'} selected; ${outputCount} output${outputCount === 1 ? '' : 's'} available.`;
 }
 
 function programUsesMidi(program: DspProgram | null): boolean {
   return Boolean(
-    program?.ops.some((op) => op.opcode === DSP_OP.MidiNote || op.opcode === DSP_OP.MidiCc || op.opcode === DSP_OP.MidiNoteSend) ||
+    program?.ops.some((op) => op.opcode === DSP_OP.MidiNote || op.opcode === DSP_OP.MidiCc || op.opcode === DSP_OP.MidiNoteSend || op.opcode === DSP_OP.MidiCcSend) ||
     (program?.midiControlBindings.length ?? 0) > 0 ||
     programUsesMidiClock(program)
   );

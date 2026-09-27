@@ -7,6 +7,9 @@ export function normalizePatch(patch: Patch): Patch {
     ...(patch.buffers ? { buffers: normalizeBufferAssets(patch.buffers) } : {}),
     ...(patch.midiInput ? { midiInput: {
       selectedDeviceIds: [...patch.midiInput.selectedDeviceIds].sort(),
+      ...(patch.midiInput.selectedOutputDeviceIds?.length ? {
+        selectedOutputDeviceIds: [...patch.midiInput.selectedOutputDeviceIds].sort(),
+      } : {}),
       ...(patch.midiInput.sendClock ? { sendClock: true } : {}),
     } } : {}),
     ...(patch.areas ? { areas: patch.areas.map((area) => ({

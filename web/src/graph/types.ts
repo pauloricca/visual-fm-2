@@ -38,6 +38,7 @@ export type NodeType =
   | 'MidiNoteOff'
   | 'MidiNoteOnSend'
   | 'MidiNoteOffSend'
+  | 'MidiCcSend'
   | 'MidiCc'
   | 'Selector'
   | 'Accumulator'
@@ -205,6 +206,8 @@ export interface PatchArea {
 
 export interface MidiInputPreferences {
   selectedDeviceIds: string[];
+  /** MIDI outputs used by send nodes, clock/transport, and playback cleanup. */
+  selectedOutputDeviceIds?: string[];
   /** When enabled, Tempo drives MIDI Clock and transport on connected MIDI outputs. */
   sendClock?: boolean;
 }

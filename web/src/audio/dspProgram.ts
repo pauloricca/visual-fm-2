@@ -73,6 +73,7 @@ export const DSP_OP = {
   DcBlock: 51,
   RollNoteEvent: 52,
   MidiNoteSend: 53,
+  MidiCcSend: 54,
 } as const;
 
 export interface DspProgram {
@@ -340,11 +341,14 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
     compileAudioOut(node, context);
   }
 
-  for (const node of patch.nodes.filter((candidate) => (
+  for (const node of ordinaryNodes.filter((candidate) => (
     candidate.enabled !== false
     && (candidate.type === 'MidiNoteOnSend' || candidate.type === 'MidiNoteOffSend')
   ))) {
     compileMidiNoteSend(node, context);
+  }
+  for (const node of ordinaryNodes.filter((candidate) => candidate.enabled !== false && candidate.type === 'MidiCcSend')) {
+    compileMidiCcSend(node, context);
   }
 
   for (const node of monitorNodes) {
@@ -679,6 +683,27 @@ function compileMidiNoteSend(node: PatchNode, context: CompileContext): void {
     d: resolveInput(node, 'channel', 1, context),
     state,
     value: node.type === 'MidiNoteOnSend' ? 1 : 0,
+  });
+}
+
+function compileMidiCcSend(node: PatchNode, context: CompileContext): void {
+  const state = nextState(context, 5);
+  context.stateBindings.push({
+    id: `${node.id}:midi-cc-send`,
+    state,
+    count: 5,
+    kind: 'effect',
+    nodeId: node.id,
+  });
+  context.ops.push({
+    opcode: DSP_OP.MidiCcSend,
+    a: resolveInput(node, 'signal', 0, context),
+    b: resolveInput(node, 'trigger', 0, context),
+    c: resolveInput(node, 'cc', 1, context),
+    d: resolveInput(node, 'channel', 1, context),
+    e: resolveInput(node, 'throttle', 0.1, context),
+    state,
+    value: hasInput(node, 'trigger', context) ? 1 : 0,
   });
 }
 
