@@ -289,6 +289,7 @@ async function closeAudioContext(
 }
 
 function parkAudioContext(
+  contextRef: { current: AudioContext | null },
   nodeRef: { current: AudioWorkletNode | null },
   outputGainRef: { current: GainNode | null },
   inputSourceRef: { current: MediaStreamAudioSourceNode | null },
@@ -305,6 +306,16 @@ function parkAudioContext(
   }
   inputSourceRef.current = null;
   inputStreamRef.current = null;
+  const context = contextRef.current;
+  if (context && context.state !== 'closed') {
+    // Muting alone still schedules the worklet and its CPU telemetry every block.
+    void context.suspend().catch((error) => {
+      logDiagnosticEvent('audio-context-suspend-error', {
+        level: 'error',
+        details: { error: serializeError(error) },
+      });
+    });
+  }
 }
 
 function fadeAudioOutputIn(context: AudioContext, gain: GainNode): void {
@@ -1257,7 +1268,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     const analyser = analyserRef.current;
     if (!context || !node || !outputGain) return;
 
-    audioActivationRequestedRef.current = true;
+    if (!audioActivationRequestedRef.current) return;
     logDiagnosticEvent('audio-activation-requested', {
       details: {
         generation: audioEngineGenerationRef.current,
@@ -1266,6 +1277,10 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
       },
     });
     await resumeAudioContext(context);
+    if (!audioActivationRequestedRef.current || contextRef.current !== context) {
+      if (context.state !== 'closed') await context.suspend();
+      return;
+    }
     node.port.postMessage({ type: 'setMuted', payload: { muted: false } });
     fadeAudioOutputIn(context, outputGain);
 
@@ -1330,6 +1345,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
           const generation = audioEngineGenerationRef.current + 1;
           audioEngineGenerationRef.current = generation;
           contextRef.current = context;
+          await context.suspend();
           logDiagnosticEvent('audio-context-created', {
             details: {
               generation,
@@ -1796,7 +1812,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
         },
       });
       await ensureAudioEngine(true);
-      startMidiClockOutput();
+      if (audioActivationRequestedRef.current) startMidiClockOutput();
     } catch (error) {
       logDiagnosticEvent('audio-start-error', {
         level: 'error',
@@ -1832,7 +1848,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
         window.clearTimeout(stopTimeoutRef.current);
       }
       stopTimeoutRef.current = window.setTimeout(() => {
-        parkAudioContext(nodeRef, outputGainRef, inputSourceRef, inputStreamRef, stopTimeoutRef);
+        parkAudioContext(contextRef, nodeRef, outputGainRef, inputSourceRef, inputStreamRef, stopTimeoutRef);
         logDiagnosticEvent('audio-context-parked', {
           details: {
             generation: audioEngineGenerationRef.current,
@@ -1843,7 +1859,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
         setLinkScopeReadings({});
       }, AUDIO_OUTPUT_STOP_DELAY_MS);
     } else {
-      parkAudioContext(nodeRef, outputGainRef, inputSourceRef, inputStreamRef, stopTimeoutRef);
+      parkAudioContext(contextRef, nodeRef, outputGainRef, inputSourceRef, inputStreamRef, stopTimeoutRef);
       logDiagnosticEvent('audio-context-parked', {
         details: {
           generation: audioEngineGenerationRef.current,

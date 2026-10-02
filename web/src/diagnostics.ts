@@ -7,14 +7,12 @@ interface DiagnosticEvent {
 }
 
 const DIAGNOSTIC_ENDPOINT = '/api/diagnostics';
-const HEARTBEAT_INTERVAL_MS = 30_000;
 const PERFORMANCE_TIMELINE_MAINTENANCE_INTERVAL_MS = 1_000;
 const PERFORMANCE_TIMELINE_ENTRY_LIMIT = 1_000;
 const SESSION_STORAGE_KEY = 'visual-fm-2.diagnostics-session';
 
 const sessionId = getSessionId();
-let lastHeartbeatAt = 0;
-let lastPerformanceTimelineMaintenance = performanceTimelineSnapshot(false);
+let lastPerformanceTimelineMaintenanceAt = 0;
 
 const buildEnvironment = import.meta.env as ImportMetaEnv & {
   MODE: string;
@@ -102,20 +100,7 @@ export function installDiagnostics(): void {
     logDiagnosticEvent('network-offline');
   });
 
-  window.setInterval(() => {
-    logDiagnosticEvent('page-heartbeat', {
-      details: {
-        visibilityState: document.visibilityState,
-        memory: memorySnapshot(),
-        performanceTimeline: lastPerformanceTimelineMaintenance,
-        viewport: viewportSnapshot(),
-      },
-    });
-  }, HEARTBEAT_INTERVAL_MS);
 
-  window.setInterval(() => {
-    lastPerformanceTimelineMaintenance = maintainPerformanceTimeline();
-  }, PERFORMANCE_TIMELINE_MAINTENANCE_INTERVAL_MS);
 }
 
 export function logDiagnosticEvent(
@@ -127,8 +112,11 @@ export function logDiagnosticEvent(
   } = {},
 ): void {
   const now = performance.now();
-  if (event === 'page-heartbeat' && now - lastHeartbeatAt < HEARTBEAT_INTERVAL_MS * 0.8) return;
-  if (event === 'page-heartbeat') lastHeartbeatAt = now;
+  // Maintain the timeline only when something happens; idle pages need no timer.
+  if (now - lastPerformanceTimelineMaintenanceAt >= PERFORMANCE_TIMELINE_MAINTENANCE_INTERVAL_MS) {
+    lastPerformanceTimelineMaintenanceAt = now;
+    maintainPerformanceTimeline();
+  }
 
   const payload = {
     sessionId,
