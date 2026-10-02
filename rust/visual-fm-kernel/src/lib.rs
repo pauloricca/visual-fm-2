@@ -41,7 +41,8 @@ const MAX_DSP_SAMPLE_NODES: usize = 128;
 const MAX_IMAGE_SLOTS: usize = 4;
 const MAX_IMAGE_DIMENSION: usize = 1024;
 const MAX_IMAGE_BYTES: usize = MAX_IMAGE_DIMENSION * MAX_IMAGE_DIMENSION * 4;
-const LINK_SCOPE_POINTS: usize = 512;
+// Two 512-point windows leave room to align the displayed trace to a zero crossing.
+const LINK_SCOPE_POINTS: usize = 1024;
 const LINK_SCOPE_SECONDS_MAX: f64 = 30.0;
 const FORMANT_INTENSITY_MAX: f64 = 36.0;
 const DEFAULT_TEMPO: f64 = 120.0;

@@ -630,7 +630,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       this.linkMeterCounts = new Uint32Array(buffer, this.wasm.linkMeterCountPtr(), 1024);
     }
     this.linkScopeSamples = typeof this.wasm.linkScopePtr === "function"
-      ? new Float32Array(buffer, this.wasm.linkScopePtr(), 512)
+      ? new Float32Array(buffer, this.wasm.linkScopePtr(), 1024)
       : null;
     this.refreshDspScopeViews(buffer);
     if (reportGrowth) {
@@ -650,7 +650,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     if (!buffer || !this.wasm?.dspScopePtr) return;
     for (const state of this.dspScopeStates.values()) {
       const ptr = this.wasm.dspScopePtr(state.slot);
-      state.samples = ptr ? new Float32Array(buffer, ptr, 512) : null;
+      state.samples = ptr ? new Float32Array(buffer, ptr, 1024) : null;
     }
   }
 
@@ -1580,7 +1580,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     for (const [linkId, state] of this.dspScopeStates) {
       if (state.samples?.buffer !== this.wasm.memory.buffer) {
         const ptr = this.wasm.dspScopePtr?.(state.slot);
-        state.samples = ptr ? new Float32Array(this.wasm.memory.buffer, ptr, 512) : null;
+        state.samples = ptr ? new Float32Array(this.wasm.memory.buffer, ptr, 1024) : null;
       }
       if (!state.samples || !sameScopeRequest(state.request, nextScopes.find((scope) => scope.request.linkId === linkId)?.request)) continue;
       previousStateById.set(linkId, {
@@ -1596,7 +1596,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       if (scopeSlot < 0) continue;
       const ptr = this.wasm.dspScopePtr(slot);
       if (!ptr) continue;
-      const samples = new Float32Array(this.wasm.memory.buffer, ptr, 512);
+      const samples = new Float32Array(this.wasm.memory.buffer, ptr, 1024);
       const previous = previousStateById.get(request.linkId);
       if (previous) {
         samples.set(previous.samples.subarray(0, request.points));
@@ -2411,13 +2411,13 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         .filter((scope) => scope && typeof scope.id === "string")
         .map((scope) => [scope.id, scope]),
     );
-    const points = this.clamp(Math.round(Number(payload.points) || 256), 32, 512);
+    const points = this.clamp(Math.round(Number(payload.points) || 256), 32, 1024);
     const displayPoints = this.clamp(Math.round(Number(payload.displayPoints) || points), 32, points);
     const defaultSeconds = this.clamp(Number(payload.seconds) || 0.08, 0.01, LINK_SCOPE_SECONDS_MAX);
     const mode = payload.mode === "zero-crossing" ? "zero-crossing" : payload.mode === "envelope" ? "envelope" : "continuous";
     const nextRequests = [...new Set(linkIds)].map((linkId) => {
       const settings = scopeSettings.get(linkId);
-      const requestPoints = this.clamp(Math.round(Number(settings?.points) || points), 32, 512);
+      const requestPoints = this.clamp(Math.round(Number(settings?.points) || points), 32, 1024);
       return {
         linkId,
         mode: settings?.mode === "zero-crossing" ? "zero-crossing" : settings?.mode === "envelope" ? "envelope" : mode,
@@ -2616,7 +2616,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     state.wasm = wasm;
     state.linkIndex = linkIndex;
     state.linkScopeSamples = typeof wasm.linkScopePtr === "function"
-      ? new Float32Array(wasm.memory.buffer, wasm.linkScopePtr(), 512)
+      ? new Float32Array(wasm.memory.buffer, wasm.linkScopePtr(), 1024)
       : null;
     state.ready = true;
     state.loading = false;
@@ -2745,7 +2745,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     if (!state?.samples || !this.wasm) return [];
     if (state.samples.buffer !== this.wasm.memory.buffer) {
       const ptr = this.wasm.dspScopePtr?.(state.slot);
-      state.samples = ptr ? new Float32Array(this.wasm.memory.buffer, ptr, 512) : null;
+      state.samples = ptr ? new Float32Array(this.wasm.memory.buffer, ptr, 1024) : null;
       if (!state.samples) return [];
     }
     const count = this.clamp(Math.round(this.wasm.dspScopeCount?.(state.slot) || 0), 0, state.request.points);

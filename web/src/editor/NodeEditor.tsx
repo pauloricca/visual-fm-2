@@ -338,6 +338,16 @@ function NodeEditorInner() {
   // React Flow owns the live viewport transform. React state only receives a
   // settled snapshot so pan/zoom frames do not rerender and serialize the full patch.
   const [settledViewport, setSettledViewport] = useState<Viewport>(initialViewport);
+  const [fullscreenScopeId, setFullscreenScopeId] = useState<string | null>(null);
+  useEffect(() => {
+    const updateFullscreenScope = () => {
+      setFullscreenScopeId(document.fullscreenElement?.getAttribute('data-fullscreen-scope-id') ?? null);
+    };
+    updateFullscreenScope();
+    document.addEventListener('fullscreenchange', updateFullscreenScope);
+    return () => document.removeEventListener('fullscreenchange', updateFullscreenScope);
+  }, []);
+
   const viewportRef = useRef<Viewport>(initialViewport);
   const [canvasLocked, setCanvasLocked] = useState(false);
   const [settledGraphZoom, setSettledGraphZoom] = useState(initialViewport.zoom);
@@ -3387,7 +3397,7 @@ function NodeEditorInner() {
       const type = node.data.patchNode.type;
       if (type !== 'Scope' && type !== 'FFT') return [];
       const hasConnectedOutput = edges.some((edge) => edge.source === node.id && edge.data?.enabled !== false);
-      if (!isNodeVisibleInViewport(node, settledViewport, editorSize) && (type === 'Scope' || !hasConnectedOutput)) return [];
+      if (node.id !== fullscreenScopeId && !isNodeVisibleInViewport(node, settledViewport, editorSize) && (type === 'Scope' || !hasConnectedOutput)) return [];
       const dspNodeId = runtimeDspNodeIdForFlowNode(node, nodesWithCallbacks, activeDspGroupIds);
       const linkId = monitorLinkIdByNode.get(dspNodeId);
       if (!linkId) return [];
@@ -3396,11 +3406,12 @@ function NodeEditorInner() {
         : [{
           id: dspNodeId,
           length: node.data.patchNode.params.length ?? 0.08,
+          ...(node.id === fullscreenScopeId ? { points: 512 } : {}),
           reset: Math.round(node.data.patchNode.params.reset ?? 1) === 1 ? 'zero-crossing' : 'none',
         }];
     });
     audio.setLinkScopes(scopeRequests);
-  }, [activeDspGroupIds, audio.setLinkScopes, editorSize, edges, monitorLinkIdByNode, nodesWithCallbacks, settledViewport]);
+  }, [activeDspGroupIds, audio.setLinkScopes, editorSize, edges, fullscreenScopeId, monitorLinkIdByNode, nodesWithCallbacks, settledViewport]);
 
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, persistedEditorStateJson);

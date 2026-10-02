@@ -93,7 +93,7 @@ const FFT_CAPTURE_SECONDS = 0.012;
 const FFT_ANALYSIS_MIN_FREQUENCY = 20;
 const FFT_ANALYSIS_MAX_FREQUENCY = 20000;
 
-export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }: NodeProps<ShaderFlowNode>) {
+export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selected, dragging }: NodeProps<ShaderFlowNode>) {
   const node = data.patchNode;
   const isCanvasLocked = data.isCanvasLocked === true;
   const scopeGradientId = `scope-gradient-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
@@ -104,6 +104,8 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
   const customWavePointScale = customWaveEditPointScreenScale(graphZoomScale);
   const updateNodeInternals = useUpdateNodeInternals();
   const nodeElementRef = useRef<HTMLDivElement | null>(null);
+  const scopeDisplayRef = useRef<HTMLDivElement | null>(null);
+  const [scopeFullscreenError, setScopeFullscreenError] = useState('');
   const draggedPortRef = useRef<{ side: 'input' | 'output'; port: string; pointerId: number } | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const scopeResizeRef = useRef<{
@@ -1418,9 +1420,9 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
             </div>
           ) : null}
           {showScopeDisplay ? (
-            <div className="audio-node-scope-display" aria-hidden="true">
+            <div ref={scopeDisplayRef} data-fullscreen-scope-id={flowNodeId} className="audio-node-scope-display">
               <ChartGrid width={160} height={48} columns={scopeGridTicks} rows={scopeScaleTicks} showRowLabels />
-              <svg className="audio-node-scope-waveform" viewBox="0 0 160 48" preserveAspectRatio="none">
+              <svg className="audio-node-scope-waveform" viewBox="0 0 160 48" preserveAspectRatio="none" aria-label="Live scope waveform">
                 <defs>
                   <linearGradient id={scopeGradientId} gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="160" y2="0">
                     <stop offset="0" stopColor="var(--color-accent)" stopOpacity="0.3" />
@@ -1428,8 +1430,31 @@ export const ShaderNode = memo(function ShaderNode({ data, selected, dragging }:
                     <stop offset="1" stopColor="var(--color-accent)" stopOpacity="1" />
                   </linearGradient>
                 </defs>
-                <path d={scopePath} style={{ stroke: `url(#${scopeGradientId})` }} />
+                <path d={scopePath} style={{ stroke: `var(--scope-trace-stroke, url(#${scopeGradientId}))` }} />
               </svg>
+              <button
+                type="button"
+                className="audio-node-scope-fullscreen nodrag nopan nowheel"
+                aria-label="Show scope full screen"
+                title="Show scope full screen (Esc to exit)"
+                onPointerDown={(event) => event.stopPropagation()}
+                onDoubleClick={(event) => event.stopPropagation()}
+                onClick={async (event) => {
+                  event.stopPropagation();
+                  setScopeFullscreenError('');
+                  try {
+                    if (!scopeDisplayRef.current?.requestFullscreen) throw new Error('Fullscreen unavailable');
+                    await scopeDisplayRef.current.requestFullscreen();
+                  } catch {
+                    setScopeFullscreenError('Full screen is unavailable in this browser window.');
+                  }
+                }}
+              >
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M6 2H2v4m8-4h4v4M2 10v4h4m8-4v4h-4" />
+                </svg>
+              </button>
+              {scopeFullscreenError ? <span className="audio-node-scope-fullscreen-error" role="alert">{scopeFullscreenError}</span> : null}
             </div>
           ) : null}
           {showFftDisplay ? (

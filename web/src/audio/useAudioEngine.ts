@@ -2157,7 +2157,7 @@ function scopePayload(requests: ScopeCaptureRequest[]) {
         // and count keeps sample spacing unchanged, leaving a full display
         // window after any eligible zero crossing.
         seconds: mode === 'zero-crossing' ? request.length * 2 : request.length,
-        points: mode === 'zero-crossing' ? Math.min(512, displayPoints * 2) : request.points ?? SCOPE_CAPTURE_POINTS,
+        points: mode === 'zero-crossing' ? Math.min(1024, displayPoints * 2) : request.points ?? SCOPE_CAPTURE_POINTS,
         displayPoints,
         mode,
       };
