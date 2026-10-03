@@ -158,7 +158,7 @@ export interface ShaderEdgeData extends Record<string, unknown> {
   isAreaCollapsedPresentation?: boolean;
 }
 
-export type ShaderFlowEdge = Edge<ShaderEdgeData, 'shaderEdge'>;
+export type ShaderFlowEdge = Edge<ShaderEdgeData, 'shaderEdge' | 'virtualRoute'>;
 
 export interface PersistedEditorState {
   version: 1;

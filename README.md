@@ -192,6 +192,8 @@ The signature notation below is `inputs -> outputs`. Port names are the names us
 
 ## Links
 
+Highlighted virtual Send/Receive connections show glowing curves in their channel number's color between the participating Send and Receive nodes. These curves follow the directional selection path, disappear when that path is no longer highlighted, and are display-only: they cannot be selected or edited and are not saved as patch links.
+
 Every link has:
 
 - `weight`: the cable amplitude/control amount.
@@ -268,6 +270,8 @@ The compiler emits the contained graph once as a reusable DSP template, and the 
 Live graph recompilation migrates Spawn instances and Spread items by stable container and node IDs. Unchanged nodes retain their scalar state and mutable Sample/effect/Buffer resources, removed nodes discard only their own state, and newly added nodes start with clean state. This keeps existing voices and repeated items running while a template is edited.
 
 ## Editor controls and shortcuts
+
+During an ordinary node drag, directly attached Send/Receive nodes follow at their existing offsets when all their physical cables connect only to that node. Multiple cables to the same node still qualify; a connection to any other node keeps the marker independent. Already-selected markers move normally with the selection, and markers can still be dragged separately. Virtual channel connections do not affect this attachment rule. Alt-drag duplication retains its explicit selection behavior.
 
 Shortcuts are ignored while editing text or numeric fields unless noted otherwise.
 

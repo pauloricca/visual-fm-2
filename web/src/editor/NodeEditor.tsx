@@ -79,11 +79,11 @@ import {
   toFlowEdges,
   toFlowNodes,
 } from './flowPatch';
-import { ShaderEdge } from './ShaderEdge';
-import { makeNodeId, ShaderNode } from './ShaderNode';
+import { ShaderEdge, VirtualRouteEdge } from './ShaderEdge';
+import { makeNodeId, routingNodeColor, ShaderNode } from './ShaderNode';
 
 const nodeTypes = { shaderNode: ShaderNode };
-const edgeTypes = { shaderEdge: ShaderEdge };
+const edgeTypes = { shaderEdge: ShaderEdge, virtualRoute: VirtualRouteEdge };
 const STORAGE_KEY = 'visual-fm-2.editor-state.v1';
 const VIEWPORT_STORAGE_KEY = 'visual-fm-2.viewport.v1';
 const HISTORY_LIMIT = 100;
@@ -397,6 +397,11 @@ function NodeEditorInner() {
   const nodeDragAnimationFrameRef = useRef<number | null>(null);
   const pendingNodeDragSelectionRef = useRef<NodeDragSelectionSnapshot | null>(null);
   const activeNodeDragSelectionRef = useRef<NodeDragSelectionSnapshot | null>(null);
+  const routingAppendicesRef = useRef<Array<{
+    id: string;
+    ownerId: string;
+    offset: { x: number; y: number };
+  }>>([]);
   const selectionDragStartRef = useRef<ScreenPoint | null>(null);
   const canvasDragPointerRef = useRef<ScreenPoint | null>(null);
   const canvasDragActiveRef = useRef(false);
@@ -3057,7 +3062,7 @@ function NodeEditorInner() {
     return reconciledNodes;
   }, [activeDspGroupIds, audio.buffers, audio.linkMeters, audio.linkScopes, audio.playheads, audio.status, clearBufferRecording, dspDiagnostics, midiControlVisuals, monitorLinkIdByNode, nodesWithGroupUi]);
 
-  const renderedEdges = useMemo(() => edgesWithCallbacks.map((edge) => {
+  const renderedEdges = useMemo<ShaderFlowEdge[]>(() => [...edgesWithCallbacks.map((edge) => {
     const dspErrors = dspDiagnostics.edgeErrors.get(edge.id) ?? [];
     if (dspErrors.length === 0) return edge;
 
@@ -3068,7 +3073,22 @@ function NodeEditorInner() {
         dspErrors,
       },
     };
-  }), [dspDiagnostics, edgesWithCallbacks]);
+  }), ...routingSelection.pairs.map(([source, target]): ShaderFlowEdge => ({
+    id: `virtual-route:${JSON.stringify([source, target])}`,
+    type: 'virtualRoute',
+    source,
+    target,
+    sourceHandle: 'virtual:send',
+    targetHandle: 'virtual:receive',
+    selectable: false,
+    deletable: false,
+    reconnectable: false,
+    focusable: false,
+    style: {
+      pointerEvents: 'none',
+      color: routingNodeColor(nodes.find((node) => node.id === source)?.data.patchNode.params.number),
+    },
+  }))], [dspDiagnostics, edgesWithCallbacks, routingSelection, nodes]);
 
   const collapsedAreaByNode = useMemo(() => {
     const collapsedAreas = areas.filter((area) => area.collapsed);
@@ -3142,6 +3162,12 @@ function NodeEditorInner() {
       data: {
         ...edge.data,
         isAreaCollapsedPresentation: true,
+        weight: edge.data?.weight ?? 1,
+        mode: edge.data?.mode ?? 'set',
+        enabled: edge.data?.enabled !== false,
+        onWeightChange: edge.data?.onWeightChange ?? updateEdgeWeightPlaceholder,
+        onModeChange: edge.data?.onModeChange ?? updateEdgeModePlaceholder,
+        onInsertNode: edge.data?.onInsertNode ?? insertNodeOnEdgePlaceholder,
         showLinkControls: false,
         ...(sourceArea ? { visualSource: collapsedAreaOutputPin(sourceArea) } : {}),
         ...(targetArea ? { visualTarget: collapsedAreaInputPin(targetArea) } : {}),
@@ -3437,6 +3463,23 @@ function NodeEditorInner() {
   const applyNodeChangesNow = useCallback((changes: NodeChange<ShaderFlowNode>[]) => {
     if (changes.length === 0) return;
     if (canvasLocked) return;
+    const movedIds = new Set(changes.filter((change) => change.type === 'position').map((change) => change.id));
+    const appendixChanges: NodeChange<ShaderFlowNode>[] = [];
+    for (const appendix of routingAppendicesRef.current) {
+      if (movedIds.has(appendix.id)) continue;
+      const ownerChange = changes.find((change) => change.type === 'position' && change.id === appendix.ownerId);
+      if (ownerChange?.type !== 'position' || !ownerChange.position) continue;
+      appendixChanges.push({
+        id: appendix.id,
+        type: 'position',
+        position: {
+          x: ownerChange.position.x + appendix.offset.x,
+          y: ownerChange.position.y + appendix.offset.y,
+        },
+        dragging: ownerChange.dragging,
+      });
+    }
+    changes = [...changes, ...appendixChanges];
     const duplicateState = duplicateDragRef.current;
     if (duplicateState?.duplicating) {
       updateDuplicateDrag(syncDuplicateDragPositionsFromChanges(duplicateState, changes));
@@ -3515,6 +3558,26 @@ function NodeEditorInner() {
       ? selectionSnapshot
       : null;
     const relatedNodes = dragNodes.length > 0 ? dragNodes : [node];
+    const draggedIds = new Set(relatedNodes.map((entry) => entry.id));
+    routingAppendicesRef.current = nodesRef.current.flatMap((candidate) => {
+      if (duplicating || draggedIds.has(candidate.id)) return [];
+      if (candidate.data.patchNode.type !== 'Send' && candidate.data.patchNode.type !== 'Receive') return [];
+      const neighbors = new Set(edgesRef.current.flatMap((edge) => {
+        if (edge.type === 'virtualRoute') return [];
+        if (edge.source === candidate.id) return [edge.target];
+        if (edge.target === candidate.id) return [edge.source];
+        return [];
+      }));
+      if (neighbors.size !== 1) return [];
+      const ownerId = [...neighbors][0];
+      const owner = relatedNodes.find((entry) => entry.id === ownerId);
+      if (!owner) return [];
+      return [{
+        id: candidate.id,
+        ownerId,
+        offset: { x: candidate.position.x - owner.position.x, y: candidate.position.y - owner.position.y },
+      }];
+    });
     const positions = Object.fromEntries(relatedNodes.map((entry) => [
       entry.id,
       { ...entry.position },
@@ -3547,6 +3610,7 @@ function NodeEditorInner() {
   ) => {
     flushQueuedNodeDragChanges();
     const dragState = duplicateDragRef.current;
+    routingAppendicesRef.current = [];
     activeNodeDragSelectionRef.current = null;
     pendingNodeDragSelectionRef.current = null;
     updateDuplicateDrag(null);
@@ -7618,7 +7682,7 @@ function isEdgeConnectedToSelectedNode(edge: ShaderFlowEdge, selectedNodeIds: Se
 function routingSelectionHighlights(
   nodes: ShaderFlowNode[],
   edges: ShaderFlowEdge[],
-): { nodeIds: Set<string>; edgeIds: Set<string> } {
+): { nodeIds: Set<string>; edgeIds: Set<string>; pairs: Array<[string, string]> } {
   const nodeById = new Map(nodes.map((node) => [node.id, node.data.patchNode]));
   const nodeIds = new Set<string>();
   const edgeIds = new Set<string>();
@@ -7708,7 +7772,23 @@ function routingSelectionHighlights(
       || backwardNumbers.size !== previousBackwardCount;
   }
 
-  return { nodeIds, edgeIds };
+  const forwardSends = new Set(nodes.filter((node) => node.selected && node.data.patchNode.type === 'Send').map((node) => node.id));
+  const backwardReceives = new Set(nodes.filter((node) => node.selected && node.data.patchNode.type === 'Receive').map((node) => node.id));
+  for (const edge of edges) {
+    const link = linkFromEdge(edge);
+    if (!link) continue;
+    if (forwardEdges.has(edge.id) && link.to.port === 'signal' && nodeById.get(link.to.node)?.type === 'Send') forwardSends.add(link.to.node);
+    if (backwardEdges.has(edge.id) && link.from.port === 'signal' && nodeById.get(link.from.node)?.type === 'Receive') backwardReceives.add(link.from.node);
+  }
+  const pairs: Array<[string, string]> = [];
+  for (const send of nodes.filter((node) => node.data.patchNode.type === 'Send')) {
+    for (const receive of nodes.filter((node) => node.data.patchNode.type === 'Receive')) {
+      if (!forwardSends.has(send.id) && !backwardReceives.has(receive.id)) continue;
+      if (routingNodeNumber(send.data.patchNode.params.number) !== routingNodeNumber(receive.data.patchNode.params.number)) continue;
+      pairs.push([send.id, receive.id]);
+    }
+  }
+  return { nodeIds, edgeIds, pairs };
 }
 
 function routingNodeNumber(value: number | undefined): number {

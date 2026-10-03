@@ -14,6 +14,18 @@ import type { ShaderFlowEdge } from './flowPatch';
 import { formatNumericValue } from './numericDisplay';
 
 const LINK_CONTROLS_SHOW_DELAY_MS = 260;
+export const VirtualRouteEdge = memo(function VirtualRouteEdge(props: EdgeProps<ShaderFlowEdge>) {
+  const [path] = getBezierPath({
+    ...props,
+    sourceX: props.data?.visualSource?.x ?? props.sourceX,
+    sourceY: props.data?.visualSource?.y ?? props.sourceY,
+    targetX: props.data?.visualTarget?.x ?? props.targetX,
+    targetY: props.data?.visualTarget?.y ?? props.targetY,
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
+  });
+  return <path d={path} className="virtual-route-edge" style={props.style} fill="none" pointerEvents="none" />;
+});
 const FEEDBACK_CURVE_OFFSET = 142;
 const SAME_NODE_FEEDBACK_CURVE_OFFSET = 220;
 const SHORT_LINK_CONTROLS_DISTANCE = 144;

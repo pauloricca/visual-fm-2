@@ -841,6 +841,18 @@ button:hover {
   zoom: var(--node-scale, 1);
 }
 
+.virtual-route-handle {
+  opacity: 0;
+  pointer-events: none !important;
+}
+
+.virtual-route-edge {
+  stroke: currentColor;
+  stroke-width: 4;
+  filter: drop-shadow(0 0 4px currentColor) drop-shadow(0 0 9px currentColor);
+  pointer-events: none;
+}
+
 .routing-node-marker-receive {
   background: var(--routing-color);
 }

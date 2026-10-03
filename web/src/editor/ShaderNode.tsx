@@ -1049,6 +1049,7 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
         title={`${isSend ? 'Send' : 'Receive'} ${number}`}
         aria-label={`${isSend ? 'Send' : 'Receive'} ${number}`}
       >
+        <Handle id={isSend ? 'virtual:send' : 'virtual:receive'} type={isSend ? 'source' : 'target'} position={isSend ? Position.Right : Position.Left} isConnectable={false} className="virtual-route-handle" />
         <span className="routing-node-number" aria-hidden="true">{number}</span>
         <Handle
           id={`${isSend ? 'in' : 'out'}:signal`}
@@ -1082,6 +1083,7 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
           data.onHeaderDoubleClick?.(node.id);
         } : undefined}
       >
+        {isRoutingNode ? <Handle id={node.type === 'Send' ? 'virtual:send' : 'virtual:receive'} type={node.type === 'Send' ? 'source' : 'target'} position={node.type === 'Send' ? Position.Right : Position.Left} isConnectable={false} className="virtual-route-handle" /> : null}
         {showHeaderInputPort && headerInputPort ? (
           <Handle
             id={`in:${headerInputPort}`}
@@ -4888,7 +4890,7 @@ function routingNodeNumber(value: number | undefined): number {
   return Math.max(1, Math.min(10, Math.round(Number.isFinite(value) ? value ?? 1 : 1)));
 }
 
-function routingNodeColor(value: number | undefined): string {
+export function routingNodeColor(value: number | undefined): string {
   return ROUTING_NODE_COLORS[routingNodeNumber(value) - 1];
 }
 
