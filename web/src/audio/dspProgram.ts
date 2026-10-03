@@ -217,6 +217,7 @@ interface CompileContext {
   buttonGateOutputByNodeId: Map<string, number>;
   joystickUnitValueByAxis: Map<string, number>;
   sliderUnitValueByNodeId: Map<string, number>;
+  sendSignalByNodeId: Map<string, number>;
   visitingOutputs: Set<string>;
   feedbackByOutput: Map<string, FeedbackBinding>;
   sequencerStateByNodeId: Map<string, number>;
@@ -485,6 +486,7 @@ function createContext(patch: Patch): CompileContext {
     buttonGateOutputByNodeId: new Map(),
     joystickUnitValueByAxis: new Map(),
     sliderUnitValueByNodeId: new Map(),
+    sendSignalByNodeId: new Map(),
     visitingOutputs: new Set(),
     feedbackByOutput: new Map(),
     sequencerStateByNodeId: new Map(),
@@ -534,6 +536,16 @@ function compileSpreadTemplates(context: CompileContext): void {
       if (link.enabled === false || context.nodeById.get(link.from.node)?.enabled === false || context.nodeById.get(link.to.node)?.enabled === false || !templateIds.has(link.to.node) || templateIds.has(link.from.node)) continue;
       const source = context.nodeById.get(link.from.node);
       if (source) resolveOutput(source, link.from.port, context);
+    }
+
+    // Virtual routes entering a repeated template need the same treatment as
+    // explicit external links: compile the Send once before the repeat begins.
+    const receivedNumbers = new Set(templateNodes
+      .filter((node) => node.type === 'Receive')
+      .map(routingNumber));
+    for (const send of context.patch.nodes) {
+      if (send.type !== 'Send' || send.enabled === false || send.runtimeSpread) continue;
+      if (receivedNumbers.has(routingNumber(send))) resolveSendSignal(send, context);
     }
 
     const countRegister = spread.type === 'Spread'
@@ -922,6 +934,19 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
 
   if (node.type === 'Pass') {
     return resolveInput(node, 'signal', 0, context);
+  }
+
+  if (node.type === 'Receive') {
+    const number = routingNumber(node);
+    const sendRegisters = context.patch.nodes
+      .filter((candidate) => (
+        candidate.enabled !== false
+        && candidate.type === 'Send'
+        && routingNumber(candidate) === number
+        && routingNodesShareRuntime(node, candidate)
+      ))
+      .map((send) => resolveSendSignal(send, context));
+    return sumRegisters(sendRegisters, context);
   }
 
   if (node.type === 'Buffer' && port === 'record head out') {
@@ -2877,6 +2902,25 @@ function dspOpUsesEffectBuffer(op: DspOp): boolean {
 
 function finiteNumber(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function routingNumber(node: PatchNode): number {
+  return Math.max(1, Math.min(10, Math.round(finiteNumber(node.params.number, 1))));
+}
+
+function routingNodesShareRuntime(receive: PatchNode, send: PatchNode): boolean {
+  if (!receive.runtimeSpread) return !send.runtimeSpread;
+  if (!send.runtimeSpread) return true;
+  return receive.runtimeSpread.spreadId === send.runtimeSpread.spreadId
+    && receive.runtimeSpread.itemIndex === send.runtimeSpread.itemIndex;
+}
+
+function resolveSendSignal(node: PatchNode, context: CompileContext): number {
+  const cached = context.sendSignalByNodeId.get(node.id);
+  if (cached !== undefined) return cached;
+  const signal = resolveInput(node, 'signal', 0, context);
+  context.sendSignalByNodeId.set(node.id, signal);
+  return signal;
 }
 
 function clampInteger(value: unknown, min: number, max: number): number {

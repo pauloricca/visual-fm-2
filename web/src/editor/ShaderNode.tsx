@@ -149,6 +149,7 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
   const isAreaCollapsedPresentation = data.isAreaCollapsedPresentation === true;
   const isAreaUiCollapsedPresentation = data.isAreaUiCollapsedPresentation === true;
   const isSelector = node.type === 'Selector';
+  const isRoutingNode = node.type === 'Send' || node.type === 'Receive';
   const canRenameInputs = node.type === 'Outs';
   const canRenameOutputs = node.type === 'Ins';
   const outputCount = definition?.outputs.length ?? 0;
@@ -384,6 +385,7 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
     '--graph-screen-scale': String(graphScreenEmphasis / graphZoomScale),
     '--graph-stroke-scale': String(1 / graphZoomScale),
     ...(groupUiPreview ? { '--group-ui-width': `${groupUiPreview.width}px` } : {}),
+    ...(isRoutingNode ? { '--routing-color': routingNodeColor(node.params.number) } : {}),
   } as CSSProperties;
   const className = [
     'shader-node',
@@ -468,6 +470,7 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
     customWave?.sustainStart,
     sequencer?.rows,
     sequencer?.steps,
+    selected,
     updateNodeInternals,
   ]);
 
@@ -1026,6 +1029,33 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
             </div>
           </>
         ) : null}
+      </div>
+    );
+  }
+
+  if (isRoutingNode && !selected) {
+    const isSend = node.type === 'Send';
+    const number = routingNodeNumber(node.params.number);
+    return (
+      <div
+        ref={nodeElementRef}
+        className={[
+          'routing-node-marker',
+          `routing-node-marker-${isSend ? 'send' : 'receive'}`,
+          data.routingHighlighted === true ? 'routing-node-marker-highlighted' : '',
+          node.enabled === false ? 'routing-node-marker-disabled' : '',
+        ].filter(Boolean).join(' ')}
+        style={nodeStyle}
+        title={`${isSend ? 'Send' : 'Receive'} ${number}`}
+        aria-label={`${isSend ? 'Send' : 'Receive'} ${number}`}
+      >
+        <span className="routing-node-number" aria-hidden="true">{number}</span>
+        <Handle
+          id={`${isSend ? 'in' : 'out'}:signal`}
+          type={isSend ? 'target' : 'source'}
+          position={isSend ? Position.Left : Position.Right}
+          className="routing-node-handle"
+        />
       </div>
     );
   }
@@ -4839,6 +4869,27 @@ function shouldForceCompactPorts(definition: NodeDefinition): boolean {
 
   return onlySignalInput
     && definition.outputs.length <= 1;
+}
+
+const ROUTING_NODE_COLORS = [
+  '#ff4d6d',
+  '#ff922b',
+  '#ffd43b',
+  '#69db7c',
+  '#38d9a9',
+  '#22b8cf',
+  '#4dabf7',
+  '#748ffc',
+  '#da77f2',
+  '#f06595',
+] as const;
+
+function routingNodeNumber(value: number | undefined): number {
+  return Math.max(1, Math.min(10, Math.round(Number.isFinite(value) ? value ?? 1 : 1)));
+}
+
+function routingNodeColor(value: number | undefined): string {
+  return ROUTING_NODE_COLORS[routingNodeNumber(value) - 1];
 }
 
 function isSelectorValuePort(name: string): boolean {

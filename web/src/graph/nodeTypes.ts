@@ -207,6 +207,21 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     inputs: [{ name: 'signal', valueEditor: false }],
     outputs: [{ name: 'signal' }],
   },
+  Send: {
+    type: 'Send',
+    inputs: [
+      { name: 'signal', valueEditor: false },
+      { name: 'number', defaultValue: 1, min: 1, max: 10, integer: true, connectable: false },
+    ],
+    outputs: [],
+  },
+  Receive: {
+    type: 'Receive',
+    inputs: [
+      { name: 'number', defaultValue: 1, min: 1, max: 10, integer: true, connectable: false },
+    ],
+    outputs: [{ name: 'signal' }],
+  },
   Slider: {
     type: 'Slider',
     inputs: [
@@ -601,6 +616,8 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   Length2Freq: 'length2freq',
   Constant: 'Constant',
   Pass: 'Pass',
+  Send: 'Send',
+  Receive: 'Receive',
   Slider: 'Slider',
   Joystick: 'Joystick',
   Button: 'Button',

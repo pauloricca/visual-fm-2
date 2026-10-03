@@ -829,6 +829,70 @@ button:hover {
   opacity: 0.48;
 }
 
+.routing-node-marker {
+  position: relative;
+  box-sizing: border-box;
+  width: 22px;
+  height: 22px;
+  border: 3px solid var(--routing-color);
+  border-radius: 50%;
+  background: var(--color-background);
+  color: var(--routing-color);
+  zoom: var(--node-scale, 1);
+}
+
+.routing-node-marker-receive {
+  background: var(--routing-color);
+}
+
+.routing-node-number {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.routing-node-marker-receive .routing-node-number {
+  color: #000;
+}
+
+.routing-node-marker-disabled {
+  border-style: dashed;
+  opacity: 0.48;
+}
+
+.routing-node-marker-highlighted {
+  box-shadow:
+    0 0 0 3px var(--color-background),
+    0 0 0 5px var(--routing-color),
+    0 0 18px 7px var(--routing-color);
+}
+
+.routing-node-handle,
+.routing-node-marker .react-flow__handle {
+  width: 8px;
+  height: 8px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+}
+
+.routing-node-marker-send .routing-node-handle {
+  left: -1px;
+}
+
+.routing-node-marker-receive .routing-node-handle {
+  right: -1px;
+}
+
 .shader-node-scope {
   width: max(var(--node-display-width, 224px), 160px);
   background: var(--color-surface);

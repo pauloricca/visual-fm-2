@@ -111,6 +111,8 @@ export interface ShaderNodeData extends Record<string, unknown> {
   setLinkInputPorts?: string[];
   previewPort?: { side: 'input' | 'output'; name: string } | null;
   isOnlySelected?: boolean;
+  /** Highlight this Send/Receive because its virtual route participates in the current selection. */
+  routingHighlighted?: boolean;
   isConnecting?: boolean;
   onTemporaryPortRevealChange?: (nodeId: string, revealed: boolean) => void;
   isTypePickerOpen: boolean;

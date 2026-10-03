@@ -26,6 +26,8 @@ export type NodeType =
   | 'Length2Freq'
   | 'Constant'
   | 'Pass'
+  | 'Send'
+  | 'Receive'
   | 'Slider'
   | 'Joystick'
   | 'Button'

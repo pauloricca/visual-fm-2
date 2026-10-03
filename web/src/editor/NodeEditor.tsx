@@ -2558,6 +2558,10 @@ function NodeEditorInner() {
   }, [edges, nodes]);
 
   const selectedNodeCount = nodes.filter((node) => node.selected).length;
+  const routingSelection = useMemo(
+    () => routingSelectionHighlights(nodes, edges),
+    [edges, nodes],
+  );
   const selectNodeFromTitle = useCallback((nodeId: string, additive: boolean) => {
     setSelectedAreaId(null);
     setNodes((current) => current.map((node) => {
@@ -2685,6 +2689,7 @@ function NodeEditorInner() {
           ? { side: selectedBoundaryPort.side, name: selectedBoundaryPort.port }
           : null,
         isOnlySelected: node.selected === true && selectedNodeCount === 1,
+        routingHighlighted: node.selected !== true && routingSelection.nodeIds.has(node.id),
         isConnecting: draftNodeConnection !== null,
         onTemporaryPortRevealChange: updateTemporaryPortReveal,
         isTypePickerOpen: editingTypeNodeId === node.id,
@@ -2718,6 +2723,7 @@ function NodeEditorInner() {
     updateTemporaryPortReveal,
     selectedBoundaryPort,
     selectedLinkPortsByNode,
+    routingSelection,
     selectBoundaryPort,
     selectNodeFromTitle,
     settledGraphZoom,
@@ -2770,7 +2776,8 @@ function NodeEditorInner() {
           || (sourceNode?.data.patchNode.type === 'Spawn' && link.from.port === 'instance gate'))
         || (targetNode?.data.patchNode.type === 'Spawn' && link.to.port === 'kill trigger')
       ));
-      const isConnectedToSelectedNode = isEdgeConnectedToSelectedNode(edge, selectedNodeIds);
+      const isConnectedToSelectedNode = isEdgeConnectedToSelectedNode(edge, selectedNodeIds)
+        || routingSelection.edgeIds.has(edge.id);
       const isHighlighted = edge.selected === true || isConnectedToSelectedNode;
       return {
         ...edge,
@@ -2802,7 +2809,7 @@ function NodeEditorInner() {
         },
       };
     });
-  }, [edges, insertNodeOnEdge, nodes, updateEdgeEnabled, updateEdgeMode, updateEdgeWeight]);
+  }, [edges, insertNodeOnEdge, nodes, routingSelection, updateEdgeEnabled, updateEdgeMode, updateEdgeWeight]);
 
   const materializedGraph = useMemo(
     () => materializeRootGraph(nodesWithCallbacks, edgesWithCallbacks, areas, editingStack, patchName),
@@ -7606,6 +7613,106 @@ function clearMidiControlVisual(
 function isEdgeConnectedToSelectedNode(edge: ShaderFlowEdge, selectedNodeIds: Set<string>): boolean {
   const link = linkFromEdge(edge);
   return Boolean(link && (selectedNodeIds.has(link.from.node) || selectedNodeIds.has(link.to.node)));
+}
+
+function routingSelectionHighlights(
+  nodes: ShaderFlowNode[],
+  edges: ShaderFlowEdge[],
+): { nodeIds: Set<string>; edgeIds: Set<string> } {
+  const nodeById = new Map(nodes.map((node) => [node.id, node.data.patchNode]));
+  const nodeIds = new Set<string>();
+  const edgeIds = new Set<string>();
+  const forwardNumbers = new Set<number>();
+  const backwardNumbers = new Set<number>();
+  // Keep traversal provenance separate from visual emphasis. An upstream
+  // edge must never become a new downstream seed (or vice versa).
+  const forwardEdges = new Set<string>();
+  const backwardEdges = new Set<string>();
+
+  for (const node of nodes) {
+    if (node.selected !== true) continue;
+    const patchNode = node.data.patchNode;
+    if (patchNode.type === 'Send') forwardNumbers.add(routingNodeNumber(patchNode.params.number));
+    if (patchNode.type === 'Receive') backwardNumbers.add(routingNodeNumber(patchNode.params.number));
+    for (const edge of edges) {
+      const link = linkFromEdge(edge);
+      if (!link) continue;
+      if (link.from.node === node.id) forwardEdges.add(edge.id);
+      if (link.to.node === node.id) backwardEdges.add(edge.id);
+    }
+  }
+
+  for (const edge of edges) {
+    if (edge.selected === true) {
+      forwardEdges.add(edge.id);
+      backwardEdges.add(edge.id);
+    }
+  }
+
+  let changed = true;
+  while (changed) {
+    const previousNodeCount = nodeIds.size;
+    const previousEdgeCount = forwardEdges.size + backwardEdges.size;
+    const previousForwardCount = forwardNumbers.size;
+    const previousBackwardCount = backwardNumbers.size;
+
+    for (const edge of edges) {
+      if (!forwardEdges.has(edge.id) && !backwardEdges.has(edge.id)) continue;
+      edgeIds.add(edge.id);
+      const link = linkFromEdge(edge);
+      if (!link) continue;
+      const source = nodeById.get(link.from.node);
+      const target = nodeById.get(link.to.node);
+      if (backwardEdges.has(edge.id) && source?.type === 'Receive' && link.from.port === 'signal') {
+        nodeIds.add(source.id);
+        backwardNumbers.add(routingNodeNumber(source.params.number));
+      }
+      if (forwardEdges.has(edge.id) && target?.type === 'Send' && link.to.port === 'signal') {
+        nodeIds.add(target.id);
+        forwardNumbers.add(routingNodeNumber(target.params.number));
+      }
+    }
+
+    for (const node of nodes) {
+      const patchNode = node.data.patchNode;
+      if (patchNode.type !== 'Send' && patchNode.type !== 'Receive') continue;
+      const number = routingNodeNumber(patchNode.params.number);
+
+      for (const edge of edges) {
+        const link = linkFromEdge(edge);
+        if (!link) continue;
+        if (
+          patchNode.type === 'Send'
+          && backwardNumbers.has(number)
+          && link.to.node === node.id
+          && link.to.port === 'signal'
+        ) {
+          nodeIds.add(node.id);
+          backwardEdges.add(edge.id);
+        }
+        if (
+          patchNode.type === 'Receive'
+          && forwardNumbers.has(number)
+          && link.from.node === node.id
+          && link.from.port === 'signal'
+        ) {
+          nodeIds.add(node.id);
+          forwardEdges.add(edge.id);
+        }
+      }
+    }
+
+    changed = nodeIds.size !== previousNodeCount
+      || forwardEdges.size + backwardEdges.size !== previousEdgeCount
+      || forwardNumbers.size !== previousForwardCount
+      || backwardNumbers.size !== previousBackwardCount;
+  }
+
+  return { nodeIds, edgeIds };
+}
+
+function routingNodeNumber(value: number | undefined): number {
+  return clampInteger(value ?? 1, 1, 10);
 }
 
 function nodeInputIsConnected(edges: ShaderFlowEdge[], nodeId: string, port: string): boolean {
