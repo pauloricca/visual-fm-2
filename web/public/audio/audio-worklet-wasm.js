@@ -2706,14 +2706,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       ? raw.slice(0, count)
       : raw.slice(writeIndex).concat(raw.slice(0, writeIndex));
     if (mode !== "zero-crossing") return resampleScopeSamples(samples, displayPoints);
-    const maxCrossing = samples.length - displayPoints;
-    const crossing = samples.findIndex((sample, index) => (
-      index > 0
-      && index <= maxCrossing
-      && samples[index - 1] < 0
-      && sample >= 0
-    ));
-    return resampleScopeSamples(crossing > 0 ? samples.slice(crossing, crossing + displayPoints) : samples, displayPoints);
+    return alignScopeToZeroCrossing(samples, displayPoints);
   }
 
   linkScopeFrameSamples() {
@@ -2731,14 +2724,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       ? raw.slice(0, count)
       : raw.slice(writeIndex).concat(raw.slice(0, writeIndex));
     if (mode !== "zero-crossing") return resampleScopeSamples(samples, displayPoints);
-    const maxCrossing = samples.length - displayPoints;
-    const crossing = samples.findIndex((sample, index) => (
-      index > 0
-      && index <= maxCrossing
-      && samples[index - 1] < 0
-      && sample >= 0
-    ));
-    return resampleScopeSamples(crossing > 0 ? samples.slice(crossing, crossing + displayPoints) : samples, displayPoints);
+    return alignScopeToZeroCrossing(samples, displayPoints);
   }
 
   dspScopeFrameSamples(state) {
@@ -2761,14 +2747,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       ? raw.slice(0, count)
       : raw.slice(writeIndex).concat(raw.slice(0, writeIndex));
     if (mode !== "zero-crossing") return resampleScopeSamples(samples, displayPoints);
-    const maxCrossing = samples.length - displayPoints;
-    const crossing = samples.findIndex((sample, index) => (
-      index > 0
-      && index <= maxCrossing
-      && samples[index - 1] < 0
-      && sample >= 0
-    ));
-    return resampleScopeSamples(crossing > 0 ? samples.slice(crossing, crossing + displayPoints) : samples, displayPoints);
+    return alignScopeToZeroCrossing(samples, displayPoints);
   }
 
   flushLinkMeters() {
@@ -3183,6 +3162,50 @@ function resampleScopeSamples(samples, targetCount) {
 
   return Array.from({ length: targetCount }, (_, index) => {
     const sourcePosition = index * (samples.length - 1) / (targetCount - 1);
+    const leftIndex = Math.floor(sourcePosition);
+    const rightIndex = Math.min(samples.length - 1, leftIndex + 1);
+    const fraction = sourcePosition - leftIndex;
+    return samples[leftIndex] + (samples[rightIndex] - samples[leftIndex]) * fraction;
+  });
+}
+
+function alignScopeToZeroCrossing(samples, targetCount) {
+  const count = Math.max(1, Math.min(samples.length, Math.trunc(targetCount) || 1));
+  const maxStart = samples.length - count;
+  if (maxStart < 1) return resampleScopeSamples(samples, count);
+
+  // A complex periodic wave can cross zero several times per cycle. Choosing
+  // the oldest crossing makes the trace alternate between those phases as the
+  // ring buffer advances. Use the most decisive rising crossing instead, with
+  // a small neighbourhood so near-zero ripples and noise do not win.
+  const slopeRadius = Math.max(1, Math.round(count / 128));
+  let bestStart = -1;
+  let bestStrength = -Infinity;
+  for (let index = 1; index <= maxStart; index += 1) {
+    const before = Number(samples[index - 1]) || 0;
+    const after = Number(samples[index]) || 0;
+    if (!(before < 0 && after >= 0)) continue;
+
+    const interval = after - before;
+    const fraction = interval > 0 ? -before / interval : 0;
+    const crossingStart = index - 1 + fraction;
+    if (crossingStart > maxStart) continue;
+
+    const left = Number(samples[Math.max(0, index - slopeRadius)]) || 0;
+    const right = Number(samples[Math.min(samples.length - 1, index + slopeRadius - 1)]) || 0;
+    const strength = right - left;
+    if (strength <= bestStrength) continue;
+
+    bestStart = crossingStart;
+    bestStrength = strength;
+  }
+
+  if (bestStart < 0) return resampleScopeSamples(samples, count);
+
+  // Interpolate the fractional crossing position so the trace begins exactly
+  // at zero instead of jittering by one captured sample between frames.
+  return Array.from({ length: count }, (_, index) => {
+    const sourcePosition = bestStart + index;
     const leftIndex = Math.floor(sourcePosition);
     const rightIndex = Math.min(samples.length - 1, leftIndex + 1);
     const fraction = sourcePosition - leftIndex;
