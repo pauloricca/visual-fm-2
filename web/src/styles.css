@@ -857,6 +857,24 @@ button:hover {
   background: var(--routing-color);
 }
 
+.routing-node-marker-send {
+  /* Equilateral triangle: horizontal altitude = vertical edge × sqrt(3) / 2. */
+  width: 24.248711px;
+  height: 28px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.routing-node-marker-send::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--routing-color);
+  clip-path: polygon(0 0, 100% 50%, 0 100%);
+  pointer-events: none;
+}
+
 .routing-node-number {
   position: absolute;
   z-index: 1;
@@ -864,16 +882,17 @@ button:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
-  font-size: 9px;
+  color: #000;
+  font-size: 11px;
   font-weight: 800;
   letter-spacing: -0.04em;
   line-height: 1;
   pointer-events: none;
 }
 
-.routing-node-marker-receive .routing-node-number {
-  color: #000;
+.routing-node-marker-send .routing-node-number {
+  /* Center the label on the triangle's centroid. */
+  right: 33.333333%;
 }
 
 .routing-node-marker-disabled {
@@ -886,6 +905,11 @@ button:hover {
     0 0 0 3px var(--color-background),
     0 0 0 5px var(--routing-color),
     0 0 18px 7px var(--routing-color);
+}
+
+.routing-node-marker-send.routing-node-marker-highlighted {
+  box-shadow: none;
+  filter: drop-shadow(0 0 4px var(--routing-color)) drop-shadow(0 0 9px var(--routing-color));
 }
 
 .routing-node-handle,
@@ -903,6 +927,31 @@ button:hover {
 
 .routing-node-marker-receive .routing-node-handle {
   right: -1px;
+}
+
+/* Extend hit testing without resizing the handle used for cable geometry.
+   The pseudo-element belongs to the real Handle, so dropping on it resolves
+   the same port. Keep the originating handle out of the drop-target layer. */
+.routing-node-drop-active .routing-node-handle.connectionindicator:not(.connectingfrom)::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  width: 32px;
+  height: 32px;
+  transform: translateY(-50%);
+  pointer-events: auto;
+}
+
+.routing-node-drop-active .routing-node-handle.connectionindicator:not(.connectingfrom) {
+  z-index: 5;
+}
+
+.routing-node-marker-send .routing-node-handle::after {
+  left: 0;
+}
+
+.routing-node-marker-receive .routing-node-handle::after {
+  right: 0;
 }
 
 .shader-node-scope {
@@ -954,11 +1003,31 @@ button:hover {
   min-width: calc(var(--input-label-width, 0ch) + 106px);
 }
 
-.shader-node-slider:has(.shader-inputs:not(:empty)),
 .shader-node-joystick:has(.shader-inputs:not(:empty)),
 .shader-node-button:has(.shader-inputs:not(:empty)),
 .shader-node-keys:has(.shader-inputs:not(:empty)) {
   min-width: max(72px, calc(var(--input-label-width, 0ch) + 90px));
+}
+
+.shader-node-slider .shader-node-content-ports {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.shader-node-slider .shader-node-content-ports .shader-outputs {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.shader-node-slider .shader-node-content-ports .shader-port-input {
+  grid-template-columns: minmax(0, 1fr) 68px;
+}
+
+.shader-node-slider .shader-node-content-ports .shader-port-output span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .shader-node-sequencer,
@@ -1005,6 +1074,10 @@ button:hover {
 
 .shader-node.shader-node-auto-width {
   width: max-content;
+}
+
+.shader-node-auto-width.shader-node-slider {
+  width: var(--node-display-width, max-content);
 }
 
 .shader-node-auto-width.shader-node-scope,
@@ -1167,6 +1240,22 @@ button:hover {
 
 .shader-node-compact .shader-node-title:last-child {
   border-bottom: 0;
+}
+
+.node-title-control-shell {
+  display: contents;
+}
+
+.shader-node-slider .node-title-control-shell {
+  position: relative;
+  display: block;
+  height: 22px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.shader-node-slider .node-title-control-shell:has(.node-title-with-live-readout) {
+  overflow: hidden;
 }
 
 .collapsed-node-label,

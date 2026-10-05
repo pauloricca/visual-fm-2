@@ -1,4 +1,4 @@
-import { Handle, Position, useReactFlow, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
+import { Handle, Position, useConnection, useReactFlow, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import {
   memo,
   useEffect,
@@ -95,6 +95,7 @@ const FFT_ANALYSIS_MAX_FREQUENCY = 20000;
 
 export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selected, dragging }: NodeProps<ShaderFlowNode>) {
   const node = data.patchNode;
+  const connectionInProgress = useConnection((connection) => connection.inProgress);
   const isCanvasLocked = data.isCanvasLocked === true;
   const scopeGradientId = `scope-gradient-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const reactFlow = useReactFlow<ShaderFlowNode, ShaderFlowEdge>();
@@ -316,7 +317,9 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
   const fftGridRows = showFftDisplay ? chartGridRows(graphDetailSize.height) : [];
   const nodeSizeStyle = showResizableDisplay
     ? ({
-        ...(!usesAutoInitialWidth ? { '--node-display-width': `${displaySize.width}px` } : {}),
+        ...(!usesAutoInitialWidth || (showSliderDisplay && autoDisplayWidth !== null)
+          ? { '--node-display-width': `${displaySize.width}px` }
+          : {}),
         '--node-display-height': `${displaySize.height}px`,
         ...(showImageDisplay ? { '--image-aspect-ratio': String(imageAspectRatio) } : {}),
         ...(sequencer ? {
@@ -431,14 +434,19 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
     const element = nodeElementRef.current;
     if (!element) return;
     const updateWidth = () => {
-      const width = Math.max(1, element.clientWidth);
+      // Reuse the resolved CSS width for Sliders: it is the same border-box
+      // value we feed back into CSS, with no border or node-scale drift.
+      const resolvedWidth = showSliderDisplay
+        ? Number.parseFloat(window.getComputedStyle(element).width)
+        : element.clientWidth;
+      const width = Math.max(1, Number.isFinite(resolvedWidth) ? resolvedWidth : 1);
       setAutoDisplayWidth((current) => current === width ? current : width);
     };
     updateWidth();
     const observer = new ResizeObserver(updateWidth);
     observer.observe(element);
     return () => observer.disconnect();
-  }, [usesAutoInitialWidth]);
+  }, [showSliderDisplay, usesAutoInitialWidth]);
 
   useLayoutEffect(() => {
     const animationFrame = requestAnimationFrame(() => updateNodeInternals(node.id));
@@ -729,7 +737,13 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
     const sequencerMinWidth = hasVisibleSequencerInputs && hasVisibleSequencerOutputs
       ? Math.max(240, sequencerLabelColumnWidth + (sequencer?.steps ?? 1) * SEQUENCER_MIN_CELL_SIZE)
       : undefined;
-    const renderedWidth = usesAutoInitialWidth ? nodeElementRef.current?.clientWidth : undefined;
+    const renderedWidth = usesAutoInitialWidth
+      ? showSliderDisplay
+        ? autoDisplayWidth ?? (nodeElementRef.current
+          ? Number.parseFloat(window.getComputedStyle(nodeElementRef.current).width)
+          : undefined)
+        : nodeElementRef.current?.clientWidth
+      : undefined;
     const startSize = renderedWidth && renderedWidth > 0
       ? { ...displaySize, width: renderedWidth }
       : displaySize;
@@ -1042,6 +1056,7 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
         className={[
           'routing-node-marker',
           `routing-node-marker-${isSend ? 'send' : 'receive'}`,
+          connectionInProgress ? 'routing-node-drop-active' : '',
           data.routingHighlighted === true ? 'routing-node-marker-highlighted' : '',
           node.enabled === false ? 'routing-node-marker-disabled' : '',
         ].filter(Boolean).join(' ')}
@@ -1099,29 +1114,31 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
             }}
           />
         ) : null}
-        {compactPorts && !revealCompactPorts ? (
-          <CollapsedNodeLabel
-            nodeType={node.type}
-            customLabel={node.customLabel}
-            displaySuffix={sliderTitleSuffix}
-            onChange={(label) => data.onCustomLabelChange?.(node.id, label)}
-            onSelect={(additive) => data.onTitleSelect?.(node.id, additive)}
-          />
-        ) : (
-          <NodeTypePicker
-            nodeType={node.type}
-            displayLabel={isGroup ? node.subpatchName ?? node.id : undefined}
-            closedSuffix={sliderTitleSuffix}
-            isEditingSubpatch={data.isEditingSubpatch === true}
-            open={data.isTypePickerOpen}
-            onOpen={() => data.onTypeEditStart(node.id)}
-            onClose={data.onTypeEditEnd}
-            onCancel={() => data.onTypeEditCancel(node.id)}
-            onChange={(type) => data.onTypeChange(node.id, type)}
-            onConvertToArea={() => data.onConvertToArea(node.id)}
-            onCustomLabelCommit={isGroup ? (label) => data.onSubpatchNameChange?.(node.id, label) : undefined}
-          />
-        )}
+        <div className="node-title-control-shell">
+          {compactPorts && !revealCompactPorts ? (
+            <CollapsedNodeLabel
+              nodeType={node.type}
+              customLabel={node.customLabel}
+              displaySuffix={sliderTitleSuffix}
+              onChange={(label) => data.onCustomLabelChange?.(node.id, label)}
+              onSelect={(additive) => data.onTitleSelect?.(node.id, additive)}
+            />
+          ) : (
+            <NodeTypePicker
+              nodeType={node.type}
+              displayLabel={isGroup ? node.subpatchName ?? node.id : undefined}
+              closedSuffix={sliderTitleSuffix}
+              isEditingSubpatch={data.isEditingSubpatch === true}
+              open={data.isTypePickerOpen}
+              onOpen={() => data.onTypeEditStart(node.id)}
+              onClose={data.onTypeEditEnd}
+              onCancel={() => data.onTypeEditCancel(node.id)}
+              onChange={(type) => data.onTypeChange(node.id, type)}
+              onConvertToArea={() => data.onConvertToArea(node.id)}
+              onCustomLabelCommit={isGroup ? (label) => data.onSubpatchNameChange?.(node.id, label) : undefined}
+            />
+          )}
+        </div>
         {!forceCompactPorts && !isAreaUiCollapsedPresentation ? (
           <button
             className="node-enabled-toggle nodrag nopan"
