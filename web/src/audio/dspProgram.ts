@@ -74,6 +74,7 @@ export const DSP_OP = {
   RollNoteEvent: 52,
   MidiNoteSend: 53,
   MidiCcSend: 54,
+  Bend: 55,
 } as const;
 
 export interface DspProgram {
@@ -769,6 +770,7 @@ function resolveInput(
   let ordinarySetCount = 0;
   const addRegisters: number[] = [];
   const multiplyRegisters: number[] = [];
+  const bendRegisters: number[] = [];
 
   for (const link of links) {
     let register = resolveLinkValue(link, context);
@@ -780,6 +782,9 @@ function resolveInput(
         break;
       case 'multiply':
         multiplyRegisters.push(register);
+        break;
+      case 'bend':
+        bendRegisters.push(register);
         break;
       case 'set':
         setRegisters.push(register);
@@ -823,6 +828,10 @@ function resolveInput(
 
   for (const register of multiplyRegisters) {
     result = emitBinary(DSP_OP.Mul, result, register, context);
+  }
+
+  for (const register of bendRegisters) {
+    result = emitBinary(DSP_OP.Mul, result, emitUnary(DSP_OP.Bend, register, context), context);
   }
 
   return result;
@@ -2771,6 +2780,25 @@ function sumRegisters(registers: number[], context: CompileContext): number {
 function emitBinary(opcode: number, a: number, b: number, context: CompileContext): number {
   const out = nextRegister(context);
   context.ops.push({ opcode, out, a, b });
+  return out;
+}
+
+function emitUnary(opcode: number, a: number, context: CompileContext): number {
+  const out = nextRegister(context);
+  context.ops.push({
+    opcode,
+    out,
+    a,
+    b: -1,
+    c: -1,
+    d: -1,
+    e: -1,
+    state: -1,
+    value: 0,
+    value2: 0,
+    value3: 0,
+    value4: 0,
+  });
   return out;
 }
 

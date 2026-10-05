@@ -163,7 +163,7 @@ export interface Endpoint {
   port: string;
 }
 
-export type LinkMode = 'set' | 'add' | 'multiply';
+export type LinkMode = 'set' | 'add' | 'multiply' | 'bend';
 
 export interface PatchLink {
   from: Endpoint;

@@ -87,6 +87,7 @@ const PARAMETER_MODE_IDS = new Map([
   ["set", 0],
   ["add", 1],
   ["multiply", 2],
+  ["bend", 3],
 ]);
 
 const FILTER_TYPE_IDS = new Map([
@@ -1757,7 +1758,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       pan: Number.isFinite(pan) ? this.clamp(pan, -1, 1) : 0,
       velocitySensitivity: Number.isFinite(velocitySensitivity) ? this.clamp(velocitySensitivity, -8, 8) : 0,
       modulationTarget: link.modulationTarget || "phase",
-      parameterMode: ["set", "add", "multiply"].includes(link.parameterMode) ? link.parameterMode : "set",
+      parameterMode: ["set", "add", "multiply", "bend"].includes(link.parameterMode) ? link.parameterMode : "set",
       internalTarget: Boolean(link.internalTarget),
       monitorOnly: Boolean(link.monitorOnly),
       drone: Boolean(link.drone),

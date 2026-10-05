@@ -98,6 +98,7 @@ const TARGET_MAP_TARGET_MAX: i32 = 30;
 const PARAM_MODE_SET: i32 = 0;
 const PARAM_MODE_ADD: i32 = 1;
 const PARAM_MODE_MULTIPLY: i32 = 2;
+const PARAM_MODE_BEND: i32 = 3;
 const LINK_AMOUNT_LIMIT: f64 = 12_000.0;
 const DSP_OP_VALUE: i32 = 0;
 const DSP_OP_ADD: i32 = 1;
@@ -154,6 +155,7 @@ const DSP_OP_DC_BLOCK: i32 = 51;
 const DSP_OP_ROLL_NOTE_EVENT: i32 = 52;
 const DSP_OP_MIDI_NOTE_SEND: i32 = 53;
 const DSP_OP_MIDI_CC_SEND: i32 = 54;
+const DSP_OP_BEND: i32 = 55;
 const MIN_ENVELOPE_ATTACK_SECONDS: f64 = 0.001;
 const MAX_DSP_TEMPO_SOURCES: usize = 129;
 const TEMPO_OUTPUT_COUNT: i32 = 10;
@@ -2904,7 +2906,7 @@ fn valid_hot_dsp_op(
         DSP_OP_ADD | DSP_OP_MUL | DSP_OP_SUB | DSP_OP_DIV => {
             valid_dsp_register(out) && valid_dsp_register(a) && valid_dsp_register(b)
         }
-        DSP_OP_NEG | DSP_OP_ABS => valid_dsp_register(out) && valid_dsp_register(a),
+        DSP_OP_NEG | DSP_OP_ABS | DSP_OP_BEND => valid_dsp_register(out) && valid_dsp_register(a),
         DSP_OP_OSC => {
             let frequency_is_valid = if a == 5 || a == 6 {
                 valid_optional_dsp_register(b)
@@ -3418,7 +3420,7 @@ pub extern "C" fn addLink(
             noise: noise.clamp(0.0, 1.0),
             pan: pan.clamp(-1.0, 1.0),
             target,
-            parameter_mode: parameter_mode.clamp(PARAM_MODE_SET, PARAM_MODE_MULTIPLY),
+            parameter_mode: parameter_mode.clamp(PARAM_MODE_SET, PARAM_MODE_BEND),
             velocity_sensitivity: velocity_sensitivity.clamp(-8.0, 8.0),
             drone,
             signal_mode,
@@ -5452,6 +5454,7 @@ struct ParamAccumulator {
     set_count: f64,
     add: f64,
     multiply: f64,
+    bend: f64,
 }
 
 impl ParamAccumulator {
@@ -5461,6 +5464,7 @@ impl ParamAccumulator {
             set_count: 0.0,
             add: 0.0,
             multiply: 1.0,
+            bend: 0.0,
         }
     }
 
@@ -5471,6 +5475,7 @@ impl ParamAccumulator {
 
         match mode {
             PARAM_MODE_MULTIPLY => self.multiply *= value,
+            PARAM_MODE_BEND => self.bend += value,
             PARAM_MODE_ADD => self.add += value,
             _ => {
                 self.set_sum += value;
@@ -5485,7 +5490,7 @@ impl ParamAccumulator {
         } else {
             base
         };
-        (value + self.add) * self.multiply
+        (value + self.add) * self.multiply * 2.0_f64.powf(self.bend.clamp(-32.0, 32.0))
     }
 }
 
@@ -9392,6 +9397,10 @@ fn render_dsp_op(
         }
         DSP_OP_NEG => unsafe {
             set_dsp_reg_unchecked(op.out, -dsp_reg_unchecked(op.a));
+        },
+        DSP_OP_BEND => unsafe {
+            let exponent = dsp_reg_unchecked(op.a).clamp(-32.0, 32.0);
+            set_dsp_reg_sanitized_unchecked(op.out, 2.0_f64.powf(exponent));
         },
         DSP_OP_OSC => unsafe {
             let frequency = if op.b >= 0 {

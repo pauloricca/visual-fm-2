@@ -275,6 +275,7 @@ function EdgeLinkControls({ value, mode, enabled, onChange, onModeChange, onEnab
         <option value="set">set</option>
         <option value="add">add</option>
         <option value="multiply">multiply</option>
+        <option value="bend">bend</option>
       </select>
     </>
   );

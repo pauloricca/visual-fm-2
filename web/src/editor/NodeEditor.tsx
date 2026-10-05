@@ -116,6 +116,7 @@ const CONNECTION_LINE_COLORS: Record<LinkMode, string> = {
   set: 'var(--color-link-set)',
   add: 'var(--color-link-add)',
   multiply: 'var(--color-link-multiply)',
+  bend: 'var(--color-link-bend)',
 };
 const DELETE_KEY_CODES = ['Backspace', 'Delete'];
 const MULTI_SELECTION_KEY_CODES = ['Meta', 'Shift'];
@@ -4478,6 +4479,7 @@ function NodeEditorInner() {
         a: 'add',
         s: 'set',
         m: 'multiply',
+        b: 'bend',
       };
       const mode = modeByKey[event.key.toLowerCase()];
       if (!mode) return;
@@ -7208,7 +7210,7 @@ function parsePatchLink(value: unknown, index: number): PatchLink {
     from: parseEndpoint(value.from, `Link ${index} source`),
     to: parseEndpoint(value.to, `Link ${index} target`),
     ...(typeof value.weight === 'number' ? { weight: value.weight } : {}),
-    ...(value.mode === 'set' || value.mode === 'add' || value.mode === 'multiply' ? { mode: value.mode } : {}),
+    ...(value.mode === 'set' || value.mode === 'add' || value.mode === 'multiply' || value.mode === 'bend' ? { mode: value.mode } : {}),
     ...(typeof value.enabled === 'boolean' ? { enabled: value.enabled } : {}),
   };
 }

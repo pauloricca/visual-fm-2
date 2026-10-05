@@ -3561,6 +3561,10 @@ button:hover {
   stroke: var(--color-link-multiply);
 }
 
+.shader-edge-path-mode-bend.shader-edge-path-foreground {
+  stroke: var(--color-link-bend);
+}
+
 .shader-edge-path-disabled {
   stroke-dasharray: 7 5;
   opacity: 0.42;
@@ -3589,6 +3593,13 @@ button:hover {
 .react-flow__edge.selectable:focus-visible .react-flow__edge-path.shader-edge-path-mode-multiply.shader-edge-path-foreground,
 .react-flow__edge.selected .react-flow__edge-path.shader-edge-path-mode-multiply.shader-edge-path-foreground {
   stroke: var(--color-link-multiply) !important;
+}
+
+.react-flow__edge.updating .react-flow__edge-path.shader-edge-path-mode-bend.shader-edge-path-foreground,
+.react-flow__edge.selectable:focus .react-flow__edge-path.shader-edge-path-mode-bend.shader-edge-path-foreground,
+.react-flow__edge.selectable:focus-visible .react-flow__edge-path.shader-edge-path-mode-bend.shader-edge-path-foreground,
+.react-flow__edge.selected .react-flow__edge-path.shader-edge-path-mode-bend.shader-edge-path-foreground {
+  stroke: var(--color-link-bend) !important;
 }
 
 .shader-edge-path-dsp-error.shader-edge-path-foreground {
@@ -3636,6 +3647,11 @@ button:hover {
 .react-flow__edge.selected .shader-edge-path-mode-multiply.shader-edge-path-foreground,
 .shader-edge-path-selected.shader-edge-path-mode-multiply {
   filter: drop-shadow(0 0 2px var(--color-link-multiply));
+}
+
+.react-flow__edge.selected .shader-edge-path-mode-bend.shader-edge-path-foreground,
+.shader-edge-path-selected.shader-edge-path-mode-bend {
+  filter: drop-shadow(0 0 2px var(--color-link-bend));
 }
 
 .react-flow__edge.selected .shader-edge-path-underlay {

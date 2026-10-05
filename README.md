@@ -199,7 +199,7 @@ Highlighted virtual Send/Receive connections show glowing curves in their channe
 Every link has:
 
 - `weight`: the cable amplitude/control amount.
-- `mode`: one of `set`, `add`, or `multiply`.
+- `mode`: one of `set`, `add`, `multiply`, or `bend`.
 
 The link value is:
 
@@ -215,7 +215,8 @@ setBase = the node's local input value, if there are no set links
 
 afterAdd = setBase + sum(all add link values)
 
-finalValue = afterAdd * product(all multiply link values)
+afterMultiply = afterAdd * product(all multiply link values)
+finalValue = afterMultiply * 2^(sum(all bend link values))
 ```
 
 So:
@@ -223,10 +224,11 @@ So:
 - `set` replaces the node's local value. Multiple `set` links are averaged.
 - `add` adds to the local value or to the averaged `set` value.
 - `multiply` multiplies the result after `set` and `add`.
+- `bend` applies reciprocal scaling after `multiply`: a weighted value of `+1` doubles the result, `-1` halves it, and `0` leaves it unchanged. Link weight controls the strength, so the exponent is `source value × link weight`.
 
 When an input has an enabled `set` link whose endpoints are both enabled, its numeric field is greyed out to show that its local value is currently replaced. The field remains editable, so its value is ready if the set link is disabled, removed, or changed to another mode. Hold Shift or Option/Alt while scrolling or making a two-finger trackpad gesture over a numeric field to adjust it vertically with the same sensitivity and modifier keys as vertical dragging; unmodified scrolling continues to pan the canvas. The same modified gesture over a Slider changes it relative to its current value, without jumping toward the pointer position: horizontal sliders follow horizontal movement and vertical sliders follow vertical movement. Cmd/Ctrl is five-times-finer; holding both Shift and Option/Alt is three-times-finer.
 
-While dragging a new link, press `a` to create it in `add` mode, `m` for `multiply` mode, or `s` for `set` mode (the default). The live link changes colour to preview the selected mode.
+While dragging a new link, press `a` to create it in `add` mode, `b` for `bend` mode, `m` for `multiply` mode, or `s` for `set` mode (the default). The live link changes colour to preview the selected mode.
 
 Drag either endpoint of an existing link to reconnect that endpoint. This works directly on all pins, including the internal `instance gate` and `kill trigger` pins in an expanded Spawn; holding Cmd, Ctrl, or Alt retains the original link and creates the reconnected link as a duplicate.
 
@@ -250,7 +252,7 @@ A node is part of an unlocked Spread when its top-left corner is inside the func
 
 - `count` selects how many items are active. It is a non-negative integer with no Spread-specific maximum and may be linked like any other input.
 - `item index` produces the user-facing, one-based index of each active item (`1` through `count`). It may only be linked to nodes inside that Spread.
-- Links between two contained nodes are copied within each item. Links entering the Spread are copied to every item, and links leaving it contribute one signal per active item using the link's existing `set`, `add`, or `multiply` behavior.
+- Links between two contained nodes are copied within each item. Links entering the Spread are copied to every item, and links leaving it contribute one signal per active item using the link's existing `set`, `add`, `multiply`, or `bend` behavior.
 
 The compiler emits the contained graph once as a repeatable DSP template. The WASM engine floors the `count` signal at zero, samples it once at the start of each audio buffer, and runs that template only for the active items. Each item keeps independent scalar DSP state and mutable node resources, including Sample playback voices, effect delay memory, Limiter lookahead, and Buffer recordings. Sample and Custom Wave visualizations inside the Spread show every active item's playhead, cycling through four line colors to make overlapping items easier to follow. State is allocated as the runtime count grows; there is no Spread count ceiling, so very large values—especially with memory-heavy nodes—can exhaust CPU or memory. Group, Spawn, and nested Spread nodes are not currently supported inside a Spread; place their underlying nodes directly in the Spread instead.
 
@@ -262,7 +264,7 @@ Choose `Spawn` from a node's type picker to create an event-driven functional ar
 - A value rising to `0.5` or above on `release trigger` finds every live instance whose tag matches that numeric value and lowers its `instance gate` from `1` to `0`. For example, triggering with `35` and later release-triggering with `35` releases all live instances tagged `35`. Return this signal to `0` between release events as well.
 - `instance gate` is an internal-only signal owned by each instance. It starts at `1`; a matching `release trigger` changes it to `0`. The contained graph decides how to respond—for example, by beginning an envelope release or allowing a Buffer tail to finish.
 - `kill trigger` may only be driven by a node inside that Spawn. A rising edge produced by an instance removes that instance and its complete contained-node state without affecting the other live instances.
-- Links between contained nodes are copied within each instance. Links entering the Spawn are shared with every live instance, while links leaving it combine one signal from each live instance using the link's existing `set`, `add`, or `multiply` behavior.
+- Links between contained nodes are copied within each instance. Links entering the Spawn are shared with every live instance, while links leaving it combine one signal from each live instance using the link's existing `set`, `add`, `multiply`, or `bend` behavior.
 - A Spawn has no fixed voice limit. Instances remain alive until their own kill trigger fires, so a missing kill path or a very fast trigger can consume increasing CPU and memory.
 
 For MIDI-controlled Spawn voices, connect `MIDI Note On.note` to `Spawn.trigger` and `MIDI Note Off.note` to `Spawn.release trigger`. Inside the Spawn, instance-local Sample & Hold nodes can capture `MIDI Note On.note`, `frequency`, and `velocity` when `instance gate` first rises. Connect `instance gate` to the voice envelope gate and route the envelope's `end trigger` back to `kill trigger`. MIDI note `0` is currently indistinguishable from the event nodes' idle zero output and therefore cannot tag a Spawn instance.
@@ -285,7 +287,7 @@ Shortcuts are ignored while editing text or numeric fields unless noted otherwis
 | `Cmd/Ctrl+C`, `Cmd/Ctrl+V` | Copy and paste selected nodes. |
 | `Backspace` or `Delete` | Delete the selected nodes, links, subpatch boundary port, or area. |
 | `Cmd/Ctrl+Backspace` or `Cmd/Ctrl+Delete` | Delete selected nodes while bridging compatible incoming and outgoing links. |
-| `A`, `S`, `M` | Set a new or selected link to add, set, or multiply mode. |
+| `A`, `B`, `S`, `M` | Set a new or selected link to add, bend, set, or multiply mode. |
 | `X` | Enable or disable the selected nodes, or the selected links when no node is selected. Disabled nodes are semi-transparent with a dashed border and disable every incident link without changing those links' own enabled state. |
 | `1`…`9` | Set the selected Selector node to the corresponding input. |
 | `Cmd/Ctrl+0` | Reset canvas zoom to 100%. |
