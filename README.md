@@ -5,7 +5,7 @@
 - `visual-visual` is the UI blueprint. The canvas, node styling, simple cable controls, selection, panning, grouping/subpatching, expression node, and save/load/import workflow are meant to feel like that app.
 - `visual-fm` is the audio lineage. Its Rust/WASM engine is the sound source: oscillators, modulation, filtering, distortion, envelopes, metering, smoothing, and click-free playback all come from that work.
 
-The important design change is that this project is node-first. In `visual-fm`, cables were rich objects: they could contain effects and processors, and one cable could modulate another cable. In `visual-fm-2`, cables are intentionally simple. Audio behavior lives in nodes. Cables connect node ports.
+The important design change is that this project is node-first. In `visual-fm`, cables were rich objects that could contain effects and processors. In `visual-fm-2`, audio processing lives in nodes and cables connect node ports; a cable can also receive modulation of its strength, which the compiler lowers through a multiply stage.
 
 ## Patch Model
 
@@ -196,6 +196,8 @@ While dragging or reconnecting a cable, the entire collapsed Send triangle or Re
 
 Highlighted virtual Send/Receive connections show glowing curves in their channel number's color between the participating Send and Receive nodes. These curves follow the directional selection path, disappear when that path is no longer highlighted, and are display-only: they cannot be selected or edited and are not saved as patch links.
 
+Selection highlighting includes strength-modulation connections. Selecting a node traces its outgoing connections through Send/Receive routes, including Receive outputs attached to cables. Selecting a cable highlights both the cables feeding its strength and the cable it modulates, recursively, following upstream and downstream Send/Receive routes in their respective directions. This adds visual emphasis without selecting those related cables or opening their controls; unrelated route branches and other modulators of a downstream cable remain dimmed.
+
 Every link has:
 
 - `weight`: the cable amplitude/control amount.
@@ -229,6 +231,16 @@ So:
 When an input has an enabled `set` link whose endpoints are both enabled, its numeric field is greyed out to show that its local value is currently replaced. The field remains editable, so its value is ready if the set link is disabled, removed, or changed to another mode. Hold Shift or Option/Alt while scrolling or making a two-finger trackpad gesture over a numeric field to adjust it vertically with the same sensitivity and modifier keys as vertical dragging; unmodified scrolling continues to pan the canvas. The same modified gesture over a Slider changes it relative to its current value, without jumping toward the pointer position: horizontal sliders follow horizontal movement and vertical sliders follow vertical movement. Cmd/Ctrl is five-times-finer; holding both Shift and Option/Alt is three-times-finer.
 
 While dragging a new link, press `a` to create it in `add` mode, `b` for `bend` mode, `m` for `multiply` mode, or `s` for `set` mode (the default). The live link changes colour to preview the selected mode.
+
+To modulate a link's strength, start dragging from an output pin and drop on the body of an existing link. The target uses the normal selected-link highlight while hovered, even when other links are dimmed. Node pins take priority: hovering or dropping on an input pin connects to that input and does not target an existing cable. The new connection ends at the target link's midpoint and has the usual selection, weight, mode, enable, and deletion controls. Only one connection from a particular output to a particular link is allowed.
+
+Selecting a strength-modulation link shows a small circular input at its attached end. Drag that circle to another link to reconnect it, or to a node input to turn it into an ordinary input connection. Escape or a drop on empty space cancels the move. A link cannot target itself or one of its own strength-modulation descendants.
+
+Both the circle and ordinary node endpoints use the same reconnection controller, including input snapping, connection validation, canvas auto-pan, and the Cmd/Ctrl/Alt duplicate gesture.
+
+You can also drag an existing ordinary link's input endpoint off a node and drop it onto another cable to make it a strength connection. It keeps its mode, strength, and enabled state. Node pins still take priority over nearby cables, and the usual Cmd/Ctrl/Alt reconnect gesture keeps the original and creates a copy.
+
+Strength modulation uses the same `set`, `add`, `multiply`, or `bend` rules as node inputs. The target link's saved weight is the starting value for `add`, `multiply`, and `bend`; a `set` connection replaces it. The compiler inserts a Multiply stage: source to `signal` uses `set` with weight `1`, strength modulation feeds `factor`, and the output retains the target link's original mode with weight `1`. Group boundaries resolve these generated connections like ordinary inputs. Disabling the original source disables its generated stage too. Strength connections are preserved in saved patches, nested groups, copies, and when inserting a node into their target link. Grouping routes unweighted sources through boundary ports and applies each original link's mode and strength once at its destination.
 
 Drag either endpoint of an existing link to reconnect that endpoint. This works directly on all pins, including the internal `instance gate` and `kill trigger` pins in an expanded Spawn; holding Cmd, Ctrl, or Alt retains the original link and creates the reconnected link as a duplicate.
 

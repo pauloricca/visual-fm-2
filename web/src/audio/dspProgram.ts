@@ -319,7 +319,9 @@ const EXPRESSION_LOGIC_FUNCTIONS = {
 
 export function compilePatchToDspProgram(patch: Patch): DspProgram {
   const spreadExpansion = expandSpreads(patch);
-  const expandedPatch = expandGroups(spreadExpansion.patch);
+  // Materialize strength inputs before group boundaries disappear, so they
+  // participate in the same boundary rewiring as every other input.
+  const expandedPatch = expandGroups(withLinkWeightModulationNodes(spreadExpansion.patch));
   const context = createContext(expandedPatch);
   context.errors.push(...spreadExpansion.errors);
   const ordinaryNodes = expandedPatch.nodes.filter((node) => !node.runtimeSpread);
@@ -462,6 +464,47 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
     usesMidiClock: context.usesMidiClock,
     errors: [],
   };
+}
+
+/** Lower cable strength modulation to ordinary Multiply nodes before DSP compilation. */
+function withLinkWeightModulationNodes(patch: Patch): Patch {
+  const nodes = patch.nodes.map((node) => node.subpatch
+    ? { ...node, subpatch: withLinkWeightModulationNodes(node.subpatch) }
+    : node);
+  const links: PatchLink[] = [];
+  let nextId = 0;
+  const lower = (link: PatchLink): void => {
+    const modulators = link.weightModulations?.filter((entry) => entry.enabled !== false) ?? [];
+    if (modulators.length === 0) {
+      links.push({ ...link, weightModulations: undefined });
+      return;
+    }
+    let id = `__link_strength_${nextId++}`;
+    while (nodes.some((node) => node.id === id)) id = `${id}_generated`;
+    const runtimeSpread = nodes.find((node) => node.id === link.from.node)?.runtimeSpread
+      ?? nodes.find((node) => node.id === link.to.node)?.runtimeSpread;
+    nodes.push({
+      id,
+      type: 'Multiply',
+      params: { factor: finiteNumber(link.weight, 1) },
+      enabled: nodes.find((node) => node.id === link.from.node)?.enabled !== false,
+      ...(runtimeSpread ? { runtimeSpread: { ...runtimeSpread, originalNodeId: id } } : {}),
+    });
+    links.push({ from: link.from, to: { node: id, port: 'signal' }, weight: 1, mode: 'set', enabled: link.enabled });
+    for (const modulation of modulators) {
+      lower({
+        from: modulation.from,
+        to: { node: id, port: 'factor' },
+        weight: modulation.weight ?? 1,
+        mode: modulation.mode ?? 'set',
+        enabled: modulation.enabled,
+        weightModulations: modulation.weightModulations,
+      });
+    }
+    links.push({ from: { node: id, port: 'signal' }, to: link.to, weight: 1, mode: link.mode, enabled: link.enabled });
+  };
+  patch.links.forEach(lower);
+  return { ...patch, nodes, links };
 }
 
 function createContext(patch: Patch): CompileContext {

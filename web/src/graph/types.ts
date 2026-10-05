@@ -165,6 +165,14 @@ export interface Endpoint {
 
 export type LinkMode = 'set' | 'add' | 'multiply' | 'bend';
 
+export interface LinkWeightModulation {
+  from: Endpoint;
+  weight?: number;
+  mode?: LinkMode;
+  enabled?: boolean;
+  weightModulations?: LinkWeightModulation[];
+}
+
 export interface PatchLink {
   from: Endpoint;
   to: Endpoint;
@@ -172,6 +180,8 @@ export interface PatchLink {
   mode?: LinkMode;
   /** Links are enabled unless explicitly disabled. */
   enabled?: boolean;
+  /** Output connections that modulate this link's strength. */
+  weightModulations?: LinkWeightModulation[];
 }
 
 export interface Patch {

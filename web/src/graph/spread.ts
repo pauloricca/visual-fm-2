@@ -141,7 +141,7 @@ function expandOneSpread(patch: Patch, spreadId: string): SpreadExpansion {
 
     if (isIndexLink) {
       links.push({
-        ...cloneLink(link),
+        ...cloneLink(link, spread.id, internalIds),
         from: { node: spreadIndexNodeId(spread.id, 0), port: 'signal' },
         to: { ...link.to, node: spreadCloneNodeId(spread.id, 0, link.to.node) },
       });
@@ -149,7 +149,7 @@ function expandOneSpread(patch: Patch, spreadId: string): SpreadExpansion {
     }
     if (isInstanceGateLink) {
       links.push({
-        ...cloneLink(link),
+        ...cloneLink(link, spread.id, internalIds),
         from: { node: spawnInstanceGateNodeId(spread.id, 0), port: 'signal' },
         to: { ...link.to, node: spreadCloneNodeId(spread.id, 0, link.to.node) },
       });
@@ -157,12 +157,12 @@ function expandOneSpread(patch: Patch, spreadId: string): SpreadExpansion {
     }
 
     if (!sourceInternal && !targetInternal) {
-      links.push(cloneLink(link));
+      links.push(cloneLink(link, spread.id, internalIds));
       continue;
     }
 
     links.push({
-      ...cloneLink(link),
+      ...cloneLink(link, spread.id, internalIds),
       from: sourceInternal
         ? { ...link.from, node: spreadCloneNodeId(spread.id, 0, link.from.node) }
         : { ...link.from },
@@ -202,13 +202,31 @@ function cloneSpreadNode(node: PatchNode, spreadId: string, itemIndex: number): 
   };
 }
 
-function cloneLink(link: PatchLink): PatchLink {
+function cloneLink(link: PatchLink, spreadId: string, internalIds: Set<string>): PatchLink {
+  const cloneModulation = (modulation: NonNullable<PatchLink['weightModulations']>[number]): typeof modulation => ({
+    ...modulation,
+    from: {
+      ...modulation.from,
+      port: modulation.from.node === spreadId && ['item index', 'instance gate'].includes(modulation.from.port)
+        ? 'signal'
+        : modulation.from.port,
+      node: modulation.from.node === spreadId && modulation.from.port === 'item index'
+        ? spreadIndexNodeId(spreadId, 0)
+        : modulation.from.node === spreadId && modulation.from.port === 'instance gate'
+          ? spawnInstanceGateNodeId(spreadId, 0)
+          : internalIds.has(modulation.from.node)
+            ? spreadCloneNodeId(spreadId, 0, modulation.from.node)
+            : modulation.from.node,
+    },
+    weightModulations: modulation.weightModulations?.map(cloneModulation),
+  });
   return {
     from: { ...link.from },
     to: { ...link.to },
     ...(link.weight !== undefined ? { weight: link.weight } : {}),
     ...(link.mode !== undefined ? { mode: link.mode } : {}),
     ...(link.enabled === false ? { enabled: false } : {}),
+    ...(link.weightModulations?.length ? { weightModulations: link.weightModulations.map(cloneModulation) } : {}),
   };
 }
 

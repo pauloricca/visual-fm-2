@@ -66,6 +66,7 @@ function expandGroupNodes(patch: Patch, prefix: string): Patch {
           weight: innerLink.weight,
           mode: innerLink.mode,
           enabled: innerLink.enabled,
+          weightModulations: innerLink.weightModulations,
         })));
         continue;
       }
@@ -77,6 +78,7 @@ function expandGroupNodes(patch: Patch, prefix: string): Patch {
           weight: externalLink.weight,
           mode: externalLink.mode,
           enabled: externalLink.enabled,
+          weightModulations: prefixWeightModulations(externalLink, prefix),
         });
       }
       links.push(...innerLinks.map((innerLink) => ({
@@ -85,6 +87,7 @@ function expandGroupNodes(patch: Patch, prefix: string): Patch {
         weight: innerLink.weight,
         mode: innerLink.mode,
         enabled: innerLink.enabled,
+        weightModulations: innerLink.weightModulations,
       })));
     }
 
@@ -97,6 +100,7 @@ function expandGroupNodes(patch: Patch, prefix: string): Patch {
           weight: innerLink.weight,
           mode: innerLink.mode,
           enabled: innerLink.enabled,
+          weightModulations: innerLink.weightModulations,
         });
       }
       for (const externalLink of externalLinks) {
@@ -106,6 +110,7 @@ function expandGroupNodes(patch: Patch, prefix: string): Patch {
           weight: externalLink.weight,
           mode: externalLink.mode,
           enabled: externalLink.enabled,
+          weightModulations: prefixWeightModulations(externalLink, prefix),
         });
       }
     }
@@ -122,6 +127,7 @@ function expandGroupNodes(patch: Patch, prefix: string): Patch {
       weight: link.weight,
       mode: link.mode,
       enabled: link.enabled,
+      weightModulations: prefixWeightModulations(link, prefix),
     });
   }
 
@@ -275,6 +281,7 @@ function clonePatch(patch: Patch): Patch {
       weight: link.weight,
       mode: link.mode,
       enabled: link.enabled,
+      weightModulations: link.weightModulations ? structuredClone(link.weightModulations) : undefined,
     })),
   };
 }
@@ -284,6 +291,15 @@ function prefixEndpoint(endpoint: PatchLink['from'], prefix: string): PatchLink[
     node: `${prefix}${endpoint.node}`,
     port: endpoint.port,
   };
+}
+
+function prefixWeightModulations(link: PatchLink, prefix: string): PatchLink['weightModulations'] {
+  const prefixModulation = (modulation: NonNullable<PatchLink['weightModulations']>[number]): typeof modulation => ({
+    ...modulation,
+    from: prefixEndpoint(modulation.from, prefix),
+    weightModulations: modulation.weightModulations?.map(prefixModulation),
+  });
+  return link.weightModulations?.map(prefixModulation);
 }
 
 function defaultNodeIdForGroupInput(groupId: string, port: string): string {

@@ -3634,6 +3634,18 @@ button:hover {
   stroke-width: 4;
 }
 
+.strength-input-handle {
+  fill: var(--color-control);
+  stroke: var(--color-foreground);
+  stroke-width: 1;
+  pointer-events: all;
+  cursor: grab;
+}
+
+.strength-input-handle:active {
+  cursor: grabbing;
+}
+
 .react-flow__edge.selected .shader-edge-path-mode-set.shader-edge-path-foreground,
 .shader-edge-path-selected.shader-edge-path-mode-set {
   filter: drop-shadow(0 0 2px var(--color-link-set));

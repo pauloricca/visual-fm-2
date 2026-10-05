@@ -52,6 +52,7 @@ export function normalizePatch(patch: Patch): Patch {
         ...(link.weight !== undefined ? { weight: link.weight } : {}),
         ...(link.mode !== undefined ? { mode: link.mode } : {}),
         ...(link.enabled === false ? { enabled: false } : {}),
+        ...(link.weightModulations?.length ? { weightModulations: structuredClone(link.weightModulations) } : {}),
       }))
       .sort(compareLinks),
   };

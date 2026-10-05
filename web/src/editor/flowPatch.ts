@@ -1,9 +1,9 @@
-import type { Edge, Node } from '@xyflow/react';
+import type { Edge, Node, ReactFlowProps } from '@xyflow/react';
 import type { AudioInputState, BufferVisualization, MidiInputState } from '../audio/useAudioEngine';
 import { normalizeCustomWave } from '../graph/customWave';
 import { getDefinition, getNodeDefinition } from '../graph/nodeTypes';
 import { normalizePatchCompatibility } from '../graph/patchCompatibility';
-import type { LinkMode, NodeType, Patch, PatchArea, PatchLink, PatchNode, PortDefinition } from '../graph/types';
+import type { LinkMode, LinkWeightModulation, NodeType, Patch, PatchArea, PatchLink, PatchNode, PortDefinition } from '../graph/types';
 
 export interface ScopeNodeSize {
   width: number;
@@ -144,6 +144,14 @@ export interface ShaderEdgeData extends Record<string, unknown> {
   onModeChange: (edgeId: string, mode: LinkMode) => void;
   onEnabledChange?: (edgeId: string, enabled: boolean) => void;
   onInsertNode: (edgeId: string) => void;
+  /** The edge whose strength input this ordinary editor edge targets. */
+  modulatesEdgeId?: string;
+  weightModulations?: LinkWeightModulation[];
+  isWeightTarget?: boolean;
+  onReconnect?: ReactFlowProps<ShaderFlowNode, ShaderFlowEdge>['onReconnect'];
+  onReconnectStart?: ReactFlowProps<ShaderFlowNode, ShaderFlowEdge>['onReconnectStart'];
+  onReconnectEnd?: ReactFlowProps<ShaderFlowNode, ShaderFlowEdge>['onReconnectEnd'];
+  isReconnecting?: boolean;
   showLinkControls?: boolean;
   /** Draw this link with the selected-link treatment because one of its nodes is selected. */
   isConnectedToSelectedNode?: boolean;
@@ -208,6 +216,8 @@ export interface PersistedEditorState {
     weight?: number;
     mode?: LinkMode;
     enabled?: boolean;
+    modulatesEdgeId?: string;
+    weightModulations?: LinkWeightModulation[];
   }>;
 }
 
@@ -258,7 +268,10 @@ export function toFlowEdges(
   onModeChange: ShaderEdgeData['onModeChange'],
   onInsertNode: ShaderEdgeData['onInsertNode'],
 ): ShaderFlowEdge[] {
-  return patch.links.map((link) => edgeFromLink(link, onWeightChange, onModeChange, onInsertNode));
+  return expandWeightModulationEdges(
+    patch.links.map((link) => edgeFromLink(link, onWeightChange, onModeChange, onInsertNode)),
+    onWeightChange, onModeChange, onInsertNode,
+  );
 }
 
 export function editorStateToFlowNodes(
@@ -309,20 +322,22 @@ export function editorStateToFlowEdges(
   onInsertNode: ShaderEdgeData['onInsertNode'],
 ): ShaderFlowEdge[] {
   const normalizedState = normalizePersistedState(state);
-  return normalizedState.edges.map((edge) => ({
+  return expandWeightModulationEdges(normalizedState.edges.map((edge) => ({
     ...edge,
     type: 'shaderEdge',
     data: {
       weight: edge.weight ?? 1,
       mode: edge.mode ?? 'set',
       enabled: edge.enabled !== false,
+      modulatesEdgeId: edge.modulatesEdgeId,
+      weightModulations: edge.weightModulations,
       onWeightChange,
       onModeChange,
       onInsertNode,
-      isFeedback: edge.source === edge.target,
+      isFeedback: !edge.modulatesEdgeId && edge.source === edge.target,
     },
     className: 'shader-edge',
-  }));
+  })), onWeightChange, onModeChange, onInsertNode);
 }
 
 export function flowToEditorState(
@@ -368,6 +383,8 @@ export function flowToEditorState(
       weight: edge.data?.weight ?? 1,
       mode: edge.data?.mode ?? 'set',
       ...(edge.data?.enabled === false ? { enabled: false } : {}),
+      ...(edge.data?.modulatesEdgeId ? { modulatesEdgeId: edge.data.modulatesEdgeId } : {}),
+      ...(edge.data?.weightModulations?.length ? { weightModulations: edge.data.weightModulations } : {}),
     })),
   };
 }
@@ -453,9 +470,38 @@ export function patchFromFlow(nodes: ShaderFlowNode[], edges: ShaderFlowEdge[], 
     });
   }
 
-  const links = edges
-    .map(linkFromEdge)
-    .filter((link): link is PatchLink => link !== null);
+  const modulationsByTarget = new Map<string, ShaderFlowEdge[]>();
+  for (const edge of edges) {
+    const targetId = edge.data?.modulatesEdgeId;
+    if (targetId) modulationsByTarget.set(targetId, [...(modulationsByTarget.get(targetId) ?? []), edge]);
+  }
+  const modulationFromEdge = (edge: ShaderFlowEdge, visited: Set<string>): LinkWeightModulation | null => {
+    if (visited.has(edge.id)) return null;
+    const source = parseHandle(edge.sourceHandle);
+    if (source?.kind !== 'out' || !typedNodeIds.has(edge.source)) return null;
+    const nextVisited = new Set([...visited, edge.id]);
+    const nested = (modulationsByTarget.get(edge.id) ?? [])
+      .map((candidate) => modulationFromEdge(candidate, nextVisited))
+      .filter((entry): entry is LinkWeightModulation => entry !== null);
+    return {
+      from: { node: edge.source, port: source.port },
+      weight: edge.data?.weight ?? 1,
+      mode: edge.data?.mode ?? 'set',
+      ...(edge.data?.enabled === false ? { enabled: false } : {}),
+      ...(nested.length ? { weightModulations: nested } : {}),
+    };
+  };
+  const links = edges.flatMap((edge) => {
+    const link = linkFromEdge(edge);
+    if (!link) return [];
+    const nested = (modulationsByTarget.get(edge.id) ?? [])
+      .map((candidate) => modulationFromEdge(candidate, new Set([edge.id])))
+      .filter((entry): entry is LinkWeightModulation => entry !== null);
+    return [{
+      ...link,
+      ...(nested.length ? { weightModulations: [...(link.weightModulations ?? []), ...nested] } : {}),
+    }];
+  });
 
   return {
     nodes: patchNodes,
@@ -481,6 +527,7 @@ export function edgeFromLink(
       weight: link.weight ?? 1,
       mode: link.mode ?? 'set',
       enabled: link.enabled !== false,
+      weightModulations: link.weightModulations,
       onWeightChange,
       onModeChange,
       onInsertNode,
@@ -490,7 +537,48 @@ export function edgeFromLink(
   };
 }
 
+function expandWeightModulationEdges(
+  edges: ShaderFlowEdge[],
+  onWeightChange: ShaderEdgeData['onWeightChange'],
+  onModeChange: ShaderEdgeData['onModeChange'],
+  onInsertNode: ShaderEdgeData['onInsertNode'],
+): ShaderFlowEdge[] {
+  const expanded: ShaderFlowEdge[] = [];
+  const append = (edge: ShaderFlowEdge, modulation: LinkWeightModulation, index: number) => {
+    const id = `weight-modulation:${edge.id}:${index}`;
+    const child: ShaderFlowEdge = {
+      id,
+      type: 'shaderEdge',
+      source: modulation.from.node,
+      sourceHandle: `out:${modulation.from.port}`,
+      target: edge.target,
+      targetHandle: edge.targetHandle,
+      className: 'shader-edge',
+      reconnectable: false,
+      data: {
+        weight: modulation.weight ?? 1,
+        mode: modulation.mode ?? 'set',
+        enabled: modulation.enabled !== false,
+        modulatesEdgeId: edge.id,
+        onWeightChange,
+        onModeChange,
+        onInsertNode,
+      },
+    };
+    expanded.push(child);
+    modulation.weightModulations?.forEach((nested, nestedIndex) => append(child, nested, nestedIndex));
+  };
+  for (const edge of edges) {
+    expanded.push(edge.data?.weightModulations?.length
+      ? { ...edge, data: { ...edge.data, weightModulations: undefined } }
+      : edge);
+    edge.data?.weightModulations?.forEach((modulation, index) => append(edge, modulation, index));
+  }
+  return dedupeEdges(expanded);
+}
+
 export function linkFromEdge(edge: Edge): PatchLink | null {
+  if (edge.data?.modulatesEdgeId) return null;
   const sourcePort = parseHandle(edge.sourceHandle);
   const targetPort = parseHandle(edge.targetHandle);
   if (!sourcePort || !targetPort) return null;
@@ -502,6 +590,7 @@ export function linkFromEdge(edge: Edge): PatchLink | null {
       weight: edge.data?.weight as number | undefined,
       mode: edge.data?.mode as LinkMode | undefined,
       ...(edge.data?.enabled === false ? { enabled: false } : {}),
+      ...(Array.isArray(edge.data?.weightModulations) ? { weightModulations: edge.data.weightModulations as LinkWeightModulation[] } : {}),
     };
   }
 
@@ -512,6 +601,7 @@ export function linkFromEdge(edge: Edge): PatchLink | null {
       weight: edge.data?.weight as number | undefined,
       mode: edge.data?.mode as LinkMode | undefined,
       ...(edge.data?.enabled === false ? { enabled: false } : {}),
+      ...(Array.isArray(edge.data?.weightModulations) ? { weightModulations: edge.data.weightModulations as LinkWeightModulation[] } : {}),
     };
   }
 
@@ -551,6 +641,7 @@ function materializeTypedLinks(
         weight: downstream.weight,
         mode: downstream.mode,
         enabled: link.enabled !== false && downstream.enabled !== false,
+        weightModulations: downstream.weightModulations,
       });
     }
   }
@@ -642,6 +733,7 @@ function normalizePersistedState(state: PersistedEditorState): PersistedEditorSt
   const typedPatch: Patch = {
     nodes: typedNodes,
     links: state.edges
+      .filter((edge) => !edge.modulatesEdgeId)
       .map(patchLinkFromPersistedEdge)
       .map((link) => normalizePersistedPatchLink(link, originalNodesById))
       .filter((link): link is PatchLink => link !== null && persistedLinkPortsExist(link, originalNodesById)),
@@ -654,7 +746,10 @@ function normalizePersistedState(state: PersistedEditorState): PersistedEditorSt
       ...normalizedTypedPatch.nodes.map((node) => persistedNodeFromPatchNode(node, originalNodesById.get(node.id))),
       ...passthroughNodes,
     ],
-    edges: normalizedTypedPatch.links.map(persistedEdgeFromPatchLink),
+    edges: [
+      ...normalizedTypedPatch.links.map(persistedEdgeFromPatchLink),
+      ...state.edges.filter((edge) => edge.modulatesEdgeId && originalNodesById.has(edge.source)),
+    ],
   };
 }
 
@@ -830,6 +925,7 @@ function patchLinkFromPersistedEdge(edge: PersistedEditorState['edges'][number])
     ...(edge.weight !== undefined ? { weight: edge.weight } : {}),
     ...(edge.mode !== undefined ? { mode: edge.mode } : {}),
     ...(edge.enabled === false ? { enabled: false } : {}),
+    ...(edge.weightModulations ? { weightModulations: edge.weightModulations } : {}),
   };
 }
 
@@ -872,5 +968,35 @@ function persistedEdgeFromPatchLink(link: PatchLink): PersistedEditorState['edge
     weight: link.weight ?? 1,
     mode: link.mode ?? 'set',
     ...(link.enabled === false ? { enabled: false } : {}),
+    ...(link.weightModulations?.length ? { weightModulations: link.weightModulations } : {}),
   };
+}
+
+export function dedupeEdges(edges: ShaderFlowEdge[]): ShaderFlowEdge[] {
+  const deduped: ShaderFlowEdge[] = [];
+  const seen = new Map<string, ShaderFlowEdge>();
+  const aliases = new Map<string, string>();
+  const byId = new Map(edges.map((edge) => [edge.id, edge]));
+  const identity = (edge: ShaderFlowEdge, visited = new Set<string>()): string => {
+    const parent = edge.data?.modulatesEdgeId ? byId.get(edge.data.modulatesEdgeId) : undefined;
+    if (!parent || visited.has(edge.id)) return linkFromEdge(edge) ? edgeId(linkFromEdge(edge)!) : edge.id;
+    return JSON.stringify([edge.source, edge.sourceHandle, identity(parent, new Set([...visited, edge.id]))]);
+  };
+  for (const edge of edges) {
+    const link = linkFromEdge(edge);
+    const key = identity(edge);
+    const existing = seen.get(key);
+    if (existing) {
+      aliases.set(edge.id, existing.id);
+      if (edge.selected) existing.selected = true;
+      continue;
+    }
+    const next = { ...edge, id: link ? edgeId(link) : edge.id };
+    aliases.set(edge.id, next.id);
+    seen.set(key, next);
+    deduped.push(next);
+  }
+  return deduped.map((edge) => edge.data?.modulatesEdgeId
+    ? { ...edge, data: { ...edge.data, modulatesEdgeId: aliases.get(edge.data.modulatesEdgeId) ?? edge.data.modulatesEdgeId } }
+    : edge);
 }

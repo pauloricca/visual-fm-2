@@ -5,7 +5,9 @@ import {
   type EdgeProps,
   useReactFlow,
   useViewport,
+  useStoreApi,
 } from '@xyflow/react';
+import { XYHandle } from '@xyflow/system';
 import { memo, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type { LinkMode } from '../graph/types';
@@ -32,8 +34,9 @@ const SHORT_LINK_CONTROLS_DISTANCE = 144;
 const SHORT_LINK_CONTROLS_OFFSET = 52;
 
 export const ShaderEdge = memo(function ShaderEdge(props: EdgeProps<ShaderFlowEdge>) {
+  const store = useStoreApi();
   const [linkControlsVisible, setLinkControlsVisible] = useState(false);
-  const isSameNodeFeedback = props.source === props.target;
+  const isSameNodeFeedback = props.source === props.target && !props.data?.modulatesEdgeId;
   const isFeedback = props.data?.isFeedback === true || isSameNodeFeedback;
   const isControl = props.data?.isControl === true;
   const visualProps = {
@@ -45,10 +48,7 @@ export const ShaderEdge = memo(function ShaderEdge(props: EdgeProps<ShaderFlowEd
     sourcePosition: props.data?.visualSource ? Position.Right : props.sourcePosition,
     targetPosition: props.data?.visualTarget ? Position.Left : props.targetPosition,
   };
-  const [defaultEdgePath, defaultLabelX, defaultLabelY] = getBezierPath(visualProps);
-  const [edgePath, labelX, labelY] = isFeedback
-    ? getFeedbackPath(visualProps, isSameNodeFeedback ? SAME_NODE_FEEDBACK_CURVE_OFFSET : FEEDBACK_CURVE_OFFSET)
-    : [defaultEdgePath, defaultLabelX, defaultLabelY];
+  const [edgePath, labelX, labelY] = getShaderEdgePath(visualProps);
   const overlayTarget = useEdgeOverlayTarget();
   const reactFlow = useReactFlow();
   const viewport = useViewport();
@@ -60,10 +60,10 @@ export const ShaderEdge = memo(function ShaderEdge(props: EdgeProps<ShaderFlowEd
   const hasDspErrors = dspErrors.length > 0;
   const selected = props.selected ?? false;
   const isConnectedToSelectedNode = props.data?.isConnectedToSelectedNode === true;
-  const isDimmedBySelection = props.data?.isDimmedBySelection === true;
+  const isDimmedBySelection = props.data?.isDimmedBySelection === true && !props.data?.isWeightTarget;
   // Node selection is deliberately visual-only for its incident links: it must
   // not expose link controls, enable reconnection, or tint the endpoint pins.
-  const emphasized = selected || isConnectedToSelectedNode;
+  const emphasized = selected || isConnectedToSelectedNode || props.data?.isWeightTarget === true;
   const showLinkControls = selected && props.data?.showLinkControls === true;
   const controlsLabelY = shouldRaiseLinkControls(visualProps, isFeedback)
     ? labelY - SHORT_LINK_CONTROLS_OFFSET
@@ -106,6 +106,8 @@ export const ShaderEdge = memo(function ShaderEdge(props: EdgeProps<ShaderFlowEd
     return () => window.clearTimeout(timeoutId);
   }, [showLinkControls]);
 
+  if (props.data?.isReconnecting) return null;
+
   return (
     <>
       <BaseEdge
@@ -123,6 +125,53 @@ export const ShaderEdge = memo(function ShaderEdge(props: EdgeProps<ShaderFlowEd
         style={selectedForegroundStyle}
         interactionWidth={isSameNodeFeedback ? 44 : isFeedback ? 36 : 18}
       />
+      {selected && props.data?.modulatesEdgeId && !props.data.isAreaCollapsedPresentation ? (
+        <circle
+          cx={visualProps.targetX}
+          cy={visualProps.targetY}
+          r={6}
+          className="strength-input-handle nodrag nopan"
+          aria-label="Reconnect link strength input"
+          onMouseDown={(event) => {
+            if (event.button !== 0) return;
+            event.stopPropagation();
+            const state = store.getState();
+            const edge = state.edgeLookup.get(props.id) as ShaderFlowEdge | undefined;
+            if (!edge) return;
+            // This is React Flow's own endpoint reconnection controller. Only
+            // the starting anchor is different: the cable midpoint circle.
+            XYHandle.onPointerDown(event.nativeEvent, {
+              autoPanOnConnect: state.autoPanOnConnect,
+              autoPanSpeed: state.autoPanSpeed,
+              connectionMode: state.connectionMode,
+              connectionRadius: state.connectionRadius,
+              domNode: state.domNode,
+              handleId: edge.sourceHandle ?? null,
+              nodeId: edge.source,
+              nodeLookup: state.nodeLookup,
+              isTarget: false,
+              edgeUpdaterType: 'source',
+              lib: state.lib,
+              flowId: state.rfId,
+              cancelConnection: state.cancelConnection,
+              panBy: state.panBy,
+              isValidConnection: (...args) => store.getState().isValidConnection?.(...args) ?? true,
+              onConnect: (connection) => edge.data?.onReconnect?.(edge, connection),
+              onConnectStart: (nativeEvent, params) => {
+                edge.data?.onReconnectStart?.(event, edge, 'source');
+                store.getState().onConnectStart?.(nativeEvent, params);
+              },
+              onConnectEnd: (...args) => store.getState().onConnectEnd?.(...args),
+              onReconnectEnd: (nativeEvent, connectionState) => edge.data?.onReconnectEnd?.(nativeEvent, edge, 'source', connectionState),
+              updateConnection: state.updateConnection,
+              getTransform: () => store.getState().transform,
+              getFromHandle: () => store.getState().connection.fromHandle,
+              dragThreshold: state.connectionDragThreshold,
+              handleDomNode: event.currentTarget,
+            });
+          }}
+        />
+      ) : null}
       {showLinkControls && linkControlsVisible && overlayTarget ? (
         createPortal(
           <div
@@ -173,8 +222,19 @@ function shouldRaiseLinkControls(props: EdgeProps<ShaderFlowEdge>, isFeedback: b
     < SHORT_LINK_CONTROLS_DISTANCE;
 }
 
+type EdgeGeometry = Pick<EdgeProps<ShaderFlowEdge>, 'source' | 'target' | 'sourceX' | 'sourceY' | 'targetX' | 'targetY' | 'sourcePosition' | 'targetPosition' | 'data'>;
+
+export function getShaderEdgePath(props: EdgeGeometry): [string, number, number] {
+  const sameNode = props.source === props.target && !props.data?.modulatesEdgeId;
+  if (sameNode || props.data?.isFeedback) {
+    return getFeedbackPath(props, sameNode ? SAME_NODE_FEEDBACK_CURVE_OFFSET : FEEDBACK_CURVE_OFFSET);
+  }
+  const [path, x, y] = getBezierPath(props);
+  return [path, x, y];
+}
+
 function getFeedbackPath(
-  props: EdgeProps<ShaderFlowEdge>,
+  props: EdgeGeometry,
   minimumOffset: number,
 ): [string, number, number] {
   const sourceX = props.sourceX;
@@ -204,7 +264,7 @@ function getFeedbackPath(
 }
 
 function getSameNodeFeedbackPath(
-  props: EdgeProps<ShaderFlowEdge>,
+  props: EdgeGeometry,
   minimumOffset: number,
 ): [string, number, number] {
   const sourceX = props.sourceX;
@@ -226,7 +286,7 @@ function getSameNodeFeedbackPath(
   return [
     path,
     (sourceX + targetX) / 2,
-    (controlY + sourceY + targetY) / 3,
+    0.125 * sourceY + 0.75 * controlY + 0.125 * targetY,
   ];
 }
 
