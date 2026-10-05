@@ -298,7 +298,7 @@ Shortcuts are ignored while editing text or numeric fields unless noted otherwis
 | `Cmd/Ctrl+Shift+Z` or `Cmd/Ctrl+Y` | Redo. |
 | `Cmd/Ctrl+C`, `Cmd/Ctrl+V` | Copy and paste selected nodes. |
 | `Backspace` or `Delete` | Delete the selected nodes, links, subpatch boundary port, or area. |
-| `Cmd/Ctrl+Backspace` or `Cmd/Ctrl+Delete` | Delete selected nodes while bridging compatible incoming and outgoing links. |
+| `Cmd/Ctrl+Backspace` or `Cmd/Ctrl+Delete` | Delete selected nodes while bridging compatible incoming and outgoing links. Unrelated links, including strength-modulation chains, are preserved. |
 | `A`, `B`, `S`, `M` | Set a new or selected link to add, bend, set, or multiply mode. |
 | `X` | Enable or disable the selected nodes, or the selected links when no node is selected. Disabled nodes are semi-transparent with a dashed border and disable every incident link without changing those links' own enabled state. |
 | `1`…`9` | Set the selected Selector node to the corresponding input. |

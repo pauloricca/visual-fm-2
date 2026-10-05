@@ -2078,10 +2078,12 @@ function NodeEditorInner() {
     if (selectedNodeIds.size === 0) return false;
 
     const bridgeEdges = buildBridgeEdges(nodesRef.current, edgesRef.current, selectedNodeIds, updateEdgeWeight, updateEdgeMode, insertNodeOnEdgePlaceholder);
-    const remainingEdges = edgesRef.current.filter((edge) => {
-      const link = linkFromEdge(edge);
-      return link && !selectedNodeIds.has(link.from.node) && !selectedNodeIds.has(link.to.node);
-    });
+    // Strength connections are real editor edges too. Filtering via
+    // linkFromEdge would discard all of them, including unrelated cables.
+    // The tree transform also removes descendants of a removed target cable.
+    const remainingEdges = transformEdgeTree(edgesRef.current, (edge) => (
+      selectedNodeIds.has(edge.source) || selectedNodeIds.has(edge.target) ? null : edge
+    ));
 
     commitHistory();
     setNodes((current) => current.filter((node) => !selectedNodeIds.has(node.id)));
