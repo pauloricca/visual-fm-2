@@ -67,6 +67,7 @@ export type NodeType =
   | 'LowpassFilter'
   | 'HighpassFilter'
   | 'BandpassFilter'
+  | 'Crossover'
   | 'Equalizer'
   | 'FormantFilter'
   | 'CombFilter'

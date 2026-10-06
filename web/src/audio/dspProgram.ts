@@ -1805,6 +1805,51 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
   }
 
   const filterType = FILTER_TYPES[node.type];
+  if (node.type === 'Crossover') {
+    const slope = Math.max(12, Math.min(48, Math.round(finiteNumber(node.params.slope, 24) / 12) * 12));
+    const stages = slope / 12;
+    const bandMatch = /^band (\d+)$/.exec(port);
+    if (!bandMatch) {
+      context.errors.push(`Crossover node "${node.id}" does not have supported output "${port}".`);
+      return null;
+    }
+    const band = Number(bandMatch[1]);
+    const points = Math.max(1, Math.min(8, Math.round(finiteNumber(node.params.points, 1))));
+    if (band < 1 || band > points + 1) return null;
+    let signal = resolveInput(node, 'signal', 0, context);
+    const applyBoundary = (boundary: number, lowPass: boolean): void => {
+      const legacyFrequency = boundary === 1 ? finiteNumber(node.params.frequency, 1200) : 1200;
+      const frequency = resolveInput(node, `frequency ${boundary}`, legacyFrequency, context);
+      for (let stage = 0; stage < stages; stage += 1) {
+        const output = nextRegister(context);
+        const state = nextState(context, 4);
+        context.stateBindings.push({
+          id: `${node.id}:crossover:${boundary}:${lowPass ? 'low' : 'high'}:${stage}`,
+          state,
+          count: 4,
+          kind: 'filter',
+          nodeId: node.id,
+        });
+        // Butterworth section Q values produce an even, maximally-flat response
+        // when the selected 12 dB/octave stages are cascaded.
+        const q = 1 / (2 * Math.sin(((2 * stage + 1) * Math.PI) / (4 * stages)));
+        context.ops.push({
+          opcode: DSP_OP.Filter,
+          out: output,
+          a: lowPass ? 1 : 2,
+          b: signal,
+          c: frequency,
+          d: constantRegister(q, context),
+          state,
+        });
+        signal = output;
+      }
+    };
+    if (band > 1) applyBoundary(band - 1, false);
+    if (band <= points) applyBoundary(band, true);
+    return signal;
+  }
+
   if (filterType !== undefined) {
     const output = nextRegister(context);
     const state = nextState(context, 4);

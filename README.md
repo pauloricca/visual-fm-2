@@ -96,6 +96,7 @@ Dragging a new link or reconnecting an existing link endpoint onto the temporary
 - `Lowpass Filter`: filters out frequencies above the cutoff.
 - `Highpass Filter`: filters out frequencies below the cutoff.
 - `Bandpass Filter`: keeps frequencies around the cutoff and attenuates the rest.
+- `Crossover`: splits a signal into frequency bands. Set `points` from 1 to 8, choose the `slope` (12, 24, 36, or 48 dB/octave), and set each crossover frequency. It provides one `band` output below, between, or above the crossover frequencies for each band.
 - `Equaliser`: shapes a signal with independent low, mid, and high gain controls (in dB).
 - `Formant Filter`: applies a vowel/formant-style filter with morph and intensity controls.
 - `Comb Filter`: applies a resonant comb filter tuned by frequency and feedback.
@@ -180,6 +181,7 @@ The signature notation below is `inputs -> outputs`. Port names are the names us
 | Lowpass Filter | `signal`, `cutoff`, `resonance` | `signal` |
 | Highpass Filter | `signal`, `cutoff`, `resonance` | `signal` |
 | Bandpass Filter | `signal`, `cutoff`, `resonance` | `signal` |
+| Crossover | `signal`, `points`, `slope`, `frequency 1` … `frequency points` | `band 1` … `band points + 1` |
 | Equaliser | `signal`, `lows`, `mids`, `highs` | `signal` |
 | Formant Filter | `signal`, `morph`, `intensity` | `signal` |
 | Comb Filter | `signal`, `frequency`, `feedback` | `signal` |

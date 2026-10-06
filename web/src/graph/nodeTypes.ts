@@ -562,6 +562,15 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   LowpassFilter: filter('LowpassFilter'),
   HighpassFilter: filter('HighpassFilter'),
   BandpassFilter: filter('BandpassFilter'),
+  Crossover: {
+    type: 'Crossover',
+    inputs: [
+      { name: 'signal', valueEditor: false },
+      { name: 'points', defaultValue: 1, min: 1, max: 8, integer: true, connectable: false },
+      { name: 'slope', defaultValue: 24, min: 12, max: 48, step: 12, integer: true, connectable: false },
+    ],
+    outputs: [],
+  },
   Equalizer: processor('Equalizer', [
     { name: 'lows', defaultValue: 0, min: -24, max: 24, step: 0.1 },
     { name: 'mids', defaultValue: 0, min: -24, max: 24, step: 0.1 },
@@ -657,6 +666,7 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   LowpassFilter: 'Lowpass Filter',
   HighpassFilter: 'Highpass Filter',
   BandpassFilter: 'Bandpass Filter',
+  Crossover: 'Crossover',
   Equalizer: 'Equaliser',
   FormantFilter: 'Formant Filter',
   CombFilter: 'Comb Filter',
@@ -755,6 +765,24 @@ export function getNodeDefinition(node: PatchNode): NodeDefinition {
       ...definition,
       inputs,
       outputs: node.outputs ?? customWaveOutputDefinitions(node.params.count),
+    };
+  }
+
+  if (node.type === 'Crossover') {
+    const points = clampInteger(node.params.points, 1, 8, 1);
+    const definition = getDefinition(node.type);
+    return {
+      ...definition,
+      inputs: [
+        ...definition.inputs,
+        ...Array.from({ length: points }, (_, index) => ({
+          name: `frequency ${index + 1}`,
+          defaultValue: [1200, 4000, 8000, 12000, 15000, 17000, 18500, 19500][index],
+          min: 20,
+          max: 20000,
+        })),
+      ],
+      outputs: Array.from({ length: points + 1 }, (_, index) => ({ name: `band ${index + 1}` })),
     };
   }
 
@@ -1013,6 +1041,11 @@ export function defaultParamsFor(type: NodeType): Record<string, number> {
     if (input.defaultValue !== undefined) {
       params[input.name] = input.defaultValue;
     }
+  }
+  if (type === 'Crossover') {
+    [1200, 4000, 8000, 12000, 15000, 17000, 18500, 19500].forEach((frequency, index) => {
+      params[`frequency ${index + 1}`] = frequency;
+    });
   }
   return params;
 }
