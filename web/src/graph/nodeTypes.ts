@@ -273,6 +273,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     inputs: [
       { name: 'size', defaultValue: 12, min: 1, max: 128, integer: true },
       { name: 'startNote', defaultValue: 60, min: 0, max: 127, integer: true },
+      { name: 'mode', defaultValue: 0, min: 0, max: 1, integer: true, connectable: false },
     ],
     outputs: [
       { name: 'midi note' },

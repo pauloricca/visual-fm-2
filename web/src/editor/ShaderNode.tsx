@@ -1442,6 +1442,8 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
             <KeysDisplay
               size={node.params.size ?? 12}
               startNote={node.params.startNote ?? 60}
+              mode={node.params.mode ?? 0}
+              activeNote={node.params.frequency > 0 ? Math.round(node.params.note ?? -1) : null}
               onNoteChange={(note) => {
                 data.onParamChange(node.id, 'note', note ?? 0);
                 data.onParamChange(node.id, 'frequency', note === null ? 0 : midiNoteToFrequency(note));
@@ -1661,6 +1663,34 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
                 >
                   {input.name}
                 </button>
+              ) : showKeysDisplay && input.name === 'mode' && !input.preview ? (
+                <>
+                  <PortNameLabel
+                    name={input.name}
+                    editable={false}
+                    draggable={false}
+                    preview={false}
+                    selected={data.selectedPort?.side === 'input' && data.selectedPort.name === input.name}
+                    activeDragTarget={false}
+                    activeDragSource={false}
+                    onChange={() => undefined}
+                  />
+                  <select
+                    className="shader-port-select nodrag nopan"
+                    aria-label="Keys mode"
+                    value={String(Math.round(node.params.mode ?? input.defaultValue ?? 0))}
+                    onChange={(event) => {
+                      data.onParamChange(node.id, 'mode', Number(event.currentTarget.value));
+                      event.currentTarget.blur();
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    <option value="0">gate</option>
+                    <option value="1">hold</option>
+                  </select>
+                </>
               ) : showCustomWaveEditor && input.name === 'mode' && !input.preview ? (
                 <>
                   <PortNameLabel
@@ -2093,7 +2123,7 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
                   onChange={(nextName) => data.onPortNameChange(node.id, 'input', input.name, nextName)}
                 />
               )}
-              {!input.preview && node.type !== 'Outs' && input.valueEditor !== false && input.defaultValue !== undefined && !(showCustomWaveEditor && input.name === 'mode') && !(showSliderDisplay && input.name === 'direction') && !(showSequencerDisplay && input.name === 'mode') && !(showButtonDisplay && input.name === 'mode') && !(showAccumulatorDisplay && input.name === 'mode') && !(showQuantiseDisplay && (input.name === 'scale' || input.name === 'root')) && !(showSampleUpload && input.name === 'mode') && !(showTempoDisplay && (input.name === 'source' || input.name === 'midiSource')) ? (
+              {!input.preview && node.type !== 'Outs' && input.valueEditor !== false && input.defaultValue !== undefined && !(showKeysDisplay && input.name === 'mode') && !(showCustomWaveEditor && input.name === 'mode') && !(showSliderDisplay && input.name === 'direction') && !(showSequencerDisplay && input.name === 'mode') && !(showButtonDisplay && input.name === 'mode') && !(showAccumulatorDisplay && input.name === 'mode') && !(showQuantiseDisplay && (input.name === 'scale' || input.name === 'root')) && !(showSampleUpload && input.name === 'mode') && !(showTempoDisplay && (input.name === 'source' || input.name === 'midiSource')) ? (
                 <NumericScrubber
                   value={node.params[input.name] ?? input.defaultValue ?? 0}
                   min={input.min}
@@ -3330,12 +3360,14 @@ function ButtonDisplay({ mode, pressed, onPressedChange, onClickPulse }: ButtonD
 interface KeysDisplayProps {
   size: number;
   startNote: number;
+  mode: number;
+  activeNote: number | null;
   onNoteChange: (note: number | null) => void;
 }
 
-function KeysDisplay({ size, startNote, onNoteChange }: KeysDisplayProps) {
+function KeysDisplay({ size, startNote, mode, activeNote, onNoteChange }: KeysDisplayProps) {
   const dragRef = useRef<{ pointerId: number; note: number } | null>(null);
-  const [activeNote, setActiveNote] = useState<number | null>(null);
+  const holdMode = Math.round(mode) === 1;
   const firstNote = clamp(Math.round(startNote), 0, 127);
   const noteCount = clamp(Math.round(size), 1, 128 - firstNote);
   const notes = Array.from({ length: noteCount }, (_, index) => firstNote + index);
@@ -3347,8 +3379,8 @@ function KeysDisplay({ size, startNote, onNoteChange }: KeysDisplayProps) {
     event.stopPropagation();
     dragRef.current = { pointerId: event.pointerId, note };
     event.currentTarget.setPointerCapture(event.pointerId);
-    setActiveNote(note);
-    onNoteChange(note);
+    const nextNote = holdMode && activeNote === note ? null : note;
+    onNoteChange(nextNote);
   }
 
   function move(event: PointerEvent<HTMLButtonElement>) {
@@ -3360,7 +3392,6 @@ function KeysDisplay({ size, startNote, onNoteChange }: KeysDisplayProps) {
     const note = Number(target?.dataset.midiNote);
     if (!Number.isInteger(note) || note === drag.note) return;
     drag.note = note;
-    setActiveNote(note);
     onNoteChange(note);
   }
 
@@ -3370,8 +3401,9 @@ function KeysDisplay({ size, startNote, onNoteChange }: KeysDisplayProps) {
     event.preventDefault();
     event.stopPropagation();
     dragRef.current = null;
-    setActiveNote(null);
-    onNoteChange(null);
+    if (!holdMode) {
+      onNoteChange(null);
+    }
   }
 
   return (
@@ -3396,8 +3428,9 @@ function KeysDisplay({ size, startNote, onNoteChange }: KeysDisplayProps) {
           onLostPointerCapture={(event) => {
             if (dragRef.current?.pointerId === event.pointerId) {
               dragRef.current = null;
-              setActiveNote(null);
-              onNoteChange(null);
+              if (!holdMode) {
+                onNoteChange(null);
+              }
             }
           }}
           onClick={(event) => {
