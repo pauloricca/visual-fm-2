@@ -11,6 +11,7 @@ export type NodeType =
   | 'SawOsc'
   | 'RampOsc'
   | 'SquareOsc'
+  | 'KinkOsc'
   | 'SampleHoldOsc'
   | 'PerlinNoise'
   | 'Noise'

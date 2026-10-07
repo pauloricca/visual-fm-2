@@ -2825,6 +2825,7 @@ button:hover {
 .audio-node-meter-display,
 .audio-node-scope-display,
 .audio-node-spectrum-display,
+.kink-osc-display,
 .audio-node-slider-display,
 .audio-node-joystick-display,
 .audio-node-button-display,
@@ -2840,6 +2841,36 @@ button:hover {
   border: calc(1px * var(--graph-stroke-scale, 1)) solid var(--color-foreground);
   background: var(--color-surface);
   overflow: hidden;
+}
+
+.kink-osc-display {
+  grid-column: 1 / -1;
+  width: 100%;
+  min-width: 156px;
+  height: 48px;
+  overflow: hidden;
+  background: var(--color-surface);
+}
+
+.kink-osc-display svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.kink-osc-display-grid {
+  fill: none;
+  stroke: var(--color-foreground);
+  opacity: 0.2;
+  stroke-width: 0.65;
+  vector-effect: non-scaling-stroke;
+}
+
+.kink-osc-display-trace {
+  fill: none;
+  stroke: var(--color-accent);
+  stroke-width: 1.6;
+  vector-effect: non-scaling-stroke;
 }
 
 .audio-node-meter-fill {

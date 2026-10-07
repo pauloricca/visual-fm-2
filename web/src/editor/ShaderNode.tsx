@@ -174,6 +174,7 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
     || node.type === 'MidiNoteOn'
     || node.type === 'MidiNoteOff';
   const showCustomWaveEditor = node.type === 'CustomWave';
+  const showKinkOscGraphic = node.type === 'KinkOsc';
   const showSampleUpload = node.type === 'SamplePlayer';
   const showSampleVideo = showSampleUpload && Boolean(node.sample?.url && isVideoSampleUrl(node.sample.url));
   const showBufferDisplay = node.type === 'Buffer';
@@ -187,7 +188,7 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
   const sliderTitleSuffix = showSliderDisplay && pointerOver
     ? `: ${formatSliderReadoutValue(sliderAbsoluteValue)} (${formatUnitValue(sliderMappedUnitValue)})`
     : undefined;
-  const showTopGraphic = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showJoystickDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showBufferDisplay || showImageDisplay || showRollDisplay || Boolean(groupUiPreview);
+  const showTopGraphic = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showJoystickDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showKinkOscGraphic || showSampleUpload || showBufferDisplay || showImageDisplay || showRollDisplay || Boolean(groupUiPreview);
   const imageX = centeredCoordinateToUnit(data.audioImagePosition?.x ?? node.params.x ?? 0);
   const imageY = centeredCoordinateToUnit(data.audioImagePosition?.y ?? node.params.y ?? 0);
   const showResizableDisplay = showMeterDisplay || showScopeDisplay || showFftDisplay || showSliderDisplay || showJoystickDisplay || showButtonDisplay || showKeysDisplay || showCustomWaveEditor || showSampleUpload || showBufferDisplay || showImageDisplay || showSequencerDisplay || showRollDisplay || isRuntimeContainer;
@@ -1414,6 +1415,12 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
               }}
             />
           ) : null}
+          {showKinkOscGraphic ? (
+            <KinkOscGraphic
+              shape={node.params.shape ?? 0}
+              squareness={node.params.squareness ?? 0}
+            />
+          ) : null}
           {showSliderDisplay ? (
             <SliderDisplay
               value={node.params.value ?? 0.5}
@@ -2286,6 +2293,55 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
     </div>
   );
 });
+
+function KinkOscGraphic({ shape, squareness }: { shape: number; squareness: number }) {
+  const safeShape = clamp(Number.isFinite(shape) ? shape : 0, -1, 1);
+  const safeSquareness = clamp(Number.isFinite(squareness) ? squareness : 0, -1, 1);
+  const magnitude = Math.abs(safeSquareness);
+  let path: string;
+  if (magnitude >= 1) {
+    path = safeSquareness > 0
+      ? 'M1 43 L78 43 L78 5 L155 5 L155 43'
+      : 'M1 5 L78 5 L78 43 L155 43 L155 5';
+  } else {
+    const split = 0.5 * (1 - safeShape * (1 - magnitude));
+    const exponent = 1 + 11 * magnitude / (1 - magnitude);
+    const point = (phase: number, position: number, rising: boolean) => {
+      const curvedPosition = safeSquareness >= 0
+        ? position ** exponent
+        : 1 - (1 - position) ** exponent;
+      const curved = rising
+        ? -1 + 2 * curvedPosition
+        : 1 - 2 * curvedPosition;
+      const straight = rising ? -1 + 2 * position : 1 - 2 * position;
+      const value = straight + (curved - straight) * magnitude;
+      const x = (1 + phase * 154).toFixed(2);
+      const y = (24 - value * 19).toFixed(2);
+      return `L${x} ${y}`;
+    };
+    const points = ['M1 43'];
+    if (split === 0) points.push('L1 5');
+    else for (let index = 1; index <= 48; index += 1) {
+      const position = index / 48;
+      points.push(point(split * position, position, true));
+    }
+    if (split === 1) points.push('L155 43');
+    else for (let index = 1; index <= 48; index += 1) {
+      const position = index / 48;
+      points.push(point(split + (1 - split) * position, position, false));
+    }
+    path = points.join(' ');
+  }
+
+  return (
+    <div className="kink-osc-display" role="img" aria-label={`Kink Osc waveform, shape ${safeShape.toFixed(2)}, squareness ${safeSquareness.toFixed(2)}`}>
+      <svg viewBox="0 0 156 48" preserveAspectRatio="none" role="img" aria-hidden="true">
+        <path className="kink-osc-display-grid" d="M0 5H156M0 24H156M0 43H156M39 0V48M78 0V48M117 0V48" />
+        <path className="kink-osc-display-trace" d={path} />
+      </svg>
+    </div>
+  );
+}
 
 interface BufferWaveformDisplayProps {
   bins: SampleWaveformBin[];

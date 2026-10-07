@@ -268,6 +268,7 @@ const OSC_WAVES: Partial<Record<NodeType, number>> = {
   RampOsc: 3,
   SquareOsc: 4,
   SampleHoldOsc: 5,
+  KinkOsc: 12,
 };
 
 const FILTER_TYPES: Partial<Record<NodeType, number>> = {
@@ -1202,10 +1203,12 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       : resolveOptionalZeroInput(node, 'phase', context);
     const phaseReset = wave === 5
       ? -1
-      : resolveOptionalZeroInput(node, 'phaseReset', context);
-    const rangeMin = wave === 5 ? -1 : resolveInput(node, 'rangeMin', -1, context);
-    const rangeMax = wave === 5 ? -1 : resolveInput(node, 'rangeMax', 1, context);
+      : resolveOptionalZeroInput(node, wave === 12 ? 'phase reset' : 'phaseReset', context);
+    const rangeMin = wave === 5 ? -1 : resolveInput(node, wave === 12 ? 'range min' : 'rangeMin', -1, context);
+    const rangeMax = wave === 5 ? -1 : resolveInput(node, wave === 12 ? 'range max' : 'rangeMax', 1, context);
     const pulseWidth = wave === 4 ? resolveInput(node, 'pulse width', 0.5, context) : -1;
+    const kinkShape = wave === 12 ? resolveInput(node, 'shape', 0, context) : -1;
+    const kinkSquareness = wave === 12 ? resolveInput(node, 'squareness', 0, context) : -1;
     const output = nextRegister(context);
     const stateCount = wave === 5 ? 3 : phaseReset >= 0 ? 4 : 1;
     const state = nextState(context, stateCount);
@@ -1221,14 +1224,14 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       out: output,
       a: wave,
       b: frequency,
-      c: signal,
+      c: wave === 12 ? kinkSquareness : signal,
       d: phaseOrTrigger,
       e: phaseReset,
       state,
       value2: rangeMin,
       value3: rangeMax,
       value4: wave === 5 ? 0 : 1,
-      value: pulseWidth,
+      value: wave === 12 ? kinkShape : pulseWidth,
     });
     return output;
   }

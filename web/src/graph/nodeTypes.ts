@@ -74,6 +74,18 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
       { name: 'rangeMax', defaultValue: 1 },
     ],
   },
+  KinkOsc: {
+    ...oscillator('KinkOsc'),
+    inputs: [
+      { name: 'frequency', defaultValue: 220 },
+      { name: 'phase', defaultValue: 0 },
+      { name: 'phase reset', defaultValue: 0 },
+      { name: 'shape', defaultValue: 0, min: -1, max: 1 },
+      { name: 'squareness', defaultValue: 0, min: -1, max: 1 },
+      { name: 'range min', defaultValue: -1 },
+      { name: 'range max', defaultValue: 1 },
+    ],
+  },
   SampleHoldOsc: {
     type: 'SampleHoldOsc',
     inputs: [
@@ -622,6 +634,7 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   SawOsc: 'Saw Osc',
   RampOsc: 'Ramp Osc',
   SquareOsc: 'Square Osc',
+  KinkOsc: 'Kink Osc',
   SampleHoldOsc: 'Sample Hold',
   PerlinNoise: 'Perlin Noise',
   Noise: 'Noise',

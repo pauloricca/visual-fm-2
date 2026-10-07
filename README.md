@@ -41,6 +41,7 @@ Dragging a new link or reconnecting an existing link endpoint onto the temporary
 - `Saw Osc`: generates a saw oscillator signal with frequency, phase, phase-reset, and output-range controls.
 - `Ramp Osc`: generates a ramp oscillator signal with frequency, phase, phase-reset, and output-range controls.
 - `Square Osc`: generates a square oscillator signal with frequency, phase, phase-reset, pulse-width, and output-range controls. `pulse width` sets the fraction of each cycle spent at the high level, from `0` to `1`, and defaults to `0.5`.
+- `Kink Osc`: generates a direct-formula oscillator with `frequency`, `phase`, `phase reset`, `shape`, `squareness`, `range min`, and `range max` inputs and a `signal` output. `shape` ranges from `-1` to `1` and defaults to `0`, giving a triangle; `-1` and `1` produce rising and falling ramps. `squareness` ranges from `-1` to `1` and defaults to `0`, where the slopes are straight; positive and negative values bend and sharpen them in opposite directions. At either squareness extreme the output is an exact 50% square wave, with opposite polarity for each sign; the influence of `shape` narrows as squareness approaches those extremes. A graph at the top of the node previews the waveform from its current `shape` and `squareness` values.
 - `Sample Hold`: samples an incoming signal when triggered and holds that value.
 - `Perlin Noise`: generates smooth noise at a controllable speed.
 - `Noise`: generates raw noise.

@@ -2923,7 +2923,7 @@ fn valid_hot_dsp_op(
             let state_is_valid = state_count == 0 || valid_dsp_state_range(state, state_count);
             let range_is_valid = value4 < 0.5
                 || (valid_dsp_register_value(value2) && valid_dsp_register_value(value3));
-            let oscillator_inputs_are_valid = if a == 9 {
+            let oscillator_inputs_are_valid = if a == 9 || a == 12 {
                 valid_dsp_register(c)
                     && valid_optional_dsp_register(d)
                     && valid_optional_dsp_register(e)
@@ -2936,6 +2936,7 @@ fn valid_hot_dsp_op(
             valid_dsp_register(out)
                 && frequency_is_valid
                 && oscillator_inputs_are_valid
+                && (a != 12 || valid_dsp_register_value(value))
                 && state_is_valid
                 && range_is_valid
         }
@@ -3930,6 +3931,7 @@ fn oscillator(
     voice_slot: usize,
     frame: usize,
     wave: i32,
+    pulse_width: f64,
 ) -> f64 {
     let p = normalize_phase(phase);
     match wave {
@@ -5881,6 +5883,7 @@ fn render_node(
                     voice_slot,
                     frame,
                     wave,
+                    0.5,
                 )
             }
         } else {
@@ -6278,6 +6281,39 @@ fn dsp_oscillator(wave: i32, phase: f64, pulse_width: f64) -> f64 {
         }
         _ => (TWO_PI * p).sin(),
     }
+}
+
+fn dsp_kink_oscillator(phase: f64, shape: f64, squareness: f64) -> f64 {
+    let p = normalize_phase(phase);
+    let amount = squareness.clamp(-1.0, 1.0);
+    let magnitude = amount.abs();
+    if magnitude >= 1.0 {
+        let high = p >= 0.5;
+        return if high == (amount > 0.0) { 1.0 } else { -1.0 };
+    }
+    let q = 0.5 * (1.0 - shape.clamp(-1.0, 1.0) * (1.0 - magnitude));
+    let (ascending, u) = if q <= 0.0 {
+        (false, p)
+    } else if q >= 1.0 {
+        (true, p)
+    } else if p <= q {
+        (true, p / q)
+    } else {
+        (false, (p - q) / (1.0 - q))
+    };
+    let straight = if ascending { -1.0 + 2.0 * u } else { 1.0 - 2.0 * u };
+    let exponent = 1.0 + 11.0 * magnitude / (1.0 - magnitude);
+    let curved_position = if amount >= 0.0 {
+        u.powf(exponent)
+    } else {
+        1.0 - (1.0 - u).powf(exponent)
+    };
+    let curved = if ascending {
+        -1.0 + 2.0 * curved_position
+    } else {
+        1.0 - 2.0 * curved_position
+    };
+    straight + (curved - straight) * magnitude
 }
 
 fn dsp_sample_hold_value(input_register: i32) -> f64 {
@@ -9296,6 +9332,11 @@ fn render_dsp_phase_oscillator_output(
                 }
             }
             4 => dsp_oscillator(op.a, render_phase, op.value),
+            12 => dsp_kink_oscillator(
+                render_phase,
+                dsp_reg_unchecked(op.value as i32),
+                dsp_reg_unchecked(op.c),
+            ),
             _ => dsp_oscillator(op.a, render_phase, 0.5),
         }
     }
