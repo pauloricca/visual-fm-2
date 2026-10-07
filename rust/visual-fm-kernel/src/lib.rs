@@ -6287,11 +6287,11 @@ fn dsp_kink_oscillator(phase: f64, shape: f64, squareness: f64) -> f64 {
     let p = normalize_phase(phase);
     let amount = squareness.clamp(-1.0, 1.0);
     let magnitude = amount.abs();
+    let q = 0.5 * (1.0 - shape.clamp(-1.0, 1.0));
     if magnitude >= 1.0 {
-        let high = p >= 0.5;
+        let high = p >= q;
         return if high == (amount > 0.0) { 1.0 } else { -1.0 };
     }
-    let q = 0.5 * (1.0 - shape.clamp(-1.0, 1.0) * (1.0 - magnitude));
     let (ascending, u) = if q <= 0.0 {
         (false, p)
     } else if q >= 1.0 {

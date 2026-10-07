@@ -2298,13 +2298,19 @@ function KinkOscGraphic({ shape, squareness }: { shape: number; squareness: numb
   const safeShape = clamp(Number.isFinite(shape) ? shape : 0, -1, 1);
   const safeSquareness = clamp(Number.isFinite(squareness) ? squareness : 0, -1, 1);
   const magnitude = Math.abs(safeSquareness);
+  const split = 0.5 * (1 - safeShape);
   let path: string;
   if (magnitude >= 1) {
-    path = safeSquareness > 0
-      ? 'M1 43 L78 43 L78 5 L155 5 L155 43'
-      : 'M1 5 L78 5 L78 43 L155 43 L155 5';
+    const startY = safeSquareness > 0 ? 43 : 5;
+    const endY = safeSquareness > 0 ? 5 : 43;
+    if (split === 0 || split === 1) {
+      const level = split === 0 ? endY : startY;
+      path = `M1 ${level} L155 ${level}`;
+    } else {
+      const splitX = (1 + split * 154).toFixed(2);
+      path = `M1 ${startY} L${splitX} ${startY} L${splitX} ${endY} L155 ${endY} L155 ${startY}`;
+    }
   } else {
-    const split = 0.5 * (1 - safeShape * (1 - magnitude));
     const exponent = 1 + 11 * magnitude / (1 - magnitude);
     const point = (phase: number, position: number, rising: boolean) => {
       const curvedPosition = safeSquareness >= 0
