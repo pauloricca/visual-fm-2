@@ -1912,7 +1912,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       delay: {
         enabled: Boolean(effects.delay?.enabled),
         time: this.clamp(Number(effects.delay?.time) || 0.28, 0.02, 1.5),
-        feedback: this.clamp(Number(effects.delay?.feedback) || 0.35, 0, 0.92),
+        feedback: this.clamp(Number(effects.delay?.feedback) || 0.35, 0, 2),
         mix: this.clamp(Number(effects.delay?.mix) || 0.25, 0, 1),
       },
       reverb: {

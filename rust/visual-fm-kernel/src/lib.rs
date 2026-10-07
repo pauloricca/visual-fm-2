@@ -6912,7 +6912,7 @@ fn render_dsp_delay(op: DspOp, sample_rate: f64) -> f64 {
     unsafe {
         let sample = sanitize_sample(dsp_reg(op.a), 8.0);
         let time = dsp_reg(op.b).clamp(0.0, 1.5);
-        let feedback = dsp_reg(op.c).clamp(0.0, 0.98);
+        let feedback = dsp_reg(op.c).clamp(0.0, 2.0);
         let mix = dsp_reg(op.d).clamp(0.0, 1.0);
         let index = DSP_EFFECT_INDICES[slot];
         if time == 0.0 {

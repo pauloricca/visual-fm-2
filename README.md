@@ -80,7 +80,7 @@ Dragging a new link or reconnecting an existing link endpoint onto the temporary
 - `Multiply`: multiplies a signal by a factor.
 - `pow`: raises the signal to an exponent.
 - `Pan`: splits a signal into equal-power `left` and `right` outputs from a `pan` value, where `-1` is left, `0` is center, and `1` is right.
-- `Delay`: applies delay with time, feedback, and wet/dry mix controls. A time of `0` bypasses the delay; positive times resolve to at least one audio sample.
+- `Delay`: applies delay with time, feedback, and wet/dry mix controls. Feedback ranges from `0` to `2`; values above `1` make each repeat grow until the delay signal reaches its safety limit. A time of `0` bypasses the delay; positive times resolve to at least one audio sample.
 - `Chorus`: applies a modulated delay chorus effect.
 - `Reverb`: applies a reverb effect with size, decay, mix controls, and `left`/`right` outputs.
 - `Compress`: applies dynamics compression with optional sidechain, threshold, ratio, attack, release, knee, and makeup controls.

@@ -484,7 +484,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   },
   Delay: processor('Delay', [
     { name: 'time', defaultValue: 0.28, min: 0, max: 1.5 },
-    { name: 'feedback', defaultValue: 0.35, min: 0, max: 0.92 },
+    { name: 'feedback', defaultValue: 0.35, min: 0, max: 2 },
     { name: 'mix', defaultValue: 0.25, min: 0, max: 1 },
   ]),
   Chorus: processor('Chorus', [
