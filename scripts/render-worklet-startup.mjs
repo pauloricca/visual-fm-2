@@ -365,7 +365,7 @@ async function compileVisiblePatch() {
       : effects
       ? [
         { id: 'sine', type: 'SineOsc', params: { frequency: 110 } },
-        { id: 'ring', type: 'RingMod', params: { amount: 0.85 } },
+        { id: 'ring', type: 'Multiply', params: { factor: 0.85 } },
         { id: 'fold', type: 'Fold', params: { amount: 0.8 } },
         { id: 'delay', type: 'Delay', params: { time: 0.06, feedback: 0.24, mix: 0.35 } },
         { id: 'chorus', type: 'Chorus', params: { rate: 1.1, depth: 0.006, mix: 0.28 } },

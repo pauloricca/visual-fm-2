@@ -5071,6 +5071,10 @@ fn filter_coefficients(
         b0 = alpha;
         b1 = 0.0;
         b2 = -alpha;
+    } else if filter_type == 8 {
+        b0 = a2;
+        b1 = a1;
+        b2 = a0;
     }
 
     (b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0)

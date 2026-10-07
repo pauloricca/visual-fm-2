@@ -89,7 +89,6 @@ Dragging a new link or reconnecting an existing link endpoint onto the temporary
 - `Envelope`: creates an envelope with trigger/gate inputs and delay, attack, decay, sustain, gate-length, and release controls. Its unconnected `signal` input defaults to a constant level of `1`, so the envelope can directly modulate any parameter. It stays closed while both event inputs are idle or unconnected, opens on a trigger or gate, and its `end trigger` output emits a one-sample pulse when the release stage finishes.
 - `Follower`: follows the amplitude contour of a signal with attack/release smoothing.
 - `Remove DC`: removes steady DC offset from a signal with a fixed 10 Hz high-pass response.
-- `Ring Mod`: multiplies a signal by a modulation amount for ring-mod-style tones.
 - `Fold`: folds a signal back on itself for wavefolding.
 - `Meter`: measures a signal level for display and downstream control. It uses the shared adaptive chart grid: resizing or canvas zoom changes the grid and legend detail while preserving thin screen-relative chart strokes and legible labels.
 - `Scope`: shows an oscilloscope-style view of the signal. Its `reset` selector defaults to `zero-crossing`, aligning each displayed trace to the strongest upward zero crossing for a stable waveform even when a complex wave crosses zero several times per cycle; choose `none` for a continuously rolling window. Canvas zoom increases its grid and scale-label detail while preserving thin screen-relative chart strokes, with a small capped label-size increase at high zoom. The small full screen icon at the top-right of the scope opens a live green trace on a black browser fullscreen background, with no grid, labels, or controls. Fullscreen increases the trace from 160 to 512 displayed points, preserving the selected time window and zero-crossing alignment; press `Esc` to return to the editor and restore the compact resolution. Scope capture pauses while the node is outside the visible canvas, then resumes when it returns; its `signal` output is unaffected.
@@ -97,6 +96,7 @@ Dragging a new link or reconnecting an existing link endpoint onto the temporary
 - `Lowpass Filter`: filters out frequencies above the cutoff.
 - `Highpass Filter`: filters out frequencies below the cutoff.
 - `Bandpass Filter`: keeps frequencies around the cutoff and attenuates the rest.
+- `Allpass Filter`: shifts phase around the cutoff while preserving the level of steady frequencies. `resonance` sets the width of the phase transition (Q); it defaults to `0.7`.
 - `Crossover`: splits a signal into frequency bands. Set `points` from 1 to 8, choose the `slope` (12, 24, 36, or 48 dB/octave), and set each crossover frequency. It provides one `band` output below, between, or above the crossover frequencies for each band.
 - `Equaliser`: shapes a signal with independent low, mid, and high gain controls (in dB).
 - `Formant Filter`: applies a vowel/formant-style filter with morph and intensity controls.
@@ -174,7 +174,6 @@ The signature notation below is `inputs -> outputs`. Port names are the names us
 | Envelope | `signal`, `trigger`, `gate`, `delay`, `attack`, `decay`, `sustain`, `gateLength`, `release` | `signal`, `end trigger` |
 | Follower | `signal`, `attack`, `release` | `signal` |
 | Remove DC | `signal` | `signal` |
-| Ring Mod | `signal`, `amount` | `signal` |
 | Fold | `signal`, `amount` | `signal` |
 | Meter | `signal`, `range`, `mode` | `signal` |
 | Scope | `signal`, `range`, `mode`, `length`, `reset` | `signal` |
@@ -182,6 +181,7 @@ The signature notation below is `inputs -> outputs`. Port names are the names us
 | Lowpass Filter | `signal`, `cutoff`, `resonance` | `signal` |
 | Highpass Filter | `signal`, `cutoff`, `resonance` | `signal` |
 | Bandpass Filter | `signal`, `cutoff`, `resonance` | `signal` |
+| Allpass Filter | `signal`, `cutoff`, `resonance` | `signal` |
 | Crossover | `signal`, `points`, `slope`, `frequency 1` … `frequency points` | `band 1` … `band points + 1` |
 | Equaliser | `signal`, `lows`, `mids`, `highs` | `signal` |
 | Formant Filter | `signal`, `morph`, `intensity` | `signal` |

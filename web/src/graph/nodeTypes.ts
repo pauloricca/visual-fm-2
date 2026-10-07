@@ -555,9 +555,6 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     { name: 'release', defaultValue: 0.12, min: 0 },
   ]),
   RemoveDc: processor('RemoveDc', []),
-  RingMod: processor('RingMod', [
-    { name: 'amount', defaultValue: 1 },
-  ]),
   Fold: processor('Fold', [
     { name: 'amount', defaultValue: 1 },
   ]),
@@ -586,6 +583,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   LowpassFilter: filter('LowpassFilter'),
   HighpassFilter: filter('HighpassFilter'),
   BandpassFilter: filter('BandpassFilter'),
+  AllpassFilter: filter('AllpassFilter'),
   Crossover: {
     type: 'Crossover',
     inputs: [
@@ -683,7 +681,6 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   Envelope: 'Envelope',
   Follower: 'Follower',
   RemoveDc: 'Remove DC',
-  RingMod: 'Ring Mod',
   Fold: 'Fold',
   Meter: 'Meter',
   Scope: 'Scope',
@@ -691,6 +688,7 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   LowpassFilter: 'Lowpass Filter',
   HighpassFilter: 'Highpass Filter',
   BandpassFilter: 'Bandpass Filter',
+  AllpassFilter: 'Allpass Filter',
   Crossover: 'Crossover',
   Equalizer: 'Equaliser',
   FormantFilter: 'Formant Filter',

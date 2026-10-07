@@ -275,6 +275,7 @@ const FILTER_TYPES: Partial<Record<NodeType, number>> = {
   LowpassFilter: 1,
   HighpassFilter: 2,
   BandpassFilter: 3,
+  AllpassFilter: 8,
 };
 
 const DISTORTION_TYPES: Partial<Record<NodeType, number>> = {
@@ -1485,15 +1486,6 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
         resolveInput(node, 'signal', 0, context),
         resolveInput(node, 'exponent', 1, context),
       ],
-      context,
-    );
-  }
-
-  if (node.type === 'RingMod') {
-    return emitBinary(
-      DSP_OP.Mul,
-      resolveInput(node, 'signal', 0, context),
-      resolveInput(node, 'amount', 1, context),
       context,
     );
   }
