@@ -1101,7 +1101,29 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
 
   if (node.type === 'Keys') {
     const valueIndex = valueIndexForNodeParam(node, port === 'frequency' ? 'frequency' : 'note', 0, context);
-    return emitValue(valueIndex, context, 'immediate');
+    const output = emitValue(valueIndex, context, 'immediate');
+    if (port !== 'frequency') return output;
+
+    const smoothedOutput = nextRegister(context);
+    const state = nextState(context, 4);
+    context.stateBindings.push({
+      id: `${node.id}:keys-frequency-glide`,
+      state,
+      count: 4,
+      kind: 'effect',
+      nodeId: node.id,
+    });
+    context.ops.push({
+      opcode: DSP_OP.Slew,
+      out: smoothedOutput,
+      a: output,
+      b: resolveInput(node, 'glide', 0, context),
+      state,
+      value: 0,
+      value2: 1,
+      value3: 1,
+    });
+    return smoothedOutput;
   }
 
   if (node.type === 'Expression') {
@@ -1183,6 +1205,7 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       : resolveOptionalZeroInput(node, 'phaseReset', context);
     const rangeMin = wave === 5 ? -1 : resolveInput(node, 'rangeMin', -1, context);
     const rangeMax = wave === 5 ? -1 : resolveInput(node, 'rangeMax', 1, context);
+    const pulseWidth = wave === 4 ? resolveInput(node, 'pulse width', 0.5, context) : -1;
     const output = nextRegister(context);
     const stateCount = wave === 5 ? 3 : phaseReset >= 0 ? 4 : 1;
     const state = nextState(context, stateCount);
@@ -1205,6 +1228,7 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
       value2: rangeMin,
       value3: rangeMax,
       value4: wave === 5 ? 0 : 1,
+      value: pulseWidth,
     });
     return output;
   }

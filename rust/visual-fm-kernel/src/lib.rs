@@ -3937,7 +3937,7 @@ fn oscillator(
         2 => p * 2.0 - 1.0,
         3 => 1.0 - p * 2.0,
         4 => {
-            if p < 0.5 {
+            if p < pulse_width.clamp(0.0, 1.0) {
                 1.0
             } else {
                 -1.0
@@ -6263,14 +6263,14 @@ fn advance_dsp_values(alpha: f64) {
     }
 }
 
-fn dsp_oscillator(wave: i32, phase: f64) -> f64 {
+fn dsp_oscillator(wave: i32, phase: f64, pulse_width: f64) -> f64 {
     let p = normalize_phase(phase);
     match wave {
         1 => 1.0 - 4.0 * ((p - 0.25).round() - (p - 0.25)).abs(),
         2 => p * 2.0 - 1.0,
         3 => 1.0 - p * 2.0,
         4 => {
-            if p < 0.5 {
+            if p < pulse_width.clamp(0.0, 1.0) {
                 1.0
             } else {
                 -1.0
@@ -9295,7 +9295,8 @@ fn render_dsp_phase_oscillator_output(
                     0.0
                 }
             }
-            _ => dsp_oscillator(op.a, render_phase),
+            4 => dsp_oscillator(op.a, render_phase, op.value),
+            _ => dsp_oscillator(op.a, render_phase, 0.5),
         }
     }
 }
@@ -9325,8 +9326,45 @@ fn render_dsp_slew(op: DspOp, sample_rate: f64) -> f64 {
         if initialize_from_target && *dsp_state_ptr(state_index + 1) < 0.5 {
             *dsp_state_ptr(state_index) = sanitize_control_value(target);
             *dsp_state_ptr(state_index + 1) = 1.0;
+            if op.value3 >= 0.5 && state_index + 3 < MAX_DSP_STATE {
+                *dsp_state_ptr(state_index + 2) = sanitize_control_value(target);
+                *dsp_state_ptr(state_index + 3) = 0.0;
+            }
             return sanitize_control_value(target);
         }
+
+        if op.value3 >= 0.5 && state_index + 3 < MAX_DSP_STATE {
+            let mut current = *dsp_state_ptr(state_index);
+            if !current.is_finite() {
+                current = 0.0;
+            }
+            let previous_target = *dsp_state_ptr(state_index + 2);
+            if (target - previous_target).abs() > f64::EPSILON {
+                let seconds = dsp_reg(op.b).max(0.0);
+                if previous_target > 0.0 && target > 0.0 && seconds > 0.0 && sample_rate > 0.0 {
+                    *dsp_state_ptr(state_index + 3) =
+                        (target - current).abs() / (seconds * sample_rate.max(1.0));
+                } else {
+                    current = target;
+                    *dsp_state_ptr(state_index) = sanitize_control_value(current);
+                    *dsp_state_ptr(state_index + 3) = 0.0;
+                }
+                *dsp_state_ptr(state_index + 2) = sanitize_control_value(target);
+            }
+
+            let step = *dsp_state_ptr(state_index + 3);
+            let delta = target - current;
+            current = if delta.abs() <= step {
+                target
+            } else if step > 0.0 {
+                current + step.copysign(delta)
+            } else {
+                target
+            };
+            *dsp_state_ptr(state_index) = sanitize_control_value(current);
+            return sanitize_control_value(current);
+        }
+
         if seconds <= 0.0 || sample_rate <= 0.0 {
             *dsp_state_ptr(state_index) = sanitize_control_value(target);
             return target;
@@ -9416,7 +9454,7 @@ fn render_dsp_op(
             if op.a >= 0 && op.a <= 4 && op.d < 0 && op.e < 0 {
                 let index = op.state as usize;
                 let phase = *dsp_state_ptr(index);
-                let output = map_dsp_oscillator_range(op, dsp_oscillator(op.a, phase));
+                let output = map_dsp_oscillator_range(op, dsp_oscillator(op.a, phase, op.value));
                 set_dsp_reg_unchecked(op.out, output);
                 *dsp_state_ptr(index) = normalize_phase(phase + frequency / sample_rate.max(1.0));
                 return;

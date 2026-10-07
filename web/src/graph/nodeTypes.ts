@@ -63,7 +63,17 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
   TriangleOsc: oscillator('TriangleOsc'),
   SawOsc: oscillator('SawOsc'),
   RampOsc: oscillator('RampOsc'),
-  SquareOsc: oscillator('SquareOsc'),
+  SquareOsc: {
+    ...oscillator('SquareOsc'),
+    inputs: [
+      { name: 'frequency', defaultValue: 220 },
+      { name: 'phase', defaultValue: 0 },
+      { name: 'phaseReset', defaultValue: 0 },
+      { name: 'pulse width', defaultValue: 0.5, min: 0, max: 1 },
+      { name: 'rangeMin', defaultValue: -1 },
+      { name: 'rangeMax', defaultValue: 1 },
+    ],
+  },
   SampleHoldOsc: {
     type: 'SampleHoldOsc',
     inputs: [
@@ -274,6 +284,7 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
       { name: 'size', defaultValue: 12, min: 1, max: 128, integer: true },
       { name: 'startNote', defaultValue: 60, min: 0, max: 127, integer: true },
       { name: 'mode', defaultValue: 0, min: 0, max: 1, integer: true, connectable: false },
+      { name: 'glide', defaultValue: 0, min: 0, max: 10, step: 0.01 },
     ],
     outputs: [
       { name: 'midi note' },
