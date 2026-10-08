@@ -31,7 +31,7 @@ When changing an existing node's type, local input values carry over only to inp
 - `Spread`: repeats the nodes placed inside its resizable area at runtime.
 - `Spawn`: creates a new, independent runtime copy of the nodes inside its resizable area on each trigger.
 - `Ins`: exposes subpatch input ports while editing a subpatch.
-- `Params`: exposes named external parameters in the root patch. Drag a connection from a destination input to its temporary output to add a parameter; rename, reorder, and set its default value like an `Ins` output. Exported packages list each parameter's node ID, port name, default, and compiled value index.
+- `Params`: exposes named external parameters in the root patch. Drag a connection from a destination input to its temporary output to add a parameter; rename and reorder it like an `Ins` output, and set its default, min, and max in three aligned columns (initially 0, 0, and 1). You can disable `Params` while editing to mute its links; package export enables it in the exported patch and compiled program. Exported packages list each parameter's node ID, port name, default, min, max, and compiled value index.
 - `Outs`: exposes subpatch output ports while editing a subpatch.
 
 Click the grey `new input`, `new param`, or `new output` label beneath an `Ins`, `Params`, or `Outs` node's ports and enter a name to add a port. Leaving the name blank adds nothing. Dragging a new link or reconnecting an existing link endpoint onto the temporary port also creates the corresponding input, external parameter, or output.

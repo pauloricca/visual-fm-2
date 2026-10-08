@@ -2184,7 +2184,10 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
             ) : null}
           </div>
           {normalOutputPorts.length > 0 || (hasNewPortPlaceholder && newPortSide === 'output') ? (
-            <div className="shader-ports shader-outputs">
+            <div className={`shader-ports shader-outputs${node.type === 'Params' ? ' shader-params-outputs' : ''}`}>
+              {node.type === 'Params' ? (
+                <div className="shader-params-columns" aria-hidden="true"><span>default</span><span>min</span><span>max</span></div>
+              ) : null}
               {normalOutputPorts.map((output) => (
               <div
                 className={[
@@ -2217,13 +2220,22 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
                   onChange={(nextName) => data.onPortNameChange(node.id, 'output', output.name, nextName)}
                 />
                 {!output.preview && (node.type === 'Ins' || node.type === 'Params') && output.valueEditor !== false ? (
-                  <NumericScrubber
-                    value={node.params[output.name] ?? output.defaultValue ?? 0}
-                    min={output.min}
-                    max={output.max}
-                    integer={output.integer}
-                    onChange={(value) => data.onParamChange(node.id, output.name, value)}
-                  />
+                  <div className={node.type === 'Params' ? 'shader-params-values' : undefined}>
+                    <NumericScrubber
+                      value={node.params[output.name] ?? output.defaultValue ?? 0}
+                      min={node.type === 'Ins' ? output.min : undefined}
+                      max={node.type === 'Ins' ? output.max : undefined}
+                      integer={output.integer}
+                      onChange={(value) => data.onParamChange(node.id, output.name, value)}
+                    />
+                    {node.type === 'Params' ? (['min', 'max'] as const).map((bound) => (
+                      <NumericScrubber
+                        key={bound}
+                        value={output[bound] ?? (bound === 'min' ? 0 : 1)}
+                        onChange={(value) => data.onParamRangeChange?.(node.id, output.name, bound, value)}
+                      />
+                    )) : null}
+                  </div>
                 ) : null}
                 <Handle
                   id={`out:${output.name}`}

@@ -4481,3 +4481,8 @@ select:not([multiple]):hover {
     border-bottom: 0;
   }
 }
+
+.shader-params-outputs { --params-box-width: 68px; --params-box-gap: 6px; }
+.shader-params-columns, .shader-params-values { display: grid; grid-template-columns: repeat(3, var(--params-box-width)); gap: var(--params-box-gap); }
+.shader-params-columns { align-self: flex-end; margin-right: 4px; color: var(--color-foreground); font-size: 11px; text-align: center; }
+.shader-params-values .numeric-scrubber { width: var(--params-box-width); }

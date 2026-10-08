@@ -1686,6 +1686,23 @@ function NodeEditorInner() {
     setEdges((current) => transformEdgeTree(current, (edge) => renameEdgePort(edge, nodeId, side, port, nextPort)));
   }, [commitHistory]);
 
+  const updateParamRange = useCallback((nodeId: string, port: string, bound: 'min' | 'max', value: number) => {
+    if (!Number.isFinite(value)) return;
+    const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
+    if (relatedNode?.data.patchNode.type !== 'Params' || !relatedNode.data.patchNode.outputs?.some((output) => output.name === port)) return;
+    commitHistory(`param-range:${nodeId}:${port}:${bound}`);
+    setNodes((current) => current.map((node) => node.id === nodeId ? {
+      ...node,
+      data: {
+        ...node.data,
+        patchNode: {
+          ...node.data.patchNode,
+          outputs: node.data.patchNode.outputs?.map((output) => output.name === port ? { ...output, [bound]: value } : output),
+        },
+      },
+    } : node));
+  }, [commitHistory]);
+
   const addBoundaryPort = useCallback((nodeId: string, side: 'input' | 'output', requestedName: string) => {
     const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
     if (!relatedNode || !canRenameBoundaryPort(relatedNode.data.patchNode as PatchNode, side)) return;
@@ -1704,7 +1721,7 @@ function NodeEditorInner() {
           ...node.data.patchNode,
           ...(side === 'input'
             ? { inputs: [...(node.data.patchNode.inputs ?? []), { name }] }
-            : { outputs: [...(node.data.patchNode.outputs ?? []), { name }] }),
+            : { outputs: [...(node.data.patchNode.outputs ?? []), node.data.patchNode.type === 'Params' ? { name, defaultValue: 0, min: 0, max: 1 } : { name }] }),
           ...((node.data.patchNode.type === 'Ins' || node.data.patchNode.type === 'Params')
             ? { params: { ...node.data.patchNode.params, [name]: 0 } }
             : {}),
@@ -2398,7 +2415,7 @@ function NodeEditorInner() {
       if (node.id !== pending.nodeId) return node;
 
       const nextPort: PortDefinition = boundaryPortHasDefaultValue(relatedNode.data.patchNode as PatchNode, pending.side)
-        ? { name: pending.port, defaultValue: 0 }
+        ? { name: pending.port, defaultValue: 0, ...(relatedNode.data.patchNode.type === 'Params' ? { min: 0, max: 1 } : {}) }
         : { name: pending.port };
       const ports = pending.side === 'input'
         ? node.data.patchNode.inputs ?? []
@@ -2711,6 +2728,7 @@ function NodeEditorInner() {
         onPortDoubleClick: insertNodeOnPort,
         onPortSelect: selectBoundaryPort,
         onPortNameChange: updateBoundaryPortName,
+        onParamRangeChange: updateParamRange,
         onPortAdd: addBoundaryPort,
         onPortMove: updateBoundaryPortOrder,
         onCompactToggle: updateNodeCompactPorts,
@@ -2801,6 +2819,7 @@ function NodeEditorInner() {
     updateNodeId,
     updateNodeParam,
     updateNodeParams,
+    updateParamRange,
     updateNodeCustomLabel,
     updateSequencerRowLabels,
     updateNodeType,
@@ -4509,7 +4528,11 @@ function NodeEditorInner() {
         ...patch,
         ...(Object.keys(savedBufferAssets).length > 0 ? { buffers: savedBufferAssets } : {}),
       };
-      const blob = await createPatchPackage(exportPatch, compilePatchToDspProgram(stripPatchForDsp(exportPatch)));
+      const compiledPatch: Patch = {
+        ...exportPatch,
+        nodes: exportPatch.nodes.map((node) => node.type === 'Params' ? { ...node, enabled: true } : node),
+      };
+      const blob = await createPatchPackage(compiledPatch, compilePatchToDspProgram(stripPatchForDsp(compiledPatch)));
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;

@@ -69,8 +69,8 @@ export async function createPatchPackage(patch: Patch, sourceProgram: DspProgram
         nodeId: node.id,
         valueIndex: binding.valueIndex,
         defaultValue: node.params[port.name] ?? port.defaultValue ?? 0,
-        ...(port.min === undefined ? {} : { min: port.min }),
-        ...(port.max === undefined ? {} : { max: port.max }),
+        min: port.min ?? 0,
+        max: port.max ?? 1,
       };
     }));
   const manifest = {

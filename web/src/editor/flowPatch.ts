@@ -97,6 +97,7 @@ export interface ShaderNodeData extends Record<string, unknown> {
   onIdChange: (nodeId: string, nextId: string) => void;
   onPortDoubleClick: (nodeId: string, side: 'input' | 'output', port: string) => void;
   onPortNameChange: (nodeId: string, side: 'input' | 'output', port: string, nextPort: string) => void;
+  onParamRangeChange?: (nodeId: string, port: string, bound: 'min' | 'max', value: number) => void;
   onPortAdd: (nodeId: string, side: 'input' | 'output', name: string) => void;
   onPortMove: (nodeId: string, side: 'input' | 'output', port: string, direction: -1 | 1) => void;
   onCompactToggle: (nodeId: string, compact: boolean) => void;
@@ -238,6 +239,7 @@ type NodeCallbacks = Pick<
   | 'onIdChange'
   | 'onPortDoubleClick'
   | 'onPortNameChange'
+  | 'onParamRangeChange'
   | 'onPortAdd'
   | 'onPortMove'
   | 'onCompactToggle'
