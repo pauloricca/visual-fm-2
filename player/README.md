@@ -9,7 +9,7 @@ cd player
 docker compose up --build
 ```
 
-Open `http://localhost:5180`, choose a new XP `.zip` export, and use Start audio, middle C, microphone input, and the exported Params sliders. Each slider uses the parameter range from the package manifest, with its current value and range shown beside it; older packages without ranges use 0 to 1. The host port can be changed with `TEIA_PLAYER_PORT`. AudioWorklet and microphone access require a secure context; browsers treat localhost as secure.
+Open `http://localhost:5181`, choose a new XP `.zip` export, and use Start audio, middle C, microphone input, and the exported Params sliders. Each slider uses the parameter range from the package manifest, with its current value and range shown beside it; older packages without ranges use 0 to 1. The host port can be changed with `TEIA_PLAYER_PORT`. The container still listens on 5180 internally. AudioWorklet and microphone access require a secure context; browsers treat localhost as secure.
 
 ## Runtime API
 
