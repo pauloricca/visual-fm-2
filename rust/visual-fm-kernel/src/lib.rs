@@ -161,6 +161,8 @@ const DSP_OP_ROLL_NOTE_EVENT: i32 = 52;
 const DSP_OP_MIDI_NOTE_SEND: i32 = 53;
 const DSP_OP_MIDI_CC_SEND: i32 = 54;
 const DSP_OP_BEND: i32 = 55;
+// Internal upload-time specialization; exported programs still use the original opcodes.
+const DSP_OP_CACHED_CONTROL: i32 = 56;
 const MIN_ENVELOPE_ATTACK_SECONDS: f64 = 0.001;
 const MAX_DSP_TEMPO_SOURCES: usize = 129;
 const TEMPO_OUTPUT_COUNT: i32 = 10;
@@ -246,6 +248,23 @@ struct DspOp {
     value3: f64,
     value4: f64,
 }
+
+// Prepared while operations are uploaded. Only ordinary, pure control chains
+// use this cache; repeat templates have instance-local registers and state.
+#[derive(Copy, Clone)]
+struct DspControlCache {
+    opcode: i32,
+    inputs: [i32; 5],
+    previous: [f64; 5],
+    output: f64,
+    count: u8,
+    initialized: bool,
+}
+
+const EMPTY_DSP_CONTROL_CACHE: DspControlCache = DspControlCache {
+    opcode: -1, inputs: [-1; 5], previous: [0.0; 5], output: 0.0,
+    count: 0, initialized: false,
+};
 
 type BiquadCoefficients = (f64, f64, f64, f64, f64);
 
@@ -906,6 +925,10 @@ static mut IMAGE_WIDTHS: [usize; MAX_IMAGE_SLOTS] = [0; MAX_IMAGE_SLOTS];
 static mut IMAGE_HEIGHTS: [usize; MAX_IMAGE_SLOTS] = [0; MAX_IMAGE_SLOTS];
 static mut DSP_OPS: [DspOp; MAX_DSP_OPS] = [EMPTY_DSP_OP; MAX_DSP_OPS];
 static mut DSP_OP_COUNT: usize = 0;
+static mut DSP_CONTROL_CACHES: [DspControlCache; MAX_DSP_OPS] =
+    [EMPTY_DSP_CONTROL_CACHE; MAX_DSP_OPS];
+static mut DSP_CONTROL_REGISTERS: [bool; MAX_DSP_REGS] = [false; MAX_DSP_REGS];
+static mut DSP_CONTROL_REPEAT_DEPTH: usize = 0;
 static mut DSP_VALUES: [f64; MAX_DSP_VALUES] = [0.0; MAX_DSP_VALUES];
 static mut DSP_VALUE_TARGETS: [f64; MAX_DSP_VALUES] = [0.0; MAX_DSP_VALUES];
 static mut DSP_VALUE_INITIALIZED: [bool; MAX_DSP_VALUES] = [false; MAX_DSP_VALUES];
@@ -1981,6 +2004,10 @@ pub extern "C" fn clearDspProgram() {
     parallel::clear_plan();
     unsafe {
         DSP_OP_COUNT = 0;
+        DSP_CONTROL_REPEAT_DEPTH = 0;
+        for index in 0..MAX_DSP_REGS {
+            DSP_CONTROL_REGISTERS[index] = false;
+        }
         for slot in 0..MAX_DSP_SPREADS {
             DSP_SPREAD_RUNTIMES[slot] = None;
             DSP_SPAWN_RUNTIMES[slot] = None;
@@ -2044,6 +2071,9 @@ pub extern "C" fn resetDspVoiceState(slot: u32) {
 pub extern "C" fn resetDspRuntimeState() {
     let preserved_buffer_slots = buffer_slots_preserved_on_reset();
     unsafe {
+        for index in 0..DSP_OP_COUNT {
+            DSP_CONTROL_CACHES[index].initialized = false;
+        }
         for index in 0..MAX_DSP_REGS {
             DSP_REGS[index] = 0.0;
         }
@@ -2980,6 +3010,45 @@ fn valid_hot_dsp_op(
     }
 }
 
+fn control_inputs(op: DspOp) -> ([i32; 5], usize) {
+    match op.opcode {
+        DSP_OP_ADD | DSP_OP_MUL | DSP_OP_SUB | DSP_OP_DIV => ([op.a, op.b, -1, -1, -1], 2),
+        DSP_OP_NEG | DSP_OP_ABS | DSP_OP_BEND => ([op.a, -1, -1, -1, -1], 1),
+        DSP_OP_FUNCTION => ([op.b, op.c, op.d, -1, -1], 3),
+        DSP_OP_MAP => ([op.a, op.b, op.c, op.d, op.e], 5),
+        DSP_OP_QUANTISE => ([op.a, op.b, op.c, -1, -1], 3),
+        _ => ([-1; 5], 0),
+    }
+}
+
+unsafe fn prepare_control_cache(index: usize, op: DspOp) {
+    let (inputs, count) = control_inputs(op);
+    let eligible = DSP_CONTROL_REPEAT_DEPTH == 0
+        && count > 0
+        && valid_dsp_register(op.out)
+        && inputs[..count].iter().all(|&input| {
+            valid_dsp_register(input) && DSP_CONTROL_REGISTERS[input as usize]
+        });
+    // Dependency provenance flows through cheap arithmetic, but checking a
+    // cache for add/multiply/clamp costs more than evaluating it. The cache is
+    // used only where it avoids the expensive maths in a stable chain.
+    let worth_caching = matches!(op.opcode, DSP_OP_DIV | DSP_OP_BEND | DSP_OP_MAP | DSP_OP_QUANTISE)
+        || (op.opcode == DSP_OP_FUNCTION && matches!(op.a, 2 | 3 | 4 | 5 | 9 | 10 | 11 | 12));
+    DSP_CONTROL_CACHES[index] = DspControlCache {
+        opcode: op.opcode, inputs, count: if eligible && worth_caching { count as u8 } else { 0 },
+        ..EMPTY_DSP_CONTROL_CACHE
+    };
+    if valid_dsp_register(op.out) {
+        DSP_CONTROL_REGISTERS[op.out as usize] = DSP_CONTROL_REPEAT_DEPTH == 0
+            && (op.opcode == DSP_OP_VALUE || eligible);
+    }
+    if op.opcode == DSP_OP_SPREAD_BEGIN || op.opcode == DSP_OP_SPAWN_BEGIN {
+        DSP_CONTROL_REPEAT_DEPTH += 1;
+    } else if op.opcode == DSP_OP_SPREAD_END || op.opcode == DSP_OP_SPAWN_END {
+        DSP_CONTROL_REPEAT_DEPTH = DSP_CONTROL_REPEAT_DEPTH.saturating_sub(1);
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn addDspOp(
     opcode: i32,
@@ -3027,6 +3096,11 @@ pub extern "C" fn addDspOp(
             value3,
             value4,
         };
+        prepare_control_cache(index, DSP_OPS[index]);
+        if DSP_CONTROL_CACHES[index].count > 0 {
+            DSP_OPS[index].opcode = DSP_OP_CACHED_CONTROL;
+            DSP_OPS[index].state = index as i32;
+        }
         DSP_OP_COUNT += 1;
         index as i32
     }
@@ -9709,6 +9783,24 @@ fn render_dsp_op<const REPEAT: bool>(
     };
     let _ = op.value;
     match op.opcode {
+        DSP_OP_CACHED_CONTROL => unsafe {
+            let cache_index = op.state as usize;
+            let mut cache = DSP_CONTROL_CACHES[cache_index];
+            let mut unchanged = cache.initialized
+                && DSP_REGS[op.out as usize].to_bits() == cache.output.to_bits();
+            for input in 0..cache.count as usize {
+                let current = DSP_REGS[cache.inputs[input] as usize];
+                unchanged &= current.to_bits() == cache.previous[input].to_bits();
+                cache.previous[input] = current;
+            }
+            if !unchanged {
+                let original = DspOp { opcode: cache.opcode, state: -1, ..op };
+                render_dsp_op::<false>(original, frame, sample_rate, left_sample, right_sample, None, None);
+                cache.output = DSP_REGS[op.out as usize];
+                cache.initialized = true;
+            }
+            DSP_CONTROL_CACHES[cache_index] = cache;
+        },
         DSP_OP_VALUE => unsafe {
             let value = if op.value >= DSP_VALUE_MODE_IMMEDIATE {
                 dsp_value_target_unchecked(op.a)
@@ -10423,11 +10515,16 @@ unsafe fn render_dsp_ops(
     sample_rate: f64,
     left_sample: &mut f64,
     right_sample: &mut f64,
+    use_control_cache: bool,
 ) {
     let mut op_index = 0;
     while op_index < DSP_OP_COUNT {
-        let op = DSP_OPS[op_index];
+        let mut op = DSP_OPS[op_index];
         if op.opcode != DSP_OP_SPREAD_BEGIN && op.opcode != DSP_OP_SPAWN_BEGIN {
+            if !use_control_cache && op.opcode == DSP_OP_CACHED_CONTROL {
+                op.opcode = DSP_CONTROL_CACHES[op_index].opcode;
+                op.state = -1;
+            }
             render_dsp_op::<false>(op, frame, sample_rate, left_sample, right_sample, None, None);
             op_index += 1;
             continue;
@@ -10675,7 +10772,7 @@ pub extern "C" fn renderDspProgram(frames: u32, sample_rate: f64) {
             let mut right_sample = 0.0;
             advance_dsp_midi_note_event();
             advance_dsp_values(value_smoothing_alpha);
-            render_dsp_ops(frame, sample_rate, &mut left_sample, &mut right_sample);
+            render_dsp_ops(frame, sample_rate, &mut left_sample, &mut right_sample, true);
             #[cfg(feature = "parallel")]
             if parallel::failed() {
                 return;
@@ -10760,7 +10857,7 @@ pub extern "C" fn renderDspProgramVoice(
             };
 
             advance_dsp_values(value_smoothing_alpha);
-            render_dsp_ops(frame, sample_rate, &mut left_sample, &mut right_sample);
+            render_dsp_ops(frame, sample_rate, &mut left_sample, &mut right_sample, false);
             capture_dsp_meters();
             capture_dsp_scopes();
             LEFT[frame] += (left_sample * amp) as f32;

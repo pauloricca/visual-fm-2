@@ -38,7 +38,7 @@ Use ringing-drone plus small cases isolating the changed feature. Include stable
 
 ## 1. Process only parameters that are smoothing
 
-**Status (8 October 2026):** Implemented in the Rust kernel with a bounded dense list and constant-time membership/removal. The single and parallel WASM variants and npm runtime artifacts have been rebuilt. Offline single-kernel benchmarks, exact-output transition checks, and serial/parallel saved-patch comparisons passed; in-app AudioWorklet timing remains for user testing. Tasks 2–6 remain separate work.
+**Status (8 October 2026):** Implemented in the Rust kernel with a bounded dense list and constant-time membership/removal. The single and parallel WASM variants and npm runtime artifacts have been rebuilt. Offline single-kernel benchmarks, exact-output transition checks, and serial/parallel saved-patch comparisons passed; in-app AudioWorklet timing remains for user testing. Tasks 3–6 remain separate work.
 
 **Objective:** remove the per-sample scan of settled parameters without changing their values or timing.
 
@@ -58,6 +58,8 @@ Use ringing-drone plus small cases isolating the changed feature. Include stable
 **Dependency:** none. Expose an internal change indicator only if useful for task 2; do not redesign the public parameter API for this task.
 
 ## 2. Cache stable control calculations
+
+**Status (8 October 2026):** Implemented for expensive pure control operations in the ordinary scalar path. Upload-time provenance follows DSP values and pure arithmetic, and runtime input comparisons reuse stable results. Spread/Spawn templates and per-voice rendering retain their original execution path. Single and parallel WASM variants and the npm runtime artifact were rebuilt. Offline A/B slider and saved-patch benchmarks plus exact-output transition and audio-rate checks passed; an in-app AudioWorklet timing comparison remains for user testing.
 
 **Objective:** stop recomputing pure control expressions whose inputs have not changed, while retaining sample-accurate smoothing and modulation.
 
