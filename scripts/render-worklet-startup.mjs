@@ -288,7 +288,7 @@ async function waitForReady() {
 }
 
 async function compileVisiblePatch() {
-  const moduleDir = fs.mkdtempSync('/tmp/visual-fm-compiler-');
+  const moduleDir = fs.mkdtempSync('/tmp/teia-compiler-');
   writeTranspiledModule('web/src/graph/expression.ts', `${moduleDir}/expression.mjs`);
   writeTranspiledModule('web/src/graph/customWave.ts', `${moduleDir}/customWave.mjs`);
   writeTranspiledModule('web/src/graph/subpatch.ts', `${moduleDir}/subpatch.mjs`, (source) => (

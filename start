@@ -2,15 +2,15 @@
 set -eu
 
 SCHEME="http"
-PORT="${TEIA_HOST_PORT:-${VISUAL_FM_HOST_PORT:-5174}}"
+PORT="${TEIA_HOST_PORT:-5174}"
 CERT_DIR=".cert"
 CERT_KEY="$CERT_DIR/teia.key"
 CERT_CERT="$CERT_DIR/teia.crt"
 CERT_CONFIG="$CERT_DIR/teia.openssl.cnf"
 CERT_HOSTS_FILE="$CERT_DIR/teia.hosts"
 HTTPS_ENABLED=0
-PATCH_STORAGE="${VITE_TEIA_PATCH_STORAGE:-${VITE_VISUAL_VISUAL_PATCH_STORAGE:-local}}"
-THEME="${VITE_TEIA_THEME:-${VITE_VISUAL_FM_THEME:-}}"
+PATCH_STORAGE="${VITE_TEIA_PATCH_STORAGE:-local}"
+THEME="${VITE_TEIA_THEME:-}"
 REBUILD_IMAGE=0
 
 usage() {
@@ -175,7 +175,7 @@ if [ "$READY" -eq 1 ]; then
     printf 'Open %s in your browser.\n' "$URL"
   fi
 
-  printf '\nVisual Visual host URLs:\n'
+  printf '\nTeia host URLs:\n'
   printf '  Editor: %s\n' "$URL"
   printf '  Viewer: %s\n' "$VIEWER_URL"
   if [ -n "$LAN_IP" ]; then
@@ -199,7 +199,7 @@ if [ "$READY" -eq 1 ]; then
     printf '  Camera/mic note: browsers allow capture on localhost, but usually block it on plain HTTP LAN IPs. Install openssl or use HTTPS for projector capture over LAN.\n'
   fi
 else
-  printf 'Visual Visual did not become ready; browser was not opened.\n' >&2
+  printf 'Teia Editor did not become ready; browser was not opened.\n' >&2
 fi
 
 wait "$COMPOSE_PID"

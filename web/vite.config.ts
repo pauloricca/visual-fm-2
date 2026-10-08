@@ -80,9 +80,7 @@ function audioAssetVersion(fileName: string): string {
 }
 
 function patchStorageMode() {
-  return process.env.VITE_TEIA_PATCH_STORAGE
-    ?? process.env.VITE_VISUAL_VISUAL_PATCH_STORAGE
-    ?? process.env.VITE_VISUAL_FM_PATCH_STORAGE;
+  return process.env.VITE_TEIA_PATCH_STORAGE;
 }
 
 function localDiagnosticsPlugin(): Plugin {
@@ -135,7 +133,7 @@ function localDiagnosticsPlugin(): Plugin {
   };
 
   return {
-    name: 'visual-visual-local-diagnostics',
+    name: 'teia-local-diagnostics',
     configureServer(server) {
       server.middlewares.use(middleware);
     },
@@ -230,7 +228,7 @@ function localSampleStoragePlugin(): Plugin {
   };
 
   return {
-    name: 'visual-visual-local-sample-storage',
+    name: 'teia-local-sample-storage',
     configureServer(server) {
       server.middlewares.use(middleware);
     },
@@ -321,7 +319,7 @@ function localImageStoragePlugin(): Plugin {
   };
 
   return {
-    name: 'visual-visual-local-image-storage',
+    name: 'teia-local-image-storage',
     configureServer(server) { server.middlewares.use(middleware); },
     configurePreviewServer(server) { server.middlewares.use(middleware); },
   };
@@ -360,7 +358,7 @@ function localRecordingStoragePlugin(): Plugin {
   };
 
   return {
-    name: 'visual-visual-local-recording-storage',
+    name: 'teia-local-recording-storage',
     configureServer(server) {
       server.middlewares.use(middleware);
     },
@@ -371,8 +369,8 @@ function localRecordingStoragePlugin(): Plugin {
 }
 
 function viteHttpsConfig() {
-  const keyPath = process.env.TEIA_HTTPS_KEY ?? process.env.VISUAL_VISUAL_HTTPS_KEY;
-  const certPath = process.env.TEIA_HTTPS_CERT ?? process.env.VISUAL_VISUAL_HTTPS_CERT;
+  const keyPath = process.env.TEIA_HTTPS_KEY;
+  const certPath = process.env.TEIA_HTTPS_CERT;
   if (!keyPath || !certPath || !existsSync(keyPath) || !existsSync(certPath)) return undefined;
 
   return {
@@ -459,7 +457,7 @@ function renderSyncPlugin(): Plugin {
   };
 
   return {
-    name: 'visual-visual-render-sync',
+    name: 'teia-render-sync',
     configureServer(server) {
       server.middlewares.use(middleware);
     },
@@ -538,7 +536,7 @@ function localPatchStoragePlugin(): Plugin {
   };
 
   return {
-    name: 'visual-visual-local-patch-storage',
+    name: 'teia-local-patch-storage',
     configureServer(server) {
       server.middlewares.use(middleware);
     },
@@ -631,7 +629,7 @@ function localBufferStoragePlugin(): Plugin {
   };
 
   return {
-    name: 'visual-visual-local-buffer-storage',
+    name: 'teia-local-buffer-storage',
     configureServer(server) {
       server.middlewares.use(middleware);
     },
@@ -693,7 +691,6 @@ const SAMPLE_AUDIO_EXTENSIONS = new Set([
 ]);
 const IMAGE_EXTENSIONS = new Set(['.avif', '.gif', '.jpeg', '.jpg', '.png', '.webp']);
 const VIDEO_PROXY_SUFFIX = '.teia-proxy.mp4';
-const LEGACY_VIDEO_PROXY_SUFFIX = '.visual-fm-proxy.mp4';
 
 async function saveUploadedRecording(recordingsDir: string, request: Connect.IncomingMessage) {
   const contentType = Array.isArray(request.headers['content-type'])
@@ -709,13 +706,9 @@ async function saveUploadedRecording(recordingsDir: string, request: Connect.Inc
   }
 
   await mkdir(recordingsDir, { recursive: true });
-  const encodedPatchNameHeader = request.headers['x-teia-patch-name-encoded'] ?? request.headers['x-visual-fm-patch-name-encoded'];
+  const encodedPatchNameHeader = request.headers['x-teia-patch-name-encoded'];
   const encodedPatchName = Array.isArray(encodedPatchNameHeader) ? encodedPatchNameHeader[0] : encodedPatchNameHeader;
-  const legacyPatchNameHeader = request.headers['x-visual-fm-patch-name'];
-  const legacyPatchName = Array.isArray(legacyPatchNameHeader) ? legacyPatchNameHeader[0] : legacyPatchNameHeader;
-  const patchName = encodedPatchName === undefined
-    ? legacyPatchName
-    : decodeRecordingPatchName(encodedPatchName);
+  const patchName = encodedPatchName === undefined ? undefined : decodeRecordingPatchName(encodedPatchName);
   const name = await uniqueSampleFilename(recordingsDir, recordingFilename(patchName));
   await writeFile(join(recordingsDir, name), data);
 
@@ -723,7 +716,7 @@ async function saveUploadedRecording(recordingsDir: string, request: Connect.Inc
 }
 
 async function saveRecordingMetadata(recordingsDir: string, request: Connect.IncomingMessage) {
-  const recordingHeader = request.headers['x-teia-recording-name'] ?? request.headers['x-visual-fm-recording-name'];
+  const recordingHeader = request.headers['x-teia-recording-name'];
   const recordingName = Array.isArray(recordingHeader) ? recordingHeader[0] : recordingHeader;
   const safeRecordingName = basename(recordingName ?? '');
   if (!safeRecordingName.toLowerCase().endsWith('.wav')) {
@@ -1005,16 +998,14 @@ async function listLocalSamples(samplesDir: string) {
   const samples = await Promise.all(entries
     .filter((entry) => entry.isFile()
       && !entry.name.endsWith(VIDEO_PROXY_SUFFIX)
-      && !entry.name.endsWith(LEGACY_VIDEO_PROXY_SUFFIX)
       && isSafePatchStorageSegment(entry.name)
       && SAMPLE_AUDIO_EXTENSIONS.has(extname(entry.name).toLowerCase()))
     .map(async (entry) => {
       const fileStats = await stat(join(samplesDir, entry.name));
       const stem = basename(entry.name, extname(entry.name));
       const teiaProxyName = `${stem}${VIDEO_PROXY_SUFFIX}`;
-      const legacyProxyName = `${stem}${LEGACY_VIDEO_PROXY_SUFFIX}`;
       const proxyName = extname(entry.name).toLowerCase() === '.mp4'
-        ? entryNames.has(teiaProxyName) ? teiaProxyName : legacyProxyName
+        ? teiaProxyName
         : null;
       return {
         name: entry.name,

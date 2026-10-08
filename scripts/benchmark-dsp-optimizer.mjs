@@ -9,7 +9,7 @@ import { buildSync } from 'esbuild';
 
 const prefix = process.argv[2];
 const root = path.resolve(new URL('..', import.meta.url).pathname);
-const compilerFile = '/tmp/visual-fm-task3-benchmark-compiler.cjs';
+const compilerFile = '/tmp/teia-task3-benchmark-compiler.cjs';
 buildSync({ entryPoints: [path.join(root, 'web/src/audio/dspProgram.ts')], outfile: compilerFile,
   bundle: true, platform: 'node', format: 'cjs', logLevel: 'silent' });
 const { compilePatchToDspProgram } = createRequire(import.meta.url)(compilerFile);

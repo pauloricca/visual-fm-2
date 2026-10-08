@@ -18,7 +18,6 @@
     "preview": "npm --workspace web run preview",
     "build:wasm": "sh scripts/build-rust-wasm.sh",
     "build:runtime": "tsc -p runtime/tsconfig.json && node scripts/build-runtime.mjs",
-    "build:player-runtime": "npm run build:runtime",
     "build": "npm --workspace web run build",
     "typecheck": "npm --workspace web run typecheck",
     "remix:video": "node scripts/remix-video-from-csv.mjs",

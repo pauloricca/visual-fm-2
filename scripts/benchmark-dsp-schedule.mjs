@@ -8,7 +8,7 @@ import { performance } from 'node:perf_hooks';
 import ts from '../node_modules/typescript/lib/typescript.js';
 
 const root = path.resolve(new URL('..', import.meta.url).pathname);
-const output = fs.mkdtempSync(path.join(os.tmpdir(), 'visual-fm-schedule-'));
+const output = fs.mkdtempSync(path.join(os.tmpdir(), 'teia-schedule-'));
 try {
   const program = ts.createProgram({
     rootNames: [path.join(root, 'web/src/audio/dspProgram.ts')],

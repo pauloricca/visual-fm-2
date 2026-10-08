@@ -3,7 +3,7 @@ set -eu
 
 cd "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
-PORT="${TEIA_PLAYER_PORT:-${VISUAL_FM_PLAYER_PORT:-5181}}"
+PORT="${TEIA_PLAYER_PORT:-5181}"
 
 usage() {
   printf 'Usage: ./start [--port=PORT]\n'

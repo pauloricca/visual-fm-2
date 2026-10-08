@@ -150,7 +150,7 @@ function groupSpreadPatch() {
 }
 
 function compilePatchCompiler() {
-  const temporaryOutput = fs.mkdtempSync(path.join(os.tmpdir(), 'visual-fm-saved-patch-benchmark-'));
+  const temporaryOutput = fs.mkdtempSync(path.join(os.tmpdir(), 'teia-saved-patch-benchmark-'));
   try {
     const program = ts.createProgram({
       rootNames: [path.join(sourceRoot, 'audio/dspProgram.ts')],

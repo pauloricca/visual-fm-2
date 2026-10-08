@@ -19,4 +19,4 @@ Serve the package's `dist/audio-worklet-wasm.js`, `dist/teia-kernel.wasm`, and `
 
 Build this package from the editor repository with `npm run build:runtime`. Its worklet skips editor visualization, metering, CPU reporting, and legacy effect allocations while retaining DSP FFT outputs. The package is installable from a local tarball; it has not been published to a registry.
 
-New editor exports use the `teia-patch` manifest format and name `@teia/runtime`. The loader also accepts version 2 ZIPs exported under `visual-fm-patch` with `@visual-fm/player-runtime`.
+Editor exports use the `teia-patch` manifest format and name `@teia/runtime`.

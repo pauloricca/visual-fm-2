@@ -3,4 +3,4 @@ services:
     image: teia-player:local
     build: .
     ports:
-      - "${TEIA_PLAYER_PORT:-${VISUAL_FM_PLAYER_PORT:-5181}}:5180"
+      - "${TEIA_PLAYER_PORT:-5181}:5180"

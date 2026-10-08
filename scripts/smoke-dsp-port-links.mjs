@@ -6,7 +6,7 @@ import ts from '../node_modules/typescript/lib/typescript.js';
 
 const repoRoot = path.resolve(new URL('..', import.meta.url).pathname);
 const sourceRoot = path.join(repoRoot, 'web/src');
-const outputRoot = path.join(os.tmpdir(), 'visual-fm-dsp-port-smoke');
+const outputRoot = path.join(os.tmpdir(), 'teia-dsp-port-smoke');
 
 fs.rmSync(outputRoot, { recursive: true, force: true });
 fs.mkdirSync(outputRoot, { recursive: true });

@@ -88,7 +88,7 @@ async function main() {
   const segments = options.overlapMode
     ? null
     : makeSegments(events, options.finalDurationMs, options.preSeconds, options.postSeconds);
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), 'visual-fm-video-remix-'));
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), 'teia-video-remix-'));
   const filterPath = join(temporaryDirectory, 'filter-complex.txt');
 
   try {

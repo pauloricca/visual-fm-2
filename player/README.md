@@ -9,7 +9,7 @@ cd player
 ./start
 ```
 
-The script builds and starts the Player in the foreground, opens `http://localhost:5181` when it is ready, and runs `docker compose down` when you end the script with Ctrl-C. Set `TEIA_PLAYER_PORT` or pass `--port=PORT` to use another host port. The container still listens on 5180 internally. Choose a new XP `.zip` export, then use Start audio, middle C, microphone input, and the exported Params sliders. Each slider uses the parameter range from the package manifest, with its current value and range shown beside it; older packages without ranges use 0 to 1. AudioWorklet and microphone access require a secure context; browsers treat localhost as secure.
+The script builds and starts the Player in the foreground, opens `http://localhost:5181` when it is ready, and runs `docker compose down` when you end the script with Ctrl-C. Set `TEIA_PLAYER_PORT` or pass `--port=PORT` to use another host port. The container still listens on 5180 internally. Choose a new XP `.zip` export, then use Start audio, middle C, microphone input, and the exported Params sliders. Each slider uses the parameter range from the package manifest, with its current value and range shown beside it. AudioWorklet and microphone access require a secure context; browsers treat localhost as secure.
 
 ## Runtime API
 
@@ -29,4 +29,4 @@ player.dispose();
 
 The loader verifies patch asset hashes, decodes samples and images, restores preserved buffers, and runs the package's WASM engine. Parameter changes are smoothed by the kernel. Browser sample decoding and audio output use Web Audio APIs. Events are currently immediate; future sample-accurate scheduling is not part of this API.
 
-To update the dependency from the repository root, run `npm run build:runtime`, then pack `runtime/` into `player/vendor/` and update the Player lockfile and local installation. A running Docker player also needs a rebuilt image and restart to receive that new package; updating host `node_modules` alone does not change the container. The included `ringing-drone.zip` is an old-format compatibility fixture. The ZIP is a playback package, not an editor import format.
+To update the dependency from the repository root, run `npm run build:runtime`, then pack `runtime/` into `player/vendor/` and update the Player lockfile and local installation. A running Docker player also needs a rebuilt image and restart to receive that new package; updating host `node_modules` alone does not change the container. The ZIP is a playback package, not an editor import format.

@@ -58,8 +58,8 @@ export class PatchPlayer {
     const bytes = packageFile instanceof Blob ? await packageFile.arrayBuffer() : packageFile;
     const files = readPackageZip(bytes);
     const manifest = readJson<Manifest>(files, 'manifest.json');
-    if (!['teia-patch', 'visual-fm-patch'].includes(manifest.format) || manifest.version !== 2 || manifest.engineApiVersion !== 1
-      || !['@teia/runtime', '@visual-fm/player-runtime'].includes(manifest.runtimePackage)) {
+    if (manifest.format !== 'teia-patch' || manifest.version !== 2 || manifest.engineApiVersion !== 1
+      || manifest.runtimePackage !== '@teia/runtime') {
       throw new Error('Unsupported patch package or engine API version.');
     }
     const program = readJson<Program>(files, manifest.paths.program);

@@ -1,7 +1,6 @@
 import type { BufferAsset } from '../graph/types';
 
-// Keep the existing IndexedDB name so saved Buffer snapshots remain available.
-const DATABASE_NAME = 'visual-fm-2.buffers.v1';
+const DATABASE_NAME = 'teia.buffers.v1';
 const STORE_NAME = 'contents';
 const DATABASE_VERSION = 1;
 let databasePromise: Promise<IDBDatabase> | null = null;

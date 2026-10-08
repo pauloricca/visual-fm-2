@@ -4,7 +4,7 @@ Teia Editor is an audio node editor built from two earlier projects:
 
 The Teia packages are `@teia/editor` (`web/`), `@teia/kernel` (`kernel/`, built from `rust/teia-kernel/`), and `@teia/runtime` (`runtime/`). `player/` is the separate Teia Player test app, kept in this repository; run `player/start` to build, open, and keep it attached until Ctrl-C. The root `teia` package holds the build scripts and workspaces. Build the kernel with `npm run build:wasm` and the browser runtime with `npm run build:runtime`; the Player vendors a packed Runtime tarball for offline Docker builds.
 
-New XP ZIPs use the `teia-patch` format and `@teia/runtime` identifier. Teia Runtime also reads existing version 2 `visual-fm-patch` ZIPs. The Editor reads old `visual-fm-2` browser editor and viewport keys, accepts copied graphs from the old app, and keeps the existing Buffer IndexedDB name so saved snapshots remain available. Existing `.visual-fm-proxy.mp4` sample assets remain usable alongside new `.teia-proxy.mp4` assets.
+XP ZIPs use the `teia-patch` format and `@teia/runtime` identifier. Browser editor state, viewport, and Buffer snapshots use Teia storage names, and new video proxies use the `.teia-proxy.mp4` suffix.
 
 - `visual-visual` is the UI blueprint. The canvas, node styling, simple cable controls, selection, panning, grouping/subpatching, expression node, and save/load/import workflow are meant to feel like that app.
 - `visual-fm` is the audio lineage. Its Rust/WASM engine is the sound source: oscillators, modulation, filtering, distortion, envelopes, metering, smoothing, and click-free playback all come from that work.
@@ -363,7 +363,7 @@ Before upload, the compiler reuses immutable literal loads within each ordinary 
 
 The old link-centric `WasmAudioGraph` TypeScript compiler has been removed. Current playback fixes should target `web/src/audio/dspProgram.ts` and the `DspProgram` sync path in the worklet.
 
-The worklet in `web/public/audio/audio-worklet-wasm.js` loads the `visual-fm` WASM kernel and syncs the compiled `DspProgram` into it. Vite derives each public audio asset's URL version from its content, preventing browsers from reusing an outdated worklet or WASM kernel after it changes. User-facing patch links target nodes or the audio output; any remaining inherited link-centric WASM API names are implementation details, not the patch philosophy.
+The worklet in `web/public/audio/audio-worklet-wasm.js` loads the Teia WASM kernel and syncs the compiled `DspProgram` into it. Vite derives each public audio asset's URL version from its content, preventing browsers from reusing an outdated worklet or WASM kernel after it changes. User-facing patch links target nodes or the audio output; any remaining inherited link-centric WASM API names are implementation details, not the patch philosophy.
 
 During program upload, the kernel traces ordinary pure control chains from DSP values and marks expensive operations (including power, division, and mapping) for input-based caching. The cached result is reused only while its exact current inputs and output register remain unchanged. Smoothed controls therefore recompute on each changing sample, and external Params, MIDI-controlled sliders, and FFT values remain mutable. Stateful and audio-rate sources, Spread/Spawn templates, and per-voice rendering use their existing path. This is an internal kernel optimization; saved patches and exported `program.json` keep the same version and opcodes.
 

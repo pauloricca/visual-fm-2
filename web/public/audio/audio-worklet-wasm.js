@@ -26,7 +26,7 @@ const RECORDING_CHANNEL_COUNT = 2;
 const QUANTISE_MIDI_ROOT = "midi-note";
 const DEFAULT_GRAPH_UPDATE_CROSSFADE_SECONDS = 0.02;
 // The player package build replaces this constant and removes editor-only work.
-const PLAYER_RUNTIME_BUILD = false;
+const TEIA_RUNTIME_BUILD = false;
 
 // Active playback uses DspProgram messages compiled by web/src/audio/dspProgram.ts.
 
@@ -218,7 +218,7 @@ class TeiaWasmEngine extends AudioWorkletProcessor {
     this.midiButtonControlValues = new Map();
     this.graphVersion = 0;
     this.linkScopeSamples = null;
-    if (!PLAYER_RUNTIME_BUILD) {
+    if (!TEIA_RUNTIME_BUILD) {
       this.masterEffects = this.normalizeEffects();
       this.chorusBuffers = [
         new Float32Array(Math.ceil(sampleRate * 0.08)),
@@ -641,7 +641,7 @@ class TeiaWasmEngine extends AudioWorkletProcessor {
       this.configureDspMeters();
       this.wasm.compileDspBlockPlan?.();
       this.refreshWasmViews(true);
-      if (!PLAYER_RUNTIME_BUILD) this.postRenderingStatus();
+      if (!TEIA_RUNTIME_BUILD) this.postRenderingStatus();
       this.port.postMessage({
         type: "backendStatus",
         payload: {
@@ -677,7 +677,7 @@ class TeiaWasmEngine extends AudioWorkletProcessor {
     this.inputBuffer = typeof this.wasm.inputPtr === "function"
       ? new Float32Array(buffer, this.wasm.inputPtr(), MAX_WASM_FRAMES)
       : null;
-    if (!PLAYER_RUNTIME_BUILD &&
+    if (!TEIA_RUNTIME_BUILD &&
       typeof this.wasm.linkMeterInputPtr === "function"
       && typeof this.wasm.linkMeterOutputPtr === "function"
       && typeof this.wasm.linkMeterEnvelopePtr === "function"
@@ -688,11 +688,11 @@ class TeiaWasmEngine extends AudioWorkletProcessor {
       this.linkMeterEnvelopeSums = new Float64Array(buffer, this.wasm.linkMeterEnvelopePtr(), 1024);
       this.linkMeterCounts = new Uint32Array(buffer, this.wasm.linkMeterCountPtr(), 1024);
     }
-    this.linkScopeSamples = !PLAYER_RUNTIME_BUILD && typeof this.wasm.linkScopePtr === "function"
+    this.linkScopeSamples = !TEIA_RUNTIME_BUILD && typeof this.wasm.linkScopePtr === "function"
       ? new Float32Array(buffer, this.wasm.linkScopePtr(), 1024)
       : null;
     this.refreshDspScopeViews(buffer);
-    if (reportGrowth && !PLAYER_RUNTIME_BUILD) {
+    if (reportGrowth && !TEIA_RUNTIME_BUILD) {
       this.port.postMessage({
         type: "wasmMemory",
         payload: {
@@ -1408,7 +1408,7 @@ class TeiaWasmEngine extends AudioWorkletProcessor {
     this.midiButtonControlValues.clear();
     if (this.dspProgram.errors.length > 0) {
       if (hasProgramMigration) this.wasm.finishDspProgramUpdate();
-      if (!PLAYER_RUNTIME_BUILD) this.postRenderingStatus();
+      if (!TEIA_RUNTIME_BUILD) this.postRenderingStatus();
       return;
     }
 
@@ -1551,7 +1551,7 @@ class TeiaWasmEngine extends AudioWorkletProcessor {
     // it while it is playing.
     this.armDspCustomWaveOneShots(preservedState);
     this.wasm.compileDspParallelPlan?.();
-    if (!PLAYER_RUNTIME_BUILD) this.postRenderingStatus();
+    if (!TEIA_RUNTIME_BUILD) this.postRenderingStatus();
   }
 
   armDspCustomWaveOneShots(preservedState = null) {
@@ -1617,7 +1617,7 @@ class TeiaWasmEngine extends AudioWorkletProcessor {
     if (!this.dspProgram || !this.wasm?.setDspScope || !this.wasm?.dspScopePtr) return;
 
     const requestsById = new Map(this.linkScopeRequests.map((request) => [request.linkId, request]));
-    if (PLAYER_RUNTIME_BUILD) {
+    if (TEIA_RUNTIME_BUILD) {
       for (const binding of this.dspProgram.fftBindings || []) {
         requestsById.set(binding.nodeId, {
           linkId: binding.nodeId,
@@ -1689,7 +1689,7 @@ class TeiaWasmEngine extends AudioWorkletProcessor {
   }
 
   configureDspMeters() {
-    if (PLAYER_RUNTIME_BUILD) return;
+    if (TEIA_RUNTIME_BUILD) return;
     this.dspMeterStates.clear();
     this.wasm?.clearDspMeters?.();
     if (!this.dspProgram || !this.wasm?.setDspMeter) return;
@@ -2421,7 +2421,7 @@ class TeiaWasmEngine extends AudioWorkletProcessor {
     this.pendingMidiNoteEvents = [];
     this.freeSlots = Array.from({ length: MAX_ACTIVE_VOICES }, (_, index) => index);
     this.outputLifecycleGain = 0;
-    if (!PLAYER_RUNTIME_BUILD) {
+    if (!TEIA_RUNTIME_BUILD) {
       this.chorusBuffers.forEach((buffer) => buffer.fill(0));
       this.chorusIndices = [0, 0];
       this.chorusPhases = [0, Math.PI * 0.5];
@@ -3037,7 +3037,7 @@ class TeiaWasmEngine extends AudioWorkletProcessor {
     if (!left) return;
     left.fill(0);
     if (right !== left) right.fill(0);
-    if (!PLAYER_RUNTIME_BUILD) this.recordOutputSamples(left, right, left.length);
+    if (!TEIA_RUNTIME_BUILD) this.recordOutputSamples(left, right, left.length);
     this.lastGraphLeftSample = 0;
     this.lastGraphRightSample = 0;
     this.outputLifecycleGain = 0;
@@ -3139,7 +3139,7 @@ class TeiaWasmEngine extends AudioWorkletProcessor {
       return true;
     }
 
-    if (!PLAYER_RUNTIME_BUILD) {
+    if (!TEIA_RUNTIME_BUILD) {
       this.pruneVoices(this.sampleCursor / sampleRate);
       this.flushPendingVoiceStarts(this.sampleCursor / sampleRate);
     }
@@ -3147,7 +3147,7 @@ class TeiaWasmEngine extends AudioWorkletProcessor {
     this.copyInput(inputs, frames);
     this.wasm.beginDspRenderQuantum?.();
     this.renderCurrentDspProgramToWasm(frames);
-    if (!PLAYER_RUNTIME_BUILD) this.captureSampleTriggerEvents();
+    if (!TEIA_RUNTIME_BUILD) this.captureSampleTriggerEvents();
 
     let peak = 0;
     for (let i = 0; i < frames; i += 1) {
@@ -3165,19 +3165,19 @@ class TeiaWasmEngine extends AudioWorkletProcessor {
       this.lastGraphRightSample = mixedRightSample;
       left[i] = leftSample;
       right[i] = rightSample;
-      if (!PLAYER_RUNTIME_BUILD) peak = Math.max(peak, Math.abs(leftSample), Math.abs(rightSample));
+      if (!TEIA_RUNTIME_BUILD) peak = Math.max(peak, Math.abs(leftSample), Math.abs(rightSample));
     }
     for (let i = frames; i < left.length; i += 1) {
       left[i] = 0;
       right[i] = 0;
     }
-    if (!PLAYER_RUNTIME_BUILD) {
+    if (!TEIA_RUNTIME_BUILD) {
       this.lastOutputPeak = Math.max(this.lastOutputPeak, peak);
       this.recordOutputSamples(left, right, left.length);
     }
     this.sampleCursor += left.length;
     this.flushPendingCustomWaveUpdates();
-    if (PLAYER_RUNTIME_BUILD) this.updatePlayerFftOutputs();
+    if (TEIA_RUNTIME_BUILD) this.updatePlayerFftOutputs();
     else this.flushLinkMeters();
     return true;
   }
@@ -3230,7 +3230,7 @@ class TeiaWasmEngine extends AudioWorkletProcessor {
   }
 
   process(inputs, outputs) {
-    const startedAt = PLAYER_RUNTIME_BUILD ? 0 : this.cpuClockNow();
+    const startedAt = TEIA_RUNTIME_BUILD ? 0 : this.cpuClockNow();
     try {
       return this.processUnsafe(inputs, outputs);
     } catch (error) {
@@ -3243,7 +3243,7 @@ class TeiaWasmEngine extends AudioWorkletProcessor {
       this.fillSilence(outputs);
       return true;
     } finally {
-      if (!PLAYER_RUNTIME_BUILD) {
+      if (!TEIA_RUNTIME_BUILD) {
         this.updateCpuLoad(
           this.cpuClockNow() - startedAt,
           outputs[0]?.[0]?.length || this.lastProcessFrames,
