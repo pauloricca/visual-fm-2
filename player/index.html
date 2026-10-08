@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Teia Player</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main>
+    <h1>Teia Player</h1>
+    <p>Load a ZIP exported with XP from the editor. This page runs only the npm player runtime.</p>
+    <label class="file-label">Patch package <input id="package" type="file" accept=".zip,application/zip"></label>
+    <p id="status" role="status">Choose a patch package.</p>
+    <div class="toolbar">
+      <button id="play" disabled>Start audio</button>
+      <button id="stop" disabled>Stop audio</button>
+      <button id="note" disabled>Play middle C</button>
+      <button id="mic" disabled>Connect microphone</button>
+    </div>
+    <section id="details" hidden>
+      <h2 id="patch-name">Patch</h2>
+      <p id="info"></p>
+      <h2>Parameters</h2>
+      <div id="parameters"></div>
+    </section>
+  </main>
+  <script type="importmap">{"imports":{"@teia/runtime":"/node_modules/@teia/runtime/dist/index.js"}}</script>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

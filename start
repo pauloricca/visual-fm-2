@@ -2,15 +2,15 @@
 set -eu
 
 SCHEME="http"
-PORT="${VISUAL_FM_HOST_PORT:-5174}"
+PORT="${TEIA_HOST_PORT:-${VISUAL_FM_HOST_PORT:-5174}}"
 CERT_DIR=".cert"
-CERT_KEY="$CERT_DIR/visual-visual.key"
-CERT_CERT="$CERT_DIR/visual-visual.crt"
-CERT_CONFIG="$CERT_DIR/visual-visual.openssl.cnf"
-CERT_HOSTS_FILE="$CERT_DIR/visual-visual.hosts"
+CERT_KEY="$CERT_DIR/teia.key"
+CERT_CERT="$CERT_DIR/teia.crt"
+CERT_CONFIG="$CERT_DIR/teia.openssl.cnf"
+CERT_HOSTS_FILE="$CERT_DIR/teia.hosts"
 HTTPS_ENABLED=0
-PATCH_STORAGE="${VITE_VISUAL_VISUAL_PATCH_STORAGE:-local}"
-THEME="${VITE_VISUAL_FM_THEME:-}"
+PATCH_STORAGE="${VITE_TEIA_PATCH_STORAGE:-${VITE_VISUAL_VISUAL_PATCH_STORAGE:-local}}"
+THEME="${VITE_TEIA_THEME:-${VITE_VISUAL_FM_THEME:-}}"
 REBUILD_IMAGE=0
 
 usage() {
@@ -62,9 +62,9 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-export VITE_VISUAL_VISUAL_PATCH_STORAGE="$PATCH_STORAGE"
-export VITE_VISUAL_FM_THEME="$THEME"
-export VISUAL_FM_HOST_PORT="$PORT"
+export VITE_TEIA_PATCH_STORAGE="$PATCH_STORAGE"
+export VITE_TEIA_THEME="$THEME"
+export TEIA_HOST_PORT="$PORT"
 
 LAN_IP=""
 if command -v ipconfig >/dev/null 2>&1; then
@@ -93,7 +93,7 @@ if command -v openssl >/dev/null 2>&1; then
       printf 'x509_extensions = v3_req\n'
       printf 'prompt = no\n'
       printf '\n[dn]\n'
-      printf 'CN = visual-visual.local\n'
+      printf 'CN = teia.local\n'
       printf '\n[v3_req]\n'
       printf 'subjectAltName = @alt_names\n'
       printf 'keyUsage = critical, digitalSignature, keyEncipherment\n'
@@ -121,8 +121,8 @@ if command -v openssl >/dev/null 2>&1; then
   if [ -f "$CERT_KEY" ] && [ -f "$CERT_CERT" ]; then
     SCHEME="https"
     HTTPS_ENABLED=1
-    export VISUAL_VISUAL_HTTPS_KEY="/app/$CERT_KEY"
-    export VISUAL_VISUAL_HTTPS_CERT="/app/$CERT_CERT"
+    export TEIA_HTTPS_KEY="/app/$CERT_KEY"
+    export TEIA_HTTPS_CERT="/app/$CERT_CERT"
   fi
 fi
 

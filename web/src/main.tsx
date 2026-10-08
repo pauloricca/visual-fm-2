@@ -8,7 +8,7 @@ import './styles.css';
 
 installDiagnostics();
 
-const theme = import.meta.env.VITE_VISUAL_FM_THEME?.trim();
+const theme = (import.meta.env.VITE_TEIA_THEME ?? import.meta.env.VITE_VISUAL_FM_THEME)?.trim();
 if (theme) {
   document.documentElement.dataset.theme = theme;
 }

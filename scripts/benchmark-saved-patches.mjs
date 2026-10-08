@@ -41,9 +41,9 @@ const workerWrapper = `const { parentPort } = require('node:worker_threads');
 globalThis.self = { postMessage: data => parentPort.postMessage(data) };
 ${workerSource}
 parentPort.on('message', data => self.onmessage({ data }));`;
-const singleBytes = fs.readFileSync(process.env.BENCHMARK_BASELINE_WASM || path.join(root, 'web/public/audio/visual-fm-kernel.wasm'));
+const singleBytes = fs.readFileSync(process.env.BENCHMARK_BASELINE_WASM || path.join(root, 'web/public/audio/teia-kernel.wasm'));
 const comparisonBytes = process.env.BENCHMARK_COMPARISON_WASM && fs.readFileSync(process.env.BENCHMARK_COMPARISON_WASM);
-const parallelModule = comparisonBytes ? null : await WebAssembly.compile(fs.readFileSync(path.join(root, 'web/public/audio/visual-fm-kernel-parallel.wasm')));
+const parallelModule = comparisonBytes ? null : await WebAssembly.compile(fs.readFileSync(path.join(root, 'web/public/audio/teia-kernel-parallel.wasm')));
 
 console.log(`Saved-patch benchmark: ${frames} frames/block at ${sampleRate} Hz; ${warmupBlocks} warmup + ${measuredBlocks} measured blocks × ${trials} trials; ${comparisonBytes ? 'two single kernels' : `multi uses ${workers} helpers`}.`);
 console.log(`Times are offline Node timings, useful for ${comparisonBytes ? 'WASM A/B' : 'single/multi'} comparison; browser AudioWorklet CPU remains the final real-time check.`);

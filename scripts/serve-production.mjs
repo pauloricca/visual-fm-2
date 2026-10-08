@@ -8,11 +8,13 @@ const publicHost = process.env.HOST || '0.0.0.0';
 const publicPort = positivePort(process.env.PORT, 5173);
 const internalHost = '127.0.0.1';
 const internalPort = positivePort(process.env.INTERNAL_PORT, 4173);
-const keyPath = resolve(process.env.VISUAL_VISUAL_HTTPS_KEY || '.cert/visual-visual.key');
-const certPath = resolve(process.env.VISUAL_VISUAL_HTTPS_CERT || '.cert/visual-visual.crt');
+const keyPath = resolve(process.env.TEIA_HTTPS_KEY || process.env.VISUAL_VISUAL_HTTPS_KEY || '.cert/teia.key');
+const certPath = resolve(process.env.TEIA_HTTPS_CERT || process.env.VISUAL_VISUAL_HTTPS_CERT || '.cert/teia.crt');
 
 // TLS terminates here; the loopback-only Vite preview server keeps the local
 // diagnostics and storage middleware available for the production bundle.
+process.env.TEIA_HTTPS_KEY = '';
+process.env.TEIA_HTTPS_CERT = '';
 process.env.VISUAL_VISUAL_HTTPS_KEY = '';
 process.env.VISUAL_VISUAL_HTTPS_CERT = '';
 const previewServer = await preview({
@@ -56,7 +58,7 @@ const server = createHttpsServer({
 });
 
 server.listen(publicPort, publicHost, () => {
-  console.log(`Visual FM 2 production server: https://localhost:${publicPort}/`);
+  console.log(`Teia Editor production server: https://localhost:${publicPort}/`);
 });
 
 for (const signal of ['SIGINT', 'SIGTERM']) {

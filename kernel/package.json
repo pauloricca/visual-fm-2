@@ -1,0 +1,12 @@
+{
+  "name": "@teia/kernel",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "UNLICENSED",
+  "files": ["dist/"],
+  "exports": {
+    "./teia-kernel.wasm": "./dist/teia-kernel.wasm",
+    "./teia-kernel-simd.wasm": "./dist/teia-kernel-simd.wasm",
+    "./teia-kernel-parallel.wasm": "./dist/teia-kernel-parallel.wasm"
+  }
+}

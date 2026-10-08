@@ -11,9 +11,9 @@ const AUDIO_ENGINE_ASSET_MODULE_ID = 'virtual:audio-engine-assets';
 const RESOLVED_AUDIO_ENGINE_ASSET_MODULE_ID = `\0${AUDIO_ENGINE_ASSET_MODULE_ID}`;
 const AUDIO_ENGINE_ASSET_FILES = new Set([
   resolve(dirname(fileURLToPath(import.meta.url)), 'public/audio/audio-worklet-wasm.js'),
-  resolve(dirname(fileURLToPath(import.meta.url)), 'public/audio/visual-fm-kernel.wasm'),
-  resolve(dirname(fileURLToPath(import.meta.url)), 'public/audio/visual-fm-kernel-simd.wasm'),
-  resolve(dirname(fileURLToPath(import.meta.url)), 'public/audio/visual-fm-kernel-parallel.wasm'),
+  resolve(dirname(fileURLToPath(import.meta.url)), 'public/audio/teia-kernel.wasm'),
+  resolve(dirname(fileURLToPath(import.meta.url)), 'public/audio/teia-kernel-simd.wasm'),
+  resolve(dirname(fileURLToPath(import.meta.url)), 'public/audio/teia-kernel-parallel.wasm'),
   resolve(dirname(fileURLToPath(import.meta.url)), 'public/audio/dsp-parallel-worker.js'),
 ]);
 
@@ -54,9 +54,9 @@ function audioEngineAssetVersionPlugin(): Plugin {
       if (id !== RESOLVED_AUDIO_ENGINE_ASSET_MODULE_ID) return null;
       return [
         `export const AUDIO_WORKLET_ASSET_VERSION = ${JSON.stringify(audioAssetVersion('audio-worklet-wasm.js'))};`,
-        `export const AUDIO_WASM_ASSET_VERSION = ${JSON.stringify(audioAssetVersion('visual-fm-kernel.wasm'))};`,
-        `export const AUDIO_SIMD_WASM_ASSET_VERSION = ${JSON.stringify(audioAssetVersion('visual-fm-kernel-simd.wasm'))};`,
-        `export const AUDIO_PARALLEL_WASM_ASSET_VERSION = ${JSON.stringify(audioAssetVersion('visual-fm-kernel-parallel.wasm'))};`,
+        `export const AUDIO_WASM_ASSET_VERSION = ${JSON.stringify(audioAssetVersion('teia-kernel.wasm'))};`,
+        `export const AUDIO_SIMD_WASM_ASSET_VERSION = ${JSON.stringify(audioAssetVersion('teia-kernel-simd.wasm'))};`,
+        `export const AUDIO_PARALLEL_WASM_ASSET_VERSION = ${JSON.stringify(audioAssetVersion('teia-kernel-parallel.wasm'))};`,
         `export const AUDIO_PARALLEL_WORKER_ASSET_VERSION = ${JSON.stringify(audioAssetVersion('dsp-parallel-worker.js'))};`,
       ].join('\n');
     },
@@ -80,7 +80,8 @@ function audioAssetVersion(fileName: string): string {
 }
 
 function patchStorageMode() {
-  return process.env.VITE_VISUAL_VISUAL_PATCH_STORAGE
+  return process.env.VITE_TEIA_PATCH_STORAGE
+    ?? process.env.VITE_VISUAL_VISUAL_PATCH_STORAGE
     ?? process.env.VITE_VISUAL_FM_PATCH_STORAGE;
 }
 
@@ -370,8 +371,8 @@ function localRecordingStoragePlugin(): Plugin {
 }
 
 function viteHttpsConfig() {
-  const keyPath = process.env.VISUAL_VISUAL_HTTPS_KEY;
-  const certPath = process.env.VISUAL_VISUAL_HTTPS_CERT;
+  const keyPath = process.env.TEIA_HTTPS_KEY ?? process.env.VISUAL_VISUAL_HTTPS_KEY;
+  const certPath = process.env.TEIA_HTTPS_CERT ?? process.env.VISUAL_VISUAL_HTTPS_CERT;
   if (!keyPath || !certPath || !existsSync(keyPath) || !existsSync(certPath)) return undefined;
 
   return {
@@ -691,7 +692,8 @@ const SAMPLE_AUDIO_EXTENSIONS = new Set([
   '.webm',
 ]);
 const IMAGE_EXTENSIONS = new Set(['.avif', '.gif', '.jpeg', '.jpg', '.png', '.webp']);
-const VIDEO_PROXY_SUFFIX = '.visual-fm-proxy.mp4';
+const VIDEO_PROXY_SUFFIX = '.teia-proxy.mp4';
+const LEGACY_VIDEO_PROXY_SUFFIX = '.visual-fm-proxy.mp4';
 
 async function saveUploadedRecording(recordingsDir: string, request: Connect.IncomingMessage) {
   const contentType = Array.isArray(request.headers['content-type'])
@@ -707,7 +709,7 @@ async function saveUploadedRecording(recordingsDir: string, request: Connect.Inc
   }
 
   await mkdir(recordingsDir, { recursive: true });
-  const encodedPatchNameHeader = request.headers['x-visual-fm-patch-name-encoded'];
+  const encodedPatchNameHeader = request.headers['x-teia-patch-name-encoded'] ?? request.headers['x-visual-fm-patch-name-encoded'];
   const encodedPatchName = Array.isArray(encodedPatchNameHeader) ? encodedPatchNameHeader[0] : encodedPatchNameHeader;
   const legacyPatchNameHeader = request.headers['x-visual-fm-patch-name'];
   const legacyPatchName = Array.isArray(legacyPatchNameHeader) ? legacyPatchNameHeader[0] : legacyPatchNameHeader;
@@ -721,7 +723,7 @@ async function saveUploadedRecording(recordingsDir: string, request: Connect.Inc
 }
 
 async function saveRecordingMetadata(recordingsDir: string, request: Connect.IncomingMessage) {
-  const recordingHeader = request.headers['x-visual-fm-recording-name'];
+  const recordingHeader = request.headers['x-teia-recording-name'] ?? request.headers['x-visual-fm-recording-name'];
   const recordingName = Array.isArray(recordingHeader) ? recordingHeader[0] : recordingHeader;
   const safeRecordingName = basename(recordingName ?? '');
   if (!safeRecordingName.toLowerCase().endsWith('.wav')) {
@@ -1003,12 +1005,16 @@ async function listLocalSamples(samplesDir: string) {
   const samples = await Promise.all(entries
     .filter((entry) => entry.isFile()
       && !entry.name.endsWith(VIDEO_PROXY_SUFFIX)
+      && !entry.name.endsWith(LEGACY_VIDEO_PROXY_SUFFIX)
       && isSafePatchStorageSegment(entry.name)
       && SAMPLE_AUDIO_EXTENSIONS.has(extname(entry.name).toLowerCase()))
     .map(async (entry) => {
       const fileStats = await stat(join(samplesDir, entry.name));
+      const stem = basename(entry.name, extname(entry.name));
+      const teiaProxyName = `${stem}${VIDEO_PROXY_SUFFIX}`;
+      const legacyProxyName = `${stem}${LEGACY_VIDEO_PROXY_SUFFIX}`;
       const proxyName = extname(entry.name).toLowerCase() === '.mp4'
-        ? `${basename(entry.name, extname(entry.name))}${VIDEO_PROXY_SUFFIX}`
+        ? entryNames.has(teiaProxyName) ? teiaProxyName : legacyProxyName
         : null;
       return {
         name: entry.name,

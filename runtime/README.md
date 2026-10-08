@@ -1,0 +1,22 @@
+# @teia/runtime
+
+Browser runtime for Teia patch ZIPs exported with XP. The npm package contains the Rust/WASM kernel and AudioWorklet; patch ZIPs contain only the editable patch, compiled DSP program, parameter metadata, and referenced assets.
+
+```js
+import { PatchPlayer } from '@teia/runtime';
+
+const context = new AudioContext();
+const player = await PatchPlayer.load(context, patchZipFile);
+player.connect(context.destination);
+await context.resume();
+player.setParameter(player.parameters[0].id, 0.5);
+player.noteOn(60, 0.8);
+player.noteOff(60);
+player.dispose();
+```
+
+Serve the package's `dist/audio-worklet-wasm.js`, `dist/teia-kernel.wasm`, and `dist/teia-kernel-simd.wasm` alongside `dist/index.js`. The module resolves those files relative to its own URL and selects the SIMD kernel only when the host validates it; the ordinary kernel is the fallback. On ordinary WASM hosts, programs with KinkOsc or sign-preserving power automatically use scalar rendering pending broader block-cost benchmarks. A bundler must copy these assets into its output, or a static server can serve the installed package files directly. `PatchPlayer.load` verifies the patch's asset hashes and checks the patch format and engine API versions.
+
+Build this package from the editor repository with `npm run build:runtime`. Its worklet skips editor visualization, metering, CPU reporting, and legacy effect allocations while retaining DSP FFT outputs. The package is installable from a local tarball; it has not been published to a registry.
+
+New editor exports use the `teia-patch` manifest format and name `@teia/runtime`. The loader also accepts version 2 ZIPs exported under `visual-fm-patch` with `@visual-fm/player-runtime`.

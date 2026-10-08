@@ -1,5 +1,5 @@
 {
-  "name": "visual-fm-2",
+  "name": "teia",
   "version": "0.1.0",
   "private": true,
   "workspaces": [
@@ -17,7 +17,8 @@
     "start": "npm run build && node scripts/serve-production.mjs",
     "preview": "npm --workspace web run preview",
     "build:wasm": "sh scripts/build-rust-wasm.sh",
-    "build:player-runtime": "tsc -p player-runtime/tsconfig.json && node scripts/build-player-runtime.mjs",
+    "build:runtime": "tsc -p runtime/tsconfig.json && node scripts/build-runtime.mjs",
+    "build:player-runtime": "npm run build:runtime",
     "build": "npm --workspace web run build",
     "typecheck": "npm --workspace web run typecheck",
     "remix:video": "node scripts/remix-video-from-csv.mjs",

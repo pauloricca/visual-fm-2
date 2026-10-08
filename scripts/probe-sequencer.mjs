@@ -164,7 +164,7 @@ assert(
   'Fractional trigger position was not configured.',
 );
 
-const wasmBytes = fs.readFileSync(path.join(repoRoot, 'web/public/audio/visual-fm-kernel.wasm'));
+const wasmBytes = fs.readFileSync(path.join(repoRoot, 'web/public/audio/teia-kernel.wasm'));
 const { instance } = await WebAssembly.instantiate(wasmBytes, {});
 const wasm = instance.exports;
 

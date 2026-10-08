@@ -1,0 +1,12 @@
+{
+  "name": "teia-player",
+  "version": "0.2.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@teia/runtime": "file:vendor/teia-runtime-0.2.2.tgz"
+  }
+}

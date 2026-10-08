@@ -28,7 +28,7 @@ export async function createParallelEngine(
   };
   signal.addEventListener('abort', dispose, { once: true });
   try {
-    const response = await fetch(`/audio/visual-fm-kernel-parallel.wasm?v=${AUDIO_PARALLEL_WASM_ASSET_VERSION}`, { signal });
+    const response = await fetch(`/audio/teia-kernel-parallel.wasm?v=${AUDIO_PARALLEL_WASM_ASSET_VERSION}`, { signal });
     if (!response.ok) throw new Error(`Could not load parallel WASM kernel (${response.status}).`);
     const module = await WebAssembly.compile(await response.arrayBuffer());
     // These limits match the parallel build's linker flags (32 MiB / 2 GiB).

@@ -34,8 +34,8 @@ interface Patch { buffers?: Record<string, { hash: string; sampleRate: number; s
 
 const registeredWorklets = new WeakMap<BaseAudioContext, { hash: string; ready: Promise<void> }>();
 const workletUrl = new URL('./audio-worklet-wasm.js', import.meta.url);
-const wasmUrl = new URL('./visual-fm-kernel.wasm', import.meta.url);
-const simdWasmUrl = new URL('./visual-fm-kernel-simd.wasm', import.meta.url);
+const wasmUrl = new URL('./teia-kernel.wasm', import.meta.url);
+const simdWasmUrl = new URL('./teia-kernel-simd.wasm', import.meta.url);
 let wasmBytesPromise: Promise<ArrayBuffer> | undefined;
 
 export class PatchPlayer {
@@ -58,8 +58,8 @@ export class PatchPlayer {
     const bytes = packageFile instanceof Blob ? await packageFile.arrayBuffer() : packageFile;
     const files = readPackageZip(bytes);
     const manifest = readJson<Manifest>(files, 'manifest.json');
-    if (manifest.format !== 'visual-fm-patch' || manifest.version !== 2 || manifest.engineApiVersion !== 1
-      || manifest.runtimePackage !== '@visual-fm/player-runtime') {
+    if (!['teia-patch', 'visual-fm-patch'].includes(manifest.format) || manifest.version !== 2 || manifest.engineApiVersion !== 1
+      || !['@teia/runtime', '@visual-fm/player-runtime'].includes(manifest.runtimePackage)) {
       throw new Error('Unsupported patch package or engine API version.');
     }
     const program = readJson<Program>(files, manifest.paths.program);
@@ -74,7 +74,7 @@ export class PatchPlayer {
     const wasmBytes = await loadWasmBytes();
     const workletHash = workletUrl.href;
     const registered = registeredWorklets.get(context);
-    if (registered && registered.hash !== workletHash) throw new Error('This AudioContext already uses a different Visual FM worklet version.');
+    if (registered && registered.hash !== workletHash) throw new Error('This AudioContext already uses a different Teia worklet version.');
     if (!registered) {
       const ready = context.audioWorklet.addModule(workletUrl.href);
       registeredWorklets.set(context, { hash: workletHash, ready });
@@ -83,7 +83,7 @@ export class PatchPlayer {
     } else {
       await registered.ready;
     }
-    const node = new AudioWorkletNode(context, 'visual-fm-wasm-engine', {
+    const node = new AudioWorkletNode(context, 'teia-wasm-engine', {
       numberOfInputs: 1,
       numberOfOutputs: 1,
       outputChannelCount: [2],

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const MIB = 1024 * 1024;
-const wasmUrl = new URL('../web/public/audio/visual-fm-kernel.wasm', import.meta.url);
+const wasmUrl = new URL('../web/public/audio/teia-kernel.wasm', import.meta.url);
 const { instance } = await WebAssembly.instantiate(await readFile(wasmUrl), {});
 const wasm = instance.exports;
 const memoryStages = [];

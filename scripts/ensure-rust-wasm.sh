@@ -2,10 +2,10 @@
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-CRATE_DIR="$ROOT/rust/visual-fm-kernel"
-WASM_OUTPUT="$ROOT/web/public/audio/visual-fm-kernel.wasm"
-PARALLEL_OUTPUT="$ROOT/web/public/audio/visual-fm-kernel-parallel.wasm"
-SIMD_OUTPUT="$ROOT/web/public/audio/visual-fm-kernel-simd.wasm"
+CRATE_DIR="$ROOT/rust/teia-kernel"
+WASM_OUTPUT="$ROOT/web/public/audio/teia-kernel.wasm"
+PARALLEL_OUTPUT="$ROOT/web/public/audio/teia-kernel-parallel.wasm"
+SIMD_OUTPUT="$ROOT/web/public/audio/teia-kernel-simd.wasm"
 BUILD_SCRIPT="$ROOT/scripts/build-rust-wasm.sh"
 
 rebuild_reason=""

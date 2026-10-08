@@ -9,7 +9,7 @@ interface DiagnosticEvent {
 const DIAGNOSTIC_ENDPOINT = '/api/diagnostics';
 const PERFORMANCE_TIMELINE_MAINTENANCE_INTERVAL_MS = 1_000;
 const PERFORMANCE_TIMELINE_ENTRY_LIMIT = 1_000;
-const SESSION_STORAGE_KEY = 'visual-fm-2.diagnostics-session';
+const SESSION_STORAGE_KEY = 'teia-editor.diagnostics-session';
 
 const sessionId = getSessionId();
 let lastPerformanceTimelineMaintenanceAt = 0;
@@ -21,9 +21,9 @@ const buildEnvironment = import.meta.env as ImportMetaEnv & {
 };
 
 export function installDiagnostics(): void {
-  const windowWithDiagnostics = window as Window & { __visualFmDiagnosticsInstalled?: boolean };
-  if (windowWithDiagnostics.__visualFmDiagnosticsInstalled) return;
-  windowWithDiagnostics.__visualFmDiagnosticsInstalled = true;
+  const windowWithDiagnostics = window as Window & { __teiaDiagnosticsInstalled?: boolean };
+  if (windowWithDiagnostics.__teiaDiagnosticsInstalled) return;
+  windowWithDiagnostics.__teiaDiagnosticsInstalled = true;
 
   logDiagnosticEvent('page-loaded', {
     level: 'info',

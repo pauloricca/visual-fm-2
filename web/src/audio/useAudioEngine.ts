@@ -213,8 +213,8 @@ interface ImageDataRequest {
 }
 
 const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_WORKLET_ASSET_VERSION}`;
-const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_WASM_ASSET_VERSION}`;
-const SIMD_WASM_URL = `/audio/visual-fm-kernel-simd.wasm?v=${AUDIO_SIMD_WASM_ASSET_VERSION}`;
+const WASM_URL = `/audio/teia-kernel.wasm?v=${AUDIO_WASM_ASSET_VERSION}`;
+const SIMD_WASM_URL = `/audio/teia-kernel-simd.wasm?v=${AUDIO_SIMD_WASM_ASSET_VERSION}`;
 
 async function loadCompatibleWasmBytes(preferSimd: boolean): Promise<ArrayBuffer> {
   if (preferSimd) {
@@ -1413,7 +1413,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
           analyser.fftSize = 1024;
           const outputGain = context.createGain();
           outputGain.gain.value = 0;
-          const createNode = (parallelEngine: ParallelEngine['processorOptions'] | undefined, fallbackReason: string) => new AudioWorkletNode(context, 'visual-fm-wasm-engine', {
+          const createNode = (parallelEngine: ParallelEngine['processorOptions'] | undefined, fallbackReason: string) => new AudioWorkletNode(context, 'teia-wasm-engine', {
             numberOfInputs: 1,
             numberOfOutputs: 1,
             outputChannelCount: [2],
@@ -2187,7 +2187,7 @@ async function uploadRecording(blob: Blob, patchName: string, sampleEvents: Samp
       'Content-Type': 'audio/wav',
       // HTTP header values are limited to Latin-1. Patch names are user text,
       // so encode them before placing them in a header (for example, "été").
-      'X-Visual-Fm-Patch-Name-Encoded': encodeURIComponent(patchName),
+      'X-Teia-Patch-Name-Encoded': encodeURIComponent(patchName),
     },
     body: blob,
   });
@@ -2205,7 +2205,7 @@ async function uploadRecording(blob: Blob, patchName: string, sampleEvents: Samp
       method: 'POST',
       headers: {
         'Content-Type': 'text/csv; charset=utf-8',
-        'X-Visual-Fm-Recording-Name': payload.name,
+        'X-Teia-Recording-Name': payload.name,
       },
       body: samplePlaybackEventsCsv(videoSampleEvents),
     });

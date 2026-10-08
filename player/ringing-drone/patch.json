@@ -1,0 +1,535 @@
+{
+  "name": "ringing-drone",
+  "midiInput": {
+    "selectedDeviceIds": [],
+    "selectedOutputDeviceIds": [
+      "-1319782791"
+    ]
+  },
+  "nodes": [
+    {
+      "id": "audio_out",
+      "type": "AudioOut",
+      "params": {
+        "level": 0.8
+      },
+      "position": {
+        "x": 1373.5248887220605,
+        "y": 305.0016074345387
+      }
+    },
+    {
+      "id": "crossover_1",
+      "type": "Crossover",
+      "params": {
+        "frequency 1": 691.6822,
+        "frequency 2": 4000,
+        "frequency 3": 8000,
+        "frequency 4": 12000,
+        "frequency 5": 15000,
+        "frequency 6": 17000,
+        "frequency 7": 18500,
+        "frequency 8": 19500,
+        "points": 1,
+        "slope": 24
+      },
+      "position": {
+        "x": 462.3356161024702,
+        "y": 400.9907684547682
+      }
+    },
+    {
+      "id": "delay_1",
+      "type": "Delay",
+      "params": {
+        "feedback": 0.6158,
+        "mix": 1,
+        "time": 0
+      },
+      "position": {
+        "x": 98.59242234470375,
+        "y": 177.4389257580828
+      }
+    },
+    {
+      "id": "delay_2",
+      "type": "Delay",
+      "params": {
+        "feedback": 0.7469,
+        "mix": 0.7753,
+        "time": 0.05
+      },
+      "position": {
+        "x": 755.0815343829029,
+        "y": 484.24739352055735
+      }
+    },
+    {
+      "id": "expression_1",
+      "type": "Expression",
+      "expression": "a * b",
+      "params": {
+        "a": 0,
+        "b": 1
+      },
+      "position": {
+        "x": -55.381094755341195,
+        "y": 418.2138078518211
+      },
+      "inputs": [
+        {
+          "name": "a",
+          "defaultValue": 0
+        },
+        {
+          "name": "b",
+          "defaultValue": 0
+        }
+      ]
+    },
+    {
+      "id": "kinkosc_1",
+      "type": "KinkOsc",
+      "params": {
+        "frequency": 124.9279,
+        "phase": 0,
+        "phase reset": 0,
+        "range max": 1,
+        "range min": -1,
+        "shape": 0.9298,
+        "squareness": -0.386
+      },
+      "position": {
+        "x": -462.9239807081011,
+        "y": 481.2477746809335
+      }
+    },
+    {
+      "id": "lowpassfilter_1",
+      "type": "LowpassFilter",
+      "params": {
+        "cutoff": 2653.6672,
+        "resonance": 0.7
+      },
+      "position": {
+        "x": 950.876243770836,
+        "y": 474.83357055171143
+      }
+    },
+    {
+      "id": "pass_1",
+      "type": "Pass",
+      "params": {},
+      "position": {
+        "x": 294.90317507966904,
+        "y": 373.83065016921137
+      }
+    },
+    {
+      "id": "pow_1",
+      "type": "Pow",
+      "params": {
+        "exponent": 0.3475
+      },
+      "position": {
+        "x": 205.6414586254097,
+        "y": 514.3103525542322
+      }
+    },
+    {
+      "id": "removedc_1",
+      "type": "RemoveDc",
+      "params": {},
+      "position": {
+        "x": 268.0447498892206,
+        "y": 184.89321373833081
+      }
+    },
+    {
+      "id": "removedc_2",
+      "type": "RemoveDc",
+      "params": {},
+      "position": {
+        "x": 1216.4834722562357,
+        "y": 419.08452356554807
+      }
+    },
+    {
+      "id": "scope_1",
+      "type": "Scope",
+      "params": {
+        "length": 0.0811,
+        "mode": 1,
+        "range": 1,
+        "reset": 1
+      },
+      "position": {
+        "x": 458.84314070197615,
+        "y": -226.34464964346068
+      },
+      "scopeSize": {
+        "width": 509,
+        "height": 265
+      }
+    },
+    {
+      "id": "sine_1",
+      "type": "KinkOsc",
+      "params": {
+        "frequency": 123.7734,
+        "phase": 0,
+        "phase reset": 0,
+        "range max": 1,
+        "range min": -1,
+        "shape": 0.7619,
+        "squareness": 0.525
+      },
+      "position": {
+        "x": -459.6832102000541,
+        "y": 81.01261693712763
+      }
+    },
+    {
+      "id": "slider_1",
+      "type": "Slider",
+      "params": {
+        "curve": 0,
+        "direction": 0,
+        "max": 300,
+        "midiCc": 1,
+        "midiChannel": 0,
+        "min": 0,
+        "value": 0.14719543631850296
+      },
+      "position": {
+        "x": -1124.8353624108547,
+        "y": -94.63812504661824
+      }
+    },
+    {
+      "id": "slider_2",
+      "type": "Slider",
+      "params": {
+        "curve": -0.9816,
+        "direction": 0,
+        "max": 2,
+        "midiCc": 1,
+        "midiChannel": 0,
+        "min": 1,
+        "value": 0.10144062222542377
+      },
+      "position": {
+        "x": -977.3803042947158,
+        "y": 572.9605996110658
+      }
+    },
+    {
+      "id": "slider_3",
+      "type": "Slider",
+      "params": {
+        "curve": 0,
+        "direction": 0,
+        "max": 0.1,
+        "midiCc": 1,
+        "midiChannel": 0,
+        "min": 0,
+        "value": 0.014057140954748835
+      },
+      "position": {
+        "x": -118.57611966225792,
+        "y": -31.44310013970154
+      },
+      "scopeSize": {
+        "width": 508,
+        "height": 53
+      },
+      "compactPorts": true
+    },
+    {
+      "id": "slider_4",
+      "type": "Slider",
+      "params": {
+        "curve": 0,
+        "direction": 0,
+        "max": 1,
+        "midiCc": 1,
+        "midiChannel": 0,
+        "min": 0,
+        "value": 0.9950140842878487
+      },
+      "position": {
+        "x": -115.33534915421092,
+        "y": 57.67808883159127
+      },
+      "scopeSize": {
+        "width": 504,
+        "height": 72
+      },
+      "compactPorts": true
+    },
+    {
+      "id": "slider_5",
+      "type": "Slider",
+      "params": {
+        "curve": 0,
+        "direction": 0,
+        "max": 1,
+        "midiCc": 1,
+        "midiChannel": 0,
+        "min": 0,
+        "value": 1
+      },
+      "position": {
+        "x": -66.72379153350573,
+        "y": 671.8041001064998
+      },
+      "scopeSize": {
+        "width": 340,
+        "height": 48
+      },
+      "compactPorts": true
+    }
+  ],
+  "links": [
+    {
+      "from": {
+        "node": "removedc_2",
+        "port": "signal"
+      },
+      "to": {
+        "node": "audio_out",
+        "port": "both"
+      },
+      "weight": 1,
+      "mode": "add"
+    },
+    {
+      "from": {
+        "node": "pass_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "crossover_1",
+        "port": "signal"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "slider_4",
+        "port": "signal"
+      },
+      "to": {
+        "node": "delay_1",
+        "port": "feedback"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "expression_1",
+        "port": "value"
+      },
+      "to": {
+        "node": "delay_1",
+        "port": "signal"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "slider_3",
+        "port": "signal"
+      },
+      "to": {
+        "node": "delay_1",
+        "port": "time"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "crossover_1",
+        "port": "band 2"
+      },
+      "to": {
+        "node": "delay_2",
+        "port": "signal"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "sine_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "expression_1",
+        "port": "a"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "kinkosc_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "expression_1",
+        "port": "b"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "slider_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "kinkosc_1",
+        "port": "frequency"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "slider_2",
+        "port": "signal"
+      },
+      "to": {
+        "node": "kinkosc_1",
+        "port": "frequency"
+      },
+      "weight": 1,
+      "mode": "multiply"
+    },
+    {
+      "from": {
+        "node": "delay_2",
+        "port": "signal"
+      },
+      "to": {
+        "node": "lowpassfilter_1",
+        "port": "signal"
+      },
+      "weight": 0.2242,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "pow_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "pass_1",
+        "port": "signal"
+      },
+      "weight": 1,
+      "mode": "add"
+    },
+    {
+      "from": {
+        "node": "removedc_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "pass_1",
+        "port": "signal"
+      },
+      "weight": 1,
+      "mode": "add"
+    },
+    {
+      "from": {
+        "node": "slider_5",
+        "port": "signal"
+      },
+      "to": {
+        "node": "pow_1",
+        "port": "exponent"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "expression_1",
+        "port": "value"
+      },
+      "to": {
+        "node": "pow_1",
+        "port": "signal"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "delay_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "removedc_1",
+        "port": "signal"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "crossover_1",
+        "port": "band 1"
+      },
+      "to": {
+        "node": "removedc_2",
+        "port": "signal"
+      },
+      "weight": 0.7122,
+      "mode": "add"
+    },
+    {
+      "from": {
+        "node": "lowpassfilter_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "removedc_2",
+        "port": "signal"
+      },
+      "weight": 1,
+      "mode": "add"
+    },
+    {
+      "from": {
+        "node": "removedc_2",
+        "port": "signal"
+      },
+      "to": {
+        "node": "scope_1",
+        "port": "signal"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "slider_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "sine_1",
+        "port": "frequency"
+      },
+      "weight": 1,
+      "mode": "set"
+    }
+  ]
+}

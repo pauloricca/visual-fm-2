@@ -90,8 +90,10 @@ import { makeNodeId, routingNodeColor, ShaderNode } from './ShaderNode';
 
 const nodeTypes = { shaderNode: ShaderNode };
 const edgeTypes = { shaderEdge: ShaderEdge, virtualRoute: VirtualRouteEdge };
-const STORAGE_KEY = 'visual-fm-2.editor-state.v1';
-const VIEWPORT_STORAGE_KEY = 'visual-fm-2.viewport.v1';
+const STORAGE_KEY = 'teia.editor-state.v1';
+const LEGACY_STORAGE_KEY = 'visual-fm-2.editor-state.v1';
+const VIEWPORT_STORAGE_KEY = 'teia.viewport.v1';
+const LEGACY_VIEWPORT_STORAGE_KEY = 'visual-fm-2.viewport.v1';
 const HISTORY_LIMIT = 100;
 const DRAFT_NODE_PREVIEW_ID = '__draft_node_preview__';
 const DUPLICATE_NODE_PREVIEW_PREFIX = '__duplicate_node_preview__:';
@@ -6492,11 +6494,13 @@ function canUseLocalPatchStorage(): boolean {
   const viteEnv = (import.meta as ImportMeta & {
     env?: {
       DEV?: boolean;
+      VITE_TEIA_PATCH_STORAGE?: string;
       VITE_VISUAL_FM_PATCH_STORAGE?: string;
       VITE_VISUAL_VISUAL_PATCH_STORAGE?: string;
     };
   }).env;
-  const storageMode = viteEnv?.VITE_VISUAL_VISUAL_PATCH_STORAGE
+  const storageMode = viteEnv?.VITE_TEIA_PATCH_STORAGE
+    ?? viteEnv?.VITE_VISUAL_VISUAL_PATCH_STORAGE
     ?? viteEnv?.VITE_VISUAL_FM_PATCH_STORAGE;
   if (storageMode === 'browser') return false;
   if (storageMode === 'local') return true;
@@ -7670,7 +7674,7 @@ function flowPositionForNewImport(
 
 function loadInitialEditorState(): PersistedEditorState | null {
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = window.localStorage.getItem(STORAGE_KEY) ?? window.localStorage.getItem(LEGACY_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as PersistedEditorState;
     if (parsed?.version !== 1 || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) return null;
@@ -7682,7 +7686,7 @@ function loadInitialEditorState(): PersistedEditorState | null {
 
 function loadStoredViewport(): Viewport | null {
   try {
-    const raw = window.localStorage.getItem(VIEWPORT_STORAGE_KEY);
+    const raw = window.localStorage.getItem(VIEWPORT_STORAGE_KEY) ?? window.localStorage.getItem(LEGACY_VIEWPORT_STORAGE_KEY);
     if (!raw) return null;
     const viewport = JSON.parse(raw) as Partial<Viewport>;
     if (!Number.isFinite(Number(viewport.x)) || !Number.isFinite(Number(viewport.y)) || !Number.isFinite(Number(viewport.zoom))) return null;
@@ -9955,7 +9959,7 @@ function cloneFlowEdgeForClipboard(edge: ShaderFlowEdge): ShaderFlowEdge {
 
 async function writeCopiedGraphToClipboard(graph: CopiedGraph): Promise<void> {
   const payload = JSON.stringify({
-    app: 'visual-fm-2',
+    app: 'teia',
     kind: 'copied-graph',
     version: 1,
     graph: flowToEditorState(graph.nodes, graph.edges),
@@ -9977,7 +9981,7 @@ async function readCopiedGraphFromClipboard(): Promise<CopiedGraph | null> {
       version?: number;
       graph?: PersistedEditorState;
     };
-    if (parsed.app !== 'visual-fm-2' || parsed.kind !== 'copied-graph' || parsed.version !== 1 || !parsed.graph) {
+    if ((parsed.app !== 'teia' && parsed.app !== 'visual-fm-2') || parsed.kind !== 'copied-graph' || parsed.version !== 1 || !parsed.graph) {
       return null;
     }
     const callbacks = nodeCallbacksPlaceholder();

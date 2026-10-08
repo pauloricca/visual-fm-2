@@ -144,7 +144,7 @@ const QUANTISE_SCALE_IDS = new Map([
   ["harmonic-minor", 8],
 ]);
 
-class VisualFmWasmEngine extends AudioWorkletProcessor {
+class TeiaWasmEngine extends AudioWorkletProcessor {
   constructor(options = {}) {
     super();
     this.nodes = [];
@@ -3461,4 +3461,4 @@ function fftInPlace(real, imaginary) {
   }
 }
 
-registerProcessor("visual-fm-wasm-engine", VisualFmWasmEngine);
+registerProcessor("teia-wasm-engine", TeiaWasmEngine);

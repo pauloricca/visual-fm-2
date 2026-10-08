@@ -1,0 +1,6 @@
+services:
+  player:
+    image: teia-player:local
+    build: .
+    ports:
+      - "${TEIA_PLAYER_PORT:-${VISUAL_FM_PLAYER_PORT:-5180}}:5180"

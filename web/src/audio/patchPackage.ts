@@ -74,11 +74,11 @@ export async function createPatchPackage(patch: Patch, sourceProgram: DspProgram
       };
     }));
   const manifest = {
-    format: 'visual-fm-patch',
+    format: 'teia-patch',
     version: 2,
     programVersion: program.version,
     engineApiVersion: 1,
-    runtimePackage: '@visual-fm/player-runtime',
+    runtimePackage: '@teia/runtime',
     paths: { patch: 'patch.json', program: 'program.json' },
     parameters,
     assets,

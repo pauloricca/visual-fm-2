@@ -1,4 +1,8 @@
 interface ImportMetaEnv {
+  readonly VITE_TEIA_THEME?: string;
+  readonly VITE_TEIA_DSP_MODE?: 'single' | 'multi';
+  readonly VITE_TEIA_DSP_WORKERS?: string;
+  readonly VITE_TEIA_PATCH_STORAGE?: 'local' | 'browser';
   readonly VITE_VISUAL_FM_THEME?: string;
   readonly VITE_VISUAL_FM_DSP_MODE?: 'single' | 'multi';
   readonly VITE_VISUAL_FM_DSP_WORKERS?: string;

@@ -13,7 +13,7 @@ const compilerFile = '/tmp/visual-fm-task3-benchmark-compiler.cjs';
 buildSync({ entryPoints: [path.join(root, 'web/src/audio/dspProgram.ts')], outfile: compilerFile,
   bundle: true, platform: 'node', format: 'cjs', logLevel: 'silent' });
 const { compilePatchToDspProgram } = createRequire(import.meta.url)(compilerFile);
-const wasmBytes = fs.readFileSync(path.join(root, 'web/public/audio/visual-fm-kernel.wasm'));
+const wasmBytes = fs.readFileSync(path.join(root, 'web/public/audio/teia-kernel.wasm'));
 const cases = [
   ['dirty-saw', 'patches/dirty-saw/2026-10-07T13-01-07.047Z.json'],
   ['ear-confusion', 'patches/ear-confusion/2026-09-23T22-47-05.833Z.json'],

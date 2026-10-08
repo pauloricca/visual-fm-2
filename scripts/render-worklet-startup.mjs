@@ -54,7 +54,7 @@ if (!ProcessorClass) {
   throw new Error('Worklet processor was not registered.');
 }
 
-const wasmBytes = fs.readFileSync('web/public/audio/visual-fm-kernel.wasm');
+const wasmBytes = fs.readFileSync('web/public/audio/teia-kernel.wasm');
 const processor = new ProcessorClass({
   processorOptions: {
     wasmBytes: wasmBytes.buffer.slice(wasmBytes.byteOffset, wasmBytes.byteOffset + wasmBytes.byteLength),
