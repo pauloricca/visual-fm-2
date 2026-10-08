@@ -34,7 +34,7 @@ When changing an existing node's type, local input values carry over only to inp
 - `Params`: exposes named external parameters in the root patch. Drag a connection from a destination input to its temporary output to add a parameter; rename, reorder, and set its default value like an `Ins` output. Exported packages list each parameter's node ID, port name, default, and compiled value index.
 - `Outs`: exposes subpatch output ports while editing a subpatch.
 
-Dragging a new link or reconnecting an existing link endpoint onto the temporary port shown on `Ins`, `Params`, or `Outs` creates the corresponding input, external parameter, or output.
+Click the grey `new input`, `new param`, or `new output` label beneath an `Ins`, `Params`, or `Outs` node's ports and enter a name to add a port. Leaving the name blank adds nothing. Dragging a new link or reconnecting an existing link endpoint onto the temporary port also creates the corresponding input, external parameter, or output.
 
 - `Audio Out`: sends mono graph signals to the stereo hardware output via `both`, `left`, or `right`, with a final `level` control.
 - `Sine Osc`: generates a sine oscillator signal with frequency, phase, phase-reset, and output-range controls.

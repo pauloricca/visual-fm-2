@@ -1232,6 +1232,9 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
           const normalOutputPorts = showSequencerDisplay
             ? visibleOutputPorts.filter((output) => output.name === SEQUENCER_INDEX_OUTPUT)
             : visibleOutputPorts.filter((output) => output.name !== headerOutputPort);
+          const newPortSide = node.type === 'Outs' ? 'input' : 'output';
+          const newPortLabel = node.type === 'Outs' ? 'new output' : node.type === 'Params' ? 'new param' : 'new input';
+          const hasNewPortPlaceholder = node.type === 'Ins' || node.type === 'Params' || node.type === 'Outs';
           const showBody = !compactPorts
             || isExpression
             || showSampleUpload
@@ -1251,6 +1254,7 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
             || showAudioOutputDisplay
             || visibleInputPorts.length > 0
             || normalOutputPorts.length > 0
+            || hasNewPortPlaceholder
             || showMeterDisplay
             || showScopeDisplay
             || showFftDisplay
@@ -2175,8 +2179,11 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
                 +
               </button>
             ) : null}
+            {node.type === 'Outs' ? (
+              <NewPortPlaceholder label={newPortLabel} onAdd={(name) => data.onPortAdd(node.id, newPortSide, name)} />
+            ) : null}
           </div>
-          {normalOutputPorts.length > 0 ? (
+          {normalOutputPorts.length > 0 || (hasNewPortPlaceholder && newPortSide === 'output') ? (
             <div className="shader-ports shader-outputs">
               {normalOutputPorts.map((output) => (
               <div
@@ -2234,6 +2241,9 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
                 />
               </div>
               ))}
+              {hasNewPortPlaceholder && newPortSide === 'output' ? (
+                <NewPortPlaceholder label={newPortLabel} onAdd={(name) => data.onPortAdd(node.id, newPortSide, name)} />
+              ) : null}
             </div>
           ) : null}
           </div>
@@ -5304,6 +5314,53 @@ function CollapsedNodeLabel({ nodeType, customLabel, displaySuffix, onChange, on
       {displayLabel}
       {displaySuffix ? <span className="slider-node-title-readout" aria-hidden="true">{displaySuffix}</span> : null}
     </button>
+  );
+}
+
+function NewPortPlaceholder({ label, onAdd }: { label: string; onAdd: (name: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (editing) inputRef.current?.focus();
+  }, [editing]);
+
+  function finish() {
+    if (draft.trim()) onAdd(draft);
+    setDraft('');
+    setEditing(false);
+  }
+
+  return (
+    <div className="shader-port shader-port-placeholder nodrag nopan">
+      {editing ? (
+        <input
+          ref={inputRef}
+          className="port-name-editor nodrag nopan"
+          aria-label={label}
+          value={draft}
+          onChange={(event) => setDraft(event.currentTarget.value)}
+          onBlur={finish}
+          onKeyDown={(event) => {
+            event.stopPropagation();
+            if (event.key === 'Enter') finish();
+            if (event.key === 'Escape') { setDraft(''); setEditing(false); }
+          }}
+          onPointerDown={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => event.stopPropagation()}
+          spellCheck={false}
+        />
+      ) : (
+        <button
+          type="button"
+          className="port-name-placeholder nodrag nopan"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => { event.stopPropagation(); setEditing(true); }}
+          onDoubleClick={(event) => event.stopPropagation()}
+        >{label}</button>
+      )}
+    </div>
   );
 }
 

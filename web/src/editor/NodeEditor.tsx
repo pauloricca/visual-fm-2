@@ -1686,6 +1686,33 @@ function NodeEditorInner() {
     setEdges((current) => transformEdgeTree(current, (edge) => renameEdgePort(edge, nodeId, side, port, nextPort)));
   }, [commitHistory]);
 
+  const addBoundaryPort = useCallback((nodeId: string, side: 'input' | 'output', requestedName: string) => {
+    const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
+    if (!relatedNode || !canRenameBoundaryPort(relatedNode.data.patchNode as PatchNode, side)) return;
+    const ports = side === 'input' ? relatedNode.data.patchNode.inputs ?? [] : relatedNode.data.patchNode.outputs ?? [];
+    const baseName = requestedName.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!baseName) return;
+    const usedNames = new Set(ports.map((port) => port.name));
+    let name = baseName;
+    for (let suffix = 2; usedNames.has(name); suffix += 1) name = `${baseName} ${suffix}`;
+    commitHistory(`port-add:${nodeId}:${side}`);
+    setNodes((current) => current.map((node) => node.id === nodeId ? {
+      ...node,
+      data: {
+        ...node.data,
+        patchNode: {
+          ...node.data.patchNode,
+          ...(side === 'input'
+            ? { inputs: [...(node.data.patchNode.inputs ?? []), { name }] }
+            : { outputs: [...(node.data.patchNode.outputs ?? []), { name }] }),
+          ...((node.data.patchNode.type === 'Ins' || node.data.patchNode.type === 'Params')
+            ? { params: { ...node.data.patchNode.params, [name]: 0 } }
+            : {}),
+        },
+      },
+    } : node));
+  }, [commitHistory]);
+
   const updateBoundaryPortOrder = useCallback((nodeId: string, side: 'input' | 'output', port: string, direction: -1 | 1) => {
     const relatedNode = nodesRef.current.find((node) => node.id === nodeId);
     if (!relatedNode || !canRenameBoundaryPort(relatedNode.data.patchNode as PatchNode, side)) return;
@@ -2684,6 +2711,7 @@ function NodeEditorInner() {
         onPortDoubleClick: insertNodeOnPort,
         onPortSelect: selectBoundaryPort,
         onPortNameChange: updateBoundaryPortName,
+        onPortAdd: addBoundaryPort,
         onPortMove: updateBoundaryPortOrder,
         onCompactToggle: updateNodeCompactPorts,
         onEnabledChange: updateNodeEnabled,
@@ -2753,6 +2781,7 @@ function NodeEditorInner() {
     selectNodeFromTitle,
     settledGraphZoom,
     updateBoundaryPortName,
+    addBoundaryPort,
     updateBoundaryPortOrder,
     updateExpression,
     updateGroupSubpatchName,
@@ -10206,6 +10235,7 @@ function nodeCallbacksPlaceholder() {
     onIdChange: updateIdPlaceholder,
     onPortDoubleClick: noopPortDoubleClick,
     onPortNameChange: noopPortNameChange,
+    onPortAdd: noopPortNameChange,
     onPortMove: noopPortMove,
     onCompactToggle: noopCompactToggle,
     onScopeResize: noopScopeResize,
