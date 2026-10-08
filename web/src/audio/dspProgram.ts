@@ -17,65 +17,10 @@ import {
   sequencerUsesGateMode,
 } from '../graph/nodeTypes';
 import type { CustomWaveSettings, LinkMode, NodeType, Patch, PatchLink, PatchNode } from '../graph/types';
+import { simplifyDspOperations, type DspOptimizationOptions, type DspOptimizationReport } from './dspOptimizer';
 
-export const DSP_OP = {
-  Value: 0,
-  Add: 1,
-  Mul: 2,
-  Osc: 3,
-  Filter: 4,
-  Output: 5,
-  Abs: 6,
-  Map: 7,
-  FeedbackRead: 8,
-  FeedbackWrite: 9,
-  Select: 10,
-  Input: 11,
-  Delay: 12,
-  Chorus: 13,
-  Reverb: 14,
-  Fold: 15,
-  Sub: 16,
-  Div: 17,
-  Neg: 18,
-  Envelope: 19,
-  Follower: 20,
-  HardClip: 21,
-  SoftClip: 22,
-  Distortion: 23,
-  Sample: 24,
-  SampleParam: 25,
-  Function: 26,
-  MidiNote: 27,
-  MidiCc: 28,
-  Accumulator: 29,
-  Button: 30,
-  Slew: 31,
-  Tempo: 32,
-  Playhead: 33,
-  Buffer: 34,
-  Sequencer: 35,
-  Image: 36,
-  Time: 37,
-  Compress: 38,
-  Limiter: 39,
-  Quantise: 40,
-  BlockLatch: 41,
-  SpreadBegin: 42,
-  SpreadIndex: 43,
-  SpreadCollect: 44,
-  SpreadEnd: 45,
-  SpawnBegin: 46,
-  SpawnEnd: 47,
-  EndTrigger: 48,
-  Random: 49,
-  SpawnInstanceGate: 50,
-  DcBlock: 51,
-  RollNoteEvent: 52,
-  MidiNoteSend: 53,
-  MidiCcSend: 54,
-  Bend: 55,
-} as const;
+import { DSP_OP } from './dspOpcodes';
+export { DSP_OP } from './dspOpcodes';
 
 export interface DspProgram {
   version: 1;
@@ -100,6 +45,7 @@ export interface DspProgram {
   usesMidiNote: boolean;
   usesMidiClock: boolean;
   errors: string[];
+  optimization?: DspOptimizationReport;
 }
 
 export interface DspOp {
@@ -230,6 +176,9 @@ interface CompileContext {
   tempoBindings: DspTempoBinding[];
   stateBindings: DspStateBinding[];
   constantValueIndexes: Map<number, number>;
+  constantRegisters: Map<string, number>;
+  deduplicatedLoads: number;
+  optimizationOptions: DspOptimizationOptions;
   errors: string[];
   feedbackLinkIds: string[];
   monitorIds: Record<string, number>;
@@ -319,12 +268,13 @@ const EXPRESSION_LOGIC_FUNCTIONS = {
   not: 27,
 } as const;
 
-export function compilePatchToDspProgram(patch: Patch): DspProgram {
+export function compilePatchToDspProgram(patch: Patch, optimizationOptions: DspOptimizationOptions = {}): DspProgram {
   const spreadExpansion = expandSpreads(patch);
   // Materialize strength inputs before group boundaries disappear, so they
   // participate in the same boundary rewiring as every other input.
   const expandedPatch = expandGroups(withLinkWeightModulationNodes(spreadExpansion.patch));
   const context = createContext(expandedPatch);
+  context.optimizationOptions = optimizationOptions;
   context.errors.push(...spreadExpansion.errors);
   const ordinaryNodes = expandedPatch.nodes.filter((node) => !node.runtimeSpread);
   const audioOutNodes = ordinaryNodes.filter((node) => node.type === 'AudioOut');
@@ -394,6 +344,8 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
     resolveOutput(node, 'signal', context);
   }
 
+  const optimization = simplifyDspOperations(context, optimizationOptions);
+
   if (context.ops.length > MAX_DSP_OPS) {
     context.errors.push(`DSP program needs ${context.ops.length} operations; the engine limit is ${MAX_DSP_OPS}. Reduce the nodes inside Spreads.`);
   }
@@ -443,6 +395,7 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
       usesMidiNote: context.usesMidiNote,
       usesMidiClock: context.usesMidiClock,
       errors: [...new Set(context.errors)],
+      optimization,
     };
   }
 
@@ -469,6 +422,7 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
     usesMidiNote: context.usesMidiNote,
     usesMidiClock: context.usesMidiClock,
     errors: [],
+    optimization,
   };
 }
 
@@ -548,6 +502,9 @@ function createContext(patch: Patch): CompileContext {
     tempoBindings: [],
     stateBindings: [],
     constantValueIndexes: new Map(),
+    constantRegisters: new Map(),
+    deduplicatedLoads: 0,
+    optimizationOptions: {},
     errors: [],
     feedbackLinkIds: [],
     monitorIds: {},
@@ -619,6 +576,7 @@ function compileSpreadTemplates(context: CompileContext): void {
       value2: 0,
     };
     context.ops.push(begin);
+    context.constantRegisters.clear();
     if (spread.type === 'Spawn') {
       context.spawnActiveCountRegisterById.set(spread.id, countRegister);
       context.monitorIds[`${spread.id}:spawn-count`] = countRegister;
@@ -666,6 +624,7 @@ function compileSpreadTemplates(context: CompileContext): void {
       opcode: spread.type === 'Spawn' ? DSP_OP.SpawnEnd : DSP_OP.SpreadEnd,
       value: spreadSlot,
     });
+    context.constantRegisters.clear();
     begin.b = endIndex;
     begin.value2 = context.stateCount - stateStart;
     context.repeatBindings.push({
@@ -3016,6 +2975,15 @@ function emitValue(
   context: CompileContext,
   mode: 'smoothed' | 'immediate' = 'smoothed',
 ): number {
+  const isConstant = context.valueBindings[valueIndex]?.kind === 'constant';
+  const cacheKey = `${valueIndex}:${mode}`;
+  if (isConstant && context.optimizationOptions.deduplicateLoads !== false) {
+    const existing = context.constantRegisters.get(cacheKey);
+    if (existing !== undefined) {
+      context.deduplicatedLoads += 1;
+      return existing;
+    }
+  }
   const out = nextRegister(context);
   context.ops.push({
     opcode: DSP_OP.Value,
@@ -3023,6 +2991,7 @@ function emitValue(
     a: valueIndex,
     value: mode === 'immediate' ? 1 : 0,
   });
+  if (isConstant && context.optimizationOptions.deduplicateLoads !== false) context.constantRegisters.set(cacheKey, out);
   return out;
 }
 

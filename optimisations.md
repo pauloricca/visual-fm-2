@@ -38,7 +38,7 @@ Use ringing-drone plus small cases isolating the changed feature. Include stable
 
 ## 1. Process only parameters that are smoothing
 
-**Status (8 October 2026):** Implemented in the Rust kernel with a bounded dense list and constant-time membership/removal. The single and parallel WASM variants and npm runtime artifacts have been rebuilt. Offline single-kernel benchmarks, exact-output transition checks, and serial/parallel saved-patch comparisons passed; in-app AudioWorklet timing remains for user testing. Tasks 3–6 remain separate work.
+**Status (8 October 2026):** Implemented in the Rust kernel with a bounded dense list and constant-time membership/removal. The single and parallel WASM variants and npm runtime artifacts have been rebuilt. Offline single-kernel benchmarks, exact-output transition checks, and serial/parallel saved-patch comparisons passed; in-app AudioWorklet timing remains for user testing. Tasks 4–6 remain separate work, alongside the remaining task 3 stages below.
 
 **Objective:** remove the per-sample scan of settled parameters without changing their values or timing.
 
@@ -79,6 +79,8 @@ Use ringing-drone plus small cases isolating the changed feature. Include stable
 **Dependency:** coordinate with task 1's value lifecycle and task 3's register/dependency analysis. Runtime caching and compile-time constant folding must agree on what is mutable.
 
 ## 3. Simplify the compiled DSP operations
+
+**Status (8 October 2026):** Implemented immutable load deduplication, conservative constant folding for add/multiply/subtract/divide, and dead pure-operation elimination outside repeat templates. The compiler emits per-pass operation/register/value/state reports and removal reasons; passes can be disabled individually. Five saved-patch offline A/B benchmarks and exact-output comparisons passed. General register compaction, more complete pure-function folding, repeat-template elimination, and in-app AudioWorklet timing remain future stages.
 
 **Objective:** reduce interpreter dispatch and redundant loads/arithmetic without changing DSP semantics.
 

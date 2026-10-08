@@ -355,6 +355,8 @@ See [optimisations.md](optimisations.md) for proposed engine and editor optimisa
 
 The active compiler is `web/src/audio/dspProgram.ts`. It expands subpatches, combines input links with the rule above, and emits a `DspProgram` for the worklet. The editor sends that program with `dspProgram` messages, and value-only changes use `dspValues`.
 
+Before upload, the compiler reuses immutable literal loads within each ordinary or repeat region, folds arithmetic whose inputs are immutable literals using the kernel's register clamp and division threshold, and removes unused pure operations outside repeat templates. Mutable node parameters, link weights, analyser values, feedback, events, and stateful operations retain their normal evaluation. The compiled program includes an `optimization` report with operation counts by opcode, register/value/state totals before and after each pass, and removal reasons. Passes can be disabled independently through the optional second argument to `compilePatchToDspProgram` for offline diagnosis. The program version and kernel opcodes are unchanged.
+
 The old link-centric `WasmAudioGraph` TypeScript compiler has been removed. Current playback fixes should target `web/src/audio/dspProgram.ts` and the `DspProgram` sync path in the worklet.
 
 The worklet in `web/public/audio/audio-worklet-wasm.js` loads the `visual-fm` WASM kernel and syncs the compiled `DspProgram` into it. Vite derives each public audio asset's URL version from its content, preventing browsers from reusing an outdated worklet or WASM kernel after it changes. User-facing patch links target nodes or the audio output; any remaining inherited link-centric WASM API names are implementation details, not the patch philosophy.
