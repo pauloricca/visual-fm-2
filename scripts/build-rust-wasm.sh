@@ -22,4 +22,16 @@ docker run --rm \
   "$IMAGE" \
   sh -c "cargo build --release --target wasm32-unknown-unknown && cp target/wasm32-unknown-unknown/release/visual_fm_kernel.wasm '$PUBLIC_OUTPUT' && cp target/wasm32-unknown-unknown/release/visual_fm_kernel.wasm '$DIST_OUTPUT'"
 
+# Rebuild std with atomics for the shared-memory variant. The ordinary kernel
+# above keeps its original toolchain flags and remains the single-mode baseline.
+docker run --rm \
+  -v "$ROOT:/work" \
+  -w "$CRATE_DIR" \
+  -e RUSTC_BOOTSTRAP=1 \
+  -e CARGO_TARGET_DIR=target/parallel \
+  -e 'RUSTFLAGS=-C target-feature=+atomics,+bulk-memory,+mutable-globals -C link-arg=--shared-memory -C link-arg=--import-memory -C link-arg=--export-memory -C link-arg=--export=__stack_pointer -C link-arg=--initial-memory=33554432 -C link-arg=--max-memory=2147483648' \
+  "$IMAGE" \
+  sh -c 'cargo build -Z build-std=std,panic_abort --features parallel --release --target wasm32-unknown-unknown && cp target/parallel/wasm32-unknown-unknown/release/visual_fm_kernel.wasm /work/web/public/audio/visual-fm-kernel-parallel.wasm && cp target/parallel/wasm32-unknown-unknown/release/visual_fm_kernel.wasm /work/web/dist/audio/visual-fm-kernel-parallel.wasm'
+
 printf 'Wrote %s\n' "$ROOT/web/public/audio/visual-fm-kernel.wasm"
+printf 'Wrote %s\n' "$ROOT/web/public/audio/visual-fm-kernel-parallel.wasm"

@@ -586,12 +586,11 @@ function compileSpreadTemplates(context: CompileContext): void {
 
     // Virtual routes entering a repeated template need the same treatment as
     // explicit external links: compile the Send once before the repeat begins.
-    const receivedNumbers = new Set(templateNodes
-      .filter((node) => node.type === 'Receive')
-      .map(routingNumber));
+    const receives = templateNodes.filter((node) => node.type === 'Receive');
     for (const send of context.patch.nodes) {
       if (send.type !== 'Send' || send.enabled === false || send.runtimeSpread) continue;
-      if (receivedNumbers.has(routingNumber(send))) resolveSendSignal(send, context);
+      if (receives.some((receive) => routingNumber(receive) === routingNumber(send)
+        && routingNodesShareRuntime(receive, send))) resolveSendSignal(send, context);
     }
 
     const countRegister = spread.type === 'Spread'
@@ -628,6 +627,8 @@ function compileSpreadTemplates(context: CompileContext): void {
       else if (node.type === 'FFT') ensureFftBinding(node, context);
       else if (node.type === 'Meter' || node.type === 'Scope') resolveOutput(node, 'signal', context);
       else if (node.type === 'SamplePlayer') resolveOutput(node, 'signal', context);
+      else if (node.enabled !== false && (node.type === 'MidiNoteOnSend' || node.type === 'MidiNoteOffSend')) compileMidiNoteSend(node, context);
+      else if (node.enabled !== false && node.type === 'MidiCcSend') compileMidiCcSend(node, context);
     }
 
     for (const link of context.patch.links) {
@@ -1162,11 +1163,13 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     const rangeMin = resolveInput(node, 'rangeMin', -1, context);
     const rangeMax = resolveInput(node, 'rangeMax', 1, context);
     const output = nextRegister(context);
+    const state = nextState(context, 1);
     context.ops.push({
       opcode: DSP_OP.Osc,
       out: output,
       a: 6,
       b: -1,
+      state,
       value2: rangeMin,
       value3: rangeMax,
       value4: 1,
@@ -1590,12 +1593,15 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
   const distortionType = DISTORTION_TYPES[node.type];
   if (distortionType !== undefined) {
     const output = nextRegister(context);
+    const state = distortionType === 3 ? nextState(context, 1) : -1;
     context.ops.push({
       opcode: DSP_OP.Distortion,
       out: output,
       a: resolveInput(node, 'signal', 0, context),
       b: resolveInput(node, 'drive', 2.5, context),
-      c: constantRegister(distortionType, context),
+      c: -1,
+      state,
+      value: distortionType,
     });
     return output;
   }
@@ -2205,6 +2211,8 @@ function compileSamplePlayer(node: PatchNode, context: CompileContext): number {
     d: resolveInput(node, 'voices', 1, context),
     e: resolveInput(node, 'level', 0.7, context),
     state,
+    value2: node.sample?.name?.toLowerCase().endsWith('.mp4')
+      || /\.mp4(?:$|[?#])/i.test(node.sample?.url ?? '') ? 1 : 0,
   });
   return output;
 }
@@ -3044,6 +3052,7 @@ function routingNumber(node: PatchNode): number {
 }
 
 function routingNodesShareRuntime(receive: PatchNode, send: PatchNode): boolean {
+  if ((receive.routingScope ?? '') !== (send.routingScope ?? '')) return false;
   if (!receive.runtimeSpread) return !send.runtimeSpread;
   if (!send.runtimeSpread) return true;
   return receive.runtimeSpread.spreadId === send.runtimeSpread.spreadId

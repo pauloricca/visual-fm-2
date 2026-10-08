@@ -125,6 +125,8 @@ export interface PatchNode {
     itemIndex: number;
     originalNodeId: string;
   };
+  /** Compiler-only Group boundary for Send/Receive routing. Empty at patch root. */
+  routingScope?: string;
 }
 
 export interface SubpatchUiNodeOverride {

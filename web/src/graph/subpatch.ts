@@ -41,10 +41,13 @@ function expandGroupNodes(patch: Patch, prefix: string): Patch {
     // mute boundary rather than just disabling the now-removed wrapper.
     nodes.push(...groupPatch.nodes
       .filter((candidate) => !boundaryNodeIds.has(candidate.id))
-      .map((candidate) => node.enabled === false ? { ...candidate, enabled: false } : candidate));
-    nodes.push(...defaultNodesForUnconnectedGroupInputs(node, prefixedGroupId, inputLinks, innerLinksByInput, insNodes));
-    nodes.push(...passNodesForGroupBoundary(node, prefixedGroupId, innerLinksByInput, insNodes, 'input'));
-    nodes.push(...passNodesForGroupBoundary(node, prefixedGroupId, innerLinksByOutput, outsNodes, 'output'));
+      .map((candidate) => inheritGroupRuntime(node, node.enabled === false ? { ...candidate, enabled: false } : candidate)));
+    nodes.push(...defaultNodesForUnconnectedGroupInputs(node, prefixedGroupId, inputLinks, innerLinksByInput, insNodes)
+      .map((candidate) => inheritGroupRuntime(node, candidate)));
+    nodes.push(...passNodesForGroupBoundary(node, prefixedGroupId, innerLinksByInput, insNodes, 'input')
+      .map((candidate) => inheritGroupRuntime(node, candidate)));
+    nodes.push(...passNodesForGroupBoundary(node, prefixedGroupId, innerLinksByOutput, outsNodes, 'output')
+      .map((candidate) => inheritGroupRuntime(node, candidate)));
     links.push(...groupPatch.links.filter((link) => (
       !boundaryNodeIds.has(link.from.node) &&
       !boundaryNodeIds.has(link.to.node)
@@ -134,6 +137,17 @@ function expandGroupNodes(patch: Patch, prefix: string): Patch {
   return { nodes, links };
 }
 
+function inheritGroupRuntime(group: PatchNode, descendant: PatchNode): PatchNode {
+  if (!group.runtimeSpread) return descendant;
+  return {
+    ...descendant,
+    runtimeSpread: {
+      ...group.runtimeSpread,
+      originalNodeId: descendant.id,
+    },
+  };
+}
+
 function passNodesForGroupBoundary(
   groupNode: PatchNode,
   prefixedGroupId: string,
@@ -214,10 +228,14 @@ function groupBy(
 }
 
 function prefixNode(node: PatchNode, prefix: string): PatchNode {
-  if (!prefix) return cloneNode(node);
+  const cloned = cloneNode(node);
+  if (node.type === 'Send' || node.type === 'Receive') {
+    cloned.routingScope = prefix;
+  }
+  if (!prefix) return cloned;
 
   return {
-    ...cloneNode(node),
+    ...cloned,
     id: `${prefix}${node.id}`,
   };
 }

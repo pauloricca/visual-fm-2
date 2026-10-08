@@ -154,6 +154,13 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.sampleSlotByStorageKey = new Map();
     this.imageDataByNodeId = new Map();
     this.graphUpdateCrossfade = this.normalizeGraphUpdateCrossfade(options.processorOptions?.audioConfig?.graphUpdateCrossfade);
+    this.renderingStatus = {
+      requestedMode: options.processorOptions?.audioConfig?.rendering?.mode || "single",
+      mode: "single", workers: 0, parallelRepeats: 0,
+      reason: options.processorOptions?.parallelFallbackReason || "",
+    };
+    this.parallelControls = [];
+    this.parallelFailed = false;
     this.graphUpdateTransition = null;
     this.customWaveMorphEndSamples = new Map();
     this.pendingCustomWaveUpdates = new Map();
@@ -175,6 +182,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.cpuLoad = null;
     this.cpuElapsedMs = 0;
     this.cpuDeadlineMs = 0;
+    this.cpuPeakLoad = 0;
+    this.cpuDeadlineMisses = 0;
     this.nextCpuLoadPostTime = 0;
     this.outputLifecycleGain = 0;
     this.dspRandomSeed = (Math.random() * 0x1_0000_0000) >>> 0;
@@ -224,6 +233,9 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.recordingCapture = null;
 
     this.port.onmessage = (event) => {
+      // A timed-out helper may still own DSP memory. Quarantine this instance
+      // until the main thread terminates every helper and closes the context.
+      if (this.parallelFailed) return;
       const { type, payload } = event.data || {};
       if (type === "dspProgram") {
         this.setDspProgram(payload);
@@ -565,7 +577,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.port.postMessage(message, channels.map((channel) => channel.buffer));
   }
 
-  async loadWasm({ wasmBytes, wasmUrl } = {}) {
+  async loadWasm({ wasmBytes, wasmUrl, parallelEngine, audioConfig } = {}) {
     try {
       let bytes = wasmBytes;
       if (!bytes) {
@@ -578,7 +590,36 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         }
         bytes = await response.arrayBuffer();
       }
-      const { instance } = await WebAssembly.instantiate(bytes, {});
+      let instance;
+      if (parallelEngine) {
+        try {
+          instance = await WebAssembly.instantiate(parallelEngine.module, {
+            env: { memory: parallelEngine.memory },
+            parallel: {
+              now: () => this.cpuClockNow(),
+              wake: () => {
+                for (const control of this.parallelControls) Atomics.notify(control, 0, 1);
+              },
+            },
+          });
+          if (instance.exports.__tls_size.value > 65536 || instance.exports.__tls_align.value > 65536) {
+            throw new Error("Parallel WASM thread-local storage is too large.");
+          }
+          instance.exports.__wasm_init_tls(instance.exports.dspParallelTlsPtr(1));
+          this.parallelControls = Array.from({ length: parallelEngine.workers }, (_, worker) => (
+            new Int32Array(parallelEngine.memory.buffer, instance.exports.dspParallelControlPtr(worker), 3)
+          ));
+          instance.exports.configureDspParallel(parallelEngine.workers);
+          this.renderingStatus.mode = "multi";
+          this.renderingStatus.workers = parallelEngine.workers;
+        } catch (error) {
+          this.renderingStatus.reason = error?.message || "Shared WASM could not start.";
+          this.parallelControls = [];
+        }
+      }
+      if (this.renderingStatus.mode !== "multi") {
+        ({ instance } = await WebAssembly.instantiate(bytes, {}));
+      }
       this.wasmBytes = bytes;
       this.wasm = instance.exports;
       this.refreshWasmViews(false);
@@ -589,6 +630,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       this.refreshWasmViews(true);
       this.configureDspScopes();
       this.configureDspMeters();
+      this.postRenderingStatus();
       this.port.postMessage({
         type: "backendStatus",
         payload: {
@@ -604,6 +646,11 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         payload: { backend: "wasm", ready: false, error: error?.message || "WASM failed to load." },
       });
     }
+  }
+
+  postRenderingStatus() {
+    this.renderingStatus.parallelRepeats = Number(this.wasm?.dspParallelRepeatCount?.()) || 0;
+    this.port.postMessage({ type: "renderingStatus", payload: this.renderingStatus });
   }
 
   refreshWasmViews(reportGrowth = true) {
@@ -1348,6 +1395,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.midiButtonControlValues.clear();
     if (this.dspProgram.errors.length > 0) {
       if (hasProgramMigration) this.wasm.finishDspProgramUpdate();
+      this.postRenderingStatus();
       return;
     }
 
@@ -1489,6 +1537,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     // state of an existing one-shot so unrelated graph updates do not interrupt
     // it while it is playing.
     this.armDspCustomWaveOneShots(preservedState);
+    this.wasm.compileDspParallelPlan?.();
+    this.postRenderingStatus();
   }
 
   armDspCustomWaveOneShots(preservedState = null) {
@@ -2964,6 +3014,15 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
   renderCurrentDspProgramToWasm(frames) {
     this.flushMidiNoteEventsToWasm();
     this.wasm.renderDspProgram?.(frames, sampleRate);
+    if (this.wasm.dspParallelFault?.()) {
+      this.parallelFailed = true;
+      this.ready = false;
+      this.port.postMessage({
+        type: "parallelFailure",
+        payload: { message: "Parallel audio workers stalled. Playback stopped; switch DSP mode to single or press play to retry." },
+      });
+      throw new Error("Parallel audio workers stalled.");
+    }
     this.flushMidiOutputEvents();
   }
 
@@ -3077,6 +3136,10 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
   }
 
   processUnsafe(inputs, outputs) {
+    if (this.parallelFailed) {
+      this.fillSilence(outputs);
+      return true;
+    }
     this.refreshWasmViews(true);
     const output = outputs[0];
     const left = output?.[0];
@@ -3104,6 +3167,11 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     try {
       return this.processUnsafe(inputs, outputs);
     } catch (error) {
+      if (this.renderingStatus.mode === "multi" && !this.parallelFailed) {
+        this.parallelFailed = true;
+        this.ready = false;
+        this.port.postMessage({ type: "parallelFailure", payload: { message: error?.message || "Parallel audio failed." } });
+      }
       this.reportProcessorError(error);
       this.fillSilence(outputs);
       return true;
@@ -3125,6 +3193,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
 
     this.cpuElapsedMs += Math.max(0, elapsedMs);
     this.cpuDeadlineMs += deadlineMs;
+    this.cpuPeakLoad = Math.max(this.cpuPeakLoad, elapsedMs / deadlineMs);
+    if (elapsedMs > deadlineMs) this.cpuDeadlineMisses += 1;
     if (currentTime < this.nextCpuLoadPostTime) return;
 
     const intervalLoad = this.cpuElapsedMs / this.cpuDeadlineMs;
@@ -3137,8 +3207,9 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.nextCpuLoadPostTime = currentTime + 0.1;
     this.port.postMessage({
       type: "cpuLoad",
-      payload: { load: this.cpuLoad },
+      payload: { load: this.cpuLoad, peakLoad: this.cpuPeakLoad, deadlineMisses: this.cpuDeadlineMisses },
     });
+    this.cpuPeakLoad = 0;
   }
 }
 

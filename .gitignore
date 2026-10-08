@@ -34,7 +34,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-rust/visual-fm-kernel/target/debug
+rust/visual-fm-kernel/target/
 
 # Local environment overrides
 .env.local

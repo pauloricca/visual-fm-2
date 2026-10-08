@@ -553,7 +553,14 @@ function NodeEditorInner() {
   const selectedMidiInputDeviceKey = useMemo(() => selectedMidiInputDeviceIds.join('\n'), [selectedMidiInputDeviceIds]);
   const audioPlaybackActive = audio.status === 'running' || audio.status === 'starting';
   const cpuLoad = audio.status === 'running' ? Math.min(1, audio.cpuLoad) : 0;
-  const cpuPercentage = Math.round(cpuLoad * 100);
+  const cpuPercentage = Math.round((audio.status === 'running' ? audio.cpuLoad : 0) * 100);
+  const cpuDetails = [
+    audio.status === 'running' ? `Audio CPU: ${cpuPercentage}%` : 'Audio CPU: stopped',
+    `Render mode: ${audio.rendering.mode}${audio.rendering.workers ? ` (${audio.rendering.workers} helper threads)` : ''}`,
+    ...(audio.rendering.mode === 'multi' ? [`${audio.rendering.parallelRepeats} eligible Spread/Spawn templates (parallel above each template's workload threshold)`] : []),
+    `Peak block: ${Math.round(audio.cpuPeakLoad * 100)}%; missed deadlines: ${audio.cpuDeadlineMisses}`,
+    ...(audio.rendering.reason ? [`Fallback: ${audio.rendering.reason}`] : []),
+  ].join('\n');
   const audioRecordingActive = audio.recording.status === 'waiting' || audio.recording.status === 'recording';
   const recordingButtonLabel = audioRecordingActive
     ? formatRecordingTimestamp(audio.recording.elapsedSeconds)
@@ -5897,8 +5904,8 @@ function NodeEditorInner() {
                 aria-label={audio.status === 'running' ? `CPU usage ${cpuPercentage}%` : 'CPU usage, audio stopped'}
                 aria-valuemin={0}
                 aria-valuemax={100}
-                aria-valuenow={audio.status === 'running' ? cpuPercentage : 0}
-                title={audio.status === 'running' ? `Audio CPU: ${cpuPercentage}%` : 'Audio CPU: stopped'}
+                aria-valuenow={audio.status === 'running' ? Math.min(100, cpuPercentage) : 0}
+                title={cpuDetails}
               >
                 <span className="cpu-meter-label">CPU</span>
                 <span className="cpu-meter-percentage" aria-hidden="true">{cpuPercentage}%</span>

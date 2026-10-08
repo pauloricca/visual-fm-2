@@ -82,14 +82,17 @@ function expandOneSpread(patch: Patch, spreadId: string): SpreadExpansion {
   for (const node of internalNodes) {
     if (isRuntimeContainer(node)) {
       errors.push(`${spread.type} "${spread.id}" cannot contain ${node.type} "${node.id}".`);
-    } else if (node.type === 'Group') {
-      errors.push(`${spread.type} "${spread.id}" cannot contain Group node "${node.id}" yet; place the Group's nodes directly in the ${spread.type}.`);
+    } else if (node.type === 'Group' && node.subpatch) {
+      const unsupported = nestedRuntimeContainer(node.subpatch);
+      if (unsupported) {
+        errors.push(`${spread.type} "${spread.id}" cannot contain Group "${node.id}" with ${unsupported} inside it.`);
+      }
     }
   }
 
   const clonedNodes: PatchNode[] = [];
   for (const node of internalNodes) {
-    if (isRuntimeContainer(node) || node.type === 'Group') continue;
+    if (isRuntimeContainer(node)) continue;
     clonedNodes.push(cloneSpreadNode(node, spread.id, 0));
   }
   if (spread.type === 'Spread') {
@@ -183,6 +186,17 @@ function expandOneSpread(patch: Patch, spreadId: string): SpreadExpansion {
     },
     errors,
   };
+}
+
+function nestedRuntimeContainer(patch: Patch): string | null {
+  for (const node of patch.nodes) {
+    if (isRuntimeContainer(node)) return node.type;
+    if (node.type === 'Group' && node.subpatch) {
+      const nested = nestedRuntimeContainer(node.subpatch);
+      if (nested) return nested;
+    }
+  }
+  return null;
 }
 
 function isRuntimeContainer(node: PatchNode): boolean {

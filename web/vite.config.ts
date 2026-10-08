@@ -12,6 +12,8 @@ const RESOLVED_AUDIO_ENGINE_ASSET_MODULE_ID = `\0${AUDIO_ENGINE_ASSET_MODULE_ID}
 const AUDIO_ENGINE_ASSET_FILES = new Set([
   resolve(dirname(fileURLToPath(import.meta.url)), 'public/audio/audio-worklet-wasm.js'),
   resolve(dirname(fileURLToPath(import.meta.url)), 'public/audio/visual-fm-kernel.wasm'),
+  resolve(dirname(fileURLToPath(import.meta.url)), 'public/audio/visual-fm-kernel-parallel.wasm'),
+  resolve(dirname(fileURLToPath(import.meta.url)), 'public/audio/dsp-parallel-worker.js'),
 ]);
 
 export default defineConfig({
@@ -52,6 +54,8 @@ function audioEngineAssetVersionPlugin(): Plugin {
       return [
         `export const AUDIO_WORKLET_ASSET_VERSION = ${JSON.stringify(audioAssetVersion('audio-worklet-wasm.js'))};`,
         `export const AUDIO_WASM_ASSET_VERSION = ${JSON.stringify(audioAssetVersion('visual-fm-kernel.wasm'))};`,
+        `export const AUDIO_PARALLEL_WASM_ASSET_VERSION = ${JSON.stringify(audioAssetVersion('visual-fm-kernel-parallel.wasm'))};`,
+        `export const AUDIO_PARALLEL_WORKER_ASSET_VERSION = ${JSON.stringify(audioAssetVersion('dsp-parallel-worker.js'))};`,
       ].join('\n');
     },
     configureServer(server) {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AUDIO_ENGINE_CONFIG } from './config';
+import { createParallelEngine, type ParallelEngine } from './parallelEngine';
 import { DSP_OP, type DspProgram } from './dspProgram';
 import { logDiagnosticEvent, serializeError } from '../diagnostics';
 import { AUDIO_WASM_ASSET_VERSION, AUDIO_WORKLET_ASSET_VERSION } from 'virtual:audio-engine-assets';
@@ -96,6 +97,9 @@ interface AudioEngineState {
   status: AudioStatus;
   message: string;
   cpuLoad: number;
+  cpuPeakLoad: number;
+  cpuDeadlineMisses: number;
+  rendering: { mode: string; workers: number; parallelRepeats: number; reason: string };
   peak: number;
   linkMeters: Record<string, LinkMeterReading>;
   linkScopes: Record<string, LinkScopeReading>;
@@ -357,6 +361,9 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   const [status, setStatus] = useState<AudioStatus>('idle');
   const [message, setMessage] = useState('audio stopped');
   const [cpuLoad, setCpuLoad] = useState(0);
+  const [cpuPeakLoad, setCpuPeakLoad] = useState(0);
+  const [cpuDeadlineMisses, setCpuDeadlineMisses] = useState(0);
+  const [rendering, setRendering] = useState({ mode: 'single', workers: 0, parallelRepeats: 0, reason: '' });
   const [peak, setPeak] = useState(0);
   const [linkMeters, setLinkMeters] = useState<Record<string, LinkMeterReading>>({});
   const [linkScopes, setLinkScopeReadings] = useState<Record<string, LinkScopeReading>>({});
@@ -377,6 +384,8 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
   const [lastMidiControlChange, setLastMidiControlChange] = useState<MidiControlChange | undefined>(undefined);
   const contextRef = useRef<AudioContext | null>(null);
   const nodeRef = useRef<AudioWorkletNode | null>(null);
+  const parallelEngineRef = useRef<ParallelEngine | null>(null);
+  const parallelEngineAbortRef = useRef<AbortController | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const outputGainRef = useRef<GainNode | null>(null);
   const inputSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
@@ -462,6 +471,10 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     if (audioEngineCloseRef.current) return audioEngineCloseRef.current;
 
     backendReadyRef.current = false;
+    parallelEngineAbortRef.current?.abort();
+    parallelEngineAbortRef.current = null;
+    const closingParallelEngine = parallelEngineRef.current;
+    parallelEngineRef.current = null;
     lastSentProgramStructureRef.current = null;
     lastSentValuesRef.current = null;
     lastSentCustomWavePointsRef.current = null;
@@ -480,6 +493,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     );
     audioEngineCloseRef.current = closePromise;
     void closePromise.finally(() => {
+      closingParallelEngine?.dispose();
       if (audioEngineCloseRef.current === closePromise) {
         audioEngineCloseRef.current = null;
       }
@@ -1361,17 +1375,55 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
             }
             return response.arrayBuffer();
           });
+          let parallelFallbackReason = '';
+          if (AUDIO_ENGINE_CONFIG.rendering.mode === 'multi') {
+            const abort = new AbortController();
+            parallelEngineAbortRef.current = abort;
+            try {
+              const parallelEngine = await createParallelEngine(AUDIO_ENGINE_CONFIG.rendering.workers, abort.signal, (error) => {
+                if (audioEngineGenerationRef.current !== generation || contextRef.current !== context) return;
+                setStatus('error');
+                setMessage(error);
+                void closeAudioEngine('parallel-worker-error');
+              });
+              if (abort.signal.aborted) {
+                parallelEngine.dispose();
+                abort.signal.throwIfAborted();
+              }
+              parallelEngineRef.current = parallelEngine;
+            } catch (error) {
+              if (abort.signal.aborted) throw error;
+              parallelFallbackReason = error instanceof Error ? error.message : String(error);
+              logDiagnosticEvent('audio-parallel-fallback', { level: 'warn', details: { reason: parallelFallbackReason } });
+            }
+          }
           await context.audioWorklet.addModule(WORKLET_URL);
           const analyser = context.createAnalyser();
           analyser.fftSize = 1024;
           const outputGain = context.createGain();
           outputGain.gain.value = 0;
-          const node = new AudioWorkletNode(context, 'visual-fm-wasm-engine', {
+          const createNode = (parallelEngine: ParallelEngine['processorOptions'] | undefined, fallbackReason: string) => new AudioWorkletNode(context, 'visual-fm-wasm-engine', {
             numberOfInputs: 1,
             numberOfOutputs: 1,
             outputChannelCount: [2],
-            processorOptions: { wasmBytes, audioConfig: AUDIO_ENGINE_CONFIG },
+            processorOptions: {
+              wasmBytes, audioConfig: AUDIO_ENGINE_CONFIG,
+              parallelEngine,
+              parallelFallbackReason: fallbackReason,
+            },
           });
+          let node: AudioWorkletNode;
+          try {
+            node = createNode(parallelEngineRef.current?.processorOptions, parallelFallbackReason);
+          } catch (error) {
+            if (!parallelEngineRef.current) throw error;
+            parallelEngineRef.current.dispose();
+            parallelEngineRef.current = null;
+            parallelFallbackReason = error instanceof Error ? error.message : String(error);
+            node = createNode(undefined, parallelFallbackReason);
+          }
+          setCpuPeakLoad(0);
+          setCpuDeadlineMisses(0);
           postBufferRestores(node, bufferRestoresRef.current);
           const pendingBufferCopies = [...pendingBufferCopiesRef.current.values()];
           pendingBufferCopiesRef.current.clear();
@@ -1391,7 +1443,29 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
           });
 
           node.port.onmessage = (event) => {
+            if (contextRef.current !== context) return;
             const { type, payload } = event.data || {};
+            if (type === 'renderingStatus') {
+              setRendering({
+                mode: payload?.mode === 'multi' ? 'multi' : 'single',
+                workers: Number(payload?.workers) || 0,
+                parallelRepeats: Number(payload?.parallelRepeats) || 0,
+                reason: String(payload?.reason || ''),
+              });
+              if (payload?.mode !== 'multi') {
+                parallelEngineRef.current?.dispose();
+                parallelEngineRef.current = null;
+              }
+              logDiagnosticEvent('audio-rendering-mode', { details: payload });
+              return;
+            }
+            if (type === 'parallelFailure') {
+              setStatus('error');
+              setMessage(payload?.message || 'Parallel audio failed.');
+              logDiagnosticEvent('audio-parallel-failure', { level: 'error', details: payload });
+              void closeAudioEngine('parallel-render-failed');
+              return;
+            }
             if (type === 'midiOutput') {
               sendMidiOutputEvents(payload?.events);
               return;
@@ -1436,6 +1510,8 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
             if (type === 'cpuLoad') {
               const load = Number(payload?.load);
               if (Number.isFinite(load)) setCpuLoad(Math.max(0, load));
+              setCpuPeakLoad(Math.max(0, Number(payload?.peakLoad) || 0));
+              setCpuDeadlineMisses(Math.max(0, Number(payload?.deadlineMisses) || 0));
               return;
             }
             if (type === 'wasmScopeMemory') {
@@ -1959,6 +2035,9 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
     status,
     message,
     cpuLoad,
+    cpuPeakLoad,
+    cpuDeadlineMisses,
+    rendering,
     peak,
     linkMeters,
     linkScopes,
