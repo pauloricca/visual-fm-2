@@ -14,7 +14,8 @@ const LINK_TARGET_BASE = -2;
 const DSP_OUTPUT_START_FADE_SECONDS = 0.02;
 const VOICE_START_FADE_SECONDS = 0.006;
 const VOICE_STEAL_FADE_SECONDS = 0.03;
-const LINK_METER_POST_SECONDS = 1 / 30;
+const VISUALIZATION_POST_SECONDS = 1 / 15;
+const SCOPE_VISUALIZATION_POST_SECONDS = 1 / 30;
 const LINK_SCOPE_SECONDS_MAX = 30;
 const MASTER_DC_BLOCK_HZ = 10;
 const DENORMAL_EPSILON = 1e-20;
@@ -24,6 +25,8 @@ const RECORDING_CHUNK_FRAMES = 16384;
 const RECORDING_CHANNEL_COUNT = 2;
 const QUANTISE_MIDI_ROOT = "midi-note";
 const DEFAULT_GRAPH_UPDATE_CROSSFADE_SECONDS = 0.02;
+// The player package build replaces this constant and removes editor-only work.
+const PLAYER_RUNTIME_BUILD = false;
 
 // Active playback uses DspProgram messages compiled by web/src/audio/dspProgram.ts.
 
@@ -215,21 +218,23 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.midiButtonControlValues = new Map();
     this.graphVersion = 0;
     this.linkScopeSamples = null;
-    this.masterEffects = this.normalizeEffects();
-    this.chorusBuffers = [
-      new Float32Array(Math.ceil(sampleRate * 0.08)),
-      new Float32Array(Math.ceil(sampleRate * 0.08)),
-    ];
-    this.chorusIndices = [0, 0];
-    this.chorusPhases = [0, Math.PI * 0.5];
-    this.delayBuffers = [
-      new Float32Array(Math.ceil(sampleRate * 1.6)),
-      new Float32Array(Math.ceil(sampleRate * 1.6)),
-    ];
-    this.delayIndices = [0, 0];
-    this.reverbDelays = [this.createReverbDelays(), this.createReverbDelays()];
-    this.inputDcBlockers = [this.createDcBlocker(), this.createDcBlocker()];
-    this.outputDcBlockers = [this.createDcBlocker(), this.createDcBlocker()];
+    if (!PLAYER_RUNTIME_BUILD) {
+      this.masterEffects = this.normalizeEffects();
+      this.chorusBuffers = [
+        new Float32Array(Math.ceil(sampleRate * 0.08)),
+        new Float32Array(Math.ceil(sampleRate * 0.08)),
+      ];
+      this.chorusIndices = [0, 0];
+      this.chorusPhases = [0, Math.PI * 0.5];
+      this.delayBuffers = [
+        new Float32Array(Math.ceil(sampleRate * 1.6)),
+        new Float32Array(Math.ceil(sampleRate * 1.6)),
+      ];
+      this.delayIndices = [0, 0];
+      this.reverbDelays = [this.createReverbDelays(), this.createReverbDelays()];
+      this.inputDcBlockers = [this.createDcBlocker(), this.createDcBlocker()];
+      this.outputDcBlockers = [this.createDcBlocker(), this.createDcBlocker()];
+    }
     this.recordingCapture = null;
 
     this.port.onmessage = (event) => {
@@ -241,6 +246,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         this.setDspProgram(payload);
       } else if (type === "dspValues") {
         this.setDspValues(payload);
+      } else if (type === "externalParameter") {
+        this.setDspValueAt(payload?.valueIndex, payload?.value);
       } else if (type === "dspCustomWaves") {
         this.setDspCustomWaves(payload);
       } else if (type === "dspSequencers") {
@@ -273,6 +280,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         this.clearBuffers(payload);
       } else if (type === "restoreBuffers") {
         this.setBufferRestores(payload);
+      } else if (type === "packageReady") {
+        this.port.postMessage({ type: "packageReady" });
       } else if (type === "setLinkScope") {
         this.setLinkScopes(payload);
       } else if (type === "setLinkScopes") {
@@ -630,7 +639,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       this.refreshWasmViews(true);
       this.configureDspScopes();
       this.configureDspMeters();
-      this.postRenderingStatus();
+      if (!PLAYER_RUNTIME_BUILD) this.postRenderingStatus();
       this.port.postMessage({
         type: "backendStatus",
         payload: {
@@ -666,7 +675,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.inputBuffer = typeof this.wasm.inputPtr === "function"
       ? new Float32Array(buffer, this.wasm.inputPtr(), MAX_WASM_FRAMES)
       : null;
-    if (
+    if (!PLAYER_RUNTIME_BUILD &&
       typeof this.wasm.linkMeterInputPtr === "function"
       && typeof this.wasm.linkMeterOutputPtr === "function"
       && typeof this.wasm.linkMeterEnvelopePtr === "function"
@@ -677,11 +686,11 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       this.linkMeterEnvelopeSums = new Float64Array(buffer, this.wasm.linkMeterEnvelopePtr(), 1024);
       this.linkMeterCounts = new Uint32Array(buffer, this.wasm.linkMeterCountPtr(), 1024);
     }
-    this.linkScopeSamples = typeof this.wasm.linkScopePtr === "function"
+    this.linkScopeSamples = !PLAYER_RUNTIME_BUILD && typeof this.wasm.linkScopePtr === "function"
       ? new Float32Array(buffer, this.wasm.linkScopePtr(), 1024)
       : null;
     this.refreshDspScopeViews(buffer);
-    if (reportGrowth) {
+    if (reportGrowth && !PLAYER_RUNTIME_BUILD) {
       this.port.postMessage({
         type: "wasmMemory",
         payload: {
@@ -1395,7 +1404,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.midiButtonControlValues.clear();
     if (this.dspProgram.errors.length > 0) {
       if (hasProgramMigration) this.wasm.finishDspProgramUpdate();
-      this.postRenderingStatus();
+      if (!PLAYER_RUNTIME_BUILD) this.postRenderingStatus();
       return;
     }
 
@@ -1538,7 +1547,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     // it while it is playing.
     this.armDspCustomWaveOneShots(preservedState);
     this.wasm.compileDspParallelPlan?.();
-    this.postRenderingStatus();
+    if (!PLAYER_RUNTIME_BUILD) this.postRenderingStatus();
   }
 
   armDspCustomWaveOneShots(preservedState = null) {
@@ -1604,6 +1613,17 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     if (!this.dspProgram || !this.wasm?.setDspScope || !this.wasm?.dspScopePtr) return;
 
     const requestsById = new Map(this.linkScopeRequests.map((request) => [request.linkId, request]));
+    if (PLAYER_RUNTIME_BUILD) {
+      for (const binding of this.dspProgram.fftBindings || []) {
+        requestsById.set(binding.nodeId, {
+          linkId: binding.nodeId,
+          mode: "continuous",
+          points: 512,
+          displayPoints: 512,
+          seconds: 0.012,
+        });
+      }
+    }
     const nextScopes = [];
     let slot = 0;
     for (const request of requestsById.values()) {
@@ -1663,6 +1683,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
   }
 
   configureDspMeters() {
+    if (PLAYER_RUNTIME_BUILD) return;
     this.dspMeterStates.clear();
     this.wasm?.clearDspMeters?.();
     if (!this.dspProgram || !this.wasm?.setDspMeter) return;
@@ -2394,14 +2415,16 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.pendingMidiNoteEvents = [];
     this.freeSlots = Array.from({ length: MAX_ACTIVE_VOICES }, (_, index) => index);
     this.outputLifecycleGain = 0;
-    this.chorusBuffers.forEach((buffer) => buffer.fill(0));
-    this.chorusIndices = [0, 0];
-    this.chorusPhases = [0, Math.PI * 0.5];
-    this.delayBuffers.forEach((buffer) => buffer.fill(0));
-    this.delayIndices = [0, 0];
-    this.reverbDelays = [this.createReverbDelays(), this.createReverbDelays()];
-    this.inputDcBlockers = [this.createDcBlocker(), this.createDcBlocker()];
-    this.outputDcBlockers = [this.createDcBlocker(), this.createDcBlocker()];
+    if (!PLAYER_RUNTIME_BUILD) {
+      this.chorusBuffers.forEach((buffer) => buffer.fill(0));
+      this.chorusIndices = [0, 0];
+      this.chorusPhases = [0, Math.PI * 0.5];
+      this.delayBuffers.forEach((buffer) => buffer.fill(0));
+      this.delayIndices = [0, 0];
+      this.reverbDelays = [this.createReverbDelays(), this.createReverbDelays()];
+      this.inputDcBlockers = [this.createDcBlocker(), this.createDcBlocker()];
+      this.outputDcBlockers = [this.createDcBlocker(), this.createDcBlocker()];
+    }
     if (this.wasm) this.wasm.resetPhases();
     this.dspRandomSeed = (this.dspRandomSeed + 0x9e37_79b9) >>> 0;
     this.wasm?.seedDspRandom?.(this.dspRandomSeed || 1);
@@ -2803,7 +2826,10 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
 
   flushLinkMeters() {
     if (this.sampleCursor < this.nextLinkMeterPostSample) return;
-    this.nextLinkMeterPostSample = this.sampleCursor + Math.max(1, Math.round(sampleRate * LINK_METER_POST_SECONDS));
+    const postSeconds = this.monitorScopeStates.size > 0 || this.dspScopeStates.size > 0
+      ? SCOPE_VISUALIZATION_POST_SECONDS
+      : VISUALIZATION_POST_SECONDS;
+    this.nextLinkMeterPostSample = this.sampleCursor + Math.max(1, Math.round(sampleRate * postSeconds));
     const levels = this.links.filter((link) => !link.monitorOnly).map((link) => {
       const index = link.wasmIndex;
       const count = index >= 0 ? this.linkMeterCounts?.[index] || 0 : 0;
@@ -2979,6 +3005,21 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     });
   }
 
+  updatePlayerFftOutputs() {
+    if (this.dspScopeStates.size === 0 || this.sampleCursor < this.nextLinkMeterPostSample) return;
+    this.nextLinkMeterPostSample = this.sampleCursor + Math.max(1, Math.round(sampleRate / 30));
+    for (const binding of this.dspProgram?.fftBindings || []) {
+      const state = this.dspScopeStates.get(binding.nodeId);
+      if (!state) continue;
+      const samples = this.dspScopeFrameSamples(state);
+      const minFrequency = this.dspProgram.values[binding.minFrequencyValueIndex];
+      const maxFrequency = this.dspProgram.values[binding.maxFrequencyValueIndex];
+      const peak = dominantSpectrumPeak(samples, state.request.seconds, minFrequency, maxFrequency);
+      this.setDspValueAt(binding.frequencyValueIndex, peak.frequency);
+      this.setDspValueAt(binding.amplitudeValueIndex, peak.amplitude);
+    }
+  }
+
   fillSilence(outputs) {
     const output = outputs[0];
     const left = output?.[0];
@@ -2986,7 +3027,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     if (!left) return;
     left.fill(0);
     if (right !== left) right.fill(0);
-    this.recordOutputSamples(left, right, left.length);
+    if (!PLAYER_RUNTIME_BUILD) this.recordOutputSamples(left, right, left.length);
     this.lastGraphLeftSample = 0;
     this.lastGraphRightSample = 0;
     this.outputLifecycleGain = 0;
@@ -3004,10 +3045,17 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     const input = inputs[0];
     const inputLeft = input?.[0];
     const inputRight = input?.[1] || inputLeft;
+    if (!inputLeft) {
+      this.inputBuffer.fill(0, 0, frames);
+      return;
+    }
+    if (inputRight === inputLeft) {
+      this.inputBuffer.set(inputLeft.subarray(0, frames));
+      if (inputLeft.length < frames) this.inputBuffer.fill(0, inputLeft.length, frames);
+      return;
+    }
     for (let i = 0; i < frames; i += 1) {
-      this.inputBuffer[i] = inputLeft
-        ? ((inputLeft[i] || 0) + (inputRight?.[i] || 0)) * 0.5
-        : 0;
+      this.inputBuffer[i] = ((inputLeft[i] || 0) + (inputRight[i] || 0)) * 0.5;
     }
   }
 
@@ -3081,37 +3129,46 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       return true;
     }
 
-    this.pruneVoices(this.sampleCursor / sampleRate);
-    this.flushPendingVoiceStarts(this.sampleCursor / sampleRate);
+    if (!PLAYER_RUNTIME_BUILD) {
+      this.pruneVoices(this.sampleCursor / sampleRate);
+      this.flushPendingVoiceStarts(this.sampleCursor / sampleRate);
+    }
     this.wasm.clear(frames);
     this.copyInput(inputs, frames);
     this.wasm.beginDspRenderQuantum?.();
     this.renderCurrentDspProgramToWasm(frames);
-    this.captureSampleTriggerEvents();
+    if (!PLAYER_RUNTIME_BUILD) this.captureSampleTriggerEvents();
 
     let peak = 0;
     for (let i = 0; i < frames; i += 1) {
       const lifecycleGain = this.nextOutputLifecycleGain();
       const rawLeftSample = (this.leftBuffer[i] || 0) * lifecycleGain;
       const rawRightSample = (this.rightBuffer[i] || 0) * lifecycleGain;
-      const [mixedLeftSample, mixedRightSample] = this.nextGraphUpdateCrossfadeSample(rawLeftSample, rawRightSample);
+      let mixedLeftSample = rawLeftSample;
+      let mixedRightSample = rawRightSample;
+      if (this.graphUpdateTransition) {
+        [mixedLeftSample, mixedRightSample] = this.nextGraphUpdateCrossfadeSample(rawLeftSample, rawRightSample);
+      }
       const leftSample = this.sanitizeSample(mixedLeftSample);
       const rightSample = this.sanitizeSample(mixedRightSample);
       this.lastGraphLeftSample = mixedLeftSample;
       this.lastGraphRightSample = mixedRightSample;
       left[i] = leftSample;
       right[i] = rightSample;
-      peak = Math.max(peak, Math.abs(leftSample), Math.abs(rightSample));
+      if (!PLAYER_RUNTIME_BUILD) peak = Math.max(peak, Math.abs(leftSample), Math.abs(rightSample));
     }
     for (let i = frames; i < left.length; i += 1) {
       left[i] = 0;
       right[i] = 0;
     }
-    this.lastOutputPeak = Math.max(this.lastOutputPeak, peak);
-    this.recordOutputSamples(left, right, left.length);
+    if (!PLAYER_RUNTIME_BUILD) {
+      this.lastOutputPeak = Math.max(this.lastOutputPeak, peak);
+      this.recordOutputSamples(left, right, left.length);
+    }
     this.sampleCursor += left.length;
     this.flushPendingCustomWaveUpdates();
-    this.flushLinkMeters();
+    if (PLAYER_RUNTIME_BUILD) this.updatePlayerFftOutputs();
+    else this.flushLinkMeters();
     return true;
   }
 
@@ -3163,7 +3220,7 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
   }
 
   process(inputs, outputs) {
-    const startedAt = this.cpuClockNow();
+    const startedAt = PLAYER_RUNTIME_BUILD ? 0 : this.cpuClockNow();
     try {
       return this.processUnsafe(inputs, outputs);
     } catch (error) {
@@ -3176,10 +3233,12 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       this.fillSilence(outputs);
       return true;
     } finally {
-      this.updateCpuLoad(
-        this.cpuClockNow() - startedAt,
-        outputs[0]?.[0]?.length || this.lastProcessFrames,
-      );
+      if (!PLAYER_RUNTIME_BUILD) {
+        this.updateCpuLoad(
+          this.cpuClockNow() - startedAt,
+          outputs[0]?.[0]?.length || this.lastProcessFrames,
+        );
+      }
     }
   }
 

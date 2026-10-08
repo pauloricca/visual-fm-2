@@ -4,6 +4,7 @@ export type NodeType =
   | 'Spread'
   | 'Spawn'
   | 'Ins'
+  | 'Params'
   | 'Outs'
   | 'AudioOut'
   | 'SineOsc'

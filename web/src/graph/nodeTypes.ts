@@ -44,6 +44,11 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     inputs: [],
     outputs: [],
   },
+  Params: {
+    type: 'Params',
+    inputs: [],
+    outputs: [],
+  },
   Outs: {
     type: 'Outs',
     inputs: [],
@@ -625,6 +630,7 @@ const NODE_TYPE_LABELS: Record<NodeType, string> = {
   Spread: 'Spread',
   Spawn: 'Spawn',
   Ins: 'Ins',
+  Params: 'Params',
   Outs: 'Outs',
   AudioOut: 'Audio Out',
   SineOsc: 'Sine Osc',
@@ -722,7 +728,7 @@ export function getNodeDefinition(node: PatchNode): NodeDefinition {
     };
   }
 
-  if (node.type === 'Ins') {
+  if (node.type === 'Ins' || node.type === 'Params') {
     return {
       type: node.type,
       inputs: [],

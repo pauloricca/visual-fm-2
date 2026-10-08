@@ -369,6 +369,10 @@ export function compilePatchToDspProgram(patch: Patch): DspProgram {
     registerSliderMonitor(node, context);
   }
 
+  for (const node of ordinaryNodes.filter((candidate) => candidate.type === 'Params')) {
+    for (const output of node.outputs ?? []) resolveOutput(node, output.name, context);
+  }
+
   for (const node of sequencerMonitorNodes) {
     registerSequencerMonitor(node, context);
   }
@@ -969,6 +973,9 @@ function emitFeedbackWriteIfNeeded(key: string, register: number, context: Compi
 }
 
 function compileNodeOutput(node: PatchNode, port: string, context: CompileContext): number | null {
+  if (node.type === 'Params') {
+    return valueRegisterForNodeParam(node, port, 0, context);
+  }
   if (node.type === 'Spread' || node.type === 'Spawn') {
     context.errors.push(`${node.type} "${node.id}" does not expose that output.`);
     return null;

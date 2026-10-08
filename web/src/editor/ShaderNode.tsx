@@ -152,7 +152,7 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
   const isSelector = node.type === 'Selector';
   const isRoutingNode = node.type === 'Send' || node.type === 'Receive';
   const canRenameInputs = node.type === 'Outs';
-  const canRenameOutputs = node.type === 'Ins';
+  const canRenameOutputs = node.type === 'Ins' || node.type === 'Params';
   const outputCount = definition?.outputs.length ?? 0;
   const previewInputPort = data.previewPort?.side === 'input' ? data.previewPort.name : null;
   const previewOutputPort = data.previewPort?.side === 'output' ? data.previewPort.name : null;
@@ -361,7 +361,7 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
     && previewInputPort !== 'signal',
   );
   const headerInputPort = showHeaderInput ? 'signal' : null;
-  const canShowHeaderOutput = node.type !== 'Ins' && node.type !== 'Sequencer' && !(node.type === 'CustomWave' && customWaveCount > 1);
+  const canShowHeaderOutput = node.type !== 'Ins' && node.type !== 'Params' && node.type !== 'Sequencer' && !(node.type === 'CustomWave' && customWaveCount > 1);
   const signalOutputPort = definition?.outputs.find((output) => output.name === 'signal')?.name ?? null;
   const headerOutputPort = canShowHeaderOutput
     ? signalOutputPort ?? (outputCount === 1 && !previewAddsOutput ? definition?.outputs[0]?.name ?? null : null)
@@ -2209,7 +2209,7 @@ export const ShaderNode = memo(function ShaderNode({ id: flowNodeId, data, selec
                   }}
                   onChange={(nextName) => data.onPortNameChange(node.id, 'output', output.name, nextName)}
                 />
-                {!output.preview && node.type === 'Ins' && output.valueEditor !== false ? (
+                {!output.preview && (node.type === 'Ins' || node.type === 'Params') && output.valueEditor !== false ? (
                   <NumericScrubber
                     value={node.params[output.name] ?? output.defaultValue ?? 0}
                     min={output.min}
@@ -5478,7 +5478,7 @@ function NodeTypePicker({
 
     return [...NODE_TYPE_LIST, 'Area' as const]
       .filter((option) => {
-        if (!isEditingSubpatch && (option === 'Ins' || option === 'Outs')) return false;
+        if ((!isEditingSubpatch && (option === 'Ins' || option === 'Outs')) || (isEditingSubpatch && option === 'Params')) return false;
         const label = option === 'Area' ? 'Area' : getNodeTypeLabel(option);
         return (
           option.toLowerCase().includes(normalizedQuery) ||

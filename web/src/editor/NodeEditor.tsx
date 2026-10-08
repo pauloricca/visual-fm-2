@@ -25,6 +25,7 @@ import {
 } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type DragEvent, type FocusEvent as ReactFocusEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { DSP_OP, compilePatchToDspProgram, type DspProgram } from '../audio/dspProgram';
+import { createPatchPackage } from '../audio/patchPackage';
 import {
   loadBufferSnapshot,
   removeUnreferencedBufferContents,
@@ -799,7 +800,7 @@ function NodeEditorInner() {
               ...node.data.patchNode,
               params: { ...node.data.patchNode.params, [port]: value },
               ...(nextPatternScopeSize ? { scopeSize: nextPatternScopeSize } : {}),
-              outputs: node.data.patchNode.type === 'Ins'
+              outputs: node.data.patchNode.type === 'Ins' || node.data.patchNode.type === 'Params'
                 ? setPortDefaultValue(node.data.patchNode.outputs, port, value)
                 : node.data.patchNode.outputs,
             },
@@ -2790,17 +2791,17 @@ function NodeEditorInner() {
     setReconnectPreviewEdge(duplicateActive ? reconnectPreviewEdgeFromEdge(edge) : null);
 
     let nextPending: BoundaryPortSelection | null = null;
-    if (editingStack.length > 0) {
+    if (editingStack.length > 0 || nodesRef.current.some((node) => node.data.patchNode.type === 'Params')) {
       // React Flow reports the endpoint that stays attached during a reconnect,
       // so a fixed target means the source endpoint is the one being moved.
       if (handleType === 'target') {
-        const insNode = nodesRef.current.find((node) => node.data.patchNode.type === 'Ins');
+        const insNode = nodesRef.current.find((node) => node.data.patchNode.type === (editingStack.length > 0 ? 'Ins' : 'Params'));
         if (insNode && edge.target !== insNode.id) {
           const usedNames = new Set((insNode.data.patchNode.outputs ?? []).map((port) => port.name));
           nextPending = {
             nodeId: insNode.id,
             side: 'output',
-            port: uniquePortName('new input', usedNames),
+            port: uniquePortName(editingStack.length > 0 ? 'new input' : 'new parameter', usedNames),
           };
         }
       } else {
@@ -4093,9 +4094,9 @@ function NodeEditorInner() {
       return;
     }
 
-    if (editingStack.length > 0) {
-      const insNode = nodesRef.current.find((node) => node.data.patchNode.type === 'Ins');
-      const outsNode = nodesRef.current.find((node) => node.data.patchNode.type === 'Outs');
+    if (editingStack.length > 0 || nodesRef.current.some((node) => node.data.patchNode.type === 'Params')) {
+      const insNode = nodesRef.current.find((node) => node.data.patchNode.type === (editingStack.length > 0 ? 'Ins' : 'Params'));
+      const outsNode = editingStack.length > 0 ? nodesRef.current.find((node) => node.data.patchNode.type === 'Outs') : undefined;
       let nextPending: BoundaryPortSelection | null = null;
 
       if (params.handleType === 'target' && insNode && params.nodeId !== insNode.id) {
@@ -4103,7 +4104,7 @@ function NodeEditorInner() {
         nextPending = {
           nodeId: insNode.id,
           side: 'output',
-          port: uniquePortName('new input', usedNames),
+          port: uniquePortName(editingStack.length > 0 ? 'new input' : 'new parameter', usedNames),
         };
       }
 
@@ -4471,6 +4472,28 @@ function NodeEditorInner() {
     URL.revokeObjectURL(url);
     showSaveFeedback();
   }, [checkpointPreservedBuffers, localPatchStorageEnabled, patch, rootPatchName, showSaveFeedback, trimmedRootPatchName]);
+
+  const exportPatchPackage = useCallback(async () => {
+    try {
+      const savedBufferAssets = await checkpointPreservedBuffers();
+      const exportPatch: Patch = {
+        ...patch,
+        ...(Object.keys(savedBufferAssets).length > 0 ? { buffers: savedBufferAssets } : {}),
+      };
+      const blob = await createPatchPackage(exportPatch, compilePatchToDspProgram(stripPatchForDsp(exportPatch)));
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${sanitizePatchFilename(rootPatchName)}.zip`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      setImportError(null);
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : String(error));
+    }
+  }, [checkpointPreservedBuffers, patch, rootPatchName]);
 
   const requestPatchLoad = useCallback(() => {
     if (localPatchStorageEnabled) {
@@ -5975,6 +5998,7 @@ function NodeEditorInner() {
             >
               SV
             </button>
+            <button className="viewport-button" type="button" onClick={() => void exportPatchPackage()} aria-label="Export patch package" title="Export patch package">XP</button>
             <button className="viewport-button" type="button" onClick={requestPatchLoad} aria-label="Load patch" title="Load patch">LD</button>
             <button className="viewport-button" type="button" onClick={undo} disabled={history.past.length === 0}>UN</button>
             <button className="viewport-button" type="button" onClick={redo} disabled={history.future.length === 0}>RE</button>
@@ -9126,7 +9150,7 @@ function endpointKey(endpoint: PatchLink['from']): string {
 }
 
 function canRenameBoundaryPort(node: PatchNode, side: 'input' | 'output'): boolean {
-  return (node.type === 'Ins' && side === 'output') || (node.type === 'Outs' && side === 'input');
+  return ((node.type === 'Ins' || node.type === 'Params') && side === 'output') || (node.type === 'Outs' && side === 'input');
 }
 
 function renamePortDefinitions(
@@ -9178,7 +9202,7 @@ function removeParamKey(params: Record<string, number>, key: string): Record<str
 }
 
 function boundaryPortHasDefaultValue(node: PatchNode, side: 'input' | 'output'): boolean {
-  return node.type === 'Ins' && side === 'output';
+  return (node.type === 'Ins' || node.type === 'Params') && side === 'output';
 }
 
 function nextBoundaryPortParams(
