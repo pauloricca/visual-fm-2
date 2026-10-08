@@ -2,7 +2,7 @@
 
 Teia Editor is an audio node editor built from two earlier projects:
 
-The Teia packages are `@teia/editor` (`web/`), `@teia/kernel` (`kernel/`, built from `rust/teia-kernel/`), and `@teia/runtime` (`runtime/`). `player/` is the separate Teia Player test app, kept in this repository. The root `teia` package holds the build scripts and workspaces. Build the kernel with `npm run build:wasm` and the browser runtime with `npm run build:runtime`; the Player vendors a packed Runtime tarball for offline Docker builds.
+The Teia packages are `@teia/editor` (`web/`), `@teia/kernel` (`kernel/`, built from `rust/teia-kernel/`), and `@teia/runtime` (`runtime/`). `player/` is the separate Teia Player test app, kept in this repository; run `player/start` to build, open, and keep it attached until Ctrl-C. The root `teia` package holds the build scripts and workspaces. Build the kernel with `npm run build:wasm` and the browser runtime with `npm run build:runtime`; the Player vendors a packed Runtime tarball for offline Docker builds.
 
 New XP ZIPs use the `teia-patch` format and `@teia/runtime` identifier. Teia Runtime also reads existing version 2 `visual-fm-patch` ZIPs. The Editor reads old `visual-fm-2` browser editor and viewport keys, accepts copied graphs from the old app, and keeps the existing Buffer IndexedDB name so saved snapshots remain available. Existing `.visual-fm-proxy.mp4` sample assets remain usable alongside new `.teia-proxy.mp4` assets.
 

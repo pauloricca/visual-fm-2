@@ -1,0 +1,81 @@
+#!/usr/bin/env sh
+set -eu
+
+cd "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+
+PORT="${TEIA_PLAYER_PORT:-${VISUAL_FM_PLAYER_PORT:-5181}}"
+
+usage() {
+  printf 'Usage: ./start [--port=PORT]\n'
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --port=*) PORT="${1#*=}" ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+case "$PORT" in
+  ''|*[!0-9]*) printf 'Port must be a number from 1 to 65535.\n' >&2; exit 2 ;;
+esac
+if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+  printf 'Port must be a number from 1 to 65535.\n' >&2
+  exit 2
+fi
+
+export TEIA_PLAYER_PORT="$PORT"
+URL="http://localhost:$PORT/"
+COMPOSE_PID=""
+
+cleanup() {
+  trap - EXIT
+  if [ -n "$COMPOSE_PID" ]; then
+    docker compose down
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+docker compose up --build &
+COMPOSE_PID="$!"
+
+READY=0
+if command -v curl >/dev/null 2>&1; then
+  i=0
+  while [ "$i" -lt 60 ]; do
+    if docker compose ps --status running --services | grep -qx player &&
+      curl -fsS --max-time 2 "$URL" >/dev/null 2>&1; then
+      READY=1
+      break
+    fi
+    if ! kill -0 "$COMPOSE_PID" 2>/dev/null; then
+      break
+    fi
+    i=$((i + 1))
+    sleep 1
+  done
+else
+  sleep 2
+  if docker compose ps --status running --services | grep -qx player; then
+    READY=1
+  fi
+fi
+
+if [ "$READY" -eq 1 ]; then
+  printf 'Teia Player: %s\n' "$URL"
+  if command -v open >/dev/null 2>&1; then
+    open "$URL" || printf 'Open %s in your browser.\n' "$URL"
+  elif command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$URL" >/dev/null 2>&1 &
+  else
+    printf 'Open %s in your browser.\n' "$URL"
+  fi
+else
+  printf 'Teia Player did not become ready; browser was not opened.\n' >&2
+fi
+
+wait "$COMPOSE_PID"

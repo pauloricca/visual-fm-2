@@ -6,10 +6,10 @@ This separate browser app lives in `player/` and installs `@teia/runtime` as an 
 
 ```sh
 cd player
-docker compose up --build
+./start
 ```
 
-Open `http://localhost:5181`, choose a new XP `.zip` export, and use Start audio, middle C, microphone input, and the exported Params sliders. Each slider uses the parameter range from the package manifest, with its current value and range shown beside it; older packages without ranges use 0 to 1. The host port can be changed with `TEIA_PLAYER_PORT`. The container still listens on 5180 internally. AudioWorklet and microphone access require a secure context; browsers treat localhost as secure.
+The script builds and starts the Player in the foreground, opens `http://localhost:5181` when it is ready, and runs `docker compose down` when you end the script with Ctrl-C. Set `TEIA_PLAYER_PORT` or pass `--port=PORT` to use another host port. The container still listens on 5180 internally. Choose a new XP `.zip` export, then use Start audio, middle C, microphone input, and the exported Params sliders. Each slider uses the parameter range from the package manifest, with its current value and range shown beside it; older packages without ranges use 0 to 1. AudioWorklet and microphone access require a secure context; browsers treat localhost as secure.
 
 ## Runtime API
 
