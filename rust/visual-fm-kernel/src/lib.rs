@@ -163,6 +163,11 @@ const DSP_OP_MIDI_CC_SEND: i32 = 54;
 const DSP_OP_BEND: i32 = 55;
 // Internal upload-time specialization; exported programs still use the original opcodes.
 const DSP_OP_CACHED_CONTROL: i32 = 56;
+// Scratch is bounded independently of the callback frame count. Larger calls
+// are rendered as successive chunks, including a partial final chunk.
+const DSP_BLOCK_FRAMES: usize = 256;
+const MAX_DSP_BLOCK_SLOTS: usize = 128;
+const MAX_DSP_BLOCK_VALUE_STREAMS: usize = 128;
 const MIN_ENVELOPE_ATTACK_SECONDS: f64 = 0.001;
 const MAX_DSP_TEMPO_SOURCES: usize = 129;
 const TEMPO_OUTPUT_COUNT: i32 = 10;
@@ -247,6 +252,25 @@ struct DspOp {
     value2: f64,
     value3: f64,
     value4: f64,
+}
+
+struct DspBlockPlan {
+    slots: Vec<usize>,
+    value_stream_for_op: Vec<usize>,
+    value_stream_sources: Vec<(i32, bool)>,
+    buffers: Vec<f64>,
+    value_streams: Vec<f64>,
+    left: [f64; DSP_BLOCK_FRAMES],
+    right: [f64; DSP_BLOCK_FRAMES],
+    slot_count: usize,
+    value_stream_count: usize,
+    stages: Vec<DspBlockStage>,
+    mixed: bool,
+}
+
+struct DspBlockStage {
+    ops: Vec<usize>,
+    cyclic: bool,
 }
 
 // Prepared while operations are uploaded. Only ordinary, pure control chains
@@ -925,6 +949,10 @@ static mut IMAGE_WIDTHS: [usize; MAX_IMAGE_SLOTS] = [0; MAX_IMAGE_SLOTS];
 static mut IMAGE_HEIGHTS: [usize; MAX_IMAGE_SLOTS] = [0; MAX_IMAGE_SLOTS];
 static mut DSP_OPS: [DspOp; MAX_DSP_OPS] = [EMPTY_DSP_OP; MAX_DSP_OPS];
 static mut DSP_OP_COUNT: usize = 0;
+static mut DSP_BLOCK_PLAN: Option<DspBlockPlan> = None;
+static mut DSP_BLOCK_RENDERING_ENABLED: bool = true;
+static mut DSP_BLOCK_RENDERING_OVERRIDE: bool = false;
+static mut DSP_BLOCK_AUTO_ENABLED: bool = true;
 static mut DSP_CONTROL_CACHES: [DspControlCache; MAX_DSP_OPS] =
     [EMPTY_DSP_CONTROL_CACHE; MAX_DSP_OPS];
 static mut DSP_CONTROL_REGISTERS: [bool; MAX_DSP_REGS] = [false; MAX_DSP_REGS];
@@ -2003,6 +2031,7 @@ pub extern "C" fn clearDspProgram() {
     #[cfg(feature = "parallel")]
     parallel::clear_plan();
     unsafe {
+        DSP_BLOCK_PLAN = None;
         DSP_OP_COUNT = 0;
         DSP_CONTROL_REPEAT_DEPTH = 0;
         for index in 0..MAX_DSP_REGS {
@@ -2725,6 +2754,7 @@ fn reset_dsp_scope(slot: usize) {
 #[no_mangle]
 pub extern "C" fn clearDspScopes() {
     unsafe {
+        DSP_BLOCK_PLAN = None;
         DSP_SCOPE_SLOT_COUNT = 0;
         for slot in 0..MAX_DSP_SCOPES {
             DSP_SCOPE_REGS[slot] = -1;
@@ -2744,6 +2774,7 @@ pub extern "C" fn setDspScope(
     sample_rate: f64,
 ) -> i32 {
     unsafe {
+        DSP_BLOCK_PLAN = None;
         let slot = slot as usize;
         if slot >= MAX_DSP_SCOPES || register < 0 || register as usize >= MAX_DSP_REGS {
             return -1;
@@ -2814,6 +2845,7 @@ pub extern "C" fn restoreDspScopeHistory(slot: u32, count: u32, write_index: u32
 #[no_mangle]
 pub extern "C" fn clearDspMeters() {
     unsafe {
+        DSP_BLOCK_PLAN = None;
         DSP_METER_SLOT_COUNT = 0;
         for slot in 0..MAX_DSP_METERS {
             DSP_METER_REGS[slot] = -1;
@@ -2838,6 +2870,7 @@ pub extern "C" fn resetDspMeterLevels() {
 #[no_mangle]
 pub extern "C" fn setDspMeter(slot: u32, register: i32) -> i32 {
     unsafe {
+        DSP_BLOCK_PLAN = None;
         let slot = slot as usize;
         if slot >= MAX_DSP_METERS || register < 0 || register as usize >= MAX_DSP_REGS {
             return -1;
@@ -3065,6 +3098,7 @@ pub extern "C" fn addDspOp(
     value4: f64,
 ) -> i32 {
     unsafe {
+        DSP_BLOCK_PLAN = None;
         if DSP_OP_COUNT >= MAX_DSP_OPS {
             return -1;
         }
@@ -10510,6 +10544,606 @@ mod repeated_resource_state_tests {
     }
 }
 
+fn block_optional_inputs(registers: &[i32]) -> ([i32; 8], usize) {
+    let mut inputs = [-1; 8];
+    let mut count = 0;
+    for &register in registers {
+        if register >= 0 {
+            inputs[count] = register;
+            count += 1;
+        }
+    }
+    (inputs, count)
+}
+
+fn block_op_inputs(op: DspOp) -> Option<([i32; 8], usize)> {
+    match op.opcode {
+        DSP_OP_VALUE => Some(([-1; 8], 0)),
+        DSP_OP_ADD | DSP_OP_MUL | DSP_OP_SUB | DSP_OP_DIV => Some(([op.a, op.b, -1, -1, -1, -1, -1, -1], 2)),
+        DSP_OP_NEG | DSP_OP_ABS | DSP_OP_DC_BLOCK => Some(([op.a, -1, -1, -1, -1, -1, -1, -1], 1)),
+        DSP_OP_FUNCTION => Some(block_optional_inputs(&[op.b, op.c, op.d])),
+        DSP_OP_DELAY => Some(block_optional_inputs(&[op.a, op.b, op.c, op.d])),
+        DSP_OP_CACHED_CONTROL if op.state >= 0 && (op.state as usize) < MAX_DSP_OPS => unsafe {
+            let cache = DSP_CONTROL_CACHES[op.state as usize];
+            if cache.count == 0 || cache.count > 4
+                || !matches!(cache.opcode, DSP_OP_FUNCTION | DSP_OP_DIV) { return None; }
+            let mut inputs = [-1; 8];
+            inputs[..cache.count as usize].copy_from_slice(&cache.inputs[..cache.count as usize]);
+            Some((inputs, cache.count as usize))
+        },
+        DSP_OP_OSC if (0..=4).contains(&op.a) && op.d < 0 && op.e < 0 && op.state >= 0 => {
+            if op.value4 >= 0.5 {
+                Some(([op.b, op.value2.round() as i32, op.value3.round() as i32, -1, -1, -1, -1, -1], 3))
+            } else {
+                Some(([op.b, -1, -1, -1, -1, -1, -1, -1], 1))
+            }
+        }
+        DSP_OP_OSC if op.a == 12 && op.state >= 0 && valid_dsp_register_value(op.value) => {
+            let mut inputs = [-1; 8];
+            let mut count = 0;
+            for register in [op.b, op.c, op.value as i32, op.d, op.e] {
+                if register >= 0 { inputs[count] = register; count += 1; }
+            }
+            if op.value4 >= 0.5 {
+                inputs[count] = op.value2.round() as i32;
+                inputs[count + 1] = op.value3.round() as i32;
+                count += 2;
+            }
+            Some((inputs, count))
+        }
+        DSP_OP_FILTER if matches!(op.a, 1 | 2 | 3 | 8) && op.state >= 0 => {
+            Some(([op.b, op.c, op.d, -1, -1, -1, -1, -1], 3))
+        }
+        DSP_OP_OUTPUT if op.b == 0 || op.b == 1 => Some(([op.a, -1, -1, -1, -1, -1, -1, -1], 1)),
+        _ => None,
+    }
+}
+
+fn mixed_op_inputs(op: DspOp) -> Option<([i32; 8], usize)> {
+    match op.opcode {
+        DSP_OP_FEEDBACK_READ => Some(([-1; 8], 0)),
+        DSP_OP_FEEDBACK_WRITE => Some(([op.a, -1, -1, -1, -1, -1, -1, -1], 1)),
+        _ => block_op_inputs(op),
+    }
+}
+
+fn block_op_numeric_state(op: DspOp) -> Option<(usize, usize)> {
+    match op.opcode {
+        DSP_OP_OSC if op.state >= 0 => Some((op.state as usize, if op.e >= 0 { 4 } else { 1 })),
+        DSP_OP_FILTER if op.state >= 0 => Some((op.state as usize, 4)),
+        DSP_OP_DC_BLOCK if op.state >= 0 => Some((op.state as usize, 2)),
+        _ => None,
+    }
+}
+
+fn tarjan_dsp_component(
+    node: usize,
+    edges: &[Vec<usize>],
+    serial: &mut usize,
+    indices: &mut [usize],
+    low: &mut [usize],
+    stack: &mut Vec<usize>,
+    on_stack: &mut [bool],
+    components: &mut Vec<Vec<usize>>,
+) {
+    indices[node] = *serial;
+    low[node] = *serial;
+    *serial += 1;
+    stack.push(node);
+    on_stack[node] = true;
+    for &next in &edges[node] {
+        if indices[next] == usize::MAX {
+            tarjan_dsp_component(next, edges, serial, indices, low, stack, on_stack, components);
+            low[node] = low[node].min(low[next]);
+        } else if on_stack[next] {
+            low[node] = low[node].min(indices[next]);
+        }
+    }
+    if low[node] == indices[node] {
+        let mut members = Vec::new();
+        loop {
+            let member = stack.pop().unwrap();
+            on_stack[member] = false;
+            members.push(member);
+            if member == node { break; }
+        }
+        members.sort_unstable();
+        components.push(members);
+    }
+}
+
+// The first mixed implementation deliberately bounds the op graph and keeps
+// resource/repeat/event programs on the scalar interpreter. Feedback state is
+// only consumed in an SCC that also contains its write, so a block cannot
+// accidentally turn a one-sample history edge into a same-sample edge.
+fn build_dsp_mixed_plan() -> Option<DspBlockPlan> {
+    unsafe {
+        let count = DSP_OP_COUNT;
+        if count == 0 || count > 512 { return None; }
+        let mut producer = [usize::MAX; MAX_DSP_REGS];
+        let mut state_used = [false; MAX_DSP_STATE];
+        let mut effect_used = [false; MAX_DSP_EFFECT_SLOTS];
+        let mut feedback_reads = [usize::MAX; MAX_DSP_STATE];
+        let mut feedback_writes = [usize::MAX; MAX_DSP_STATE];
+        let mut highest_register = 0;
+        let mut value_op_count = 0;
+        let mut output_previous: Option<usize> = None;
+        let mut edges = vec![Vec::new(); count];
+        for index in 0..count {
+            let op = DSP_OPS[index];
+            let (inputs, input_count) = mixed_op_inputs(op)?;
+            for &register in &inputs[..input_count] {
+                if !valid_dsp_register(register) { return None; }
+                let source = producer[register as usize];
+                if source == usize::MAX { return None; }
+                edges[source].push(index);
+            }
+            if let Some((start, length)) = block_op_numeric_state(op) {
+                if start + length > MAX_DSP_STATE || state_used[start..start + length].iter().any(|used| *used) {
+                    return None;
+                }
+                state_used[start..start + length].fill(true);
+            }
+            if op.opcode == DSP_OP_DELAY {
+                let slot = dsp_effect_slot(op.state)?;
+                if effect_used[slot] { return None; }
+                effect_used[slot] = true;
+            }
+            if op.opcode == DSP_OP_FEEDBACK_READ || op.opcode == DSP_OP_FEEDBACK_WRITE {
+                if op.state < 0 || op.state as usize >= MAX_DSP_STATE { return None; }
+                let slot = if op.opcode == DSP_OP_FEEDBACK_READ {
+                    &mut feedback_reads[op.state as usize]
+                } else { &mut feedback_writes[op.state as usize] };
+                if *slot != usize::MAX { return None; }
+                *slot = index;
+            }
+            if op.opcode == DSP_OP_VALUE { value_op_count += 1; }
+            if op.opcode == DSP_OP_OUTPUT {
+                if let Some(previous) = output_previous { edges[previous].push(index); }
+                output_previous = Some(index);
+            } else if op.opcode != DSP_OP_FEEDBACK_WRITE {
+                if !valid_dsp_register(op.out) || producer[op.out as usize] != usize::MAX { return None; }
+                producer[op.out as usize] = index;
+                highest_register = highest_register.max(op.out as usize + 1);
+            }
+        }
+        let mut has_feedback = false;
+        for state in 0..MAX_DSP_STATE {
+            let read = feedback_reads[state];
+            let write = feedback_writes[state];
+            if read == usize::MAX && write == usize::MAX { continue; }
+            if read == usize::MAX || write == usize::MAX || state_used[state] { return None; }
+            has_feedback = true;
+            edges[write].push(read);
+        }
+        if !has_feedback { return None; }
+
+        let mut indices = vec![usize::MAX; count];
+        let mut low = vec![0; count];
+        let mut stack = Vec::new();
+        let mut on_stack = vec![false; count];
+        let mut components = Vec::new();
+        let mut serial = 0;
+        for index in 0..count {
+            if indices[index] == usize::MAX {
+                tarjan_dsp_component(index, &edges, &mut serial, &mut indices, &mut low, &mut stack, &mut on_stack, &mut components);
+            }
+        }
+        let mut component_of = vec![0; count];
+        for (component, members) in components.iter().enumerate() {
+            for &index in members { component_of[index] = component; }
+        }
+        for state in 0..MAX_DSP_STATE {
+            if feedback_reads[state] != usize::MAX
+                && component_of[feedback_reads[state]] != component_of[feedback_writes[state]] {
+                return None;
+            }
+        }
+        let mut following = vec![Vec::new(); components.len()];
+        let mut indegree = vec![0usize; components.len()];
+        for (from, successors) in edges.iter().enumerate() {
+            for &to in successors {
+                let source = component_of[from];
+                let target = component_of[to];
+                if source != target && !following[source].contains(&target) {
+                    following[source].push(target);
+                    indegree[target] += 1;
+                }
+            }
+        }
+        let mut ready: Vec<usize> = (0..components.len()).filter(|&id| indegree[id] == 0).collect();
+        let mut stages = Vec::with_capacity(components.len());
+        while !ready.is_empty() {
+            ready.sort_unstable_by_key(|&id| components[id][0]);
+            let component = ready.remove(0);
+            let members = &components[component];
+            let cyclic = members.len() > 1 || edges[members[0]].contains(&members[0]);
+            if cyclic && !members.iter().any(|&index| DSP_OPS[index].opcode == DSP_OP_FEEDBACK_READ) {
+                return None;
+            }
+            stages.push(DspBlockStage { ops: members.clone(), cyclic });
+            for &next in &following[component] {
+                indegree[next] -= 1;
+                if indegree[next] == 0 { ready.push(next); }
+            }
+        }
+        if stages.len() != components.len() { return None; }
+        let cyclic_ops: usize = stages.iter().filter(|stage| stage.cyclic).map(|stage| stage.ops.len()).sum();
+        let block_ops = count - cyclic_ops;
+        // For a tiny acyclic fringe, copying buffers around the cyclic
+        // interpreter costs more than keeping the entire program scalar.
+        if block_ops < 16 || block_ops < cyclic_ops * 2 { return None; }
+        let mut value_stream_for_op = vec![usize::MAX; count];
+        let mut value_stream_sources = Vec::with_capacity(value_op_count);
+        for index in 0..count {
+            let op = DSP_OPS[index];
+            if op.opcode == DSP_OP_VALUE {
+                let source = (op.a, op.value >= DSP_VALUE_MODE_IMMEDIATE);
+                let stream = value_stream_sources.iter().position(|existing| *existing == source)
+                    .unwrap_or_else(|| {
+                        value_stream_sources.push(source);
+                        value_stream_sources.len() - 1
+                    });
+                value_stream_for_op[index] = stream;
+                if value_stream_sources.len() > MAX_DSP_BLOCK_VALUE_STREAMS { return None; }
+            }
+        }
+        let value_stream_count = value_stream_sources.len();
+        let mut slots = vec![usize::MAX; highest_register];
+        let mut slot_count = 0;
+        for register in 0..highest_register {
+            if producer[register] != usize::MAX {
+                slots[register] = slot_count;
+                slot_count += 1;
+            }
+        }
+        if slot_count > MAX_DSP_BLOCK_SLOTS { return None; }
+        Some(DspBlockPlan {
+            slots, value_stream_for_op, value_stream_sources,
+            buffers: vec![0.0; slot_count * DSP_BLOCK_FRAMES],
+            value_streams: vec![0.0; value_stream_count * DSP_BLOCK_FRAMES],
+            left: [0.0; DSP_BLOCK_FRAMES], right: [0.0; DSP_BLOCK_FRAMES],
+            slot_count, value_stream_count, stages, mixed: true,
+        })
+    }
+}
+
+fn build_dsp_block_plan() -> Option<DspBlockPlan> {
+    unsafe {
+        if DSP_OP_COUNT == 0 { return None; }
+        let mut defined = [false; MAX_DSP_REGS];
+        let mut last_use = [0usize; MAX_DSP_REGS];
+        let mut state_used = [false; MAX_DSP_STATE];
+        let mut effect_used = [false; MAX_DSP_EFFECT_SLOTS];
+        let mut highest_register = 0;
+        let mut value_op_count = 0;
+        for index in 0..DSP_OP_COUNT {
+            let op = DSP_OPS[index];
+            let (inputs, count) = block_op_inputs(op)?;
+            for &register in &inputs[..count] {
+                if !valid_dsp_register(register) || !defined[register as usize] { return None; }
+                last_use[register as usize] = index;
+            }
+            if let Some((start, length)) = block_op_numeric_state(op) {
+                if start + length > MAX_DSP_STATE || state_used[start..start + length].iter().any(|used| *used) {
+                    return None;
+                }
+                state_used[start..start + length].fill(true);
+            }
+            if op.opcode == DSP_OP_DELAY {
+                let slot = dsp_effect_slot(op.state)?;
+                if effect_used[slot] { return None; }
+                effect_used[slot] = true;
+            }
+            if op.opcode == DSP_OP_VALUE { value_op_count += 1; }
+            if op.opcode != DSP_OP_OUTPUT {
+                if !valid_dsp_register(op.out) || defined[op.out as usize] { return None; }
+                defined[op.out as usize] = true;
+                last_use[op.out as usize] = index;
+                highest_register = highest_register.max(op.out as usize + 1);
+            }
+        }
+        for slot in 0..DSP_METER_SLOT_COUNT {
+            let register = DSP_METER_REGS[slot];
+            if valid_dsp_register(register) && defined[register as usize] {
+                last_use[register as usize] = DSP_OP_COUNT;
+            }
+        }
+        for slot in 0..DSP_SCOPE_SLOT_COUNT {
+            let register = DSP_SCOPE_REGS[slot];
+            if valid_dsp_register(register) && defined[register as usize] {
+                last_use[register as usize] = DSP_OP_COUNT;
+            }
+        }
+        let mut slots = vec![usize::MAX; highest_register];
+        let mut active = [false; MAX_DSP_REGS];
+        let mut free = Vec::new();
+        let mut slot_count = 0;
+        let mut value_stream_for_op = vec![usize::MAX; DSP_OP_COUNT];
+        let mut value_stream_sources = Vec::with_capacity(value_op_count);
+        for index in 0..DSP_OP_COUNT {
+            let op = DSP_OPS[index];
+            if op.opcode == DSP_OP_VALUE {
+                let source = (op.a, op.value >= DSP_VALUE_MODE_IMMEDIATE);
+                let stream = value_stream_sources.iter().position(|existing| *existing == source)
+                    .unwrap_or_else(|| {
+                        value_stream_sources.push(source);
+                        value_stream_sources.len() - 1
+                    });
+                value_stream_for_op[index] = stream;
+                if value_stream_sources.len() > MAX_DSP_BLOCK_VALUE_STREAMS { return None; }
+            }
+            if op.opcode != DSP_OP_OUTPUT {
+                let slot = free.pop().unwrap_or_else(|| {
+                    let next = slot_count;
+                    slot_count += 1;
+                    next
+                });
+                if slot_count > MAX_DSP_BLOCK_SLOTS { return None; }
+                slots[op.out as usize] = slot;
+                active[op.out as usize] = true;
+            }
+            let (inputs, count) = block_op_inputs(op)?;
+            for &register in &inputs[..count] {
+                let register = register as usize;
+                if last_use[register] == index && active[register] {
+                    active[register] = false;
+                    free.push(slots[register]);
+                }
+            }
+            if op.opcode != DSP_OP_OUTPUT {
+                let register = op.out as usize;
+                if last_use[register] == index && active[register] {
+                    active[register] = false;
+                    free.push(slots[register]);
+                }
+            }
+        }
+        let value_stream_count = value_stream_sources.len();
+        Some(DspBlockPlan {
+            slots, value_stream_for_op, value_stream_sources,
+            buffers: vec![0.0; slot_count * DSP_BLOCK_FRAMES],
+            value_streams: vec![0.0; value_stream_count * DSP_BLOCK_FRAMES],
+            left: [0.0; DSP_BLOCK_FRAMES], right: [0.0; DSP_BLOCK_FRAMES],
+            slot_count, value_stream_count,
+            stages: (0..DSP_OP_COUNT).map(|index| DspBlockStage { ops: vec![index], cyclic: false }).collect(),
+            mixed: false,
+        })
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn compileDspBlockPlan() -> i32 {
+    unsafe {
+        *core::ptr::addr_of_mut!(DSP_BLOCK_PLAN) = build_dsp_block_plan().or_else(build_dsp_mixed_plan);
+        // The exact KinkOsc and sign-preserving power helpers dominate this
+        // patch's cost. Ordinary block dispatch regressed in offline runs, so
+        // retain scalar automatic rendering for this provisional workload
+        // class until a broader cost model is measured. SIMD can still block
+        // the independent arithmetic around those sample-ordered helpers.
+        DSP_BLOCK_AUTO_ENABLED = cfg!(all(target_arch = "wasm32", target_feature = "simd128"))
+            || !(0..DSP_OP_COUNT).any(|index| {
+                let op = DSP_OPS[index];
+                (op.opcode == DSP_OP_OSC && op.a == 12)
+                    || (op.opcode == DSP_OP_FUNCTION && op.a == 9)
+                    || (op.opcode == DSP_OP_CACHED_CONTROL
+                        && op.state >= 0 && (op.state as usize) < MAX_DSP_OPS
+                        && DSP_CONTROL_CACHES[op.state as usize].opcode == DSP_OP_FUNCTION
+                        && op.a == 9)
+            });
+        match (*core::ptr::addr_of!(DSP_BLOCK_PLAN)).as_ref() {
+            Some(plan) if plan.mixed => 2,
+            Some(_) => 1,
+            None => 0,
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn dspBlockPlanBytes() -> u32 {
+    unsafe {
+        (*core::ptr::addr_of!(DSP_BLOCK_PLAN)).as_ref().map_or(0, |plan| {
+            ((plan.slot_count + plan.value_stream_count) * DSP_BLOCK_FRAMES * 8) as u32
+        })
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn setDspBlockRendering(enabled: i32) {
+    unsafe {
+        DSP_BLOCK_RENDERING_OVERRIDE = enabled >= 0;
+        DSP_BLOCK_RENDERING_ENABLED = enabled != 0;
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn dspBlockRenderingEnabled() -> i32 {
+    unsafe {
+        i32::from((*core::ptr::addr_of!(DSP_BLOCK_PLAN)).is_some()
+            && if DSP_BLOCK_RENDERING_OVERRIDE {
+                DSP_BLOCK_RENDERING_ENABLED
+            } else {
+                DSP_BLOCK_AUTO_ENABLED
+            })
+    }
+}
+
+#[inline(always)]
+fn block_register(plan: &DspBlockPlan, register: i32, frame: usize) -> f64 {
+    plan.buffers[plan.slots[register as usize] * DSP_BLOCK_FRAMES + frame]
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+unsafe fn render_simd_binary(plan: &mut DspBlockPlan, op: DspOp, count: usize, offset: usize) {
+    use core::arch::wasm32::{f64x2_add, f64x2_mul, f64x2_sub, v128, v128_load, v128_store};
+    let left = plan.buffers.as_ptr().add(plan.slots[op.a as usize] * DSP_BLOCK_FRAMES);
+    let right = plan.buffers.as_ptr().add(plan.slots[op.b as usize] * DSP_BLOCK_FRAMES);
+    let output = plan.buffers.as_mut_ptr().add(offset);
+    let mut frame = 0;
+    while frame + 2 <= count {
+        let a = v128_load(left.add(frame) as *const v128);
+        let b = v128_load(right.add(frame) as *const v128);
+        let result = match op.opcode {
+            DSP_OP_ADD => f64x2_add(a, b),
+            DSP_OP_MUL => f64x2_mul(a, b),
+            _ => f64x2_sub(a, b),
+        };
+        let mut lanes = [0.0_f64; 2];
+        v128_store(lanes.as_mut_ptr() as *mut v128, result);
+        *output.add(frame) = sanitize_dsp_register(lanes[0]);
+        *output.add(frame + 1) = sanitize_dsp_register(lanes[1]);
+        frame += 2;
+    }
+    if frame < count {
+        let a = *left.add(frame);
+        let b = *right.add(frame);
+        *output.add(frame) = sanitize_dsp_register(match op.opcode {
+            DSP_OP_ADD => a + b,
+            DSP_OP_MUL => a * b,
+            _ => a - b,
+        });
+    }
+}
+
+unsafe fn render_dsp_block(plan: &mut DspBlockPlan, frames: usize, sample_rate: f64, alpha: f64) {
+    for start in (0..frames).step_by(DSP_BLOCK_FRAMES) {
+        let count = (frames - start).min(DSP_BLOCK_FRAMES);
+        plan.left[..count].fill(0.0);
+        plan.right[..count].fill(0.0);
+
+        // Capture the current value at every sample before any operation is
+        // evaluated. Each smoother and MIDI timeline advances exactly once.
+        for frame in 0..count {
+            advance_dsp_midi_note_event();
+            advance_dsp_values(alpha);
+            for (stream, &(value_index, immediate)) in plan.value_stream_sources.iter().enumerate() {
+                let value = if immediate {
+                    dsp_value_target_unchecked(value_index)
+                } else {
+                    dsp_value_unchecked(value_index)
+                };
+                plan.value_streams[stream * DSP_BLOCK_FRAMES + frame] = sanitize_dsp_register(value);
+            }
+        }
+
+        for stage_index in 0..plan.stages.len() {
+            if plan.stages[stage_index].cyclic {
+                for frame in 0..count {
+                    for member in 0..plan.stages[stage_index].ops.len() {
+                        let index = plan.stages[stage_index].ops[member];
+                        let op = DSP_OPS[index];
+                        let (inputs, input_count) = mixed_op_inputs(op).unwrap();
+                        for &register in &inputs[..input_count] {
+                            DSP_REGS[register as usize] = block_register(plan, register, frame);
+                        }
+                        render_dsp_op::<false>(op, start + frame, sample_rate,
+                            &mut plan.left[frame], &mut plan.right[frame], None, None);
+                        if op.opcode != DSP_OP_OUTPUT && op.opcode != DSP_OP_FEEDBACK_WRITE {
+                            let offset = plan.slots[op.out as usize] * DSP_BLOCK_FRAMES;
+                            plan.buffers[offset + frame] = DSP_REGS[op.out as usize];
+                        }
+                    }
+                }
+                continue;
+            }
+            for member in 0..plan.stages[stage_index].ops.len() {
+            let index = plan.stages[stage_index].ops[member];
+            let op = DSP_OPS[index];
+            if op.opcode == DSP_OP_OUTPUT {
+                for frame in 0..count {
+                    let sample = sanitize_sample(block_register(plan, op.a, frame), 8.0);
+                    let channel = if op.b == 0 { &mut plan.left[frame] } else { &mut plan.right[frame] };
+                    *channel = sanitize_sample(*channel + sample, 8.0);
+                }
+                continue;
+            }
+            let offset = plan.slots[op.out as usize] * DSP_BLOCK_FRAMES;
+            #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+            if matches!(op.opcode, DSP_OP_ADD | DSP_OP_MUL | DSP_OP_SUB) {
+                render_simd_binary(plan, op, count, offset);
+                DSP_REGS[op.out as usize] = plan.buffers[offset + count - 1];
+                continue;
+            }
+            for frame in 0..count {
+                let value = if matches!(op.opcode, DSP_OP_FUNCTION | DSP_OP_CACHED_CONTROL | DSP_OP_DELAY | DSP_OP_DC_BLOCK)
+                    || (op.opcode == DSP_OP_OSC && op.a == 12) {
+                    // Reuse the interpreter's exact maths and state updates.
+                    // Each input is already a per-sample stream from an earlier
+                    // stage, so stateful effects still run in sample order.
+                    let (inputs, input_count) = block_op_inputs(op).unwrap();
+                    for &register in &inputs[..input_count] {
+                        DSP_REGS[register as usize] = block_register(plan, register, frame);
+                    }
+                    render_dsp_op::<false>(op, start + frame, sample_rate,
+                        &mut plan.left[frame], &mut plan.right[frame], None, None);
+                    DSP_REGS[op.out as usize]
+                } else { match op.opcode {
+                    DSP_OP_VALUE => {
+                        let stream = plan.value_stream_for_op[index];
+                        plan.value_streams[stream * DSP_BLOCK_FRAMES + frame]
+                    }
+                    DSP_OP_ADD => sanitize_dsp_register(block_register(plan, op.a, frame) + block_register(plan, op.b, frame)),
+                    DSP_OP_MUL => sanitize_dsp_register(block_register(plan, op.a, frame) * block_register(plan, op.b, frame)),
+                    DSP_OP_SUB => sanitize_dsp_register(block_register(plan, op.a, frame) - block_register(plan, op.b, frame)),
+                    DSP_OP_DIV => {
+                        let denominator = block_register(plan, op.b, frame);
+                        sanitize_dsp_register(if denominator.abs() <= 0.000001 { 0.0 }
+                            else { block_register(plan, op.a, frame) / denominator })
+                    }
+                    DSP_OP_NEG => -block_register(plan, op.a, frame),
+                    DSP_OP_ABS => block_register(plan, op.a, frame).abs(),
+                    DSP_OP_OSC => {
+                        let frequency = block_register(plan, op.b, frame).max(0.0);
+                        let state = dsp_state_ptr(op.state as usize);
+                        let phase = *state;
+                        let output = dsp_oscillator(op.a, phase, op.value);
+                        let output = if op.value4 >= 0.5 {
+                            let min = block_register(plan, op.value2.round() as i32, frame);
+                            let max = block_register(plan, op.value3.round() as i32, frame);
+                            min + (output + 1.0) * 0.5 * (max - min)
+                        } else { output };
+                        *state = normalize_phase(phase + frequency / sample_rate.max(1.0));
+                        output
+                    }
+                    DSP_OP_FILTER => {
+                        DSP_REGS[op.b as usize] = block_register(plan, op.b, frame);
+                        DSP_REGS[op.c as usize] = block_register(plan, op.c, frame);
+                        DSP_REGS[op.d as usize] = block_register(plan, op.d, frame);
+                        sanitize_dsp_register(render_dsp_filter(op, sample_rate))
+                    }
+                    _ => unreachable!(),
+                }};
+                plan.buffers[offset + frame] = value;
+            }
+            // The scalar interpreter leaves every register holding its most
+            // recent sample, including registers whose scratch slot is reused.
+            DSP_REGS[op.out as usize] = plan.buffers[offset + count - 1];
+            }
+        }
+
+        for frame in 0..count {
+            for slot in 0..DSP_METER_SLOT_COUNT {
+                let register = DSP_METER_REGS[slot];
+                if register >= 0 && (register as usize) < plan.slots.len()
+                    && plan.slots[register as usize] != usize::MAX {
+                    DSP_REGS[register as usize] = block_register(plan, register, frame);
+                }
+            }
+            for slot in 0..DSP_SCOPE_SLOT_COUNT {
+                let register = DSP_SCOPE_REGS[slot];
+                if register >= 0 && (register as usize) < plan.slots.len()
+                    && plan.slots[register as usize] != usize::MAX {
+                    DSP_REGS[register as usize] = block_register(plan, register, frame);
+                }
+            }
+            capture_dsp_meters();
+            capture_dsp_scopes();
+            LEFT[start + frame] += plan.left[frame] as f32;
+            RIGHT[start + frame] += plan.right[frame] as f32;
+        }
+    }
+}
+
 unsafe fn render_dsp_ops(
     frame: usize,
     sample_rate: f64,
@@ -10767,6 +11401,15 @@ pub extern "C" fn renderDspProgram(frames: u32, sample_rate: f64) {
 
     unsafe {
         DSP_SPREAD_CONTEXT = 0;
+        if dspBlockRenderingEnabled() != 0 {
+            if let Some(mut plan) = (*core::ptr::addr_of_mut!(DSP_BLOCK_PLAN)).take() {
+                render_dsp_block(&mut plan, frames, sample_rate, value_smoothing_alpha);
+                *core::ptr::addr_of_mut!(DSP_BLOCK_PLAN) = Some(plan);
+                #[cfg(feature = "parallel")]
+                parallel::end_quantum();
+                return;
+            }
+        }
         for frame in 0..frames {
             let mut left_sample = 0.0;
             let mut right_sample = 0.0;

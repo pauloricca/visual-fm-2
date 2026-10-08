@@ -35,6 +35,7 @@ interface Patch { buffers?: Record<string, { hash: string; sampleRate: number; s
 const registeredWorklets = new WeakMap<BaseAudioContext, { hash: string; ready: Promise<void> }>();
 const workletUrl = new URL('./audio-worklet-wasm.js', import.meta.url);
 const wasmUrl = new URL('./visual-fm-kernel.wasm', import.meta.url);
+const simdWasmUrl = new URL('./visual-fm-kernel-simd.wasm', import.meta.url);
 let wasmBytesPromise: Promise<ArrayBuffer> | undefined;
 
 export class PatchPlayer {
@@ -153,10 +154,18 @@ function readJson<T>(files: Map<string, Uint8Array<ArrayBuffer>>, path: string):
 
 async function loadWasmBytes(): Promise<ArrayBuffer> {
   if (!wasmBytesPromise) {
-    wasmBytesPromise = fetch(wasmUrl).then((response) => {
+    wasmBytesPromise = (async () => {
+      try {
+        const response = await fetch(simdWasmUrl);
+        if (response.ok) {
+          const bytes = await response.arrayBuffer();
+          if (WebAssembly.validate(bytes)) return bytes;
+        }
+      } catch { /* Use the ordinary module on older hosts or missing assets. */ }
+      const response = await fetch(wasmUrl);
       if (!response.ok) throw new Error(`Could not load runtime WASM (${response.status}).`);
       return response.arrayBuffer();
-    }).catch((error) => {
+    })().catch((error) => {
       wasmBytesPromise = undefined;
       throw error;
     });

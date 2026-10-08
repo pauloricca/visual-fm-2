@@ -13,4 +13,5 @@ const playerWorkletSource = workletSource.replace(buildMarker, 'const PLAYER_RUN
 const { code } = await transform(playerWorkletSource, { loader: 'js', minify: true, target: 'es2022' });
 await writeFile(path.join(output, 'audio-worklet-wasm.js'), code);
 await copyFile(path.join(root, 'web/public/audio/visual-fm-kernel.wasm'), path.join(output, 'visual-fm-kernel.wasm'));
+await copyFile(path.join(root, 'web/public/audio/visual-fm-kernel-simd.wasm'), path.join(output, 'visual-fm-kernel-simd.wasm'));
 console.log(`Built player runtime at ${output}`);

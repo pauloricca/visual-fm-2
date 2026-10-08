@@ -117,6 +117,8 @@ Use ringing-drone plus small cases isolating the changed feature. Include stable
 
 ## 5. Render eligible graph regions in blocks
 
+**Status (8 October 2026):** Stages 5A–5C implemented for the audited subset, now extended to KinkOsc mode 12, Function and eligible cached Function operations, Delay with private effect slots, and DC blockers. Ringing-drone receives a full block plan with its meters and scope configured. The runtime also derives SCC plans for bounded feedback programs with substantial work outside the cycle. Small feedback graphs and unsupported repeat/resource/event programs keep the scalar renderer. A separately built SIMD single kernel handles independent add/multiply/subtract samples when the host validates its WASM features. Offline exact-output and state comparisons passed at 48 and 96 kHz for ringing-drone. Its ordinary block path regressed slightly, so the ordinary kernel now automatically selects scalar rendering for programs with KinkOsc mode 12 or sign-preserving power; explicit block mode remains available for comparisons. SIMD still uses the block plan. Timing-only ablations indicate KinkOsc is the larger remaining DSP cost, with power calculations also contributing. A general selection policy needs broader benchmarks, and in-app AudioWorklet timing remains open.
+
 **Objective:** dispatch each eligible operation once per block, preserving sample ordering inside feedback regions and stateful node kernels. Block rendering and SIMD are separate steps; block rendering does not automatically make a recursive filter SIMD-friendly.
 
 ### 5A. Dependency analysis and scheduling plan

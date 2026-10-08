@@ -20,6 +20,7 @@ import type { CustomWaveSettings, LinkMode, NodeType, Patch, PatchLink, PatchNod
 import { simplifyDspOperations, type DspOptimizationOptions, type DspOptimizationReport } from './dspOptimizer';
 
 import { DSP_OP } from './dspOpcodes';
+import { analyzeDspSchedule, type DspScheduleReport } from './dspSchedule';
 export { DSP_OP } from './dspOpcodes';
 
 export interface DspProgram {
@@ -46,6 +47,7 @@ export interface DspProgram {
   usesMidiClock: boolean;
   errors: string[];
   optimization?: DspOptimizationReport;
+  schedule?: DspScheduleReport;
 }
 
 export interface DspOp {
@@ -345,6 +347,9 @@ export function compilePatchToDspProgram(patch: Patch, optimizationOptions: DspO
   }
 
   const optimization = simplifyDspOperations(context, optimizationOptions);
+  const schedule = optimizationOptions.analyzeSchedule
+    ? analyzeDspSchedule(expandedPatch, context.ops, context.feedbackLinkIds)
+    : undefined;
 
   if (context.ops.length > MAX_DSP_OPS) {
     context.errors.push(`DSP program needs ${context.ops.length} operations; the engine limit is ${MAX_DSP_OPS}. Reduce the nodes inside Spreads.`);
@@ -396,6 +401,7 @@ export function compilePatchToDspProgram(patch: Patch, optimizationOptions: DspO
       usesMidiClock: context.usesMidiClock,
       errors: [...new Set(context.errors)],
       optimization,
+      schedule,
     };
   }
 
@@ -423,6 +429,7 @@ export function compilePatchToDspProgram(patch: Patch, optimizationOptions: DspO
     usesMidiClock: context.usesMidiClock,
     errors: [],
     optimization,
+    schedule,
   };
 }
 

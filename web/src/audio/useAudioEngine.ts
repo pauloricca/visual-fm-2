@@ -3,7 +3,7 @@ import { AUDIO_ENGINE_CONFIG } from './config';
 import { createParallelEngine, type ParallelEngine } from './parallelEngine';
 import { DSP_OP, type DspProgram } from './dspProgram';
 import { logDiagnosticEvent, serializeError } from '../diagnostics';
-import { AUDIO_WASM_ASSET_VERSION, AUDIO_WORKLET_ASSET_VERSION } from 'virtual:audio-engine-assets';
+import { AUDIO_SIMD_WASM_ASSET_VERSION, AUDIO_WASM_ASSET_VERSION, AUDIO_WORKLET_ASSET_VERSION } from 'virtual:audio-engine-assets';
 
 type AudioStatus = 'idle' | 'starting' | 'running' | 'error';
 type RecordingStatus = 'idle' | 'waiting' | 'recording' | 'saving' | 'saved' | 'error';
@@ -214,6 +214,22 @@ interface ImageDataRequest {
 
 const WORKLET_URL = `/audio/audio-worklet-wasm.js?v=${AUDIO_WORKLET_ASSET_VERSION}`;
 const WASM_URL = `/audio/visual-fm-kernel.wasm?v=${AUDIO_WASM_ASSET_VERSION}`;
+const SIMD_WASM_URL = `/audio/visual-fm-kernel-simd.wasm?v=${AUDIO_SIMD_WASM_ASSET_VERSION}`;
+
+async function loadCompatibleWasmBytes(preferSimd: boolean): Promise<ArrayBuffer> {
+  if (preferSimd) {
+    try {
+      const response = await fetch(SIMD_WASM_URL, { cache: 'no-store' });
+      if (response.ok) {
+        const bytes = await response.arrayBuffer();
+        if (WebAssembly.validate(bytes)) return bytes;
+      }
+    } catch { /* The ordinary kernel is the compatibility fallback. */ }
+  }
+  const response = await fetch(WASM_URL, { cache: 'no-store' });
+  if (!response.ok) throw new Error(`Could not load WASM kernel (${response.status}).`);
+  return response.arrayBuffer();
+}
 const METER_UPDATE_INTERVAL_MS = 80;
 const RECORDING_CHUNK_FRAMES = 16384;
 const RECORDING_CHANNEL_COUNT = 2;
@@ -1369,12 +1385,7 @@ export function useAudioEngine(options: UseAudioEngineOptions = {}): AudioEngine
               state: context.state,
             },
           });
-          const wasmBytes = await fetch(WASM_URL, { cache: 'no-store' }).then((response) => {
-            if (!response.ok) {
-              throw new Error(`Could not load WASM kernel (${response.status}).`);
-            }
-            return response.arrayBuffer();
-          });
+          const wasmBytes = await loadCompatibleWasmBytes(AUDIO_ENGINE_CONFIG.rendering.mode !== 'multi');
           let parallelFallbackReason = '';
           if (AUDIO_ENGINE_CONFIG.rendering.mode === 'multi') {
             const abort = new AbortController();

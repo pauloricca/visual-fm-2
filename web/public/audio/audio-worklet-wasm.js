@@ -639,6 +639,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       this.refreshWasmViews(true);
       this.configureDspScopes();
       this.configureDspMeters();
+      this.wasm.compileDspBlockPlan?.();
+      this.refreshWasmViews(true);
       if (!PLAYER_RUNTIME_BUILD) this.postRenderingStatus();
       this.port.postMessage({
         type: "backendStatus",
@@ -735,6 +737,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.refreshWasmViews(true);
     this.configureDspScopes();
     this.configureDspMeters();
+    this.wasm?.compileDspBlockPlan?.();
+    this.refreshWasmViews(true);
   }
 
   captureMidiControlValues(program) {
@@ -1680,6 +1684,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
         samples,
       });
     }
+    this.wasm?.compileDspBlockPlan?.();
+    this.refreshWasmViews(true);
   }
 
   configureDspMeters() {
@@ -2436,6 +2442,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
     this.dspScopeStates.clear();
     this.wasm?.clearDspScopes?.();
     if (this.dspProgram) this.configureDspScopes();
+    this.wasm?.compileDspBlockPlan?.();
+    this.refreshWasmViews(true);
   }
 
   setMuted(muted) {
@@ -2476,6 +2484,8 @@ class VisualFmWasmEngine extends AudioWorkletProcessor {
       } else {
         this.dspScopeStates.clear();
         this.wasm?.clearDspScopes?.();
+        this.wasm?.compileDspBlockPlan?.();
+        this.refreshWasmViews(true);
       }
       return;
     }

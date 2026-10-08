@@ -22,6 +22,16 @@ docker run --rm \
   "$IMAGE" \
   sh -c "cargo build --release --target wasm32-unknown-unknown && cp target/wasm32-unknown-unknown/release/visual_fm_kernel.wasm '$PUBLIC_OUTPUT' && cp target/wasm32-unknown-unknown/release/visual_fm_kernel.wasm '$DIST_OUTPUT'"
 
+# The optional single-thread SIMD module is selected only after WASM feature
+# validation in the editor/player. Keep the ordinary module for older hosts.
+docker run --rm \
+  -v "$ROOT:/work" \
+  -w "$CRATE_DIR" \
+  -e CARGO_TARGET_DIR=target/simd \
+  -e 'RUSTFLAGS=-C target-feature=+simd128' \
+  "$IMAGE" \
+  sh -c 'cargo build --release --target wasm32-unknown-unknown && cp target/simd/wasm32-unknown-unknown/release/visual_fm_kernel.wasm /work/web/public/audio/visual-fm-kernel-simd.wasm && cp target/simd/wasm32-unknown-unknown/release/visual_fm_kernel.wasm /work/web/dist/audio/visual-fm-kernel-simd.wasm'
+
 # Rebuild std with atomics for the shared-memory variant. The ordinary kernel
 # above keeps its original toolchain flags and remains the single-mode baseline.
 docker run --rm \
@@ -34,4 +44,5 @@ docker run --rm \
   sh -c 'cargo build -Z build-std=std,panic_abort --features parallel --release --target wasm32-unknown-unknown && cp target/parallel/wasm32-unknown-unknown/release/visual_fm_kernel.wasm /work/web/public/audio/visual-fm-kernel-parallel.wasm && cp target/parallel/wasm32-unknown-unknown/release/visual_fm_kernel.wasm /work/web/dist/audio/visual-fm-kernel-parallel.wasm'
 
 printf 'Wrote %s\n' "$ROOT/web/public/audio/visual-fm-kernel.wasm"
+printf 'Wrote %s\n' "$ROOT/web/public/audio/visual-fm-kernel-simd.wasm"
 printf 'Wrote %s\n' "$ROOT/web/public/audio/visual-fm-kernel-parallel.wasm"

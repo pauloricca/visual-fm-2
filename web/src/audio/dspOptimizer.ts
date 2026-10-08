@@ -5,6 +5,7 @@ export interface DspOptimizationOptions {
   deduplicateLoads?: boolean;
   foldConstants?: boolean;
   eliminateDeadPureOps?: boolean;
+  analyzeSchedule?: boolean;
 }
 
 export interface DspOptimizationSnapshot {
