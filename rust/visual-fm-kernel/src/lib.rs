@@ -909,7 +909,9 @@ static mut DSP_OP_COUNT: usize = 0;
 static mut DSP_VALUES: [f64; MAX_DSP_VALUES] = [0.0; MAX_DSP_VALUES];
 static mut DSP_VALUE_TARGETS: [f64; MAX_DSP_VALUES] = [0.0; MAX_DSP_VALUES];
 static mut DSP_VALUE_INITIALIZED: [bool; MAX_DSP_VALUES] = [false; MAX_DSP_VALUES];
-static mut DSP_VALUE_ACTIVE_COUNT: usize = 0;
+static mut DSP_VALUE_SMOOTHING_INDICES: [usize; MAX_DSP_VALUES] = [0; MAX_DSP_VALUES];
+static mut DSP_VALUE_SMOOTHING_POSITIONS: [usize; MAX_DSP_VALUES] = [usize::MAX; MAX_DSP_VALUES];
+static mut DSP_VALUE_SMOOTHING_COUNT: usize = 0;
 static mut DSP_REGS: [f64; MAX_DSP_REGS] = [0.0; MAX_DSP_REGS];
 static mut DSP_STATE: [f64; MAX_DSP_STATE] = [0.0; MAX_DSP_STATE];
 static mut DSP_REPEAT_STATE_PTR: *mut f64 = core::ptr::null_mut();
@@ -1984,7 +1986,7 @@ pub extern "C" fn clearDspProgram() {
             DSP_SPAWN_RUNTIMES[slot] = None;
             DSP_SEQUENCER_CONFIGS[slot] = None;
         }
-        DSP_VALUE_ACTIVE_COUNT = 0;
+        DSP_VALUE_SMOOTHING_COUNT = 0;
         for index in 0..MAX_DSP_REGS {
             DSP_REGS[index] = 0.0;
         }
@@ -1998,6 +2000,7 @@ pub extern "C" fn clearDspProgram() {
         }
         for index in 0..MAX_DSP_VALUES {
             DSP_VALUE_INITIALIZED[index] = false;
+            DSP_VALUE_SMOOTHING_POSITIONS[index] = usize::MAX;
         }
         for slot in 0..MAX_DSP_EFFECT_SLOTS {
             DSP_EFFECT_INDICES[slot] = 0;
@@ -2858,8 +2861,11 @@ pub extern "C" fn setDspValue(index: u32, value: f64) {
             if !DSP_VALUE_INITIALIZED[index] {
                 DSP_VALUES[index] = value;
                 DSP_VALUE_INITIALIZED[index] = true;
+            } else if DSP_VALUES[index] != value {
+                insert_smoothing_value(index);
+            } else {
+                remove_smoothing_value(index);
             }
-            DSP_VALUE_ACTIVE_COUNT = DSP_VALUE_ACTIVE_COUNT.max(index + 1);
         }
     }
 }
@@ -2873,7 +2879,7 @@ pub extern "C" fn setDspValueImmediate(index: u32, value: f64) {
             DSP_VALUE_TARGETS[index] = value;
             DSP_VALUES[index] = value;
             DSP_VALUE_INITIALIZED[index] = true;
-            DSP_VALUE_ACTIVE_COUNT = DSP_VALUE_ACTIVE_COUNT.max(index + 1);
+            remove_smoothing_value(index);
         }
     }
 }
@@ -6345,24 +6351,49 @@ fn dsp_value_smoothing_alpha(sample_rate: f64) -> f64 {
     1.0 - (-1.0 / (sample_rate * DSP_VALUE_SMOOTH_SECONDS.max(0.001))).exp()
 }
 
+#[inline(always)]
+unsafe fn insert_smoothing_value(index: usize) {
+    if DSP_VALUE_SMOOTHING_POSITIONS[index] == usize::MAX {
+        let position = DSP_VALUE_SMOOTHING_COUNT;
+        DSP_VALUE_SMOOTHING_INDICES[position] = index;
+        DSP_VALUE_SMOOTHING_POSITIONS[index] = position;
+        DSP_VALUE_SMOOTHING_COUNT += 1;
+    }
+}
+
+#[inline(always)]
+unsafe fn remove_smoothing_value(index: usize) {
+    let position = DSP_VALUE_SMOOTHING_POSITIONS[index];
+    if position == usize::MAX {
+        return;
+    }
+    DSP_VALUE_SMOOTHING_COUNT -= 1;
+    let last_index = DSP_VALUE_SMOOTHING_INDICES[DSP_VALUE_SMOOTHING_COUNT];
+    DSP_VALUE_SMOOTHING_INDICES[position] = last_index;
+    DSP_VALUE_SMOOTHING_POSITIONS[last_index] = position;
+    DSP_VALUE_SMOOTHING_POSITIONS[index] = usize::MAX;
+}
+
 fn advance_dsp_values(alpha: f64) {
     unsafe {
-        for index in 0..DSP_VALUE_ACTIVE_COUNT {
-            if !DSP_VALUE_INITIALIZED[index] {
-                continue;
-            }
+        let mut position = 0;
+        while position < DSP_VALUE_SMOOTHING_COUNT {
+            let index = DSP_VALUE_SMOOTHING_INDICES[position];
             let current = DSP_VALUES[index];
             let target = DSP_VALUE_TARGETS[index];
             let delta = target - current;
             if delta == 0.0 {
+                remove_smoothing_value(index);
                 continue;
             }
             let next = current + delta * alpha;
-            DSP_VALUES[index] = if (target - next).abs() <= DSP_VALUE_SETTLE_EPSILON {
-                target
+            if (target - next).abs() <= DSP_VALUE_SETTLE_EPSILON {
+                DSP_VALUES[index] = target;
+                remove_smoothing_value(index);
             } else {
-                next
-            };
+                DSP_VALUES[index] = next;
+                position += 1;
+            }
         }
     }
 }

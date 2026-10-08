@@ -38,9 +38,11 @@ Use ringing-drone plus small cases isolating the changed feature. Include stable
 
 ## 1. Process only parameters that are smoothing
 
+**Status (8 October 2026):** Implemented in the Rust kernel with a bounded dense list and constant-time membership/removal. The single and parallel WASM variants and npm runtime artifacts have been rebuilt. Offline single-kernel benchmarks, exact-output transition checks, and serial/parallel saved-patch comparisons passed; in-app AudioWorklet timing remains for user testing. Tasks 2–6 remain separate work.
+
 **Objective:** remove the per-sample scan of settled parameters without changing their values or timing.
 
-**Current entry points:** `advance_dsp_values`, `setDspValue`, `setDspValueImmediate`, `DSP_VALUE_ACTIVE_COUNT`, and all value reset/program-upload paths in `lib.rs`. The current active count is a high-water mark, not a list of moving values.
+**Original entry points:** `advance_dsp_values`, `setDspValue`, `setDspValueImmediate`, `DSP_VALUE_ACTIVE_COUNT`, and all value reset/program-upload paths in `lib.rs`. Before this change, the active count was a high-water mark rather than a list of moving values.
 
 ### Implementation
 
