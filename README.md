@@ -351,6 +351,8 @@ Because the CSV does not contain the recording stop time, the export ends one me
 
 ## Compiler And Engine Boundary
 
+See [optimisations.md](optimisations.md) for proposed engine and editor optimisation tasks, implementation constraints, and validation criteria for separate development threads.
+
 The active compiler is `web/src/audio/dspProgram.ts`. It expands subpatches, combines input links with the rule above, and emits a `DspProgram` for the worklet. The editor sends that program with `dspProgram` messages, and value-only changes use `dspValues`.
 
 The old link-centric `WasmAudioGraph` TypeScript compiler has been removed. Current playback fixes should target `web/src/audio/dspProgram.ts` and the `DspProgram` sync path in the worklet.
