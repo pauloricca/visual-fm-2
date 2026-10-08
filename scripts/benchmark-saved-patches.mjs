@@ -11,7 +11,6 @@ import ts from '../node_modules/typescript/lib/typescript.js';
 
 const root = path.resolve(new URL('..', import.meta.url).pathname);
 const sourceRoot = path.join(root, 'web/src');
-const temporaryOutput = path.join(os.tmpdir(), 'visual-fm-saved-patch-benchmark');
 const frames = 128;
 const sampleRate = positiveInteger(process.env.BENCHMARK_SAMPLE_RATE, 48_000);
 // Keep defaults below the real watchdog's limit on slower developer machines.
@@ -19,6 +18,14 @@ const sampleRate = positiveInteger(process.env.BENCHMARK_SAMPLE_RATE, 48_000);
 const warmupBlocks = positiveInteger(process.env.BENCHMARK_WARMUP_BLOCKS, 32);
 const measuredBlocks = positiveInteger(process.env.BENCHMARK_MEASURED_BLOCKS, 64);
 const trials = positiveInteger(process.env.BENCHMARK_TRIALS, 3);
+if (process.env.BENCHMARK_EXERCISE_RINGING_CONTROLS === '1') {
+  assert(warmupBlocks + measuredBlocks >= 257,
+    'Ringing control verification needs at least 257 blocks to include its transport reset.');
+}
+if (process.env.BENCHMARK_FORCE_BLOCK_CANDIDATE === '1') {
+  assert(process.env.BENCHMARK_BLOCK_PLAN === '1' && process.env.BENCHMARK_COMPARISON_WASM,
+    'Forcing the candidate block path requires BENCHMARK_BLOCK_PLAN=1 and BENCHMARK_COMPARISON_WASM.');
+}
 const workers = Math.max(1, Math.min(4, Number(process.argv[2]) || 2));
 const patchFiles = process.env.BENCHMARK_PATCH_FILES?.split(',').filter(Boolean) ?? [
   'patches/dirty-saw/2026-10-07T13-01-07.047Z.json',
@@ -54,6 +61,7 @@ for (const file of patchFiles) {
   const profileVariant = process.env.BENCHMARK_PROFILE_VARIANT;
   if (profileVariant) {
     assert(['kink-sine', 'power-min', 'both'].includes(profileVariant), 'Unknown profile variant.');
+    assert(patch.name === 'ringing-drone', 'Profiling ablations are defined only for ringing-drone.');
     // Timing-only ablations: keep operation positions and the surrounding
     // saved patch, but substitute cheaper exact DSP operations. Their output
     // is intentionally different and is never used as a correctness oracle.
@@ -142,23 +150,26 @@ function groupSpreadPatch() {
 }
 
 function compilePatchCompiler() {
-  fs.rmSync(temporaryOutput, { recursive: true, force: true });
-  fs.mkdirSync(temporaryOutput, { recursive: true });
-  const program = ts.createProgram({
-    rootNames: [path.join(sourceRoot, 'audio/dspProgram.ts')],
-    options: {
-      target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS,
-      moduleResolution: ts.ModuleResolutionKind.Node10, rootDir: sourceRoot,
-      outDir: temporaryOutput, strict: true, skipLibCheck: true, esModuleInterop: true,
-    },
-  });
-  const emitted = program.emit();
-  const errors = ts.getPreEmitDiagnostics(program).concat(emitted.diagnostics)
-    .filter(diagnostic => diagnostic.category === ts.DiagnosticCategory.Error);
-  assert.equal(errors.length, 0, ts.formatDiagnosticsWithColorAndContext(errors, {
-    getCanonicalFileName: fileName => fileName, getCurrentDirectory: () => root, getNewLine: () => '\n',
-  }));
-  return createRequire(import.meta.url)(path.join(temporaryOutput, 'audio/dspProgram.js'));
+  const temporaryOutput = fs.mkdtempSync(path.join(os.tmpdir(), 'visual-fm-saved-patch-benchmark-'));
+  try {
+    const program = ts.createProgram({
+      rootNames: [path.join(sourceRoot, 'audio/dspProgram.ts')],
+      options: {
+        target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS,
+        moduleResolution: ts.ModuleResolutionKind.Node10, rootDir: sourceRoot,
+        outDir: temporaryOutput, strict: true, skipLibCheck: true, esModuleInterop: true,
+      },
+    });
+    const emitted = program.emit();
+    const errors = ts.getPreEmitDiagnostics(program).concat(emitted.diagnostics)
+      .filter(diagnostic => diagnostic.category === ts.DiagnosticCategory.Error);
+    assert.equal(errors.length, 0, ts.formatDiagnosticsWithColorAndContext(errors, {
+      getCanonicalFileName: fileName => fileName, getCurrentDirectory: () => root, getNewLine: () => '\n',
+    }));
+    return createRequire(import.meta.url)(path.join(temporaryOutput, 'audio/dspProgram.js'));
+  } finally {
+    fs.rmSync(temporaryOutput, { recursive: true, force: true });
+  }
 }
 
 async function benchmark(name, program) {
