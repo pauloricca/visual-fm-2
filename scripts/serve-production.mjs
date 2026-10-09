@@ -16,7 +16,7 @@ const certPath = resolve(process.env.TEIA_HTTPS_CERT || '.cert/teia.crt');
 process.env.TEIA_HTTPS_KEY = '';
 process.env.TEIA_HTTPS_CERT = '';
 const previewServer = await preview({
-  root: resolve('web'),
+  root: resolve('editor'),
   preview: {
     host: internalHost,
     port: internalPort,

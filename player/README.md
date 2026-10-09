@@ -1,6 +1,6 @@
 # Teia Player
 
-This separate browser app lives in `player/` and installs `@teia/runtime` as an npm dependency. The dependency contains the Rust/WASM engine and AudioWorklet. The ZIP downloaded with XP contains the patch manifest, editable patch, compiled DSP program, and referenced assets only.
+This separate browser app lives in `player/` and installs `@pauloricca/teia-runtime` as an npm dependency. The dependency contains the Rust/WASM engine and AudioWorklet. The ZIP downloaded with XP contains the patch manifest, editable patch, compiled DSP program, and referenced assets only.
 
 ## Run with Docker
 
@@ -13,10 +13,10 @@ The script builds and starts the Player in the foreground, opens `http://localho
 
 ## Runtime API
 
-The app installs the npm package from its vendored tarball so Docker builds need no npm registry access. Runtime version 0.2.2 uses a player-specific worklet that skips editor visualization and CPU reporting while retaining FFT signal outputs. It selects the SIMD block kernel where supported and keeps scalar rendering for KinkOsc/power programs on ordinary WASM hosts. A project with registry access can depend on a published `@teia/runtime` version instead. The package API is:
+The app installs the npm package from its vendored tarball so Docker builds need no npm registry access. Runtime version 0.2.2 uses a player-specific worklet that skips editor visualization and CPU reporting while retaining FFT signal outputs. It selects the SIMD block kernel where supported and keeps scalar rendering for KinkOsc/power programs on ordinary WASM hosts. A project with registry access can depend on a published `@pauloricca/teia-runtime` version instead. The package API is:
 
 ```js
-import { PatchPlayer } from '@teia/runtime';
+import { PatchPlayer } from '@pauloricca/teia-runtime';
 const context = new AudioContext();
 const player = await PatchPlayer.load(context, packageFile);
 player.connect(context.destination);

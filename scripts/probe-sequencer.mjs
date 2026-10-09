@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import ts from '../node_modules/typescript/lib/typescript.js';
 
 const repoRoot = path.resolve(new URL('..', import.meta.url).pathname);
-const sourceRoot = path.join(repoRoot, 'web/src');
+const sourceRoot = path.join(repoRoot, 'editor/src');
 const outputRoot = path.join(os.tmpdir(), 'teia-sequencer-probe');
 
 fs.rmSync(outputRoot, { recursive: true, force: true });
@@ -164,7 +164,7 @@ assert(
   'Fractional trigger position was not configured.',
 );
 
-const wasmBytes = fs.readFileSync(path.join(repoRoot, 'web/public/audio/teia-kernel.wasm'));
+const wasmBytes = fs.readFileSync(path.join(repoRoot, 'editor/public/audio/teia-kernel.wasm'));
 const { instance } = await WebAssembly.instantiate(wasmBytes, {});
 const wasm = instance.exports;
 

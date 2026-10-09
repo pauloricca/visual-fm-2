@@ -28,7 +28,7 @@ const DEFAULT_GRAPH_UPDATE_CROSSFADE_SECONDS = 0.02;
 // The player package build replaces this constant and removes editor-only work.
 const TEIA_RUNTIME_BUILD = false;
 
-// Active playback uses DspProgram messages compiled by web/src/audio/dspProgram.ts.
+// Active playback uses DspProgram messages compiled by editor/src/audio/dspProgram.ts.
 
 const WAVE_IDS = new Map([
   ["sine", 0],

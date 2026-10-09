@@ -59,7 +59,7 @@ export class PatchPlayer {
     const files = readPackageZip(bytes);
     const manifest = readJson<Manifest>(files, 'manifest.json');
     if (manifest.format !== 'teia-patch' || manifest.version !== 2 || manifest.engineApiVersion !== 1
-      || manifest.runtimePackage !== '@teia/runtime') {
+      || manifest.runtimePackage !== '@pauloricca/teia-runtime') {
       throw new Error('Unsupported patch package or engine API version.');
     }
     const program = readJson<Program>(files, manifest.paths.program);

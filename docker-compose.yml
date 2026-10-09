@@ -1,5 +1,5 @@
 services:
-  web:
+  editor:
     build:
       context: .
     ports:

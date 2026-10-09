@@ -11,11 +11,11 @@ const root = path.resolve(new URL('..', import.meta.url).pathname);
 const output = fs.mkdtempSync(path.join(os.tmpdir(), 'teia-schedule-'));
 try {
   const program = ts.createProgram({
-    rootNames: [path.join(root, 'web/src/audio/dspProgram.ts')],
+    rootNames: [path.join(root, 'editor/src/audio/dspProgram.ts')],
     options: {
       target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS,
       moduleResolution: ts.ModuleResolutionKind.Node10,
-      rootDir: path.join(root, 'web/src'), outDir: output,
+      rootDir: path.join(root, 'editor/src'), outDir: output,
       strict: true, skipLibCheck: true, esModuleInterop: true,
     },
   });

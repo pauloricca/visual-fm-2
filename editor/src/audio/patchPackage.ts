@@ -78,7 +78,7 @@ export async function createPatchPackage(patch: Patch, sourceProgram: DspProgram
     version: 2,
     programVersion: program.version,
     engineApiVersion: 1,
-    runtimePackage: '@teia/runtime',
+    runtimePackage: '@pauloricca/teia-runtime',
     paths: { patch: 'patch.json', program: 'program.json' },
     parameters,
     assets,

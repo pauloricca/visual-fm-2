@@ -3,9 +3,9 @@ set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 CRATE_DIR="$ROOT/rust/teia-kernel"
-WASM_OUTPUT="$ROOT/web/public/audio/teia-kernel.wasm"
-PARALLEL_OUTPUT="$ROOT/web/public/audio/teia-kernel-parallel.wasm"
-SIMD_OUTPUT="$ROOT/web/public/audio/teia-kernel-simd.wasm"
+WASM_OUTPUT="$ROOT/editor/public/audio/teia-kernel.wasm"
+PARALLEL_OUTPUT="$ROOT/editor/public/audio/teia-kernel-parallel.wasm"
+SIMD_OUTPUT="$ROOT/editor/public/audio/teia-kernel-simd.wasm"
 BUILD_SCRIPT="$ROOT/scripts/build-rust-wasm.sh"
 
 rebuild_reason=""

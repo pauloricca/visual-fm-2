@@ -1,9 +1,9 @@
-# @teia/runtime
+# @pauloricca/teia-runtime
 
 Browser runtime for Teia patch ZIPs exported with XP. The npm package contains the Rust/WASM kernel and AudioWorklet; patch ZIPs contain only the editable patch, compiled DSP program, parameter metadata, and referenced assets.
 
 ```js
-import { PatchPlayer } from '@teia/runtime';
+import { PatchPlayer } from '@pauloricca/teia-runtime';
 
 const context = new AudioContext();
 const player = await PatchPlayer.load(context, patchZipFile);
@@ -17,6 +17,6 @@ player.dispose();
 
 Serve the package's `dist/audio-worklet-wasm.js`, `dist/teia-kernel.wasm`, and `dist/teia-kernel-simd.wasm` alongside `dist/index.js`. The module resolves those files relative to its own URL and selects the SIMD kernel only when the host validates it; the ordinary kernel is the fallback. On ordinary WASM hosts, programs with KinkOsc or sign-preserving power automatically use scalar rendering pending broader block-cost benchmarks. A bundler must copy these assets into its output, or a static server can serve the installed package files directly. `PatchPlayer.load` verifies the patch's asset hashes and checks the patch format and engine API versions.
 
-Build this package from the editor repository with `npm run build:runtime`. Its worklet skips editor visualization, metering, CPU reporting, and legacy effect allocations while retaining DSP FFT outputs. The package is installable from a local tarball; it has not been published to a registry.
+Build this package from the editor repository with `npm run build:runtime`. Its worklet skips editor visualization, metering, CPU reporting, and legacy effect allocations while retaining DSP FFT outputs. The package is installable from a local tarball; it has not been published to a registry. Before the first public release, review `npm pack --dry-run ./runtime`, then publish from `runtime/` with `npm publish --access public` after signing in to npm and enabling 2FA.
 
-Editor exports use the `teia-patch` manifest format and name `@teia/runtime`.
+Editor exports use the `teia-patch` manifest format and name `@pauloricca/teia-runtime`.

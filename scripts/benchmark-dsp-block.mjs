@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { performance } from 'node:perf_hooks';
 
-const bytes = fs.readFileSync(new URL('../web/public/audio/teia-kernel.wasm', import.meta.url));
-const simdBytes = fs.readFileSync(new URL('../web/public/audio/teia-kernel-simd.wasm', import.meta.url));
+const bytes = fs.readFileSync(new URL('../editor/public/audio/teia-kernel.wasm', import.meta.url));
+const simdBytes = fs.readFileSync(new URL('../editor/public/audio/teia-kernel-simd.wasm', import.meta.url));
 assert(WebAssembly.validate(simdBytes), 'This benchmark host does not support WASM SIMD.');
 const sampleRate = 48_000;
 const cases = [

@@ -20,7 +20,7 @@ const candidate = (await WebAssembly.instantiate(parallelModule, {
   env: { memory }, parallel: { now: () => performance.now(), wake: () => controls.forEach(control => Atomics.notify(control, 0, 1)) },
 })).exports;
 candidate.__wasm_init_tls(candidate.dspParallelTlsPtr(1));
-const workerSource = fs.readFileSync(path.join(import.meta.dirname, '../web/public/audio/dsp-parallel-worker.js'), 'utf8');
+const workerSource = fs.readFileSync(path.join(import.meta.dirname, '../editor/public/audio/dsp-parallel-worker.js'), 'utf8');
 const workerWrapper = `const { parentPort } = require('node:worker_threads');
 globalThis.self = { postMessage: data => parentPort.postMessage(data) };
 ${workerSource}

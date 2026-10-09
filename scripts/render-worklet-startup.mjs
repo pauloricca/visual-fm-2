@@ -46,7 +46,7 @@ globalThis.registerProcessor = (_name, klass) => {
   ProcessorClass = klass;
 };
 
-vm.runInThisContext(fs.readFileSync('web/public/audio/audio-worklet-wasm.js', 'utf8'), {
+vm.runInThisContext(fs.readFileSync('editor/public/audio/audio-worklet-wasm.js', 'utf8'), {
   filename: 'audio-worklet-wasm.js',
 });
 
@@ -54,7 +54,7 @@ if (!ProcessorClass) {
   throw new Error('Worklet processor was not registered.');
 }
 
-const wasmBytes = fs.readFileSync('web/public/audio/teia-kernel.wasm');
+const wasmBytes = fs.readFileSync('editor/public/audio/teia-kernel.wasm');
 const processor = new ProcessorClass({
   processorOptions: {
     wasmBytes: wasmBytes.buffer.slice(wasmBytes.byteOffset, wasmBytes.byteOffset + wasmBytes.byteLength),
@@ -289,13 +289,13 @@ async function waitForReady() {
 
 async function compileVisiblePatch() {
   const moduleDir = fs.mkdtempSync('/tmp/teia-compiler-');
-  writeTranspiledModule('web/src/graph/expression.ts', `${moduleDir}/expression.mjs`);
-  writeTranspiledModule('web/src/graph/customWave.ts', `${moduleDir}/customWave.mjs`);
-  writeTranspiledModule('web/src/graph/subpatch.ts', `${moduleDir}/subpatch.mjs`, (source) => (
+  writeTranspiledModule('editor/src/graph/expression.ts', `${moduleDir}/expression.mjs`);
+  writeTranspiledModule('editor/src/graph/customWave.ts', `${moduleDir}/customWave.mjs`);
+  writeTranspiledModule('editor/src/graph/subpatch.ts', `${moduleDir}/subpatch.mjs`, (source) => (
     source.replaceAll("'./customWave'", "'./customWave.mjs'")
   ));
-  writeTranspiledModule('web/src/graph/nodeTypes.ts', `${moduleDir}/nodeTypes.mjs`);
-  writeTranspiledModule('web/src/audio/dspProgram.ts', `${moduleDir}/dspProgram.mjs`, (source) => (
+  writeTranspiledModule('editor/src/graph/nodeTypes.ts', `${moduleDir}/nodeTypes.mjs`);
+  writeTranspiledModule('editor/src/audio/dspProgram.ts', `${moduleDir}/dspProgram.mjs`, (source) => (
     source
       .replaceAll("'../graph/subpatch'", "'./subpatch.mjs'")
       .replaceAll("'../graph/customWave'", "'./customWave.mjs'")

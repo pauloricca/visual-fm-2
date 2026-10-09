@@ -1,4 +1,4 @@
-import { PatchPlayer } from '@teia/runtime';
+import { PatchPlayer } from '@pauloricca/teia-runtime';
 
 const pick = (id) => document.getElementById(id);
 const fileInput = pick('package');

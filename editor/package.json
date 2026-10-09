@@ -1,5 +1,5 @@
 {
-  "name": "@teia/editor",
+  "name": "@pauloricca/teia-editor",
   "version": "0.1.0",
   "private": true,
   "type": "module",

@@ -10,10 +10,10 @@ import { buildSync } from 'esbuild';
 const prefix = process.argv[2];
 const root = path.resolve(new URL('..', import.meta.url).pathname);
 const compilerFile = '/tmp/teia-task3-benchmark-compiler.cjs';
-buildSync({ entryPoints: [path.join(root, 'web/src/audio/dspProgram.ts')], outfile: compilerFile,
+buildSync({ entryPoints: [path.join(root, 'editor/src/audio/dspProgram.ts')], outfile: compilerFile,
   bundle: true, platform: 'node', format: 'cjs', logLevel: 'silent' });
 const { compilePatchToDspProgram } = createRequire(import.meta.url)(compilerFile);
-const wasmBytes = fs.readFileSync(path.join(root, 'web/public/audio/teia-kernel.wasm'));
+const wasmBytes = fs.readFileSync(path.join(root, 'editor/public/audio/teia-kernel.wasm'));
 const cases = [
   ['dirty-saw', 'patches/dirty-saw/2026-10-07T13-01-07.047Z.json'],
   ['ear-confusion', 'patches/ear-confusion/2026-09-23T22-47-05.833Z.json'],

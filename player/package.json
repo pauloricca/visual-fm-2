@@ -7,6 +7,6 @@
     "start": "node server.mjs"
   },
   "dependencies": {
-    "@teia/runtime": "file:vendor/teia-runtime-0.2.2.tgz"
+    "@pauloricca/teia-runtime": "file:vendor/pauloricca-teia-runtime-0.2.2.tgz"
   }
 }

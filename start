@@ -151,7 +151,7 @@ if command -v curl >/dev/null 2>&1; then
     if [ "$HTTPS_ENABLED" -eq 1 ]; then
       CURL_ARGS="-kfsS"
     fi
-    if docker compose ps --status running --services | grep -qx web &&
+    if docker compose ps --status running --services | grep -qx editor &&
       curl $CURL_ARGS "$URL" >/dev/null 2>&1; then
       READY=1
       break
@@ -161,7 +161,7 @@ if command -v curl >/dev/null 2>&1; then
   done
 else
   sleep 2
-  if docker compose ps --status running --services | grep -qx web; then
+  if docker compose ps --status running --services | grep -qx editor; then
     READY=1
   fi
 fi
