@@ -957,6 +957,7 @@ function persistedNodeFromPatchNode(
     outputs: node.outputs,
     subpatch: node.subpatch,
     compactPorts: node.compactPorts ?? original?.compactPorts,
+    enabled: node.enabled,
     spreadNodeIds: node.spreadNodeIds ?? original?.spreadNodeIds,
     scopeSize: node.scopeSize ?? original?.scopeSize,
   };
