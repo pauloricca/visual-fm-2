@@ -1,0 +1,499 @@
+{
+  "profile": "baseline",
+  "flags": {},
+  "felucca_commit": "129a4cf4e98e6ef06a4a89e97b65092247d69412",
+  "sdk_commit": "d179b4484759423312073f5fbb232501aa491047",
+  "sdk_files_sha256": {
+    "uboot.boot": "4e3b4c220dc96641cb5a723f41e68ce41d5261ae9434bb33fbd7f2c59976ded4",
+    "cfg_tool.bin": "276579954f076886a6a7694f65dc71c034a63a2c204b76749065c0ac7b010d1b",
+    "cfg/eq_cfg_hw.bin": "41167491bffed4651750719c973d2758adeb9021a5670d02d6a53c85ed80ea7d"
+  },
+  "compiler": "clang version 4.0.1 () ()\nTarget: x86_64-unknown-linux-gnu\nThread model: posix\nInstalledDir: /opt/jieli/pi32v2/bin\n",
+  "compiler_archive_sha256": "a1545cddbc451a06bac43eb5cd96d831470c42a97c5c0b1f98879a20fc7647bd",
+  "compiler_executable_sha256": "c45189ee624de0430deb0db02e6dce171fb5538e7fe323e3964dc8ac6236240f",
+  "docker_image": "debian@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587",
+  "python": "3.14.3",
+  "pillow": "12.2.0",
+  "fonttools": "4.60.2",
+  "raqm": "0.10.3",
+  "regions": {
+    "RAM": {
+      "used": 54916,
+      "capacity": 73728,
+      "free": 18812
+    },
+    "POOL": {
+      "used": 327796,
+      "capacity": 368640,
+      "free": 40844
+    },
+    "RAMTEXT": {
+      "used": 2924,
+      "capacity": 24576,
+      "free": 21652
+    },
+    "XIP": {
+      "used": 491692,
+      "capacity": 581564,
+      "free": 89872
+    }
+  },
+  "artifacts": {
+    "felucca.bin": {
+      "bytes": 491692,
+      "sha256": "214239feb0afa2f940953f833581a997b0f99e51549812dd225e6cf186e9c950"
+    },
+    "felucca.elf": {
+      "bytes": 543984,
+      "sha256": "c44b129337e422a4cd086a2e2983edd09956ebee4581ea28e4ac4a33babdff8d"
+    },
+    "felucca.fwsc": {
+      "bytes": 610086,
+      "sha256": "12e48ccca6733b8bc4ad5f047bc0b79dea08242b7db4c617594bc369709cd462"
+    },
+    "loader/ota.bin": {
+      "bytes": 6930,
+      "sha256": "a48ee499520cb16750e2504264bd8a8cd3e13ea953bbf319537cb840eb0d2115"
+    }
+  },
+  "pool_objects": [
+    {
+      "name": "dly_buf",
+      "section": ".pool",
+      "bytes": 131072
+    },
+    {
+      "name": "cv_px",
+      "section": ".pool",
+      "bytes": 59520
+    },
+    {
+      "name": "eng_mem",
+      "section": ".pool",
+      "bytes": 51552
+    },
+    {
+      "name": "sl_buf",
+      "section": ".pool",
+      "bytes": 32768
+    },
+    {
+      "name": "rev_comb",
+      "section": ".pool",
+      "bytes": 9874
+    },
+    {
+      "name": "up_bank",
+      "section": ".pool",
+      "bytes": 6160
+    },
+    {
+      "name": "proj_scratch",
+      "section": ".pool",
+      "bytes": 4780
+    },
+    {
+      "name": "cho_buf",
+      "section": ".pool",
+      "bytes": 4096
+    },
+    {
+      "name": "proj_wire_u",
+      "section": ".pool",
+      "bytes": 3840
+    },
+    {
+      "name": "st_buf",
+      "section": ".pool",
+      "bytes": 3840
+    },
+    {
+      "name": "upf",
+      "section": ".pool",
+      "bytes": 3728
+    },
+    {
+      "name": "ins",
+      "section": ".pool",
+      "bytes": 2320
+    },
+    {
+      "name": "rev_u",
+      "section": ".pool",
+      "bytes": 1996
+    },
+    {
+      "name": "hc_tab",
+      "section": ".pool",
+      "bytes": 1548
+    },
+    {
+      "name": "undo",
+      "section": ".pool",
+      "bytes": 1500
+    },
+    {
+      "name": "tl_open",
+      "section": ".pool",
+      "bytes": 1092
+    },
+    {
+      "name": "graph_scope.snap",
+      "section": ".pool",
+      "bytes": 1024
+    },
+    {
+      "name": "ota_stage.hdr",
+      "section": ".pool",
+      "bytes": 1024
+    },
+    {
+      "name": "hl",
+      "section": ".pool",
+      "bytes": 708
+    },
+    {
+      "name": "ed_out",
+      "section": ".pool",
+      "bytes": 664
+    },
+    {
+      "name": "ota_dec",
+      "section": ".pool",
+      "bytes": 640
+    },
+    {
+      "name": "ed_bk_settings",
+      "section": ".pool",
+      "bytes": 572
+    },
+    {
+      "name": "persist_saved",
+      "section": ".pool",
+      "bytes": 572
+    },
+    {
+      "name": "favorites",
+      "section": ".pool",
+      "bytes": 520
+    },
+    {
+      "name": "ed_smp_buf",
+      "section": ".pool",
+      "bytes": 512
+    },
+    {
+      "name": "fm6_own",
+      "section": ".pool",
+      "bytes": 512
+    },
+    {
+      "name": "ota_stage.b",
+      "section": ".pool",
+      "bytes": 512
+    },
+    {
+      "name": "ota_stage.mine",
+      "section": ".pool",
+      "bytes": 512
+    },
+    {
+      "name": "kr",
+      "section": ".pool",
+      "bytes": 160
+    },
+    {
+      "name": "nm",
+      "section": ".pool",
+      "bytes": 56
+    },
+    {
+      "name": "mom.1",
+      "section": ".pool",
+      "bytes": 32
+    },
+    {
+      "name": "mom.2",
+      "section": ".pool",
+      "bytes": 16
+    },
+    {
+      "name": "proj_name",
+      "section": ".pool",
+      "bytes": 13
+    },
+    {
+      "name": "as.0",
+      "section": ".pool",
+      "bytes": 4
+    },
+    {
+      "name": "as.1",
+      "section": ".pool",
+      "bytes": 4
+    },
+    {
+      "name": "as.2",
+      "section": ".pool",
+      "bytes": 4
+    },
+    {
+      "name": "as.3",
+      "section": ".pool",
+      "bytes": 4
+    },
+    {
+      "name": "as.4",
+      "section": ".pool",
+      "bytes": 4
+    },
+    {
+      "name": "as.5",
+      "section": ".pool",
+      "bytes": 4
+    },
+    {
+      "name": "as.6",
+      "section": ".pool",
+      "bytes": 4
+    },
+    {
+      "name": "fm6_bank_read",
+      "section": ".pool",
+      "bytes": 4
+    },
+    {
+      "name": "fm6_bank_used",
+      "section": ".pool",
+      "bytes": 4
+    },
+    {
+      "name": "fvb_tx.0",
+      "section": ".pool",
+      "bytes": 4
+    },
+    {
+      "name": "fvb_tx.1",
+      "section": ".pool",
+      "bytes": 4
+    },
+    {
+      "name": "as.7",
+      "section": ".pool",
+      "bytes": 1
+    },
+    {
+      "name": "fvb_tx.2",
+      "section": ".pool",
+      "bytes": 1
+    },
+    {
+      "name": "mom.0",
+      "section": ".pool",
+      "bytes": 1
+    }
+  ],
+  "largest_static_objects": [
+    {
+      "name": "dly_buf",
+      "section": ".pool",
+      "bytes": 131072
+    },
+    {
+      "name": "SMP_DATA",
+      "section": ".text",
+      "bytes": 126244
+    },
+    {
+      "name": "cv_px",
+      "section": ".pool",
+      "bytes": 59520
+    },
+    {
+      "name": "eng_mem",
+      "section": ".pool",
+      "bytes": 51552
+    },
+    {
+      "name": "sl_buf",
+      "section": ".pool",
+      "bytes": 32768
+    },
+    {
+      "name": "proj_slot",
+      "section": ".noinit",
+      "bytes": 15360
+    },
+    {
+      "name": "chain",
+      "section": ".bss",
+      "bytes": 13096
+    },
+    {
+      "name": "AF_M_DATA",
+      "section": ".text",
+      "bytes": 13028
+    },
+    {
+      "name": "AF_S_DATA",
+      "section": ".text",
+      "bytes": 10410
+    },
+    {
+      "name": "rev_comb",
+      "section": ".pool",
+      "bytes": 9874
+    },
+    {
+      "name": "UAC_FIR",
+      "section": ".text",
+      "bytes": 7680
+    },
+    {
+      "name": "trk",
+      "section": ".bss",
+      "bytes": 7296
+    },
+    {
+      "name": "up_bank",
+      "section": ".pool",
+      "bytes": 6160
+    },
+    {
+      "name": "AF_L_DATA",
+      "section": ".text",
+      "bytes": 5706
+    },
+    {
+      "name": "KC_DATA",
+      "section": ".text",
+      "bytes": 4935
+    },
+    {
+      "name": "proj_scratch",
+      "section": ".pool",
+      "bytes": 4780
+    },
+    {
+      "name": "FM6_EXP2",
+      "section": ".text",
+      "bytes": 4100
+    },
+    {
+      "name": "cho_buf",
+      "section": ".pool",
+      "bytes": 4096
+    },
+    {
+      "name": "proj_wire_u",
+      "section": ".pool",
+      "bytes": 3840
+    },
+    {
+      "name": "st_buf",
+      "section": ".pool",
+      "bytes": 3840
+    },
+    {
+      "name": "upf",
+      "section": ".pool",
+      "bytes": 3728
+    },
+    {
+      "name": "AI12_DATA",
+      "section": ".text",
+      "bytes": 3694
+    },
+    {
+      "name": "AF_M_G",
+      "section": ".text",
+      "bytes": 3360
+    },
+    {
+      "name": "AF_S_G",
+      "section": ".text",
+      "bytes": 3360
+    },
+    {
+      "name": "drw_v",
+      "section": ".bss",
+      "bytes": 2944
+    },
+    {
+      "name": "slc_usr",
+      "section": ".bss",
+      "bytes": 2928
+    },
+    {
+      "name": "ins",
+      "section": ".pool",
+      "bytes": 2320
+    },
+    {
+      "name": "AI16_DATA",
+      "section": ".text",
+      "bytes": 2311
+    },
+    {
+      "name": "TP",
+      "section": ".text",
+      "bytes": 2220
+    },
+    {
+      "name": "SINE",
+      "section": ".text",
+      "bytes": 2050
+    },
+    {
+      "name": "abuf",
+      "section": ".bss",
+      "bytes": 2048
+    },
+    {
+      "name": "cdc_out",
+      "section": ".bss",
+      "bytes": 2048
+    },
+    {
+      "name": "midi_sel_on",
+      "section": ".bss",
+      "bytes": 2048
+    },
+    {
+      "name": "ua_ring",
+      "section": ".bss",
+      "bytes": 2048
+    },
+    {
+      "name": "rev_u",
+      "section": ".pool",
+      "bytes": 1996
+    },
+    {
+      "name": "AF_M_KERN",
+      "section": ".text",
+      "bytes": 1984
+    },
+    {
+      "name": "AF_S_KERN",
+      "section": ".text",
+      "bytes": 1838
+    },
+    {
+      "name": "slc_man",
+      "section": ".bss",
+      "bytes": 1584
+    },
+    {
+      "name": "hc_tab",
+      "section": ".pool",
+      "bytes": 1548
+    },
+    {
+      "name": "undo",
+      "section": ".pool",
+      "bytes": 1500
+    }
+  ],
+  "compilation_target": "pi32v2"
+}

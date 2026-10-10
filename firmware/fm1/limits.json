@@ -1,0 +1,8 @@
+{
+  "operations": 256,
+  "registers": 256,
+  "values": 128,
+  "states": 32,
+  "packageVersion": 4,
+  "operationBytes": 24
+}

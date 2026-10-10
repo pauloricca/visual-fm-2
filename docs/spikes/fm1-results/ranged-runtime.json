@@ -1,0 +1,65 @@
+{
+  "status": "compiled; not tested on hardware",
+  "upstream_commit": "129a4cf4e98e6ef06a4a89e97b65092247d69412",
+  "sdk_commit": "d179b4484759423312073f5fbb232501aa491047",
+  "compiler_sha256": "c45189ee624de0430deb0db02e6dce171fb5538e7fe323e3964dc8ac6236240f",
+  "image": "debian@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587",
+  "checks": [
+    ".ram_text: 916 insns, no calls",
+    "image 26908 B; RAM .data+.bss 12016 B of 73728; pool 33960 B of 368640"
+  ],
+  "forbidden_symbols_absent": [
+    "dly_buf",
+    "sl_buf",
+    "eng_mem",
+    "SMP_DATA",
+    "mix_block",
+    "seq_tick",
+    "ENGINES",
+    "demo_program"
+  ],
+  "sources": {
+    "firmware/fm1/.DS_Store": "0faccd38c1ea082c8b9612d34f702ab6f0ce97559e10114c71b50b038f8abe54",
+    "firmware/fm1/LICENSE": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+    "firmware/fm1/README.md": "ceb6faf55bb188038ef1423916153370f55be59a661cd4b33e46e68ff98ead65",
+    "firmware/fm1/UPLOAD.md": "4aff7316d7ec0481ffcfcb4c5898f77b6aa3aa6a7252b30d65bd8929f2621170",
+    "firmware/fm1/app.c": "c54e46919f4f7d2766df133ba72b6527a3ee30b3a7914265b9e7864f8a9a5cda",
+    "firmware/fm1/export-patch.mjs": "b9d8d28314930e11fd85c2eb7b3f697820356be18361a2f772fe498b7a8d1c69",
+    "firmware/fm1/limits.json": "227d82f38d5dc5c6bd6843da5a545a2ee849e766f3654cea5cd9cf9f7627bef5",
+    "firmware/fm1/patches/octave.json": "94a2522f12b71626cc1b8916fe835ab65d5bcf8c632eedbb0c72af42ec361882",
+    "firmware/fm1/patches/sine.json": "2ba91477ec8d76db684c2e8ae097cf4b2bf14a3875ff59d58a3d3c76185b362f",
+    "firmware/fm1/patches/test.json": "28882b98bd389f4494c8d7a2d7b5bf9f30b5a446b109d6c5afc5a2369cfd9cf4",
+    "firmware/fm1/patches/tremolo.json": "1a074fa160350186088b4a5f9998937b7b7e5ebd6e4539ebd4e38ffd84148ead",
+    "firmware/fm1/runtime.h": "2477c7e6db33c490a91a7f4e16b6897e8be408cc90c6c571891e10610d408bc9",
+    "firmware/fm1/test-ranges.c": "bbd4ea5a3c00040b383d857958b778c53c65cab3cea5889c0a01d5c43482e718",
+    "firmware/fm1/test-runtime.c": "663af314a0a0a6ae02ed4337490eb042ecca8305bc143730479b3db03662146f",
+    "firmware/fm1/test-upload.c": "3f53565a93244b130c82f702b383d1e345379748d10c7267bd9bd394150bcfd6",
+    "firmware/fm1/upload.h": "7a09f56177422eb56fbfa571a317f5cb4385ca720c43f93677cd8d921f4abab6"
+  },
+  "artifacts": {
+    "felucca.bin": {
+      "bytes": 26908,
+      "sha256": "056bf47835e186ea4e9bfe0e84f7f3f7bdcd031fe7c65f08142162b07f809cbc"
+    },
+    "felucca.elf": {
+      "bytes": 34036,
+      "sha256": "9923a9dfffc7bfd0cedaf0fa54c8667e1d6d041fad27dddad40bbc2128b5782b"
+    },
+    "teia-fm1-spike.fwsc": {
+      "bytes": 610078,
+      "sha256": "7b24bd701b99943c55cbe8b1633b3b043f8197ea46acf7f2c21ad80652f472d5"
+    },
+    "loader/ota.bin": {
+      "bytes": 6922,
+      "sha256": "1b54f9f293a616fcd485a90218da64601d6df682a76da402de66ccd42c450e96"
+    },
+    "gen/program.json": {
+      "bytes": 9393,
+      "sha256": "6631c234211549d8eb121a066a02c3b20842a67e372fd64142dcaeec73691f9a"
+    },
+    "gen/patch.h": {
+      "bytes": 8760,
+      "sha256": "fe707d559458e6004ffa07440ee94b0d1cb85052cca053ae8a55e6586d390a8d"
+    }
+  }
+}

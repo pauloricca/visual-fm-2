@@ -286,7 +286,7 @@ const idleEnvelopeProgram = compilePatchToDspProgram({
       attack: 0.01,
       decay: 0.16,
       sustain: 0.72,
-      gateLength: 0,
+      gateLength: 3,
       release: 0.24,
     }),
     node('out', 'AudioOut', { level: 1 }),
@@ -306,6 +306,25 @@ for (const register of [idleEnvelopeOp.a, idleEnvelopeOp.b]) {
   assert(
     valueOp && idleEnvelopeProgram.values[valueOp.a] === 0,
     'Unconnected Envelope trigger and gate ports should compile as zero even when stale saved values are present.',
+  );
+}
+const packedEnvelopeParameters = Math.round(idleEnvelopeOp.value ?? 0);
+const envelopeParameterRegisters = [
+  idleEnvelopeOp.c,
+  idleEnvelopeOp.d,
+  idleEnvelopeOp.e,
+  packedEnvelopeParameters % 4096,
+  Math.floor(packedEnvelopeParameters / 4096),
+  Math.round(idleEnvelopeOp.value2 ?? 0) - 1,
+];
+for (const [register, expected] of envelopeParameterRegisters.map((register, index) => [
+  register,
+  [0, 0.01, 0.16, 0.72, 0.24, 3][index],
+])) {
+  const valueOp = idleEnvelopeProgram.ops.find((op) => op.opcode === 0 && op.out === register);
+  assert(
+    valueOp && idleEnvelopeProgram.values[valueOp.a] === expected,
+    `Envelope parameter ${expected} should remain live after optimisation.`,
   );
 }
 const idleEnvelopeSignalOp = idleEnvelopeProgram.ops.find(

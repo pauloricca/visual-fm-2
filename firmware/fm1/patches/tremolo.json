@@ -1,0 +1,230 @@
+{
+  "name": "Tremolo",
+  "nodes": [
+    {
+      "id": "audio_out",
+      "type": "AudioOut",
+      "params": {
+        "level": 0.8
+      }
+    },
+    {
+      "id": "envelope_1",
+      "type": "Envelope",
+      "params": {
+        "attack": 0.01,
+        "decay": 0,
+        "delay": 0,
+        "gateLength": 0,
+        "release": 0.24,
+        "sustain": 1
+      }
+    },
+    {
+      "id": "filter_1",
+      "type": "Multiply",
+      "params": {
+        "factor": 1
+      }
+    },
+    {
+      "id": "multiply_1",
+      "type": "Multiply",
+      "params": {
+        "factor": 1
+      }
+    },
+    {
+      "id": "params_1",
+      "type": "Params",
+      "params": {
+        "attack": 0.01,
+        "frequency": 220,
+        "gate": 0,
+        "level": 0.5,
+        "release": 0.2
+      },
+      "outputs": [
+        {
+          "name": "level",
+          "defaultValue": 0.5,
+          "min": 0,
+          "max": 1
+        },
+        {
+          "name": "frequency",
+          "defaultValue": 220,
+          "min": 0,
+          "max": 20000
+        },
+        {
+          "name": "gate",
+          "defaultValue": 0,
+          "min": 0,
+          "max": 1
+        },
+        {
+          "name": "attack",
+          "defaultValue": 0.01,
+          "min": 0.001,
+          "max": 2
+        },
+        {
+          "name": "release",
+          "defaultValue": 0.2,
+          "min": 0,
+          "max": 2
+        }
+      ]
+    },
+    {
+      "id": "sine_1",
+      "type": "SineOsc",
+      "params": {
+        "frequency": 110
+      }
+    },
+    {
+      "id": "sineosc_1",
+      "type": "SineOsc",
+      "params": {
+        "frequency": 110,
+        "rangeMin": 0
+      }
+    }
+  ],
+  "links": [
+    {
+      "from": {
+        "node": "envelope_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "audio_out",
+        "port": "both"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "params_1",
+        "port": "attack"
+      },
+      "to": {
+        "node": "envelope_1",
+        "port": "attack"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "params_1",
+        "port": "gate"
+      },
+      "to": {
+        "node": "envelope_1",
+        "port": "gate"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "params_1",
+        "port": "release"
+      },
+      "to": {
+        "node": "envelope_1",
+        "port": "release"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "filter_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "envelope_1",
+        "port": "signal"
+      },
+      "weight": 0.85,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "sineosc_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "filter_1",
+        "port": "factor"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "multiply_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "filter_1",
+        "port": "signal"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "params_1",
+        "port": "level"
+      },
+      "to": {
+        "node": "multiply_1",
+        "port": "factor"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "sine_1",
+        "port": "signal"
+      },
+      "to": {
+        "node": "multiply_1",
+        "port": "signal"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "params_1",
+        "port": "frequency"
+      },
+      "to": {
+        "node": "sine_1",
+        "port": "frequency"
+      },
+      "weight": 1,
+      "mode": "set"
+    },
+    {
+      "from": {
+        "node": "params_1",
+        "port": "frequency"
+      },
+      "to": {
+        "node": "sineosc_1",
+        "port": "frequency"
+      },
+      "weight": 0.02,
+      "mode": "set"
+    }
+  ]
+}

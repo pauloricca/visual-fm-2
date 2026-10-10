@@ -59,6 +59,7 @@ const STATEFUL = new Set<number>([
 ]);
 const BINARY = new Set<number>([DSP_OP.Add, DSP_OP.Mul, DSP_OP.Sub, DSP_OP.Div, DSP_OP.Fold, DSP_OP.HardClip, DSP_OP.SoftClip]);
 const UNARY = new Set<number>([DSP_OP.Neg, DSP_OP.Abs, DSP_OP.Bend]);
+const DSP_REGISTER_COUNT = 4096;
 
 function operationTrait(opcode: number): DspOperationTrait {
   if (PURE.has(opcode)) return 'pure';
@@ -95,6 +96,19 @@ function inputs(op: DspOp): number[] {
   if (op.opcode === DSP_OP.Function) return [op.b ?? -1, op.c ?? -1, op.d ?? -1];
   if (op.opcode === DSP_OP.Map) return [op.a ?? -1, op.b ?? -1, op.c ?? -1, op.d ?? -1, op.e ?? -1];
   if (op.opcode === DSP_OP.Quantise) return [op.a ?? -1, op.b ?? -1, op.c ?? -1];
+  if (op.opcode === DSP_OP.Envelope) {
+    const packed = Math.round(op.value ?? 0);
+    return [
+      op.a ?? -1,
+      op.b ?? -1,
+      op.c ?? -1,
+      op.d ?? -1,
+      op.e ?? -1,
+      packed % DSP_REGISTER_COUNT,
+      Math.floor(packed / DSP_REGISTER_COUNT),
+      Math.round(op.value2 ?? 0) - 1,
+    ];
+  }
   // Unknown operations are kept. Their numeric fields are conservatively
   // considered uses, including packed register references in value fields.
   return [op.a, op.b, op.c, op.d, op.e, op.out, op.value, op.value2, op.value3, op.value4]

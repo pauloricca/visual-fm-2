@@ -3,6 +3,8 @@ node_modules/
 **/node_modules/
 
 patches/
+# Firmware source fixtures must travel with the compiler and build scripts.
+!firmware/fm1/patches/
 recordings/
 samples/
 images/

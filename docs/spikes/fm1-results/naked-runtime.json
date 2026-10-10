@@ -1,0 +1,54 @@
+{
+  "status": "compiled; not tested on hardware",
+  "upstream_commit": "129a4cf4e98e6ef06a4a89e97b65092247d69412",
+  "sdk_commit": "d179b4484759423312073f5fbb232501aa491047",
+  "compiler_sha256": "c45189ee624de0430deb0db02e6dce171fb5538e7fe323e3964dc8ac6236240f",
+  "image": "debian@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587",
+  "checks": [
+    ".ram_text: 916 insns, no calls",
+    "image 24852 B; RAM .data+.bss 12000 B of 73728; pool 19072 B of 368640"
+  ],
+  "forbidden_symbols_absent": [
+    "dly_buf",
+    "sl_buf",
+    "eng_mem",
+    "SMP_DATA",
+    "mix_block",
+    "seq_tick",
+    "ENGINES"
+  ],
+  "sources": {
+    "firmware/fm1/README.md": "ba5a75c9a6d23c4b0b3571fe57c8626274e42dc9d808d2b11517a475a46164ae",
+    "firmware/fm1/app.c": "6d5eb5588bc7f850838ff9164ec5dd254957948531eb694d81b52e363dbdcda2",
+    "firmware/fm1/export-patch.mjs": "30b180a9a25423314f625aa6aee1d5088b019d749004ec806e86bdbf23c67b51",
+    "firmware/fm1/patches/sine.json": "5ea4d1a52c564b2dbdadfee647dfa4afb45188fec14194554d08bde200f81095",
+    "firmware/fm1/runtime.h": "b6ccc87a05eeaae21fb0e2f68bde98c6af23e29a797fc2ad5691b23ff67f2c56",
+    "firmware/fm1/test-runtime.c": "f80fac70c7ae2cb0e2a47c115948bd1b9e352c1f005cfef8cca2029a6341bdd9"
+  },
+  "artifacts": {
+    "felucca.bin": {
+      "bytes": 24852,
+      "sha256": "55d9d023b908da681b6862fd64c4ae871f35cb5edd71c6cad14c43052724c810"
+    },
+    "felucca.elf": {
+      "bytes": 32388,
+      "sha256": "da6f21bdb88b982c6f872708dd42a2ae803cbb9a4ec083032a469f1409cfff56"
+    },
+    "teia-fm1-spike.fwsc": {
+      "bytes": 610078,
+      "sha256": "035ec4f01b3a9904da4126fa3f5bb73da34b4a7e70904296ecad53b89c04186d"
+    },
+    "loader/ota.bin": {
+      "bytes": 6922,
+      "sha256": "1b54f9f293a616fcd485a90218da64601d6df682a76da402de66ccd42c450e96"
+    },
+    "gen/program.json": {
+      "bytes": 9393,
+      "sha256": "6631c234211549d8eb121a066a02c3b20842a67e372fd64142dcaeec73691f9a"
+    },
+    "gen/patch.h": {
+      "bytes": 8757,
+      "sha256": "7fa006046a097caa29ff375b383db3bd39ae3f3cdd9ad1fe983d8fd5a6a4faef"
+    }
+  }
+}

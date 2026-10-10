@@ -25,6 +25,7 @@ import {
 } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type DragEvent, type FocusEvent as ReactFocusEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { DSP_OP, compilePatchToDspProgram, type DspProgram } from '../audio/dspProgram';
+import { Fm1UploadDialog } from './Fm1UploadDialog';
 import { createPatchPackage } from '../audio/patchPackage';
 import {
   loadBufferSnapshot,
@@ -432,6 +433,8 @@ function NodeEditorInner() {
   const [editingStack, setEditingStack] = useState<SubpatchEditFrame[]>([]);
   const [pendingBoundaryPort, setPendingBoundaryPort] = useState<BoundaryPortSelection | null>(null);
   const [selectedBoundaryPort, setSelectedBoundaryPort] = useState<BoundaryPortSelection | null>(null);
+  const [newPatchConfirmationOpen, setNewPatchConfirmationOpen] = useState(false);
+  const [fm1Patch, setFm1Patch] = useState<Patch | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [saveFeedbackActive, setSaveFeedbackActive] = useState(false);
   const [localPatchLibrary, setLocalPatchLibrary] = useState<LocalPatchLibraryState | null>(null);
@@ -565,7 +568,7 @@ function NodeEditorInner() {
   const audioRecordingActive = audio.recording.status === 'waiting' || audio.recording.status === 'recording';
   const recordingButtonLabel = audioRecordingActive
     ? formatRecordingTimestamp(audio.recording.elapsedSeconds)
-    : 'RC';
+    : 'REC';
   const localPatchStorageEnabled = useMemo(() => canUseLocalPatchStorage(), []);
   const [reconnectPreviewEdge, setReconnectPreviewEdge] = useState<ShaderFlowEdge | null>(null);
   const [areaDraw, setAreaDraw] = useState<AreaDrawState | null>(null);
@@ -4691,24 +4694,40 @@ function NodeEditorInner() {
   }, []);
 
   const newPatch = useCallback(() => {
-    commitHistory();
-    const callbacks = nodeCallbacksPlaceholder();
+    setNewPatchConfirmationOpen(true);
+  }, []);
+
+  const confirmNewPatch = useCallback(() => {
     setEditingStack([]);
     setPendingBoundaryPort(null);
     setSelectedBoundaryPort(null);
-    setPatchName('single-patch');
+    setPatchName(localPatchStorageEnabled ? '' : 'untitled-patch');
     setSelectedMidiInputDeviceIds([]);
     setMidiClockOutputEnabled(false);
     setMidiControlVisuals({});
-    setNodes(toFlowNodes(demoPatch, callbacks, null));
-    setEdges(toFlowEdges(demoPatch, updateEdgeWeight, updateEdgeMode, insertNodeOnEdge));
+    setNodes([]);
+    setEdges([]);
     setAreas([]);
     setSelectedAreaId(null);
     setSurfacedAreaId(null);
     setEditingAreaId(null);
     setEditingTypeNodeId(null);
+    setHistory({ past: [], future: [] });
+    setNewPatchConfirmationOpen(false);
     void restoreBufferAssets({}).catch(() => undefined);
-  }, [commitHistory, insertNodeOnEdge, restoreBufferAssets, updateEdgeMode, updateEdgeWeight]);
+  }, [localPatchStorageEnabled, restoreBufferAssets]);
+
+  useEffect(() => {
+    if (!newPatchConfirmationOpen) return;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      setNewPatchConfirmationOpen(false);
+    };
+    window.addEventListener('keydown', handleEscape, { capture: true });
+    return () => window.removeEventListener('keydown', handleEscape, { capture: true });
+  }, [newPatchConfirmationOpen]);
 
   useEffect(() => {
     const handleHistoryKeyDown = (event: KeyboardEvent) => {
@@ -6017,7 +6036,7 @@ function NodeEditorInner() {
               title={audioPlaybackActive ? 'Stop audio' : 'Play audio'}
               onClick={toggleAudioPlayback}
             >
-              PL
+              PLAY
             </button>
             <button
               className="viewport-button viewport-button-record"
@@ -6030,51 +6049,39 @@ function NodeEditorInner() {
             >
               {recordingButtonLabel}
             </button>
-            <button
-              className="viewport-button"
-              type="button"
-              role="switch"
-              aria-checked={selectedMidiInputDeviceIds.length > 0 || selectedMidiOutputDeviceIds.length > 0 || midiClockOutputEnabled}
-              aria-label="MIDI settings"
-              title={audio.midiInput.message}
-              onClick={() => setMidiSettingsOpen(true)}
-            >
-              MD
-            </button>
+            <button className="viewport-button" type="button" onClick={newPatch} aria-label="New patch" title="New patch">NEW</button>
             <button
               className={['viewport-button', saveFeedbackActive ? 'viewport-button-save-confirmed' : ''].filter(Boolean).join(' ')}
               type="button"
               onClick={() => void savePatchJson()}
+              disabled={localPatchStorageEnabled && trimmedRootPatchName.length === 0}
               aria-label="Save patch"
-              title="Save patch"
+              title={localPatchStorageEnabled && trimmedRootPatchName.length === 0 ? 'Enter a patch name before saving locally' : 'Save patch'}
             >
-              SV
+              SAVE
             </button>
-            <button className="viewport-button" type="button" onClick={() => void exportPatchPackage()} aria-label="Export patch package" title="Export patch package">XP</button>
-            <button className="viewport-button" type="button" onClick={requestPatchLoad} aria-label="Load patch" title="Load patch">LD</button>
-            <button className="viewport-button" type="button" onClick={undo} disabled={history.past.length === 0}>UN</button>
-            <button className="viewport-button" type="button" onClick={redo} disabled={history.future.length === 0}>RE</button>
-            {!isEditingSubpatch ? (
-              <button className="viewport-button" type="button" onClick={groupSelectedNodes} disabled={!canGroupSelection} aria-label="Group to subpatch" title="Group to subpatch">GR</button>
-            ) : null}
-            <button className="viewport-button" type="button" onClick={newPatch} aria-label="New patch" title="New patch">NW</button>
-            <button className="viewport-button" type="button" onClick={() => void requestSubpatchImport()} aria-label="Import subpatch" title="Import subpatch">IM</button>
-            <button
-              className={`viewport-button${canvasLocked ? ' viewport-button-active' : ''}`}
-              type="button"
-              role="switch"
-              aria-checked={canvasLocked}
-              aria-label={canvasLocked ? 'Unlock canvas' : 'Lock canvas'}
-              title={canvasLocked ? 'Unlock canvas' : 'Lock canvas'}
-              onClick={toggleCanvasLock}
-            >LK</button>
-            <button className="viewport-button" type="button" onClick={() => scaleSelectedNodes(2)} disabled={!canScaleSelection} aria-label="Increase selected node scale" title="Increase selected node scale">S+</button>
-            <button className="viewport-button" type="button" onClick={() => scaleSelectedNodes(0.5)} disabled={!canScaleSelection} aria-label="Decrease selected node scale" title="Decrease selected node scale">S-</button>
+            <button className="viewport-button" type="button" onClick={requestPatchLoad} aria-label="Load patch" title="Load patch">LOAD</button>
+            <button className="viewport-button viewport-button-history" type="button" onClick={undo} disabled={history.past.length === 0} aria-label="Undo" title="Undo">UNDO</button>
+            <button className="viewport-button viewport-button-history" type="button" onClick={redo} disabled={history.future.length === 0} aria-label="Redo" title="Redo">REDO</button>
+            <div className="viewport-more">
+              <button className="viewport-button viewport-more-trigger" type="button" aria-haspopup="menu" aria-label="More actions" title="More actions">MORE ˆ</button>
+              <div className="viewport-more-menu" role="menu" aria-label="More actions">
+                <button className="viewport-button" type="button" onClick={() => setMidiSettingsOpen(true)} aria-label="MIDI settings" title="MIDI settings" role="menuitem">MIDI SETTINGS</button>
+                <button className="viewport-button" type="button" onClick={() => void exportPatchPackage()} aria-label="Export patch package" title="Export patch package" role="menuitem">EXPORT PATCH</button>
+                <button className="viewport-button" type="button" onClick={() => setFm1Patch(patch)} aria-label="Send patch to FM-1" title="FM-1 limits and upload" role="menuitem">SEND TO FM1</button>
+                <button className="viewport-button" type="button" onClick={() => scaleSelectedNodes(2)} disabled={!canScaleSelection} aria-label="Increase selected node scale" title="Increase selected node scale" role="menuitem">SCALE UP SELECTION</button>
+                <button className="viewport-button" type="button" onClick={() => scaleSelectedNodes(0.5)} disabled={!canScaleSelection} aria-label="Decrease selected node scale" title="Decrease selected node scale" role="menuitem">SCALE DOWN SELECTION</button>
+                <button className="viewport-button" type="button" onClick={groupSelectedNodes} disabled={!canGroupSelection || isEditingSubpatch} aria-label="Group to subpatch" title="Group to subpatch" role="menuitem">GROUP TO SUBPATCH</button>
+                <button className="viewport-button" type="button" onClick={() => void requestSubpatchImport()} aria-label="Import subpatch" title="Import subpatch" role="menuitem">IMPORT SUBPATCH</button>
+                <button className="viewport-button" type="button" role="menuitemcheckbox" aria-checked={canvasLocked} aria-label={canvasLocked ? 'Unlock UI' : 'Lock UI'} title={canvasLocked ? 'Unlock UI' : 'Lock UI'} onClick={toggleCanvasLock}>LOCK UI</button>
+              </div>
+            </div>
           </div>
           <input ref={fileInputRef} className="file-input" type="file" accept="application/json,.json" onChange={loadPatchFile} />
           <input ref={importFileInputRef} className="file-input" type="file" accept="application/json,.json" onChange={loadSubpatchImportFile} />
           <input ref={sampleFileInputRef} className="file-input" type="file" accept="audio/*,video/mp4,.wav,.mp3,.aiff,.aif,.flac,.ogg,.m4a,.mp4" onChange={uploadSampleFile} />
           <input ref={imageFileInputRef} className="file-input" type="file" accept="image/avif,image/gif,image/jpeg,image/png,image/webp,.avif,.gif,.jpg,.jpeg,.png,.webp" onChange={uploadImageFile} />
+          {fm1Patch && <Fm1UploadDialog patch={fm1Patch} onClose={() => setFm1Patch(null)} />}
           {importError ? <p className="import-error-floating">{importError}</p> : null}
           {audioGraph.errors.length > 0 ? (
             <section className="dsp-error-panel" aria-live="polite" aria-label="DSP compile errors">
@@ -6091,6 +6098,27 @@ function NodeEditorInner() {
                 <p className="dsp-error-more">+{audioGraph.errors.length - DSP_ERROR_PANEL_LIMIT} more</p>
               ) : null}
             </section>
+          ) : null}
+          {newPatchConfirmationOpen ? (
+            <div
+              className="import-modal-backdrop"
+              role="presentation"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget) setNewPatchConfirmationOpen(false);
+              }}
+            >
+              <section className="import-modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="new-patch-modal-title" aria-describedby="new-patch-modal-message">
+                <header className="import-modal-header">
+                  <h2 id="new-patch-modal-title">New patch</h2>
+                  <button className="import-modal-close" type="button" onClick={() => setNewPatchConfirmationOpen(false)} aria-label="Close new patch confirmation" title="Close">X</button>
+                </header>
+                <p className="import-modal-message" id="new-patch-modal-message">Start a new empty patch? Unsaved changes will be lost.</p>
+                <footer className="import-modal-actions">
+                  <button type="button" onClick={() => setNewPatchConfirmationOpen(false)}>Cancel</button>
+                  <button type="button" onClick={confirmNewPatch}>New patch</button>
+                </footer>
+              </section>
+            </div>
           ) : null}
           {midiSettingsOpen ? (
             <MidiSettingsModal
@@ -9990,11 +10018,12 @@ async function readCopiedGraphFromClipboard(): Promise<CopiedGraph | null> {
 
 function isEditableEventTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
-  if (target.isContentEditable) return true;
+  if (target.isContentEditable || target.closest('dialog[open]')) return true;
   return ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
 }
 
 function isPlaybackShortcutControlEventTarget(target: EventTarget | null): boolean {
+  if (target instanceof HTMLElement && target.closest('dialog[open]')) return false;
   if (target instanceof HTMLInputElement) {
     return target.type === 'range';
   }

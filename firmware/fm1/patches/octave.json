@@ -1,0 +1,130 @@
+{
+  "name": "Octave sine",
+  "nodes": [
+    {
+      "id": "controls",
+      "type": "Params",
+      "params": {
+        "level": 0.2,
+        "attack": 0.3,
+        "release": 0.24
+      },
+      "outputs": [
+        {
+          "name": "level",
+          "defaultValue": 0.2,
+          "min": 0,
+          "max": 1
+        },
+        {
+          "name": "attack",
+          "defaultValue": 0.3,
+          "min": 0,
+          "max": 2
+        },
+        {
+          "name": "release",
+          "defaultValue": 0.24,
+          "min": 0,
+          "max": 2
+        }
+      ]
+    },
+    {
+      "id": "midi",
+      "type": "MidiNote",
+      "params": {}
+    },
+    {
+      "id": "osc",
+      "type": "SineOsc",
+      "params": {}
+    },
+    {
+      "id": "env",
+      "type": "Envelope",
+      "params": {
+        "decay": 0,
+        "sustain": 1
+      }
+    },
+    {
+      "id": "out",
+      "type": "AudioOut",
+      "params": {}
+    }
+  ],
+  "links": [
+    {
+      "from": {
+        "port": "frequency",
+        "node": "midi"
+      },
+      "to": {
+        "port": "frequency",
+        "node": "osc"
+      },
+      "weight": 2
+    },
+    {
+      "from": {
+        "port": "gate",
+        "node": "midi"
+      },
+      "to": {
+        "port": "gate",
+        "node": "env"
+      }
+    },
+    {
+      "from": {
+        "port": "attack",
+        "node": "controls"
+      },
+      "to": {
+        "port": "attack",
+        "node": "env"
+      }
+    },
+    {
+      "from": {
+        "port": "release",
+        "node": "controls"
+      },
+      "to": {
+        "port": "release",
+        "node": "env"
+      }
+    },
+    {
+      "from": {
+        "port": "level",
+        "node": "controls"
+      },
+      "to": {
+        "port": "level",
+        "node": "out"
+      }
+    },
+    {
+      "from": {
+        "port": "signal",
+        "node": "osc"
+      },
+      "to": {
+        "port": "signal",
+        "node": "env"
+      }
+    },
+    {
+      "from": {
+        "port": "signal",
+        "node": "env"
+      },
+      "to": {
+        "port": "both",
+        "node": "out"
+      }
+    }
+  ]
+}

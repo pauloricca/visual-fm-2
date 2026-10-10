@@ -1,0 +1,658 @@
+/* SPDX-License-Identifier: GPL-3.0-only */
+/* Bounded, allocation-free spike backend: Q16.16 values and Q0.32 oscillator phase.
+ * Supports only the subset checked by export-patch.mjs, not general Teia programs. */
+#ifndef TEIA_FM1_RUNTIME_H
+#define TEIA_FM1_RUNTIME_H
+#include <stdint.h>
+#include "teia_limits.h"
+#define TEIA_FS 44100u
+#define TEIA_Q 65536
+#define TEIA_MAX_DELAY_SAMPLES 2048u
+typedef struct { int16_t code, out, a, b, c, state, d, e, f, g, h, i; } teia_op_t;
+typedef struct {
+    uint32_t count, registers, value_count;
+    teia_op_t ops[TEIA_MAX_OPS];
+    int32_t values[TEIA_MAX_VALUES];
+} teia_program_t;
+typedef struct {
+    int32_t level, start;
+    uint32_t elapsed, duration, phase;
+    uint8_t gate, stage, trigger, coeff_valid;
+    int32_t coeff[5], cutoff, q, x1, x2, y1, y2;
+} teia_state_t;
+typedef struct {
+    const teia_program_t *program;
+    int32_t values[TEIA_MAX_VALUES], regs[TEIA_MAX_REGS];
+    teia_state_t state[TEIA_MAX_STATES];
+    /* Feedback has one-sample history independent of node-local DSP state. */
+    int32_t feedback[TEIA_MAX_STATES];
+    /* One bounded delay line keeps the interpreter within its 16 KiB arena. */
+    int32_t delay[TEIA_MAX_DELAY_SAMPLES];
+    int16_t delay_owner;
+    /* The board turns physical keys and channel-1 MIDI into this mono source. */
+    int32_t midi_note, midi_frequency, midi_velocity, midi_gate, midi_trigger;
+    /* A pending note-on is consumed by exactly one rendered sample. */
+    uint8_t midi_trigger_pending;
+    uint32_t rejected;
+} teia_runtime_t;
+#include "patch.h"
+
+static int teia_reg(int r, uint32_t count) { return r >= 0 && (uint32_t)r < count; }
+static int teia_function_arity(int id)
+{
+    if(id==1 || (id>=13 && id<=17) || id==27) return 1;
+    if(id==6 || id==7 || (id>=19 && id<=26)) return 2;
+    return id==8 ? 3 : 0;
+}
+static int teia_validate(const teia_program_t *p)
+{
+    uint32_t i; uint8_t assigned[TEIA_MAX_REGS] = {0}, states[TEIA_MAX_STATES] = {0}; int delays=0;
+    if (!p || !p->count || p->count > TEIA_MAX_OPS || !p->registers || p->registers > TEIA_MAX_REGS || p->value_count > TEIA_MAX_VALUES) return 0;
+    for (i = 0; i < p->count; ++i) {
+        const teia_op_t *o = &p->ops[i];
+        if (o->code != 5 && o->code != 43 && !teia_reg(o->out, p->registers)) return 0;
+        if (o->code == 0) {
+            if (!teia_reg(o->a, p->value_count)) return 0;
+        } else {
+            int refs[9], n=0, stateful=0;
+            refs[n++]=o->a;
+            switch(o->code) {
+            case 1: case 24: case 32: case 41: break;
+            case 52:
+                if(o->a<0 || o->a>4) return 0;
+                n=0; refs[n++]=o->b; break;
+            case 2: case 21: case 22: case 23: case 33: case 34: case 35: case 36: refs[n++]=o->b; break;
+            case 3: case 37: stateful=1; break;
+            case 5: if(o->b!=0 && o->b!=1) return 0; break;
+            case 42:
+                n=0;
+                if(!teia_reg(o->state,TEIA_MAX_STATES) || states[o->state]) return 0;
+                states[o->state]=2; break;
+            case 43:
+                if(!teia_reg(o->state,TEIA_MAX_STATES) || states[o->state]!=2) return 0;
+                states[o->state]=3; break;
+            case 19: case 20: case 27: case 29: case 30: case 31:
+                refs[n++]=o->b; refs[n++]=o->c; stateful=1; break;
+            case 28: refs[n++]=o->b; stateful=1; break;
+            case 38: {
+                int arity=teia_function_arity(o->d);
+                if(!arity) return 0;
+                if(arity>=2) refs[n++]=o->b;
+                if(arity==3) refs[n++]=o->c;
+                break;
+            }
+            case 39:
+                if(o->f!=0 && o->f!=1) return 0;
+                refs[n++]=o->b; refs[n++]=o->c; refs[n++]=o->d; refs[n++]=o->e;
+                stateful=1; break;
+            case 40:
+                if(o->c < -1) return 0;
+                refs[n++]=o->b; if(o->c>=0) refs[n++]=o->c;
+                stateful=1; break;
+            case 25:
+                if((o->g<0 || (o->g>4 && o->g!=12)) || o->d < -1 || o->e < -1 || o->f < -1 || o->h < -1) return 0;
+                refs[n++]=o->b; refs[n++]=o->c;
+                if(o->d>=0) refs[n++]=o->d;
+                if(o->e>=0) refs[n++]=o->e;
+                if(o->f>=0) refs[n++]=o->f;
+                if(o->g==4 && o->f<0) return 0;
+                if(o->g==12 && (o->f<0 || o->h<0)) return 0;
+                if(o->g==12) refs[n++]=o->h;
+                stateful=1; break;
+            case 26:
+                refs[n++]=o->b; refs[n++]=o->c; refs[n++]=o->d; refs[n++]=o->e;
+                refs[n++]=o->f; refs[n++]=o->g; refs[n++]=o->h; stateful=1; break;
+            case 44:
+                if(++delays>1) return 0;
+                refs[n++]=o->b; refs[n++]=o->c; refs[n++]=o->d; stateful=1; break;
+            case 45: refs[n++]=o->b; refs[n++]=o->c; stateful=1; break;
+            case 46: refs[n++]=o->b; refs[n++]=o->c; refs[n++]=o->d; refs[n++]=o->e; break;
+            case 47: refs[n++]=o->b; break;
+            case 48: refs[n++]=o->b; refs[n++]=o->c; break;
+            case 49:
+                if(o->b<0 || o->b>19) return 0;
+                refs[n++]=o->c; stateful=1; break;
+            case 50: refs[n++]=o->b; stateful=1; break;
+            case 51:
+                if(o->g<0 || o->h<2 || o->g+2*o->h+2>=(int)p->value_count) return 0;
+                refs[n++]=o->b; refs[n++]=o->c; refs[n++]=o->d; refs[n++]=o->e; refs[n++]=o->f;
+                stateful=1; break;
+            default: return 0;
+            }
+            for(int j=0;j<n;j++) if(!teia_reg(refs[j],p->registers) || !assigned[refs[j]]) return 0;
+            if(stateful) {
+                if(!teia_reg(o->state,TEIA_MAX_STATES) || states[o->state]) return 0;
+                states[o->state]=1;
+            }
+        }
+        if (o->code != 5 && o->code != 43) assigned[o->out] = 1;
+    }
+    for(i=0;i<TEIA_MAX_STATES;i++) if(states[i]==2) return 0;
+    return 1;
+}
+static int teia_load(teia_runtime_t *r, const teia_program_t *p)
+{
+    uint32_t i;
+    if (!teia_validate(p)) return 0;
+    r->program = p;
+    for (i = 0; i < TEIA_MAX_VALUES; ++i) r->values[i] = p->values[i];
+    for (i = 0; i < TEIA_MAX_REGS; ++i) r->regs[i] = 0;
+    for (i = 0; i < TEIA_MAX_STATES; ++i) r->feedback[i] = 0;
+    for (i = 0; i < TEIA_MAX_DELAY_SAMPLES; ++i) r->delay[i] = 0;
+    r->delay_owner = -1;
+    r->midi_note = r->midi_frequency = r->midi_velocity = r->midi_gate = r->midi_trigger = 0;
+    r->midi_trigger_pending = 0;
+    for (i = 0; i < TEIA_MAX_STATES; ++i) {
+        r->state[i].level = r->state[i].start = 0;
+        r->state[i].elapsed = r->state[i].duration = r->state[i].phase = 0;
+        r->state[i].gate = r->state[i].stage = r->state[i].trigger = r->state[i].coeff_valid = 0;
+        r->state[i].x1 = r->state[i].x2 = r->state[i].y1 = r->state[i].y2 = 0;
+    }
+    for (i=0;i<p->count;i++) {
+        if(p->ops[i].code==28 || p->ops[i].code==40) r->state[p->ops[i].state].phase=0x9e3779b9u ^ ((uint32_t)p->ops[i].state*0x85ebca6bu);
+    }
+    return 1;
+}
+static int32_t teia_clamp(int32_t x, int32_t lo, int32_t hi) { return x < lo ? lo : x > hi ? hi : x; }
+static int32_t teia_mul(int32_t a, int32_t b)
+{
+    int64_t v = ((int64_t)a * b) >> 16;
+    return v > 2147483647 ? 2147483647 : v < (-2147483647 - 1) ? (-2147483647 - 1) : (int32_t)v;
+}
+static uint32_t teia_duration(int32_t t, int attack)
+{
+    uint32_t n = (uint32_t)(((int64_t)teia_clamp(t, 0, 2 * TEIA_Q) * TEIA_FS) >> 16);
+    return attack && n < 45 ? 45 : n; /* Teia's minimum attack is 1 ms. */
+}
+static int32_t teia_envelope(teia_state_t *s, int32_t gate, int32_t attack, int32_t release)
+{
+    uint32_t on = gate >= TEIA_Q / 2;
+    if (on != s->gate) {
+        s->start = s->level; s->elapsed = 0;
+        s->duration = teia_duration(on ? attack : release, on);
+        s->stage = on ? 1 : 2;
+    }
+    s->gate = (uint8_t)on;
+    if (s->stage) {
+        if (++s->elapsed >= s->duration) {
+            s->level = on ? TEIA_Q : 0; s->stage = 0;
+        } else {
+            /* First divide in 32 bits; the remainder product also fits below 2^32. */
+            uint32_t n = s->elapsed, d = s->duration;
+            uint32_t progress = n / d * TEIA_Q + (n % d) * (TEIA_Q / 2) / d * 2;
+            s->level = on ? s->start + teia_mul(TEIA_Q - s->start, (int32_t)progress)
+                          : teia_mul(s->start, TEIA_Q - (int32_t)progress);
+        }
+    }
+    return s->level;
+}
+static int32_t teia_sine(teia_state_t *s, int32_t frequency)
+{
+    uint32_t f = (uint32_t)teia_clamp(frequency, 0, 20000 * TEIA_Q);
+    uint32_t i = s->phase >> 22, fraction = (s->phase >> 7) & 32767u;
+    int32_t a = sine_table[i], b = sine_table[i + 1u];
+    int32_t value = (a + (b - a) * (int32_t)fraction / 32768) * 2;
+    s->phase += (f / TEIA_FS) * 65536u + ((f % TEIA_FS) * 65536u) / TEIA_FS;
+    return value;
+}
+/* Linear mapping of the bipolar sine into either ordered or inverted endpoints.
+ * Widen before subtracting: even the full signed Q16.16 span fits in int64. */
+static int32_t teia_range(int32_t sine, int32_t low, int32_t high)
+{
+    return (int32_t)((int64_t)low + (((int64_t)high - low) * ((int64_t)sine + TEIA_Q) >> 17));
+}
+/* Saturating arithmetic; intermediates never overflow signed 32-bit values. */
+static int32_t teia_sat(int64_t v)
+{ return v > INT32_MAX ? INT32_MAX : v < INT32_MIN ? INT32_MIN : (int32_t)v; }
+static uint32_t teia_abs(int32_t x) { return x < 0 ? 0u - (uint32_t)x : (uint32_t)x; }
+/* Fractional division without a software 64-bit division in the audio ISR. */
+static uint32_t teia_fraction(uint32_t n, uint32_t d, unsigned bits)
+{
+    uint32_t result = n / d, remainder = n % d;
+    while (bits--) {
+        result <<= 1;
+        /* remainder*2 can overflow for arbitrary Q16 divisors. */
+        if (remainder >= d - remainder) { remainder -= d - remainder; result |= 1; }
+        else remainder += remainder;
+    }
+    return result;
+}
+static int32_t teia_div(int32_t a, int32_t b)
+{
+    uint32_t n, d, whole, magnitude; int negative = (a < 0) != (b < 0);
+    if (!b) return 0;
+    n=teia_abs(a); d=teia_abs(b); whole=n/d;
+    if (whole >= 32768u) return negative ? INT32_MIN : INT32_MAX;
+    magnitude=teia_fraction(n,d,16);
+    return negative ? -(int32_t)magnitude : (int32_t)magnitude;
+}
+static uint32_t teia_seconds(int32_t seconds, int attack)
+{
+    uint32_t n=(uint32_t)(((int64_t)teia_clamp(seconds,0,60*TEIA_Q)*TEIA_FS)>>16);
+    return attack && n < 45 ? 45 : n;
+}
+static int32_t teia_progress(uint32_t elapsed, uint32_t duration)
+{ return !duration || elapsed >= duration ? TEIA_Q : (int32_t)teia_fraction(elapsed,duration,16); }
+static int32_t teia_adsr(teia_state_t *s, const teia_op_t *o, const int32_t *v)
+{
+    int gate=v[o->a]>=TEIA_Q/2, trigger=v[o->f]>=TEIA_Q/2;
+    int32_t sustain=teia_clamp(v[o->d],0,TEIA_Q), p;
+    if ((gate && !s->gate) || (trigger && !s->trigger)) {
+        s->start=s->level; s->elapsed=0; s->stage=v[o->g]>0 ? 5 : 1;
+    } else if (!gate && s->gate) { s->start=s->level; s->elapsed=0; s->stage=4; }
+    s->gate=(uint8_t)gate; s->trigger=(uint8_t)trigger;
+    if (s->elapsed < 60u*TEIA_FS+1u) ++s->elapsed;
+    switch(s->stage) {
+    case 5:
+        if(s->elapsed>=teia_seconds(v[o->g],0)) { s->stage=1; s->elapsed=0; }
+        break;
+    case 1:
+        p=teia_progress(s->elapsed,teia_seconds(v[o->b],1));
+        s->level=s->start+teia_mul(TEIA_Q-s->start,p);
+        if(p==TEIA_Q) { s->stage=2; s->elapsed=0; }
+        break;
+    case 2:
+        p=teia_progress(s->elapsed,teia_seconds(v[o->c],0));
+        s->level=TEIA_Q+teia_mul(sustain-TEIA_Q,p);
+        if(p==TEIA_Q) { s->stage=gate?3:(v[o->h]>0?6:4); s->start=s->level; s->elapsed=0; }
+        break;
+    case 3: s->level=sustain; break;
+    case 6:
+        s->level=sustain;
+        if(s->elapsed>=teia_seconds(v[o->h],0)) { s->stage=4; s->start=s->level; s->elapsed=0; }
+        break;
+    case 4:
+        p=teia_progress(s->elapsed,teia_seconds(v[o->e],0));
+        s->level=teia_mul(s->start,TEIA_Q-p);
+        if(p==TEIA_Q) { s->level=0; s->stage=0; }
+        break;
+    default: s->level=0; break;
+    }
+    return s->level;
+}
+static uint32_t teia_increment(int32_t frequency)
+{
+    uint32_t f=(uint32_t)teia_clamp(frequency,0,20000*TEIA_Q);
+    return f/TEIA_FS*65536u+(f%TEIA_FS)*65536u/TEIA_FS;
+}
+static int32_t teia_wave(uint32_t phase, int wave, int32_t width)
+{
+    int32_t p=(int32_t)(phase>>16);
+    switch(wave) {
+    case 1: { uint32_t t=phase+0x40000000u; int32_t q=(int32_t)(t>>16);
+        return q<32768 ? q*4-TEIA_Q : 3*TEIA_Q-q*4; }
+    case 2: return p*2-TEIA_Q;
+    case 3: return TEIA_Q-p*2;
+    case 4: return p<teia_clamp(width,0,TEIA_Q) ? TEIA_Q : -TEIA_Q;
+    default: { uint32_t i=phase>>22, fraction=(phase>>7)&32767u;
+        return (sine_table[i]+(sine_table[i+1]-sine_table[i])*(int32_t)fraction/32768)*2; }
+    }
+}
+static int32_t teia_sqrt_q(int32_t x)
+{
+    uint32_t guess, value; int n;
+    if(x<=0) return 0;
+    value=(uint32_t)x; guess=value>TEIA_Q?value:TEIA_Q;
+    for(n=0;n<16;n++) guess=(guess+(uint32_t)(((uint64_t)value<<16)/guess))>>1;
+    return (int32_t)guess;
+}
+/* Bounded Q16.16 power. Negative bases retain the browser's integer-exponent
+ * behavior; non-integral negative powers resolve to zero rather than NaN. */
+static int32_t teia_pow_q(int32_t base, int32_t exponent)
+{
+    int64_t whole=exponent/TEIA_Q; int32_t fraction=exponent%TEIA_Q;
+    int negative=base<0, invert=0, sign=0; uint32_t count; int32_t result=TEIA_Q, factor;
+    if(!exponent) return TEIA_Q;
+    if(fraction<0) { --whole; fraction+=TEIA_Q; }
+    if(negative && fraction) return 0;
+    if(whole<0) { invert=1; whole=-whole; }
+    if(whole>32768) return invert?0:INT32_MAX;
+    factor=negative?teia_sat(-(int64_t)base):base; count=(uint32_t)whole;
+    sign=negative && (count&1u);
+    while(count) { if(count&1u) result=teia_mul(result,factor); count>>=1; if(count) factor=teia_mul(factor,factor); }
+    if(fraction) {
+        uint32_t bit=0x8000u; int32_t root=factor;
+        while(bit) { root=teia_sqrt_q(root); if((uint32_t)fraction&bit) result=teia_mul(result,root); bit>>=1; }
+    }
+    if(invert) result=teia_div(TEIA_Q,result);
+    return sign?teia_sat(-(int64_t)result):result;
+}
+static int32_t teia_kink(uint32_t phase, int32_t shape, int32_t squareness)
+{
+    int32_t p=(int32_t)(phase>>16), amount=teia_clamp(squareness,-TEIA_Q,TEIA_Q);
+    int32_t magnitude=(int32_t)teia_abs(amount), q=(TEIA_Q-teia_clamp(shape,-TEIA_Q,TEIA_Q))/2;
+    int ascending, u, straight, curved_position, curved, exponent;
+    if(magnitude>=TEIA_Q) { int high=p>=q; return high==(amount>0)?TEIA_Q:-TEIA_Q; }
+    if(q<=0) { ascending=0; u=p; }
+    else if(q>=TEIA_Q) { ascending=1; u=p; }
+    else if(p<=q) { ascending=1; u=teia_div(p,q); }
+    else { ascending=0; u=teia_div(p-q,TEIA_Q-q); }
+    u=teia_clamp(u,0,TEIA_Q); straight=ascending?-TEIA_Q+2*u:TEIA_Q-2*u;
+    exponent=TEIA_Q+teia_mul(11*TEIA_Q,magnitude)/(TEIA_Q-magnitude);
+    curved_position=amount>=0?teia_pow_q(u,exponent):TEIA_Q-teia_pow_q(TEIA_Q-u,exponent);
+    curved=ascending?-TEIA_Q+2*curved_position:TEIA_Q-2*curved_position;
+    return teia_sat((int64_t)straight+teia_mul(curved-straight,magnitude));
+}
+static int32_t teia_osc(teia_state_t *s, const teia_op_t *o, const int32_t *v)
+{
+    int reset=o->e>=0 && v[o->e]>=TEIA_Q/2;
+    int32_t phase=o->d>=0 ? v[o->d] : 0, width=o->f>=0 ? v[o->f] : TEIA_Q/2;
+    /* Match the browser's short phase-reset crossfade before mapping to range. */
+    if(reset && !s->gate) {
+        s->start=o->g==12 ? teia_kink(s->phase+((uint32_t)phase<<16),v[o->f],v[o->h]) : teia_wave(s->phase+((uint32_t)phase<<16),o->g,width);
+        s->elapsed=0; s->stage=1; s->phase=0;
+    }
+    s->gate=(uint8_t)reset;
+    /* Casting before shifting gives defined modulo-one handling of negative offsets. */
+    int32_t sample=o->g==12 ? teia_kink(s->phase+((uint32_t)phase<<16),v[o->f],v[o->h]) : teia_wave(s->phase+((uint32_t)phase<<16),o->g,width);
+    if(s->stage) { /* 8 ms at the FM-1's 44.1 kHz render rate. */
+        int32_t progress=(int32_t)(((uint64_t)s->elapsed*TEIA_Q)/353u);
+        int32_t squared=teia_mul(progress,progress);
+        int32_t mix=teia_mul(squared,3*TEIA_Q-2*progress);
+        sample=s->start+teia_mul(sample-s->start,mix);
+        if(++s->elapsed>=353u) s->stage=0;
+    }
+    s->phase+=teia_increment(v[o->a]);
+    return teia_range(sample,v[o->b],v[o->c]);
+}
+static int32_t teia_noise(teia_state_t *s, int32_t lo, int32_t hi)
+{
+    uint32_t x=s->phase;
+    x^=x<<13; x^=x>>17; x^=x<<5; s->phase=x;
+    return teia_range((int32_t)(x>>15)-TEIA_Q,lo,hi);
+}
+static int32_t teia_sin30(uint32_t phase)
+{
+    uint32_t i=phase>>22, fraction=phase&0x3fffffu;
+    return filter_sine[i]+(int32_t)(((int64_t)filter_sine[i+1]-filter_sine[i])*fraction>>22);
+}
+/* RBJ low/high/band/all-pass biquad. Q28 coefficients, Q16 signal history, cached by cutoff/Q.
+ * Q is limited to 0.25..16; coefficient calculation uses bounded integer division.
+ * As in the browser, cutoff is Hz and resonance is Q, not a 0..1 wet amount. */
+static int32_t teia_biquad(teia_state_t *s, int32_t input, int32_t cutoff, int32_t q, int mode)
+{
+    const int32_t one=268435456;
+    cutoff=teia_clamp(cutoff,20*TEIA_Q,19845*TEIA_Q); q=teia_clamp(q,TEIA_Q/4,16*TEIA_Q);
+    if(s->coeff_valid!=mode || s->cutoff!=cutoff || s->q!=q) {
+        uint32_t phase=teia_increment(cutoff);
+        int32_t sine=teia_sin30(phase)>>2, cosine=teia_sin30(phase+0x40000000u)>>2;
+        /* sine/(2Q), keeping Q28 precision without a 64-bit divide. */
+        uint32_t alpha=teia_fraction((uint32_t)sine,(uint32_t)q*2u,16);
+        uint32_t denominator=(uint32_t)one+alpha;
+        s->coeff[3]=(int32_t)teia_fraction(teia_abs(cosine)*2u,denominator,28)*(cosine>=0?-1:1);
+        s->coeff[4]=(int32_t)teia_fraction(teia_abs(one-(int32_t)alpha),denominator,28)*(alpha>(uint32_t)one?-1:1);
+        if(mode==8) { /* All-pass: reverse the normalised denominator. */
+            s->coeff[0]=s->coeff[4]; s->coeff[1]=s->coeff[3]; s->coeff[2]=one;
+        } else if(mode==3) { /* Constant 0 dB peak band-pass, matching the browser. */
+            s->coeff[0]=(int32_t)teia_fraction(alpha,denominator,28);
+            s->coeff[1]=0; s->coeff[2]=-s->coeff[0];
+        } else {
+            uint32_t numerator=(uint32_t)(mode==2 ? one+cosine : one-cosine)/2u;
+            s->coeff[0]=(int32_t)teia_fraction(numerator,denominator,28);
+            s->coeff[1]=s->coeff[0]*(mode==2 ? -2 : 2); s->coeff[2]=s->coeff[0];
+        }
+        s->cutoff=cutoff; s->q=q; s->coeff_valid=(uint8_t)mode;
+    }
+    int64_t sum=(int64_t)s->coeff[0]*input+(int64_t)s->coeff[1]*s->x1+(int64_t)s->coeff[2]*s->x2
+        -(int64_t)s->coeff[3]*s->y1-(int64_t)s->coeff[4]*s->y2;
+    int32_t result=teia_sat(sum>>28);
+    s->x2=s->x1; s->x1=input; s->y2=s->y1; s->y1=result;
+    return result;
+}
+
+/* Keep the driven value wide until folding: saturating first destroys the wraps.
+ * Split the positive gain into whole/fractional parts so even Fold's full Q16
+ * amount range cannot overflow the signed 64-bit product. */
+static int32_t teia_fold(int32_t input, int64_t gain)
+{
+    int64_t driven=(int64_t)input*(gain>>16)+(((int64_t)input*(gain&65535))>>16);
+    uint32_t wrapped=((uint32_t)driven+TEIA_Q)&(4u*TEIA_Q-1u);
+    return wrapped<=2u*TEIA_Q ? (int32_t)wrapped-TEIA_Q : 3*TEIA_Q-(int32_t)wrapped;
+}
+static int32_t teia_distortion(int32_t input, int32_t drive, int code)
+{
+    drive=teia_clamp(drive,6554,40*TEIA_Q); /* 0.1..40, as in the browser. */
+    if(code==36) return teia_fold(input,drive);
+    int32_t driven=teia_clamp(teia_mul(input,drive),-32*TEIA_Q,32*TEIA_Q);
+    if(code==34) return teia_clamp(driven,-TEIA_Q,TEIA_Q);
+    return teia_div(driven,TEIA_Q+(int32_t)teia_abs(driven));
+}
+/* 10 Hz one-pole DC blocker at 44.1 kHz. Q24 history reduces the DC
+ * quantisation floor; input and output are bounded to +/-4 like the browser. */
+static int32_t teia_dc_block(teia_state_t *s, int32_t input)
+{
+    const int32_t pole=268053273; /* round(exp(-2*pi*10/44100) * 2^28) */
+    int32_t x=teia_clamp(input,-4*TEIA_Q,4*TEIA_Q)*256;
+    int32_t y=teia_clamp(x-s->x1+(int32_t)(((int64_t)pole*s->y1)>>28),
+        -4*TEIA_Q*256,4*TEIA_Q*256);
+    s->x1=x; s->y1=y;
+    return y/256;
+}
+
+static int32_t teia_function(int id, int32_t x, int32_t y, int32_t z)
+{
+    int32_t fraction=(int32_t)((uint32_t)x&65535u);
+    switch(id) {
+    case 1: return teia_sat((int64_t)teia_abs(x));
+    case 6: return x<y?x:y;
+    case 7: return x>y?x:y;
+    case 8: return teia_clamp(x,y<z?y:z,y>z?y:z);
+    case 13: return x-fraction;
+    case 14: return teia_sat((int64_t)x-fraction+(fraction?TEIA_Q:0));
+    case 15: { /* Nearest integer, ties away from zero like Rust f64::round. */
+        int64_t magnitude=((int64_t)teia_abs(x)+TEIA_Q/2)/TEIA_Q*TEIA_Q;
+        return teia_sat(x<0?-magnitude:magnitude);
+    }
+    case 16: return x>0?TEIA_Q:x<0?-TEIA_Q:0;
+    case 17: return fraction;
+    case 19: return x<y?TEIA_Q:0;
+    case 20: return x<=y?TEIA_Q:0;
+    case 21: return x>y?TEIA_Q:0;
+    case 22: return x>=y?TEIA_Q:0;
+    case 23: return x==y?TEIA_Q:0;
+    case 24: return x!=y?TEIA_Q:0;
+    case 25: return x && y?TEIA_Q:0;
+    case 26: return x || y?TEIA_Q:0;
+    case 27: return x?0:TEIA_Q;
+    default: return 0;
+    }
+}
+static int32_t teia_accumulator(teia_state_t *s, const teia_op_t *o, const int32_t *v)
+{
+    int trigger=v[o->a]>=TEIA_Q/2, reset=v[o->e]>=TEIA_Q/2;
+    int32_t low=v[o->b]<v[o->c]?v[o->b]:v[o->c], high=v[o->b]>v[o->c]?v[o->b]:v[o->c];
+    int32_t value=teia_clamp(s->level,low,high);
+    if(reset && !s->gate) value=low;
+    else if(o->f || (trigger && !s->trigger)) {
+        int64_t next=(int64_t)value+v[o->d];
+        value=next>high?low:next<low?high:(int32_t)next;
+    }
+    s->gate=(uint8_t)reset; s->trigger=(uint8_t)trigger; s->level=value;
+    return value;
+}
+static int32_t teia_random(teia_state_t *s, int trigger, int32_t low, int32_t high)
+{
+    if(!s->stage || (trigger && !s->trigger)) {
+        s->level=teia_noise(s,-TEIA_Q,TEIA_Q); s->stage=1;
+    }
+    s->trigger=(uint8_t)trigger;
+    return teia_range(s->level,low,high);
+}
+
+/* 2^exponent, using a Q2.30 fractional-octave table and linear interpolation.
+ * Q16.16 output rounds to nearest and saturates; no floating point or libm.
+ * Integer exponents are exact while representable. */
+static int32_t teia_bend(int32_t exponent)
+{
+    if (exponent >= 15 * TEIA_Q) return INT32_MAX;
+    if (exponent < -17 * TEIA_Q) return 0;
+    int whole = exponent / TEIA_Q;
+    int fraction = exponent % TEIA_Q;
+    if (fraction < 0) { --whole; fraction += TEIA_Q; }
+    unsigned index = (unsigned)fraction >> 8;
+    uint64_t ratio = bend_ratio_table[index];
+    ratio += ((uint64_t)(bend_ratio_table[index + 1] - bend_ratio_table[index])
+        * ((unsigned)fraction & 255u) + 128u) >> 8;
+    unsigned shift = (unsigned)(14 - whole);
+    if (!shift) return (int32_t)ratio;
+    return (int32_t)((ratio + ((uint64_t)1 << (shift - 1))) >> shift);
+}
+
+static int32_t teia_map(int32_t signal, int32_t src_min, int32_t src_max, int32_t target_min, int32_t target_max)
+{
+    int32_t denominator=teia_sat((int64_t)src_max-src_min);
+    if(!denominator) denominator=TEIA_Q;
+    return teia_sat((int64_t)target_min+teia_mul(teia_div(teia_sat((int64_t)signal-src_min),denominator),teia_sat((int64_t)target_max-target_min)));
+}
+static int32_t teia_follower(teia_state_t *s, int32_t signal, int32_t attack, int32_t release)
+{
+    int32_t target=teia_sat((int64_t)teia_abs(signal)), seconds=target>s->level?attack:release;
+    uint32_t duration=teia_seconds(seconds,0); int32_t coefficient=!duration?TEIA_Q:(int32_t)teia_fraction(1,duration,16);
+    s->level=teia_sat((int64_t)s->level+teia_mul(target-s->level,coefficient));
+    return s->level<0?0:s->level;
+}
+static int32_t teia_delay(teia_runtime_t *r, teia_state_t *s, uint32_t state, int32_t input, int32_t time, int32_t feedback, int32_t mix)
+{
+    uint32_t index, delay, before; int32_t delayed, sample=teia_clamp(input,-8*TEIA_Q,8*TEIA_Q);
+    if(r->delay_owner<0) r->delay_owner=(int16_t)state;
+    if(r->delay_owner!=(int16_t)state) return sample;
+    index=s->elapsed%TEIA_MAX_DELAY_SAMPLES;
+    delay=(uint32_t)(((int64_t)teia_clamp(time,0,(int32_t)((TEIA_MAX_DELAY_SAMPLES*TEIA_Q)/TEIA_FS))*TEIA_FS)>>16);
+    if(!delay) { r->delay[index]=sample; s->elapsed=(index+1)%TEIA_MAX_DELAY_SAMPLES; return sample; }
+    if(delay>=TEIA_MAX_DELAY_SAMPLES) delay=TEIA_MAX_DELAY_SAMPLES-1;
+    before=(index+TEIA_MAX_DELAY_SAMPLES-delay)%TEIA_MAX_DELAY_SAMPLES;
+    delayed=r->delay[before];
+    r->delay[index]=teia_clamp(teia_sat((int64_t)sample+teia_mul(delayed,teia_clamp(feedback,0,2*TEIA_Q))),-8*TEIA_Q,8*TEIA_Q);
+    s->elapsed=(index+1)%TEIA_MAX_DELAY_SAMPLES;
+    return teia_clamp(teia_sat((int64_t)teia_mul(sample,TEIA_Q-teia_clamp(mix,0,TEIA_Q))+teia_mul(delayed,teia_clamp(mix,0,TEIA_Q))),-8*TEIA_Q,8*TEIA_Q);
+}
+static int32_t teia_sample_hold(teia_state_t *s, int32_t signal, int32_t trigger)
+{
+    int on=trigger>=TEIA_Q/2;
+    if(!s->stage || (on&&!s->trigger)) { s->level=signal; s->stage=1; }
+    s->trigger=(uint8_t)on; return s->level;
+}
+static int32_t teia_tempo(teia_state_t *s, int32_t bpm, int kind, int32_t swing)
+{
+    static const uint32_t divisions[10]={16,8,4,4,2,1,1,2,4,8};
+    uint32_t increment=(uint32_t)(((uint64_t)teia_clamp(bpm,TEIA_Q,999*TEIA_Q)*65536u)/(60u*TEIA_FS));
+    uint32_t previous=s->phase; uint32_t division=divisions[kind%10], current;
+    uint64_t before, after; (void)swing; s->phase+=increment; current=s->phase;
+    if(current<previous) ++s->elapsed;
+    if(kind>=10) return teia_sat((int64_t)teia_clamp(bpm,TEIA_Q,999*TEIA_Q)/(60*(int32_t)division));
+    if(!s->stage) { s->stage=1; return kind==6?0:TEIA_Q; }
+    if(kind<=5) return current<previous && s->elapsed%division==0 ? TEIA_Q : 0;
+    if(kind==6) return previous<0x80000000u && current>=0x80000000u ? TEIA_Q : 0;
+    before=(uint64_t)previous*division; after=(uint64_t)current*division;
+    return before>>32 != after>>32 ? TEIA_Q : 0;
+}
+static int32_t teia_log2_q(int32_t value)
+{
+    int whole=0; uint32_t x; int32_t fraction=0; uint32_t bit;
+    if(value<=0) return INT32_MIN;
+    x=(uint32_t)value;
+    while(x<TEIA_Q) { x<<=1; --whole; }
+    while(x>=2u*TEIA_Q) { x>>=1; ++whole; }
+    for(bit=0x8000u;bit;bit>>=1) { x=(uint32_t)(((uint64_t)x*x)>>16); if(x>=2u*TEIA_Q) { x>>=1; fraction|=(int32_t)bit; } }
+    return whole*TEIA_Q+fraction;
+}
+static int32_t teia_quantise(int32_t frequency, int32_t scale, int32_t root)
+{
+    static const uint16_t masks[16]={0xfff,0xab5,0x5ad,0x9ad,0x6ad,0x295,0x4a9,0x469,0x6ad,0x5ab,0xad5,0x6b5,0x56b,0x555,0xb6d,0x6db};
+    int sign=frequency<0?-1:1, note, nearest=0, distance=INT32_MAX, candidate, octave, semitone, root_note, centre;
+    if(!frequency) return 0;
+    note=69*TEIA_Q+12*teia_log2_q(teia_div((int32_t)teia_abs(frequency),440*TEIA_Q));
+    root_note=((root+TEIA_Q/2)/TEIA_Q)%12; if(root_note<0) root_note+=12;
+    centre=(note/TEIA_Q-root_note)/12;
+    for(octave=centre-1;octave<=centre+1;octave++) for(semitone=0;semitone<12;semitone++) if(masks[teia_clamp((scale+TEIA_Q/2)/TEIA_Q,0,15)]&(1u<<semitone)) {
+        candidate=(root_note+octave*12+semitone)*TEIA_Q;
+        if((int32_t)teia_abs(candidate-note)<=distance) { distance=(int32_t)teia_abs(candidate-note); nearest=candidate; }
+    }
+    return sign*teia_mul(440*TEIA_Q,teia_bend(teia_div(nearest-69*TEIA_Q,12*TEIA_Q)));
+}
+static int32_t teia_custom_wave(teia_state_t *s, const teia_op_t *o, const int32_t *v, const int32_t *values)
+{
+    int32_t mode=values[o->g]/TEIA_Q, sustain_start=values[o->g+1], sustain_end=values[o->g+2];
+    int32_t normalized=0, endpoint=v[o->d], phase=(int32_t)(s->phase>>16); uint32_t increment=teia_increment(v[o->a]);
+    int trigger=v[o->c]>=TEIA_Q/2; int point;
+    if(trigger&&!s->trigger) { s->phase=0; s->gate=0; s->stage=0; }
+    s->trigger=(uint8_t)trigger; endpoint=teia_clamp(endpoint,-TEIA_Q,TEIA_Q);
+    for(point=1;point<o->h;point++) {
+        int32_t x0=values[o->g+3+2*(point-1)], y0=point==1?endpoint:values[o->g+4+2*(point-1)];
+        int32_t x1=values[o->g+3+2*point], y1=point==o->h-1?endpoint:values[o->g+4+2*point];
+        if(phase<=x1 || point==o->h-1) { normalized=x1==x0?y1:y0+teia_mul(y1-y0,teia_div(phase-x0,x1-x0)); break; }
+    }
+    if(mode==1 || mode==5) { if(!s->gate) { s->phase+=increment; if(s->phase>=UINT32_MAX) { s->phase=UINT32_MAX-(s->phase-UINT32_MAX); s->gate=1; } } else { s->phase-=increment; if((int32_t)s->phase<=0) { s->phase=0u-(uint32_t)(int32_t)s->phase; s->gate=0; } } }
+    else if(mode==2) { if(!s->stage) { s->phase+=increment; if(s->phase<increment) s->stage=1; } }
+    else if(mode==3 || mode==4) { if(s->phase>>16 < (uint32_t)sustain_start) s->phase+=increment; else s->phase=(uint32_t)sustain_start<<16; }
+    else s->phase+=increment;
+    (void)sustain_end;
+    return teia_range(normalized,v[o->e],v[o->f]);
+}
+
+static void teia_sample(teia_runtime_t *r, int32_t *left, int32_t *right)
+{
+    uint32_t i; int64_t l = 0, rr = 0;
+    /* MIDI Note's trigger is an event, never the held note gate. Consume it
+     * before evaluating the graph so every MIDI Note node sees the same
+     * one-sample pulse and no later sample can retain it. */
+    r->midi_trigger = r->midi_trigger_pending ? TEIA_Q : 0;
+    r->midi_trigger_pending = 0;
+    if (!r->program) { *left = *right = 0; r->midi_trigger = 0; return; }
+    for (i = 0; i < r->program->count; ++i) {
+        const teia_op_t *o = &r->program->ops[i]; int32_t *v = r->regs;
+        switch (o->code) {
+        case 0: v[o->out] = r->values[o->a]; break;
+        case 1: v[o->out] = v[o->a]; break;
+        case 2: v[o->out] = teia_mul(v[o->a], v[o->b]); break;
+        case 3: v[o->out] = teia_sine(&r->state[o->state], v[o->a]); break;
+        case 20: v[o->out] = teia_range(teia_sine(&r->state[o->state], v[o->a]), v[o->b], v[o->c]); break;
+        case 19: v[o->out] = teia_envelope(&r->state[o->state], v[o->a], v[o->b], v[o->c]); break;
+        case 21: v[o->out]=teia_sat((int64_t)v[o->a]+v[o->b]); break;
+        case 22: v[o->out]=teia_sat((int64_t)v[o->a]-v[o->b]); break;
+        case 23: v[o->out]=teia_div(v[o->a],v[o->b]); break;
+        case 24: v[o->out]=teia_sat(-(int64_t)v[o->a]); break;
+        case 25: v[o->out]=teia_osc(&r->state[o->state],o,v); break;
+        case 26: v[o->out]=teia_adsr(&r->state[o->state],o,v); break;
+        case 27: case 29: case 30: case 31:
+            v[o->out]=teia_biquad(&r->state[o->state],v[o->a],v[o->b],v[o->c],
+                o->code==27 ? 1 : o->code==29 ? 2 : o->code==30 ? 3 : 8); break;
+        case 28: v[o->out]=teia_noise(&r->state[o->state],v[o->a],v[o->b]); break;
+        case 32: v[o->out]=teia_sat((int64_t)teia_abs(v[o->a])); break;
+        case 33: v[o->out]=teia_fold(v[o->a],TEIA_Q+3*(int64_t)(v[o->b]>0?v[o->b]:0)); break;
+        case 34: case 35: case 36: v[o->out]=teia_distortion(v[o->a],v[o->b],o->code); break;
+        case 37: v[o->out]=teia_dc_block(&r->state[o->state],v[o->a]); break;
+        case 38: v[o->out]=teia_function(o->d,v[o->a],teia_function_arity(o->d)>=2?v[o->b]:0,o->d==8?v[o->c]:0); break;
+        case 39: v[o->out]=teia_accumulator(&r->state[o->state],o,v); break;
+        case 40: v[o->out]=teia_random(&r->state[o->state],o->c>=0 && v[o->c]>=TEIA_Q/2,v[o->a],v[o->b]); break;
+        case 41: v[o->out]=teia_bend(v[o->a]); break;
+        case 44: v[o->out]=teia_delay(r,&r->state[o->state],(uint32_t)o->state,v[o->a],v[o->b],v[o->c],v[o->d]); break;
+        case 45: v[o->out]=teia_follower(&r->state[o->state],v[o->a],v[o->b],v[o->c]); break;
+        case 46: v[o->out]=teia_map(v[o->a],v[o->b],v[o->c],v[o->d],v[o->e]); break;
+        case 47: v[o->out]=teia_pow_q(v[o->a],v[o->b]); break;
+        case 48: v[o->out]=teia_quantise(v[o->a],v[o->b],v[o->c]); break;
+        case 49: v[o->out]=teia_tempo(&r->state[o->state],v[o->a],o->b,v[o->c]); break;
+        case 50: v[o->out]=teia_sample_hold(&r->state[o->state],v[o->a],v[o->b]); break;
+        case 51: v[o->out]=teia_custom_wave(&r->state[o->state],o,v,r->values); break;
+        case 52: {
+            int32_t channel=teia_clamp(v[o->b]/TEIA_Q,0,16);
+            if(channel>1) v[o->out]=0;
+            else switch(o->a) {
+            case 1: v[o->out]=r->midi_frequency; break;
+            case 2: v[o->out]=r->midi_velocity; break;
+            case 3: v[o->out]=r->midi_gate; break;
+            case 4: v[o->out]=r->midi_trigger; break;
+            default: v[o->out]=r->midi_note; break;
+            }
+            break;
+        }
+        case 5: if (o->b) rr += v[o->a]; else l += v[o->a]; break;
+        case 42: v[o->out]=r->feedback[o->state]; break;
+        case 43: r->feedback[o->state]=v[o->a]; break;
+        }
+    }
+    *left = l > TEIA_Q ? TEIA_Q : l < -TEIA_Q ? -TEIA_Q : (int32_t)l;
+    *right = rr > TEIA_Q ? TEIA_Q : rr < -TEIA_Q ? -TEIA_Q : (int32_t)rr;
+    r->midi_trigger = 0;
+}
+#endif

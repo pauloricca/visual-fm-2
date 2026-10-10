@@ -1,0 +1,155 @@
+{
+  "name": "Saw ADSR wavefold",
+  "nodes": [
+    {
+      "id": "controls",
+      "type": "Params",
+      "params": {
+        "level": 0.2,
+        "frequency": 220,
+        "gate": 0,
+        "attack": 0.01,
+        "release": 0.24
+      },
+      "outputs": [
+        {
+          "name": "level",
+          "defaultValue": 0.2,
+          "min": 0,
+          "max": 1
+        },
+        {
+          "name": "frequency",
+          "defaultValue": 220,
+          "min": 0,
+          "max": 2000
+        },
+        {
+          "name": "gate",
+          "defaultValue": 0,
+          "min": 0,
+          "max": 1
+        },
+        {
+          "name": "attack",
+          "defaultValue": 0.01,
+          "min": 0,
+          "max": 2
+        },
+        {
+          "name": "release",
+          "defaultValue": 0.24,
+          "min": 0,
+          "max": 2
+        }
+      ]
+    },
+    {
+      "id": "osc",
+      "type": "SawOsc",
+      "params": {}
+    },
+    {
+      "id": "env",
+      "type": "Envelope",
+      "params": {
+        "decay": 0.2,
+        "sustain": 0.45
+      }
+    },
+    {
+      "id": "out",
+      "type": "AudioOut",
+      "params": {}
+    },
+    {
+      "id": "filter",
+      "type": "WavefoldDistortion",
+      "params": {
+        "drive": 4
+      }
+    }
+  ],
+  "links": [
+    {
+      "from": {
+        "port": "frequency",
+        "node": "controls"
+      },
+      "to": {
+        "port": "frequency",
+        "node": "osc"
+      }
+    },
+    {
+      "from": {
+        "port": "gate",
+        "node": "controls"
+      },
+      "to": {
+        "port": "gate",
+        "node": "env"
+      }
+    },
+    {
+      "from": {
+        "port": "attack",
+        "node": "controls"
+      },
+      "to": {
+        "port": "attack",
+        "node": "env"
+      }
+    },
+    {
+      "from": {
+        "port": "release",
+        "node": "controls"
+      },
+      "to": {
+        "port": "release",
+        "node": "env"
+      }
+    },
+    {
+      "from": {
+        "port": "level",
+        "node": "controls"
+      },
+      "to": {
+        "port": "level",
+        "node": "out"
+      }
+    },
+    {
+      "from": {
+        "port": "signal",
+        "node": "osc"
+      },
+      "to": {
+        "port": "signal",
+        "node": "filter"
+      }
+    },
+    {
+      "from": {
+        "port": "signal",
+        "node": "env"
+      },
+      "to": {
+        "port": "both",
+        "node": "out"
+      }
+    },
+    {
+      "from": {
+        "node": "filter",
+        "port": "signal"
+      },
+      "to": {
+        "node": "env",
+        "port": "signal"
+      }
+    }
+  ]
+}

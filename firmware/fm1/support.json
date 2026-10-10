@@ -1,0 +1,1942 @@
+{
+  "schemaVersion": 2,
+  "firmware": "FM-1_912",
+  "reviewedOn": "2026-10-10",
+  "reviewedSources": {
+    "editor/src/graph/types.ts": "d151a68c85539525df1abc869e07378c17c9c21a3dd5d265bc9b4fe7ce72536a",
+    "editor/src/graph/nodeTypes.ts": "1f79be272daf828e69d5a2513edd9cf76ac17d3e1ace160611cc59ef11e6fc09",
+    "editor/src/graph/subpatch.ts": "56fd60b9c664479761eefaa1e4d5264160156974687bc529aba01716ed2fbeb5",
+    "editor/src/graph/spread.ts": "58bec3d980343612b1fc6e31059ab2926b50455f7a547129ffd24b071d81a0da",
+    "editor/src/graph/expression.ts": "3d9ffced8af6611ed9b59414f2917895aa21fbf2d0f145d59eeab71a9ab34995",
+    "editor/src/audio/dspProgram.ts": "7dc99dcea11d98893e94b12bac5785cb852c2a4ed2377f8d03de78c94a1e4ddc",
+    "editor/src/audio/dspOpcodes.ts": "3e605442a356c87dd1c6aef58ce0d00d762c5ed31da0499b90e962181fed55ee",
+    "editor/src/audio/fm1Package.ts": "63672634e1820228493997a7f20b4abc96778e12f0642fbd492c1d9e76045d22",
+    "editor/src/audio/fm1Upload.ts": "352c53da3d8880cb83a0f3fb2f3f4d7c073de89ec007b1d5d55b7534658f0446",
+    "editor/src/audio/fm1Support.ts": "dbb414526f456897f11548daf582d2201c58ef169aa48cc5140cc8dec1cb4c40",
+    "editor/src/audio/fm1Capabilities.ts": "9dce2bb5869752fa79a06f37d5b2954a6cd28b23dd2486aee40ce35f69ccbb1b",
+    "editor/src/editor/Fm1SupportPage.tsx": "4f634b0db59887bc62a1a8a0dbe811e563683ee4cfa534a3a4aa8a1760264f49",
+    "editor/src/App.tsx": "a7ab18f0eea1c2c9e395d4c01b34d58621d483f7e9069b4325e82ff3a7da4eee",
+    "editor/src/styles.css": "c3fc07b6de0507a4b086b6bcbdf47a474e612cf57ecf189d1ebf99d9dfcc4bc1",
+    "firmware/fm1/runtime.h": "76a66566d92987d6f98521aa977208700c2a242bdcfb1c9ff6b6b73696b8135f",
+    "firmware/fm1/app.c": "724c3fc22eebe3ff5f46b2377ef6743042599287107e074ce5fc5d30b499c714",
+    "firmware/fm1/upload.h": "1c1c9452c85940a1f03337115a6b40b0727784481d241bcb6e2ddb8d89a1d776",
+    "firmware/fm1/export-patch.mjs": "e168182cde8a0475276674e9bf9bf4845ba68c1976d10582ecba6a2de2b5747d",
+    "scripts/fm1-runtime-spike.py": "ce457b030db05a6ac7833f942c9d8f921e40f73fd8be8eb84b0b73ce43f20f5c",
+    "scripts/fm1-send-patch.py": "ac9f2d5aa2e845dd89660cecbe959f7f490a4bf2fa1aeb2b8f61e89428408c8d",
+    "scripts/fm1-install.py": "cb0b4d51615e40b164fd767964d845a65f3931c194d698c650b724f9825f228c"
+  },
+  "features": [
+    {
+      "id": "Expression",
+      "category": "node",
+      "status": "partial",
+      "since": 904,
+      "verification": "source reviewed",
+      "notes": "Basic arithmetic since 904; 907 adds abs/min/max/clamp/floor/ceil/round/sign/fract, comparisons and boolean logic. Q16.16 saturation; round ties away from zero. Transcendentals, pow, sqrt and mix remain unsupported.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Group",
+      "category": "node",
+      "status": "partial",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "Structural routing is flattened by the graph compiler. Every enabled contained node must independently pass FM-1 eligibility; this is not a claim that arbitrary group contents are supported.",
+      "evidence": [
+        "editor/src/graph/subpatch.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Spread",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Spawn",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Ins",
+      "category": "node",
+      "status": "partial",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "Structural routing is flattened by the graph compiler. Every enabled contained node must independently pass FM-1 eligibility; this is not a claim that arbitrary group contents are supported.",
+      "evidence": [
+        "editor/src/graph/subpatch.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Params",
+      "category": "node",
+      "status": "partial",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "One enabled Params node may expose zero to six outputs. Their saved order maps directly to Knob 1, Knob 2, Knob 3, Knob 4, Select and Algorithm; each output supplies its screen label, default and range.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Outs",
+      "category": "node",
+      "status": "partial",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "Structural routing is flattened by the graph compiler. Every enabled contained node must independently pass FM-1 eligibility; this is not a claim that arbitrary group contents are supported.",
+      "evidence": [
+        "editor/src/graph/subpatch.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "AudioOut",
+      "category": "node",
+      "status": "supported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "Stereo output with device output bound and additional 6 dB headroom.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "SineOsc",
+      "category": "node",
+      "status": "partial",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "Audio-rate frequency/phase modulation, live range endpoints and rising-edge reset with an 8 ms crossfade; signal input remains unsupported and no waveform is band-limited.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [
+        "signal"
+      ],
+      "blockedOutputs": []
+    },
+    {
+      "id": "TriangleOsc",
+      "category": "node",
+      "status": "partial",
+      "since": 904,
+      "verification": "source reviewed",
+      "notes": "Audio-rate frequency/phase modulation, live range endpoints and rising-edge reset with an 8 ms crossfade; signal input remains unsupported and no waveform is band-limited.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [
+        "signal"
+      ],
+      "blockedOutputs": []
+    },
+    {
+      "id": "SawOsc",
+      "category": "node",
+      "status": "partial",
+      "since": 904,
+      "verification": "source reviewed",
+      "notes": "Audio-rate frequency/phase modulation, live range endpoints and rising-edge reset with an 8 ms crossfade; signal input remains unsupported and no waveform is band-limited.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [
+        "signal"
+      ],
+      "blockedOutputs": []
+    },
+    {
+      "id": "RampOsc",
+      "category": "node",
+      "status": "partial",
+      "since": 904,
+      "verification": "source reviewed",
+      "notes": "Audio-rate frequency/phase modulation, live range endpoints and rising-edge reset with an 8 ms crossfade; signal input remains unsupported and no waveform is band-limited.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [
+        "signal"
+      ],
+      "blockedOutputs": []
+    },
+    {
+      "id": "SquareOsc",
+      "category": "node",
+      "status": "partial",
+      "since": 904,
+      "verification": "source reviewed",
+      "notes": "Audio-rate frequency/phase modulation, live range endpoints and rising-edge reset with an 8 ms crossfade; live pulse width 0–1. Signal input remains unsupported and no waveform is band-limited.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [
+        "signal"
+      ],
+      "blockedOutputs": []
+    },
+    {
+      "id": "KinkOsc",
+      "category": "node",
+      "status": "partial",
+      "since": 910,
+      "verification": "source reviewed",
+      "notes": "Live frequency, phase, reset, shape, squareness and range endpoints. Fixed-point power shaping is approximate and not band-limited.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts",
+        "firmware/fm1/runtime.h"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "SampleHoldOsc",
+      "category": "node",
+      "status": "partial",
+      "since": 910,
+      "verification": "source reviewed",
+      "notes": "Holds the signal on load and each rising trigger edge at 0.5; Q16.16 state resets on patch load.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts",
+        "firmware/fm1/runtime.h"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "PerlinNoise",
+      "category": "node",
+      "status": "partial",
+      "since": 911,
+      "verification": "source reviewed",
+      "notes": "Monophonic note, frequency, velocity, gate and one-sample trigger lowering for physical keys and USB/TRS channel 1. Channels 2–16 produce zero; per-note event nodes remain unsupported.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Noise",
+      "category": "node",
+      "status": "supported",
+      "since": 904,
+      "verification": "source reviewed",
+      "notes": "Deterministic per-node xorshift noise with live range endpoints; sequence resets on patch load.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Random",
+      "category": "node",
+      "status": "partial",
+      "since": 907,
+      "verification": "source reviewed",
+      "notes": "Per-node deterministic xorshift sample on initialization and rising trigger edges at 0.5; held trigger retains value. Live/equal/inverted range endpoints; missing trigger holds initial value. Sequence resets on patch load, differs from browser.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "AudioInput",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "CustomWave",
+      "category": "node",
+      "status": "partial",
+      "since": 910,
+      "verification": "source reviewed",
+      "notes": "Encodes the curve in package values and renders live frequency, phase, trigger, base level and range. Loop, ping-pong and one-shot progression are implemented; sustain behavior and end events differ from the browser.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts",
+        "firmware/fm1/runtime.h"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": [
+        "end trigger"
+      ],
+      "drift": {
+        "webBehavior": "Supports all sustain modes and provides an end trigger output.",
+        "firmwareBehavior": "Uses package-embedded points and omits end trigger; sustain modes hold at sustain start rather than matching browser release behavior.",
+        "requiredWork": "Add custom-wave completion state/output and full sustain-release progression, then remove the blocked output rule."
+      }
+    },
+    {
+      "id": "SamplePlayer",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Image",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Buffer",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Playhead",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Time",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Freq2Length",
+      "category": "node",
+      "status": "supported",
+      "since": 904,
+      "verification": "source reviewed",
+      "notes": "Compiles to reciprocal division (1 / input); fixed-point division by zero returns zero.",
+      "evidence": [
+        "editor/src/audio/dspProgram.ts",
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Length2Freq",
+      "category": "node",
+      "status": "supported",
+      "since": 904,
+      "verification": "source reviewed",
+      "notes": "Compiles to reciprocal division (1 / input); fixed-point division by zero returns zero.",
+      "evidence": [
+        "editor/src/audio/dspProgram.ts",
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Constant",
+      "category": "node",
+      "status": "supported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "Q16.16 values; representable range applies.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Pass",
+      "category": "node",
+      "status": "supported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "Pass-through within the supported compiled graph.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Send",
+      "category": "node",
+      "status": "unknown",
+      "since": null,
+      "verification": "unverified",
+      "notes": "Not individually audited. May be flattened, compiled to basic operations, or omitted by the compiler; do not claim device support yet.",
+      "evidence": [
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Receive",
+      "category": "node",
+      "status": "unknown",
+      "since": null,
+      "verification": "unverified",
+      "notes": "Not individually audited. May be flattened, compiled to basic operations, or omitted by the compiler; do not claim device support yet.",
+      "evidence": [
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Slider",
+      "category": "node",
+      "status": "unknown",
+      "since": null,
+      "verification": "unverified",
+      "notes": "Not individually audited. May be flattened, compiled to basic operations, or omitted by the compiler; do not claim device support yet.",
+      "evidence": [
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Joystick",
+      "category": "node",
+      "status": "unknown",
+      "since": null,
+      "verification": "unverified",
+      "notes": "Not individually audited. May be flattened, compiled to basic operations, or omitted by the compiler; do not claim device support yet.",
+      "evidence": [
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Button",
+      "category": "node",
+      "status": "unknown",
+      "since": null,
+      "verification": "unverified",
+      "notes": "Not individually audited. May be flattened, compiled to basic operations, or omitted by the compiler; do not claim device support yet.",
+      "evidence": [
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Keys",
+      "category": "node",
+      "status": "unknown",
+      "since": null,
+      "verification": "unverified",
+      "notes": "Not individually audited. May be flattened, compiled to basic operations, or omitted by the compiler; do not claim device support yet.",
+      "evidence": [
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Sequencer",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Roll",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Tempo",
+      "category": "node",
+      "status": "partial",
+      "since": 910,
+      "verification": "source reviewed",
+      "notes": "Internal BPM transport provides division pulses and frequency outputs. MIDI clock source and swing are not implemented.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts",
+        "firmware/fm1/runtime.h"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": [],
+      "drift": {
+        "webBehavior": "Can follow a selected MIDI clock source and applies swing to tempo click boundaries.",
+        "firmwareBehavior": "Always runs an internal Q0.32 BPM clock and ignores MIDI source selection and swing.",
+        "requiredWork": "Route MIDI clock into the runtime and implement swung boundary scheduling."
+      }
+    },
+    {
+      "id": "MidiNote",
+      "category": "node",
+      "status": "partial",
+      "since": 911,
+      "verification": "source reviewed",
+      "notes": "Monophonic note, frequency, velocity, gate and a pending note-on trigger consumed by exactly one rendered sample for physical keys and USB/TRS channel 1. The trigger is independent of the held gate. Channels 2–16 produce zero; per-note event nodes remain unsupported.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts",
+        "firmware/fm1/app.c",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/test-nodes.c"
+      ],
+      "blockedInputs": [
+        "channel"
+      ],
+      "blockedOutputs": []
+    },
+    {
+      "id": "MidiNoteOn",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "MidiNoteOff",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "MidiNoteOnSend",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "MidiNoteOffSend",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "MidiCcSend",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "MidiCc",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Selector",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Accumulator",
+      "category": "node",
+      "status": "supported",
+      "since": 907,
+      "verification": "source reviewed",
+      "notes": "Rising-edge trigger/reset at 0.5; reset wins simultaneous edges; continuous mode increments every sample. Live increment/min/max, reversed bounds accepted; overshoot wraps to opposite endpoint. Q16.16, state resets on patch load.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Quantise",
+      "category": "node",
+      "status": "partial",
+      "since": 910,
+      "verification": "source reviewed",
+      "notes": "Quantises signed frequency signals to the selected chromatic, diatonic, pentatonic, modal, whole-tone or diminished scale/root using fixed-point log2 and power approximations.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts",
+        "firmware/fm1/runtime.h"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Abs",
+      "category": "node",
+      "status": "supported",
+      "since": 906,
+      "verification": "source reviewed",
+      "notes": "Absolute value of signal; Q16.16 minimum saturates to the maximum positive value.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Map",
+      "category": "node",
+      "status": "partial",
+      "since": 910,
+      "verification": "source reviewed",
+      "notes": "Live source and target endpoints with saturating Q16.16 arithmetic. A zero source span uses one unit instead of the browser's tiny epsilon span.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts",
+        "firmware/fm1/runtime.h"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Clamp",
+      "category": "node",
+      "status": "supported",
+      "since": 907,
+      "verification": "source reviewed",
+      "notes": "Live signal/min/max with ordered or reversed bounds; Q16.16 clamping.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Multiply",
+      "category": "node",
+      "status": "supported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "Saturating Q16.16 multiplication.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Pow",
+      "category": "node",
+      "status": "partial",
+      "since": 910,
+      "verification": "source reviewed",
+      "notes": "Q16.16 exponentiation uses integer powers and successive square roots. Negative bases only support integral exponents; output saturates instead of producing non-finite values.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts",
+        "firmware/fm1/runtime.h"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Pan",
+      "category": "node",
+      "status": "unknown",
+      "since": null,
+      "verification": "unverified",
+      "notes": "Not individually audited. May be flattened, compiled to basic operations, or omitted by the compiler; do not claim device support yet.",
+      "evidence": [
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Delay",
+      "category": "node",
+      "status": "partial",
+      "since": 910,
+      "verification": "source reviewed",
+      "notes": "One live time/feedback/mix delay is supported per patch. Its shared 2,048-sample Q16.16 line limits time to about 46 ms at 44.1 kHz and uses integer-sample taps.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts",
+        "firmware/fm1/runtime.h"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Chorus",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Reverb",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Compress",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Limiter",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Envelope",
+      "category": "node",
+      "status": "partial",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "Linear ADSR, delay, trigger and timed gate; a trigger-only envelope releases after decay unless gate length is set, while the independent gate input holds sustain. End trigger unsupported. Live durations 0–60 seconds, minimum attack 45 samples. The firmware measures a trigger-only gate length after decay; the web engine measures it from the trigger edge.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/test-nodes.c",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": [
+        "end trigger"
+      ],
+      "drift": {
+        "webBehavior": "Provides an end trigger output when the envelope finishes and measures trigger-only gate length from the trigger edge, including delay, attack, and decay.",
+        "firmwareBehavior": "Renders the envelope signal but does not implement end trigger output; it begins a trigger-only gate-length hold after decay reaches sustain.",
+        "requiredWork": "Implement and validate the envelope completion operation in firmware and lowering, and align trigger-only gate-length timing with the web engine, then remove the blocked output rule."
+      }
+    },
+    {
+      "id": "Follower",
+      "category": "node",
+      "status": "partial",
+      "since": 910,
+      "verification": "source reviewed",
+      "notes": "Rectifies the signal and applies live linear attack/release smoothing in Q16.16; zero seconds updates immediately.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts",
+        "firmware/fm1/runtime.h"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "RemoveDc",
+      "category": "node",
+      "status": "partial",
+      "since": 906,
+      "verification": "source reviewed",
+      "notes": "10 Hz one-pole DC blocker at nominal 44.1 kHz; signal input/output bounded to ±4; Q24 history reset on patch load. Fixed-point response differs slightly from browser.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Fold",
+      "category": "node",
+      "status": "partial",
+      "since": 906,
+      "verification": "source reviewed",
+      "notes": "Live signal/amount; gain is 1 + 3 × max(amount, 0). Triangle folding to −1…1 without saturating before wrapping; Q16.16 quantisation, no oversampling.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Meter",
+      "category": "node",
+      "status": "unknown",
+      "since": null,
+      "verification": "unverified",
+      "notes": "Not individually audited. May be flattened, compiled to basic operations, or omitted by the compiler; do not claim device support yet.",
+      "evidence": [
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Scope",
+      "category": "node",
+      "status": "unknown",
+      "since": null,
+      "verification": "unverified",
+      "notes": "Not individually audited. May be flattened, compiled to basic operations, or omitted by the compiler; do not claim device support yet.",
+      "evidence": [
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "FFT",
+      "category": "node",
+      "status": "unknown",
+      "since": null,
+      "verification": "unverified",
+      "notes": "Not individually audited. May be flattened, compiled to basic operations, or omitted by the compiler; do not claim device support yet.",
+      "evidence": [
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "LowpassFilter",
+      "category": "node",
+      "status": "partial",
+      "since": 904,
+      "verification": "source reviewed",
+      "notes": "Fixed-point 12 dB/octave biquad; cutoff 20–19,845 Hz, Q 0.25–16; differs from browser response.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "HighpassFilter",
+      "category": "node",
+      "status": "partial",
+      "since": 905,
+      "verification": "source reviewed",
+      "notes": "Fixed-point RBJ biquad; live signal/cutoff/resonance; cutoff 20–19,845 Hz, Q 0.25–16. Band-pass has unity peak; all-pass changes phase. Hardware response unverified.",
+      "evidence": [
+        "editor/src/audio/dspProgram.ts",
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "BandpassFilter",
+      "category": "node",
+      "status": "partial",
+      "since": 905,
+      "verification": "source reviewed",
+      "notes": "Fixed-point RBJ biquad; live signal/cutoff/resonance; cutoff 20–19,845 Hz, Q 0.25–16. Band-pass has unity peak; all-pass changes phase. Hardware response unverified.",
+      "evidence": [
+        "editor/src/audio/dspProgram.ts",
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "AllpassFilter",
+      "category": "node",
+      "status": "partial",
+      "since": 905,
+      "verification": "source reviewed",
+      "notes": "Fixed-point RBJ biquad; live signal/cutoff/resonance; cutoff 20–19,845 Hz, Q 0.25–16. Band-pass has unity peak; all-pass changes phase. Hardware response unverified.",
+      "evidence": [
+        "editor/src/audio/dspProgram.ts",
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Crossover",
+      "category": "node",
+      "status": "partial",
+      "since": 905,
+      "verification": "source reviewed",
+      "notes": "Compiler-generated low/high-pass cascades; 1–8 frequency boundaries, 12/24/36/48 dB slopes and band outputs. Cutoff 20–19,845 Hz; 32 state-entry budget limits combinations. Not a phase-aligned reconstruction crossover; hardware unverified.",
+      "evidence": [
+        "editor/src/audio/dspProgram.ts",
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "Equalizer",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "FormantFilter",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "CombFilter",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "CombNotchFilter",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "HardClipDistortion",
+      "category": "node",
+      "status": "partial",
+      "since": 906,
+      "verification": "source reviewed",
+      "notes": "Live signal/drive; drive clamped to 0.1–40, output clipped to −1…1. Q16.16, no oversampling.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "SoftClipDistortion",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "FuzzDistortion",
+      "category": "node",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "No supported FM-1 lowering for this node operation or resource; browser support does not imply device support.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "editor/src/audio/dspProgram.ts"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "SaturateDistortion",
+      "category": "node",
+      "status": "partial",
+      "since": 906,
+      "verification": "source reviewed",
+      "notes": "Live signal/drive; drive clamped to 0.1–40; driven signal bounded to ±32 then x/(1+abs(x)). Q16.16, no oversampling.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "WavefoldDistortion",
+      "category": "node",
+      "status": "partial",
+      "since": 906,
+      "verification": "source reviewed",
+      "notes": "Live signal/drive; drive clamped to 0.1–40, triangle folding to −1…1 without saturating before wrapping. Q16.16, no oversampling.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/README.md"
+      ],
+      "blockedInputs": [],
+      "blockedOutputs": []
+    },
+    {
+      "id": "oscillator modulation",
+      "category": "dsp",
+      "status": "partial",
+      "since": 904,
+      "verification": "source reviewed",
+      "notes": "Audio-rate FM/PM, phase reset with an 8 ms crossfade, and square PWM; aliasing and fixed-point differences apply.",
+      "evidence": [
+        "firmware/fm1/README.md",
+        "firmware/fm1/UPLOAD.md"
+      ]
+    },
+    {
+      "id": "envelope end trigger",
+      "category": "dsp",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "The end trigger output is not implemented.",
+      "evidence": [
+        "firmware/fm1/README.md",
+        "firmware/fm1/UPLOAD.md"
+      ]
+    },
+    {
+      "id": "polyphony",
+      "category": "performance",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "One voice; highest held note wins; mono changes are legato.",
+      "evidence": [
+        "firmware/fm1/README.md",
+        "firmware/fm1/UPLOAD.md"
+      ]
+    },
+    {
+      "id": "physical keys",
+      "category": "hardware",
+      "status": "supported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "F3–G5 at octave zero; startup-held keys ignored until released.",
+      "evidence": [
+        "firmware/fm1/README.md",
+        "firmware/fm1/UPLOAD.md"
+      ]
+    },
+    {
+      "id": "physical key octave transpose",
+      "category": "hardware",
+      "status": "supported",
+      "since": 910,
+      "verification": "source reviewed",
+      "notes": "OCT− and OCT+ transpose the physical keys through −3…+3 octaves; pressing both centres the offset. The button pointing to centre is steadily lit and both are dark at zero. MIDI notes are not transposed. Holding both for five seconds still enters ROM recovery.",
+      "evidence": [
+        "firmware/fm1/app.c",
+        "firmware/fm1/README.md"
+      ]
+    },
+    {
+      "id": "knobs",
+      "category": "hardware",
+      "status": "partial",
+      "since": 912,
+      "verification": "source reviewed",
+      "notes": "Up to six Params outputs map in order to Knobs 1–4, Select and Algorithm. The screen shows each output name and its actual declared-unit value, rounded to up to four decimal places.",
+      "evidence": [
+        "firmware/fm1/README.md",
+        "firmware/fm1/UPLOAD.md"
+      ]
+    },
+    {
+      "id": "other musical controls",
+      "category": "hardware",
+      "status": "partial",
+      "since": 911,
+      "verification": "source reviewed",
+      "notes": "Algorithm and Select encoders control the fifth and sixth ordered Params outputs. Musical buttons remain unassigned.",
+      "evidence": [
+        "firmware/fm1/README.md",
+        "firmware/fm1/UPLOAD.md"
+      ]
+    },
+    {
+      "id": "master output",
+      "category": "hardware",
+      "status": "supported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "Physical output level is read before audio starts and smoothed.",
+      "evidence": [
+        "firmware/fm1/README.md",
+        "firmware/fm1/UPLOAD.md"
+      ]
+    },
+    {
+      "id": "midi input",
+      "category": "midi",
+      "status": "partial",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "USB and TRS channel 1 note on/off, zero-velocity note off, CC 120/123; source ownership tracked separately. Physical keys and channel 1 feed the FM-1 MIDI Note lowering as one monophonic source.",
+      "evidence": [
+        "firmware/fm1/README.md",
+        "firmware/fm1/UPLOAD.md"
+      ]
+    },
+    {
+      "id": "midi expression",
+      "category": "midi",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "Sustain, pitch bend, velocity response and channel routing are not implemented.",
+      "evidence": [
+        "firmware/fm1/README.md",
+        "firmware/fm1/UPLOAD.md"
+      ]
+    },
+    {
+      "id": "patch upload and selection",
+      "category": "storage",
+      "status": "supported",
+      "since": 902,
+      "verification": "source reviewed",
+      "notes": "USB MIDI SysEx upload; two RAM slots; PRESETS selects slots; switching fades and resets DSP state.",
+      "evidence": [
+        "firmware/fm1/README.md",
+        "firmware/fm1/UPLOAD.md"
+      ]
+    },
+    {
+      "id": "patch persistence",
+      "category": "storage",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "Slots clear on power-off; no flash patch library.",
+      "evidence": [
+        "firmware/fm1/README.md",
+        "firmware/fm1/UPLOAD.md"
+      ]
+    },
+    {
+      "id": "calibration storage",
+      "category": "storage",
+      "status": "unsupported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "Calibration persistence is not implemented.",
+      "evidence": [
+        "firmware/fm1/README.md",
+        "firmware/fm1/UPLOAD.md"
+      ]
+    },
+    {
+      "id": "package compatibility",
+      "category": "protocol",
+      "status": "supported",
+      "since": 911,
+      "verification": "source reviewed",
+      "notes": "911 reads package versions 1–4; the compiler emits version 4 with an ordered six-control Params descriptor list. Opcode 52 is MIDI Note. Opcodes 29–31 require 905, 32–37 require 906, 38–40 require 907, 41 (bend scaling) requires 908, 42–43 (feedback read/write) require 909, and 44–51 require 910. Older firmware rejects unfamiliar opcodes before replacing a preset.",
+      "evidence": [
+        "firmware/fm1/README.md",
+        "firmware/fm1/UPLOAD.md"
+      ]
+    },
+    {
+      "id": "resource capacity",
+      "category": "performance",
+      "status": "partial",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "256 operations/registers, 128 values, 32 state entries; capacity is not a measured CPU budget.",
+      "evidence": [
+        "firmware/fm1/README.md",
+        "firmware/fm1/UPLOAD.md"
+      ]
+    },
+    {
+      "id": "audio timing and quality",
+      "category": "performance",
+      "status": "unknown",
+      "since": null,
+      "verification": "unverified",
+      "notes": "Pitch, sustained load and new-node late-buffer performance require measurement; memory fit is insufficient.",
+      "evidence": [
+        "firmware/fm1/README.md",
+        "firmware/fm1/UPLOAD.md"
+      ]
+    },
+    {
+      "id": "status display",
+      "category": "hardware",
+      "status": "supported",
+      "since": 912,
+      "verification": "source reviewed",
+      "notes": "Slot/name, up to six ordered Params labels and declared-unit values rounded to up to four decimal places, maximum render time, late-buffer and MIDI-overflow counts.",
+      "evidence": [
+        "firmware/fm1/README.md",
+        "firmware/fm1/UPLOAD.md"
+      ]
+    },
+    {
+      "id": "firmware update",
+      "category": "maintenance",
+      "status": "partial",
+      "since": 904,
+      "verification": "source reviewed",
+      "notes": "910 source identity assigned; cross-build, installation and reboot unverified. Prior 904 installation evidence is historical only; return to stock and interrupted-update recovery unverified. The fm1:install wrapper audits sources, rebuilds changed/missing packages, checks package hashes and invokes the pinned installer with post-reboot identity verification; wrapper execution remains unverified.",
+      "evidence": [
+        "firmware/fm1/README.md",
+        "firmware/fm1/UPLOAD.md",
+        "scripts/fm1-install.py"
+      ]
+    },
+    {
+      "id": "rom recovery gesture",
+      "category": "maintenance",
+      "status": "partial",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "Both OCT buttons held for five seconds request ROM recovery; hardware result unverified.",
+      "evidence": [
+        "firmware/fm1/README.md",
+        "firmware/fm1/UPLOAD.md"
+      ]
+    },
+    {
+      "id": "editor compatibility warnings",
+      "category": "workflow",
+      "status": "supported",
+      "since": null,
+      "verification": "source reviewed",
+      "notes": "FM dialog inventories enabled nodes recursively through enabled groups, using this register to show unsupported, partial and unknown support with node locations. Advisory node warnings can include unused nodes; compiler errors gate upload. Feedback loops compile when all other support and resource rules pass. Target firmware is the register version, not a detected device version. No DSP or firmware behavior changes.",
+      "evidence": [
+        "editor/src/audio/fm1Support.ts",
+        "editor/src/editor/Fm1UploadDialog.tsx",
+        "README.md"
+      ]
+    },
+    {
+      "id": "bend links",
+      "category": "dsp",
+      "status": "partial",
+      "since": 908,
+      "verification": "source reviewed",
+      "notes": "Bend mode on ordinary links and link-strength modulation multiplies by 2^(weighted source). Q16.16 ratio rounded to nearest, saturating at 32767.9999847 and rounding tiny ratios to zero. Uses interpolated Q2.30 table; device timing and audio unverified. Does not add MIDI pitch-wheel input.",
+      "evidence": [
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h",
+        "firmware/fm1/export-patch.mjs",
+        "firmware/fm1/test-nodes.c"
+      ],
+      "drift": {
+        "webBehavior": "Double-precision 2^x with the exponent clamped to -32 through 32.",
+        "firmwareBehavior": "Q16.16 ratio with table interpolation (approximately 0.0001% relative interpolation error), nearest rounding and saturation; subsequent multiplication also saturates.",
+        "requiredWork": "Wider numeric representation is needed to preserve the web range. Measure device timing and audible results."
+      }
+    },
+    {
+      "id": "feedback loops",
+      "category": "dsp",
+      "status": "partial",
+      "since": 909,
+      "verification": "source reviewed",
+      "notes": "Graph cycles lower to paired feedback read/write instructions sharing one state slot. The state is cleared when a patch loads or switches. Q16.16 history differs from the browser's floating-point history; hardware behavior is unverified.",
+      "evidence": [
+        "editor/src/audio/dspProgram.ts",
+        "editor/src/audio/fm1Package.ts",
+        "firmware/fm1/runtime.h"
+      ],
+      "drift": {
+        "webBehavior": "Graph cycles use a stored floating-point value, read before the cycle and written after it on every sample.",
+        "firmwareBehavior": "Paired package instructions read and write a reset-on-load Q16.16 history value with the same one-sample ordering.",
+        "requiredWork": "Measure hardware timing and audible stability under representative feedback gains."
+      }
+    }
+  ],
+  "evidenceLog": [
+    {
+      "date": "2026-10-09",
+      "firmware": "FM-1_901",
+      "scope": "Basic playback, three knobs and MIDI (transport unspecified); same-image update. Does not verify later firmware.",
+      "source": "firmware/fm1/README.md"
+    },
+    {
+      "date": "2026-10-09",
+      "firmware": "FM-1_902",
+      "scope": "Two patch uploads and selection acknowledged; user confirmed playback/switching and no late buffers. Does not verify 904 DSP additions.",
+      "source": "firmware/fm1/UPLOAD.md"
+    },
+    {
+      "date": "2026-10-10",
+      "firmware": "FM-1_904",
+      "scope": "Installation from 903 and reboot identity only. New-node host tests statically compiled, not executed; audio and performance unverified.",
+      "source": "firmware/fm1/UPLOAD.md"
+    }
+  ],
+  "$schema": "./support.schema.json",
+  "limits": {
+    "operations": 256,
+    "registers": 256,
+    "values": 128,
+    "states": 32,
+    "packageVersion": 4,
+    "operationBytes": 24
+  },
+  "compiler": {
+    "opcodes": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      8,
+      9,
+      15,
+      16,
+      17,
+      18,
+      19,
+      23,
+      26,
+      27,
+      29,
+      49,
+      51,
+      55,
+      7,
+      12,
+      20,
+      21,
+      32,
+      40
+    ],
+    "oscillatorModes": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      9,
+      12
+    ],
+    "filterModes": {
+      "1": 27,
+      "2": 29,
+      "3": 30,
+      "8": 31
+    },
+    "distortionModes": {
+      "1": 34,
+      "4": 35,
+      "5": 36
+    },
+    "functions": [
+      {
+        "id": 1,
+        "name": "abs",
+        "arity": 1
+      },
+      {
+        "id": 6,
+        "name": "min",
+        "arity": 2
+      },
+      {
+        "id": 7,
+        "name": "max",
+        "arity": 2
+      },
+      {
+        "id": 8,
+        "name": "clamp",
+        "arity": 3
+      },
+      {
+        "id": 13,
+        "name": "floor",
+        "arity": 1
+      },
+      {
+        "id": 14,
+        "name": "ceil",
+        "arity": 1
+      },
+      {
+        "id": 15,
+        "name": "round",
+        "arity": 1
+      },
+      {
+        "id": 16,
+        "name": "sign",
+        "arity": 1
+      },
+      {
+        "id": 17,
+        "name": "fract",
+        "arity": 1
+      },
+      {
+        "id": 19,
+        "name": "less than",
+        "arity": 2
+      },
+      {
+        "id": 20,
+        "name": "less than or equal",
+        "arity": 2
+      },
+      {
+        "id": 21,
+        "name": "greater than",
+        "arity": 2
+      },
+      {
+        "id": 22,
+        "name": "greater than or equal",
+        "arity": 2
+      },
+      {
+        "id": 23,
+        "name": "equal",
+        "arity": 2
+      },
+      {
+        "id": 24,
+        "name": "not equal",
+        "arity": 2
+      },
+      {
+        "id": 25,
+        "name": "and",
+        "arity": 2
+      },
+      {
+        "id": 26,
+        "name": "or",
+        "arity": 2
+      },
+      {
+        "id": 27,
+        "name": "not",
+        "arity": 1
+      }
+    ]
+  },
+  "protocol": {
+    "packages": [
+      {
+        "version": 1,
+        "headerBytes": 116,
+        "operationBytes": 12,
+        "operations": 64,
+        "registers": 64,
+        "values": 64
+      },
+      {
+        "version": 2,
+        "headerBytes": 116,
+        "operationBytes": 12,
+        "operations": 256,
+        "registers": 256,
+        "values": 128
+      },
+      {
+        "version": 3,
+        "headerBytes": 116,
+        "operationBytes": 24,
+        "operations": 256,
+        "registers": 256,
+        "values": 128
+      },
+      {
+        "version": 4,
+        "headerBytes": 187,
+        "operationBytes": 24,
+        "operations": 256,
+        "registers": 256,
+        "values": 128
+      }
+    ],
+    "instructions": [
+      {
+        "code": 0,
+        "name": "value",
+        "since": 902,
+        "minimumPackageVersion": 1
+      },
+      {
+        "code": 1,
+        "name": "copy",
+        "since": 902,
+        "minimumPackageVersion": 1
+      },
+      {
+        "code": 2,
+        "name": "multiply",
+        "since": 902,
+        "minimumPackageVersion": 1
+      },
+      {
+        "code": 3,
+        "name": "legacy sine",
+        "since": 902,
+        "minimumPackageVersion": 1
+      },
+      {
+        "code": 5,
+        "name": "output",
+        "since": 902,
+        "minimumPackageVersion": 1
+      },
+      {
+        "code": 19,
+        "name": "legacy envelope",
+        "since": 902,
+        "minimumPackageVersion": 1
+      },
+      {
+        "code": 20,
+        "name": "legacy ranged sine",
+        "since": 903,
+        "minimumPackageVersion": 2
+      },
+      {
+        "code": 21,
+        "name": "add",
+        "since": 904,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 22,
+        "name": "subtract",
+        "since": 904,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 23,
+        "name": "divide",
+        "since": 904,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 24,
+        "name": "negate",
+        "since": 904,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 25,
+        "name": "oscillator",
+        "since": 904,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 26,
+        "name": "envelope",
+        "since": 904,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 27,
+        "name": "low pass",
+        "since": 904,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 28,
+        "name": "noise",
+        "since": 904,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 29,
+        "name": "high pass",
+        "since": 905,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 30,
+        "name": "band pass",
+        "since": 905,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 31,
+        "name": "all pass",
+        "since": 905,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 32,
+        "name": "absolute",
+        "since": 906,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 33,
+        "name": "fold",
+        "since": 906,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 34,
+        "name": "fuzz",
+        "since": 906,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 35,
+        "name": "saturate",
+        "since": 906,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 36,
+        "name": "wavefold",
+        "since": 906,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 37,
+        "name": "remove dc",
+        "since": 906,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 38,
+        "name": "expression function",
+        "since": 907,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 39,
+        "name": "accumulator",
+        "since": 907,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 40,
+        "name": "random",
+        "since": 907,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 41,
+        "name": "bend scaling",
+        "since": 908,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 42,
+        "name": "feedback read",
+        "since": 909,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 43,
+        "name": "feedback write",
+        "since": 909,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 44,
+        "name": "delay",
+        "since": 910,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 45,
+        "name": "follower",
+        "since": 910,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 46,
+        "name": "map",
+        "since": 910,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 47,
+        "name": "power",
+        "since": 910,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 48,
+        "name": "quantise",
+        "since": 910,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 49,
+        "name": "tempo",
+        "since": 910,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 50,
+        "name": "sample hold",
+        "since": 910,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 51,
+        "name": "custom wave",
+        "since": 910,
+        "minimumPackageVersion": 3
+      },
+      {
+        "code": 52,
+        "name": "midi note",
+        "since": 911,
+        "minimumPackageVersion": 4
+      }
+    ]
+  }
+}

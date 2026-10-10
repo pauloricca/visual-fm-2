@@ -24,6 +24,11 @@
     "smoke:video-remix": "node scripts/smoke-video-remix.mjs",
     "smoke:dsp-ports": "node scripts/smoke-dsp-port-links.mjs",
     "benchmark:saved-patches": "node scripts/benchmark-saved-patches.mjs",
-    "smoke:wasm-memory": "node scripts/smoke-wasm-memory.mjs"
+    "smoke:wasm-memory": "node scripts/smoke-wasm-memory.mjs",
+    "fm1:support:check": "node scripts/fm1-support.mjs --check",
+    "fm1:support:write": "node scripts/fm1-support.mjs --write",
+    "pretypecheck": "npm run fm1:support:check",
+    "prebuild": "npm run fm1:support:check",
+    "fm1:install": "python3 scripts/fm1-install.py"
   }
 }

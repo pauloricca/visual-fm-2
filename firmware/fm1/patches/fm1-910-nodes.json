@@ -1,0 +1,50 @@
+{
+  "name": "FM1 910 nodes",
+  "nodes": [
+    {
+      "id": "controls",
+      "type": "Params",
+      "params": { "level": 0.2, "frequency": 220, "gate": 0, "attack": 0.01, "release": 0.24 },
+      "outputs": [
+        { "name": "level", "defaultValue": 0.2, "min": 0, "max": 0.5 },
+        { "name": "frequency", "defaultValue": 220, "min": 1, "max": 2000 },
+        { "name": "gate", "defaultValue": 0, "min": 0, "max": 1 },
+        { "name": "attack", "defaultValue": 0.01, "min": 0, "max": 2 },
+        { "name": "release", "defaultValue": 0.24, "min": 0, "max": 2 }
+      ]
+    },
+    { "id": "tempo", "type": "Tempo", "params": { "bpm": 120 } },
+    { "id": "quantise", "type": "Quantise", "params": { "scale": 1, "root": 0 } },
+    { "id": "kink", "type": "KinkOsc", "params": { "shape": 0.2, "squareness": 0.35 } },
+    { "id": "hold", "type": "SampleHoldOsc", "params": {} },
+    {
+      "id": "custom",
+      "type": "CustomWave",
+      "params": { "baseLevel": 0, "rangeMin": -1, "rangeMax": 1 },
+      "customWave": {
+        "mode": "loop",
+        "sustainStart": 0.5,
+        "sustainEnd": 0.75,
+        "points": [ { "x": 0, "y": 0 }, { "x": 0.3, "y": 0.8 }, { "x": 0.7, "y": -0.8 }, { "x": 1, "y": 0 } ]
+      }
+    },
+    { "id": "map", "type": "Map", "params": { "srcMax": 1, "trgtMin": -1, "trgtMax": 1 } },
+    { "id": "power", "type": "Pow", "params": { "exponent": 2 } },
+    { "id": "follower", "type": "Follower", "params": { "attack": 0.01, "release": 0.12 } },
+    { "id": "delay", "type": "Delay", "params": { "time": 0.03, "feedback": 0.35, "mix": 0.25 } },
+    { "id": "out", "type": "AudioOut", "params": {} }
+  ],
+  "links": [
+    { "from": { "node": "controls", "port": "frequency" }, "to": { "node": "quantise", "port": "signal" } },
+    { "from": { "node": "quantise", "port": "signal" }, "to": { "node": "kink", "port": "frequency" } },
+    { "from": { "node": "tempo", "port": "quarter / beat" }, "to": { "node": "hold", "port": "trigger" } },
+    { "from": { "node": "kink", "port": "signal" }, "to": { "node": "hold", "port": "signal" } },
+    { "from": { "node": "hold", "port": "signal" }, "to": { "node": "map", "port": "signal" } },
+    { "from": { "node": "custom", "port": "signal" }, "to": { "node": "map", "port": "srcMin" } },
+    { "from": { "node": "map", "port": "signal" }, "to": { "node": "power", "port": "signal" } },
+    { "from": { "node": "power", "port": "signal" }, "to": { "node": "follower", "port": "signal" } },
+    { "from": { "node": "follower", "port": "signal" }, "to": { "node": "delay", "port": "signal" } },
+    { "from": { "node": "delay", "port": "signal" }, "to": { "node": "out", "port": "both" } },
+    { "from": { "node": "controls", "port": "level" }, "to": { "node": "out", "port": "level" } }
+  ]
+}

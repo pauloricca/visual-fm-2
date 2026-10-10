@@ -1,0 +1,60 @@
+{
+  "status": "compiled; not tested on hardware",
+  "upstream_commit": "129a4cf4e98e6ef06a4a89e97b65092247d69412",
+  "sdk_commit": "d179b4484759423312073f5fbb232501aa491047",
+  "compiler_sha256": "c45189ee624de0430deb0db02e6dce171fb5538e7fe323e3964dc8ac6236240f",
+  "image": "debian@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587",
+  "checks": [
+    ".ram_text: 916 insns, no calls",
+    "image 26424 B; RAM .data+.bss 12016 B of 73728; pool 23720 B of 368640"
+  ],
+  "forbidden_symbols_absent": [
+    "dly_buf",
+    "sl_buf",
+    "eng_mem",
+    "SMP_DATA",
+    "mix_block",
+    "seq_tick",
+    "ENGINES",
+    "demo_program"
+  ],
+  "sources": {
+    "firmware/fm1/LICENSE": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+    "firmware/fm1/README.md": "ceb6faf55bb188038ef1423916153370f55be59a661cd4b33e46e68ff98ead65",
+    "firmware/fm1/UPLOAD.md": "d02f3caf06285679a10eb4d8ec49e903e08c2923c81d1f0a31c1ecea9bbcbfe6",
+    "firmware/fm1/app.c": "2cfa76ea815fe85dc762422aa9606eca81d08bb3f5a17fb61ce74e2c22b3664e",
+    "firmware/fm1/export-patch.mjs": "77b8ef3c0cd35c91ee46f09174bce2d5ddefa400b87df9945e29d1afa81676cc",
+    "firmware/fm1/patches/octave.json": "94a2522f12b71626cc1b8916fe835ab65d5bcf8c632eedbb0c72af42ec361882",
+    "firmware/fm1/patches/sine.json": "2ba91477ec8d76db684c2e8ae097cf4b2bf14a3875ff59d58a3d3c76185b362f",
+    "firmware/fm1/runtime.h": "b6ccc87a05eeaae21fb0e2f68bde98c6af23e29a797fc2ad5691b23ff67f2c56",
+    "firmware/fm1/test-runtime.c": "f80fac70c7ae2cb0e2a47c115948bd1b9e352c1f005cfef8cca2029a6341bdd9",
+    "firmware/fm1/test-upload.c": "3f53565a93244b130c82f702b383d1e345379748d10c7267bd9bd394150bcfd6",
+    "firmware/fm1/upload.h": "bd7b4112630837e3c37b9116408a01a0fd6552d667323efe0278c6468217d3fc"
+  },
+  "artifacts": {
+    "felucca.bin": {
+      "bytes": 26424,
+      "sha256": "0b2ab3ae44048c1ab495ef2515073df9c8f72fb3311549e680eccdcad011575b"
+    },
+    "felucca.elf": {
+      "bytes": 33980,
+      "sha256": "53df954f6f9988a85d73141a8a03369d224d375846dafa32c953d62d458a90fe"
+    },
+    "teia-fm1-spike.fwsc": {
+      "bytes": 610078,
+      "sha256": "91604123416b790d81995312dc72fe5179d06471c1a2c80037abf5a20cc8aed2"
+    },
+    "loader/ota.bin": {
+      "bytes": 6922,
+      "sha256": "1b54f9f293a616fcd485a90218da64601d6df682a76da402de66ccd42c450e96"
+    },
+    "gen/program.json": {
+      "bytes": 9393,
+      "sha256": "6631c234211549d8eb121a066a02c3b20842a67e372fd64142dcaeec73691f9a"
+    },
+    "gen/patch.h": {
+      "bytes": 8757,
+      "sha256": "7fa006046a097caa29ff375b383db3bd39ae3f3cdd9ad1fe983d8fd5a6a4faef"
+    }
+  }
+}

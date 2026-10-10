@@ -1483,7 +1483,7 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
 
   if (node.type === 'Envelope') {
     const envelope = nextRegister(context);
-    const state = nextState(context, 7);
+    const state = nextState(context, 8);
     // Trigger and gate are event inputs, not editable node parameters. Older
     // patches can still contain saved values for them, so force an unconnected
     // port low instead of letting a stale value hold the envelope open.
@@ -1499,7 +1499,7 @@ function compileNodeOutput(node: PatchNode, port: string, context: CompileContex
     context.stateBindings.push({
       id: `${node.id}:envelope`,
       state,
-      count: 7,
+      count: 8,
       kind: 'effect',
       nodeId: node.id,
     });

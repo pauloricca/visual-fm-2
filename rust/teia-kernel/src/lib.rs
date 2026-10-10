@@ -7364,13 +7364,13 @@ fn envelope_coefficient(seconds: f64, sample_rate: f64) -> f64 {
 
 fn render_dsp_envelope<const REPEAT: bool>(op: DspOp, sample_rate: f64, node_context: Option<DspNodeContext>) -> f64 {
     unsafe {
-        if op.state < 0 || (op.state as usize + 6) >= MAX_DSP_STATE {
+        if op.state < 0 || (op.state as usize + 7) >= MAX_DSP_STATE {
             return 0.0;
         }
 
         let state_index = op.state as usize;
         let state_ptr = if REPEAT { node_context.unwrap().state_ptr(state_index) } else { dsp_state_ptr(state_index) };
-        let state = core::slice::from_raw_parts_mut(state_ptr, 7);
+        let state = core::slice::from_raw_parts_mut(state_ptr, 8);
         let regs = if REPEAT { node_context.unwrap().regs } else { dsp_regs_ptr() };
         let reg = |index: i32| {
             if index < 0 || index as usize >= MAX_DSP_REGS { 0.0 }
@@ -7400,6 +7400,7 @@ fn render_dsp_envelope<const REPEAT: bool>(op: DspOp, sample_rate: f64, node_con
         let mut stage_time = (state[3]).max(0.0);
         let mut release_start = (state[4]).clamp(0.0, 1.0);
         let mut attack_start = (state[6]).clamp(0.0, 1.0);
+        let mut timed_gate_elapsed = state[7].max(0.0);
         let trigger_edge = trigger && !was_triggered;
         let gate_opened = gate && !was_gated;
         let gate_closed = !gate && was_gated;
@@ -7412,6 +7413,7 @@ fn render_dsp_envelope<const REPEAT: bool>(op: DspOp, sample_rate: f64, node_con
             attack_start = env;
             stage = if delay > 0.0 { 5 } else { 1 };
             stage_time = 0.0;
+            timed_gate_elapsed = 0.0;
         } else if gate_closed {
             stage = 4;
             stage_time = 0.0;
@@ -7471,13 +7473,7 @@ fn render_dsp_envelope<const REPEAT: bool>(op: DspOp, sample_rate: f64, node_con
                 }
             }
             6 => {
-                stage_time += dt;
                 env = sustain;
-                if stage_time >= gate_length {
-                    stage = 4;
-                    stage_time = 0.0;
-                    release_start = env;
-                }
             }
             4 => {
                 stage_time += dt;
@@ -7497,6 +7493,20 @@ fn render_dsp_envelope<const REPEAT: bool>(op: DspOp, sample_rate: f64, node_con
             }
         }
 
+        // A trigger has no held gate signal, so gate length defines the full
+        // audible duration from that trigger edge. In particular, delay,
+        // attack, and decay must consume time from the requested length rather
+        // than adding to it before sustain starts. A connected high gate still
+        // owns the envelope and holds it open until it falls.
+        if gate_length > 0.0 && !gate && stage != 0 && stage != 4 {
+            timed_gate_elapsed += dt;
+            if timed_gate_elapsed >= gate_length {
+                stage = 4;
+                stage_time = 0.0;
+                release_start = env;
+            }
+        }
+
         state[0] = sanitize_control_value(env).clamp(0.0, 1.0);
         state[1] = if trigger { 1.0 } else { 0.0 };
         state[2] = stage as f64;
@@ -7504,7 +7514,62 @@ fn render_dsp_envelope<const REPEAT: bool>(op: DspOp, sample_rate: f64, node_con
         state[4] = release_start;
         state[5] = if gate { 1.0 } else { 0.0 };
         state[6] = attack_start;
+        state[7] = timed_gate_elapsed;
         state[0]
+    }
+}
+
+#[cfg(test)]
+mod envelope_tests {
+    use super::{
+        dsp_state_ptr, render_dsp_envelope, DspOp, DSP_OP_ENVELOPE, DSP_REGS, MAX_DSP_REGS,
+    };
+
+    #[test]
+    fn trigger_only_gate_length_runs_from_the_trigger_edge() {
+        let state = 3600;
+        let op = DspOp {
+            opcode: DSP_OP_ENVELOPE,
+            out: -1,
+            a: 20,
+            b: 21,
+            c: 22,
+            d: 23,
+            e: 24,
+            state,
+            value: 25.0 + 26.0 * MAX_DSP_REGS as f64,
+            value2: 28.0,
+            value3: 0.0,
+            value4: 0.0,
+        };
+
+        unsafe {
+            for index in state..(state + 8) {
+                *dsp_state_ptr(index as usize) = 0.0;
+            }
+            DSP_REGS[20] = 1.0;
+            DSP_REGS[21] = 0.0;
+            DSP_REGS[22] = 0.01;
+            DSP_REGS[23] = 0.01;
+            DSP_REGS[24] = 0.01;
+            DSP_REGS[25] = 1.0;
+            DSP_REGS[26] = 0.0;
+            DSP_REGS[27] = 0.005;
+        }
+
+        render_dsp_envelope::<false>(op, 1_000.0, None);
+        unsafe { DSP_REGS[20] = 0.0 };
+        for _ in 0..4 {
+            render_dsp_envelope::<false>(op, 1_000.0, None);
+        }
+
+        unsafe {
+            assert_eq!(
+                (*dsp_state_ptr(state as usize + 2)).round() as i32,
+                4,
+                "the timed trigger should release before delay, attack, and decay can add to its length",
+            );
+        }
     }
 }
 
